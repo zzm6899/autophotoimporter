@@ -4,12 +4,14 @@ import { useFileScanner } from '../hooks/useFileScanner';
 import { ThumbnailCard } from './ThumbnailCard';
 import { SingleView } from './SingleView';
 import { EmptyState } from './EmptyState';
+import { SettingsPage } from './SettingsPage';
 
 export function ThumbnailGrid() {
-  const { files, phase, selectedSource, scanError, focusedIndex, viewMode, showLeftPanel, showRightPanel, filter, cullMode, collapsedBursts, exposureAnchorPath, saveFormat } = useAppState();
+  const { files, phase, selectedSource, scanError, focusedIndex, viewMode, showLeftPanel, showRightPanel, filter, cullMode, collapsedBursts, exposureAnchorPath, saveFormat, burstGrouping } = useAppState();
   const { startScan } = useFileScanner();
   const dispatch = useAppDispatch();
   const gridRef = useRef<HTMLDivElement>(null);
+  const [showSettings, setShowSettings] = useState(false);
   const splitGridRef = useRef<HTMLDivElement>(null);
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
   const lastClickedRef = useRef<number>(-1);
@@ -287,6 +289,19 @@ export function ThumbnailGrid() {
     }
   }, [focusedIndex, viewMode]);
 
+  // Preload adjacent photos so SingleView navigation feels instant.
+  // Fire-and-forget: generatePreview deduplicates in-flight requests.
+  useEffect(() => {
+    if (viewMode !== 'single' && viewMode !== 'split') return;
+    if (focusedIndex < 0 || sortedFiles.length === 0) return;
+    const neighbors = [focusedIndex - 1, focusedIndex + 1, focusedIndex + 2];
+    for (const i of neighbors) {
+      if (i >= 0 && i < sortedFiles.length) {
+        void window.electronAPI.getPreview(sortedFiles[i].path);
+      }
+    }
+  }, [focusedIndex, viewMode, sortedFiles]);
+
   if (!selectedSource) {
     return <EmptyState />;
   }
@@ -326,6 +341,14 @@ export function ThumbnailGrid() {
   const focusedFile = focusedIndex >= 0 && focusedIndex < sortedFiles.length ? sortedFiles[focusedIndex] : null;
   const isSingle = (viewMode === 'single' || viewMode === 'split') && focusedFile;
   const hasBatchSelection = selectedIndices.size > 0;
+
+  // Burst collapse/expand state
+  const burstIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const f of files) if (f.burstId && f.burstSize && f.burstSize > 1) ids.add(f.burstId);
+    return ids;
+  }, [files]);
+  const allBurstsCollapsed = burstIds.size > 0 && burstIds.size === collapsedBursts.length;
 
   // Expose-normalize button state
   const anchorFile = exposureAnchorPath ? files.find((f) => f.path === exposureAnchorPath) : null;
@@ -572,6 +595,18 @@ export function ThumbnailGrid() {
             >
               CSV
             </button>
+            {burstGrouping && burstIds.size > 0 && (
+              <>
+                <div className="w-px h-3 bg-border mx-1" />
+                <button
+                  onClick={() => dispatch({ type: allBurstsCollapsed ? 'CLEAR_COLLAPSED_BURSTS' : 'COLLAPSE_ALL_BURSTS' })}
+                  className="px-1.5 py-0.5 text-[10px] text-text-muted hover:text-text rounded transition-colors"
+                  title={allBurstsCollapsed ? 'Expand all bursts' : 'Collapse all bursts'}
+                >
+                  {allBurstsCollapsed ? 'Expand bursts' : 'Collapse bursts'}
+                </button>
+              </>
+            )}
           </div>
         )}
 
