@@ -1,0 +1,101 @@
+name: Build & Release Alpha
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            artifact_glob: 'out/make/**/*.dmg out/make/**/*.zip'
+          - os: windows-latest
+            artifact_glob: 'out/make/**/*.exe out/make/**/*.nupkg out/make/**/*.zip'
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm test
+
+      - run: npm run make
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.os }}
+          path: out/make/**/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Delete existing alpha release
+        run: gh release delete v1.1.0-alpha --cleanup-tag --yes || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create alpha release
+        run: |
+          args=()
+          while IFS= read -r f; do
+            args+=("$f")
+          done < <(find artifacts -type f \( -name "*.dmg" -o -name "*.zip" -o -name "*.exe" -o -name "*.nupkg" \))
+
+          gh release create v1.1.0-alpha \
+            "${args[@]}" \
+            --prerelease \
+            --title "v1.1.0-alpha" \
+            --notes "$(cat <<'EOF'
+          ## Photo Importer — Alpha Release (macOS + Windows)
+
+          > **Rolling build** — automatically updated on every push to `main`.
+
+          ### Install
+
+          **macOS**
+          1. Download the `.dmg` below
+          2. Open it and drag **Photo Importer** to Applications
+          3. On first launch, macOS will block the unsigned app:
+             - Go to **System Settings → Privacy & Security**
+             - Scroll down and click **Open Anyway**
+
+          **Windows**
+          1. Download `PhotoImporter-Setup.exe` below
+          2. SmartScreen may warn — click **More info → Run anyway**
+          3. The installer places the app under `%LocalAppData%\photo-importer` and adds a Start menu entry.
+
+          ### ⚠️ Unsigned App
+
+          This alpha build is not code-signed or notarized. Gatekeeper (macOS) and SmartScreen (Windows) will warn you on first launch. This is expected — follow the instructions above to allow it.
+          EOF
+          )"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

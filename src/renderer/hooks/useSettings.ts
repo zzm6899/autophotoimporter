@@ -1,0 +1,70 @@
+import { useEffect } from 'react';
+import { useAppDispatch } from '../context/ImportContext';
+
+export function useSettings() {
+  const dispatch = useAppDispatch();
+
+  useEffect(() => {
+    window.electronAPI.getSettings().then((settings) => {
+      if (settings.lastDestination) {
+        dispatch({ type: 'SET_DESTINATION', path: settings.lastDestination });
+      }
+      dispatch({ type: 'SET_SKIP_DUPLICATES', value: settings.skipDuplicates });
+      if (settings.saveFormat) {
+        dispatch({ type: 'SET_SAVE_FORMAT', format: settings.saveFormat });
+      }
+      if (typeof settings.jpegQuality === 'number') {
+        dispatch({ type: 'SET_JPEG_QUALITY', quality: settings.jpegQuality });
+      }
+      if (settings.folderPreset) {
+        dispatch({ type: 'SET_FOLDER_PRESET', preset: settings.folderPreset });
+      }
+      if (settings.customPattern) {
+        dispatch({ type: 'SET_CUSTOM_PATTERN', pattern: settings.customPattern });
+      }
+      if (settings.theme) {
+        dispatch({ type: 'SET_THEME', theme: settings.theme });
+      }
+
+      // Workflow — hydrate from persisted settings. Wrap each in a safe
+      // "if defined" check so an older settings.json (pre-workflow) doesn't
+      // stomp sane defaults with `undefined`.
+      if (typeof settings.separateProtected === 'boolean') {
+        dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'separateProtected', value: settings.separateProtected });
+      }
+      if (typeof settings.protectedFolderName === 'string') {
+        dispatch({ type: 'SET_WORKFLOW_STRING', key: 'protectedFolderName', value: settings.protectedFolderName });
+      }
+      if (typeof settings.backupDestRoot === 'string') {
+        dispatch({ type: 'SET_WORKFLOW_STRING', key: 'backupDestRoot', value: settings.backupDestRoot });
+      }
+      if (typeof settings.autoEject === 'boolean') {
+        dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'autoEject', value: settings.autoEject });
+      }
+      if (typeof settings.playSoundOnComplete === 'boolean') {
+        dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'playSoundOnComplete', value: settings.playSoundOnComplete });
+      }
+      if (typeof settings.openFolderOnComplete === 'boolean') {
+        dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'openFolderOnComplete', value: settings.openFolderOnComplete });
+      }
+      if (typeof settings.autoImport === 'boolean') {
+        dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'autoImport', value: settings.autoImport });
+      }
+      if (typeof settings.autoImportDestRoot === 'string') {
+        dispatch({ type: 'SET_WORKFLOW_STRING', key: 'autoImportDestRoot', value: settings.autoImportDestRoot });
+      }
+      if (typeof settings.burstGrouping === 'boolean') {
+        dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'burstGrouping', value: settings.burstGrouping });
+      }
+      if (typeof settings.burstWindowSec === 'number') {
+        dispatch({ type: 'SET_BURST_WINDOW', seconds: settings.burstWindowSec });
+      }
+      if (typeof settings.normalizeExposure === 'boolean') {
+        dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'normalizeExposure', value: settings.normalizeExposure });
+      }
+      if (typeof settings.exposureMaxStops === 'number') {
+        dispatch({ type: 'SET_EXPOSURE_MAX_STOPS', stops: settings.exposureMaxStops });
+      }
+    });
+  }, [dispatch]);
+}

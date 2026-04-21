@@ -1,0 +1,143 @@
+import { contextBridge, ipcRenderer } from 'electron';
+import { IPC } from '../shared/types';
+import type { ImportConfig, AppSettings, MediaFile, Volume, ImportProgress, ImportResult, UpdateInfo, FtpConfig, ImportError } from '../shared/types';
+
+export interface FtpProbeResult {
+  ok: boolean;
+  error?: string;
+  fileCount?: number;
+  totalBytes?: number;
+}
+
+export interface FtpMirrorResult {
+  ok: boolean;
+  stagingDir?: string;
+  error?: string;
+}
+
+export interface FtpMirrorProgress {
+  done: number;
+  total: number;
+  name: string;
+}
+
+const api = {
+  // Volumes
+  listVolumes: (): Promise<Volume[]> =>
+    ipcRenderer.invoke(IPC.VOLUMES_LIST),
+  onVolumesChanged: (cb: (volumes: Volume[]) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, volumes: Volume[]) => cb(volumes);
+    ipcRenderer.on(IPC.VOLUMES_CHANGED, handler);
+    return () => ipcRenderer.removeListener(IPC.VOLUMES_CHANGED, handler);
+  },
+
+  // Scanning
+  scanFiles: (sourcePath: string, folderPattern?: string): Promise<void> =>
+    ipcRenderer.invoke(IPC.SCAN_START, sourcePath, folderPattern),
+  onScanBatch: (cb: (files: MediaFile[]) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, files: MediaFile[]) => cb(files);
+    ipcRenderer.on(IPC.SCAN_BATCH, handler);
+    return () => ipcRenderer.removeListener(IPC.SCAN_BATCH, handler);
+  },
+  onScanComplete: (cb: (totalFiles: number) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, total: number) => cb(total);
+    ipcRenderer.on(IPC.SCAN_COMPLETE, handler);
+    return () => ipcRenderer.removeListener(IPC.SCAN_COMPLETE, handler);
+  },
+  onScanThumbnail: (cb: (filePath: string, thumbnail: string) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, filePath: string, thumbnail: string) => cb(filePath, thumbnail);
+    ipcRenderer.on(IPC.SCAN_THUMBNAIL, handler);
+    return () => ipcRenderer.removeListener(IPC.SCAN_THUMBNAIL, handler);
+  },
+  checkDuplicates: (destRoot: string): Promise<void> =>
+    ipcRenderer.invoke(IPC.SCAN_CHECK_DUPLICATES, destRoot),
+  onScanDuplicate: (cb: (filePath: string) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, filePath: string) => cb(filePath);
+    ipcRenderer.on(IPC.SCAN_DUPLICATE, handler);
+    return () => ipcRenderer.removeListener(IPC.SCAN_DUPLICATE, handler);
+  },
+  getPreview: (filePath: string): Promise<string | undefined> =>
+    ipcRenderer.invoke(IPC.SCAN_PREVIEW, filePath),
+  cancelScan: (): Promise<void> =>
+    ipcRenderer.invoke(IPC.SCAN_CANCEL),
+
+  // Import
+  startImport: (config: ImportConfig): Promise<ImportResult> =>
+    ipcRenderer.invoke(IPC.IMPORT_START, config),
+  onImportProgress: (cb: (progress: ImportProgress) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, progress: ImportProgress) => cb(progress);
+    ipcRenderer.on(IPC.IMPORT_PROGRESS, handler);
+    return () => ipcRenderer.removeListener(IPC.IMPORT_PROGRESS, handler);
+  },
+  cancelImport: (): Promise<void> =>
+    ipcRenderer.invoke(IPC.IMPORT_CANCEL),
+
+  // Dialogs
+  selectFolder: (title: string): Promise<string | null> =>
+    ipcRenderer.invoke(IPC.DIALOG_SELECT_FOLDER, title),
+  openPath: (path: string): Promise<void> =>
+    ipcRenderer.invoke(IPC.DIALOG_OPEN_PATH, path),
+
+  // Settings
+  getSettings: (): Promise<AppSettings> =>
+    ipcRenderer.invoke(IPC.SETTINGS_GET),
+  setSettings: (settings: Partial<AppSettings>): Promise<void> =>
+    ipcRenderer.invoke(IPC.SETTINGS_SET, settings),
+
+  // Updates
+  onUpdateAvailable: (cb: (info: UpdateInfo) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, info: UpdateInfo) => cb(info);
+    ipcRenderer.on(IPC.UPDATE_AVAILABLE, handler);
+    return () => ipcRenderer.removeListener(IPC.UPDATE_AVAILABLE, handler);
+  },
+  openReleaseUrl: (url: string): Promise<void> =>
+    ipcRenderer.invoke(IPC.UPDATE_OPEN_RELEASE, url),
+
+  // FTP source
+  probeFtp: (config: FtpConfig): Promise<FtpProbeResult> =>
+    ipcRenderer.invoke(IPC.FTP_PROBE, config),
+  mirrorFtp: (config: FtpConfig): Promise<FtpMirrorResult> =>
+    ipcRenderer.invoke(IPC.FTP_MIRROR_START, config),
+  cancelFtpMirror: (): Promise<void> =>
+    ipcRenderer.invoke(IPC.FTP_MIRROR_CANCEL),
+  onFtpMirrorProgress: (cb: (p: FtpMirrorProgress) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, p: FtpMirrorProgress) => cb(p);
+    ipcRenderer.on(IPC.FTP_MIRROR_PROGRESS, handler);
+    return () => ipcRenderer.removeListener(IPC.FTP_MIRROR_PROGRESS, handler);
+  },
+
+  // Export manifest
+  exportManifest: (format: 'csv' | 'json'): Promise<string | null> =>
+    ipcRenderer.invoke(IPC.EXPORT_MANIFEST, format),
+
+  // Eject volume (removable only, best-effort)
+  ejectVolume: (volumePath: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke(IPC.EJECT_VOLUME, volumePath),
+
+  // Disk free-space check (for pre-import warnings)
+  getDiskFreeSpace: (dirPath: string): Promise<number | null> =>
+    ipcRenderer.invoke(IPC.DISK_FREE_SPACE, dirPath),
+
+  // Auto-import — fires when a new device is inserted and the app has
+  // autoImport enabled. UI uses this to jump into the import flow.
+  onDeviceInserted: (cb: (volume: Volume) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, volume: Volume) => cb(volume);
+    ipcRenderer.on(IPC.DEVICE_INSERTED, handler);
+    return () => ipcRenderer.removeListener(IPC.DEVICE_INSERTED, handler);
+  },
+  onAutoImportStarted: (cb: (info: { volumePath: string; destRoot: string }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, info: { volumePath: string; destRoot: string }) => cb(info);
+    ipcRenderer.on(IPC.AUTO_IMPORT_STARTED, handler);
+    return () => ipcRenderer.removeListener(IPC.AUTO_IMPORT_STARTED, handler);
+  },
+
+  // Platform info (renderer uses this to show Ctrl vs ⌘ in shortcuts)
+  platform: process.platform,
+};
+
+// Re-export so non-preload modules can reference the ImportError type on results.
+export type { ImportError };
+
+export type ElectronAPI = typeof api;
+
+contextBridge.exposeInMainWorld('electronAPI', api);
