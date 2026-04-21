@@ -49,6 +49,14 @@ export function useImport() {
     const anchorFile = exposureAnchorPath ? files.find((f) => f.path === exposureAnchorPath) : null;
     const exposureAnchorEV = anchorFile?.exposureValue;
 
+    // Per-file normalization paths: files the user has explicitly marked
+    // "Normalize to anchor". These are normalized on import regardless of
+    // the global normalizeExposure toggle, as long as the anchor EV is known
+    // and the save format is transcoding.
+    const normalizeAnchorPaths = typeof exposureAnchorEV === 'number' && saveFormat !== 'original'
+      ? files.filter((f) => f.normalizeToAnchor).map((f) => f.path)
+      : [];
+
     dispatch({ type: 'IMPORT_START' });
     try {
       const result = await window.electronAPI.startImport({
@@ -65,6 +73,7 @@ export function useImport() {
         normalizeExposure: normalizeExposure && saveFormat !== 'original' && typeof exposureAnchorEV === 'number',
         exposureAnchorEV,
         exposureMaxStops,
+        normalizeAnchorPaths: normalizeAnchorPaths.length > 0 ? normalizeAnchorPaths : undefined,
       });
       dispatch({ type: 'IMPORT_COMPLETE', result });
 

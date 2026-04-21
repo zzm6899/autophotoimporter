@@ -6,7 +6,7 @@ import { SingleView } from './SingleView';
 import { EmptyState } from './EmptyState';
 
 export function ThumbnailGrid() {
-  const { files, phase, selectedSource, scanError, focusedIndex, viewMode, showLeftPanel, showRightPanel, filter, cullMode, collapsedBursts } = useAppState();
+  const { files, phase, selectedSource, scanError, focusedIndex, viewMode, showLeftPanel, showRightPanel, filter, cullMode, collapsedBursts, exposureAnchorPath, saveFormat } = useAppState();
   const { startScan } = useFileScanner();
   const dispatch = useAppDispatch();
   const gridRef = useRef<HTMLDivElement>(null);
@@ -327,6 +327,21 @@ export function ThumbnailGrid() {
   const isSingle = (viewMode === 'single' || viewMode === 'split') && focusedFile;
   const hasBatchSelection = selectedIndices.size > 0;
 
+  // Expose-normalize button state
+  const anchorFile = exposureAnchorPath ? files.find((f) => f.path === exposureAnchorPath) : null;
+  const anchorHasEV = typeof anchorFile?.exposureValue === 'number';
+  const canNormalize = anchorHasEV && saveFormat !== 'original';
+  const normalizeTargetPaths = hasBatchSelection
+    ? Array.from(selectedIndices).filter((i) => i >= 0 && i < sortedFiles.length).map((i) => sortedFiles[i].path)
+    : focusedFile ? [focusedFile.path] : [];
+  const allTargetsNormalized = normalizeTargetPaths.length > 0 &&
+    normalizeTargetPaths.every((p) => files.find((f) => f.path === p)?.normalizeToAnchor);
+
+  const handleNormalizeToggle = useCallback(() => {
+    if (normalizeTargetPaths.length === 0) return;
+    dispatch({ type: 'SET_NORMALIZE_TO_ANCHOR', filePaths: normalizeTargetPaths, value: !allTargetsNormalized });
+  }, [dispatch, normalizeTargetPaths, allTargetsNormalized]);
+
   const floatingToolbar = (focusedFile || hasBatchSelection) ? (
     <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-px bg-surface-alt/95 backdrop-blur-sm border border-border rounded-lg shadow-lg overflow-hidden z-20">
       {!hasBatchSelection && (
@@ -385,6 +400,24 @@ export function ThumbnailGrid() {
       >
         Clear
       </button>
+      {canNormalize && normalizeTargetPaths.length > 0 && (
+        <>
+          <div className="w-px h-4 bg-border" />
+          <button
+            onClick={handleNormalizeToggle}
+            className={`px-3 py-1.5 text-[11px] transition-colors ${
+              allTargetsNormalized
+                ? 'bg-orange-500/20 text-orange-400 hover:bg-orange-500/30'
+                : 'text-text-secondary hover:text-orange-400 hover:bg-orange-500/10'
+            }`}
+            title={allTargetsNormalized
+              ? 'Remove exposure normalization from these files'
+              : `Normalize exposure to anchor (${anchorFile?.name}) on import`}
+          >
+            {allTargetsNormalized ? '⊖ Anchor' : '⊕ Anchor'}
+          </button>
+        </>
+      )}
       {!hasBatchSelection && (
         <>
           <div className="w-px h-4 bg-border" />

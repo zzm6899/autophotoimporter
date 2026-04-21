@@ -110,16 +110,28 @@ export function ThumbnailCard({
             </div>
           )}
 
-          {/* In-camera protected / read-only lock */}
-          {file.isProtected && (
-            <div
-              className="absolute top-1.5 left-1.5 bg-emerald-600/90 text-[9px] text-white px-1 py-0.5 rounded font-medium z-20 flex items-center gap-0.5"
-              title="Protected / read-only — prioritized for import"
-            >
-              <svg className="w-2.5 h-2.5" viewBox="0 0 20 20" fill="currentColor">
-                <path fillRule="evenodd" d="M10 1a4.5 4.5 0 00-4.5 4.5V9H5a2 2 0 00-2 2v6a2 2 0 002 2h10a2 2 0 002-2v-6a2 2 0 00-2-2h-.5V5.5A4.5 4.5 0 0010 1zm3 8V5.5a3 3 0 10-6 0V9h6z" clipRule="evenodd" />
-              </svg>
-              PROTECTED
+          {/* Left-side stacked badges: Protected and/or Normalize-to-anchor */}
+          {(file.isProtected || file.normalizeToAnchor) && (
+            <div className="absolute top-1.5 left-1.5 flex flex-col gap-0.5 z-20">
+              {file.isProtected && (
+                <div
+                  className="bg-emerald-600/90 text-[9px] text-white px-1 py-0.5 rounded font-medium flex items-center gap-0.5"
+                  title="Protected / read-only — prioritized for import"
+                >
+                  <svg className="w-2.5 h-2.5" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M10 1a4.5 4.5 0 00-4.5 4.5V9H5a2 2 0 00-2 2v6a2 2 0 002 2h10a2 2 0 002-2v-6a2 2 0 00-2-2h-.5V5.5A4.5 4.5 0 0010 1zm3 8V5.5a3 3 0 10-6 0V9h6z" clipRule="evenodd" />
+                  </svg>
+                  PROTECTED
+                </div>
+              )}
+              {file.normalizeToAnchor && (
+                <div
+                  className="bg-orange-500/90 text-[9px] text-white px-1 py-0.5 rounded font-medium"
+                  title="Exposure will be normalized to the anchor on import"
+                >
+                  EXP↔
+                </div>
+              )}
             </div>
           )}
 

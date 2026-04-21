@@ -241,13 +241,21 @@ export async function importFiles(
     !!config.normalizeExposure &&
     config.saveFormat !== 'original' &&
     typeof config.exposureAnchorEV === 'number';
+  // Per-file normalization: files the user explicitly marked "Normalize to
+  // anchor" in the grid, regardless of the global normalizeExposure toggle.
+  const perFileNormalizePaths = new Set(
+    config.normalizeAnchorPaths && config.saveFormat !== 'original' && typeof config.exposureAnchorEV === 'number'
+      ? config.normalizeAnchorPaths
+      : [],
+  );
   const maxStops = typeof config.exposureMaxStops === 'number' && config.exposureMaxStops > 0
     ? config.exposureMaxStops
     : 2;
   let normalizationMissing = 0; // how many files we couldn't normalize
 
   function brightnessFor(file: MediaFile): number {
-    if (!normalizeActive) return 1;
+    const shouldNormalize = normalizeActive || perFileNormalizePaths.has(file.path);
+    if (!shouldNormalize) return 1;
     if (typeof file.exposureValue !== 'number') return 1;
     const anchor = config.exposureAnchorEV as number;
     // EV delta of +1 means the shot is 1 stop brighter than the anchor, so
