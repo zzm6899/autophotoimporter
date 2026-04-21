@@ -19,10 +19,11 @@ export function SingleView({ file, index, total }: SingleViewProps) {
   const [loading, setLoading] = useState(false);
   const isPicked = file.pick === 'selected';
   const isRejected = file.pick === 'rejected';
-  const { files, exposureAnchorPath, normalizeExposure } = useAppState();
+  const { files, exposureAnchorPath, normalizeExposure, saveFormat } = useAppState();
   const dispatch = useAppDispatch();
   const anchor = exposureAnchorPath ? files.find((f) => f.path === exposureAnchorPath) : null;
   const isAnchor = anchor?.path === file.path;
+  const anchorHasEV = typeof anchor?.exposureValue === 'number';
   const evDelta =
     anchor && typeof anchor.exposureValue === 'number' && typeof file.exposureValue === 'number'
       ? file.exposureValue - anchor.exposureValue
@@ -219,6 +220,30 @@ export function SingleView({ file, index, total }: SingleViewProps) {
                     : 'Set as exposure anchor (enable Normalize Exposure in the Output panel to apply on import)'}
               >
                 {isAnchor ? 'Clear anchor' : 'Set as anchor'}
+              </button>
+            )}
+            {typeof file.exposureValue === 'number' && !isAnchor && anchorHasEV && (
+              <button
+                type="button"
+                onClick={() =>
+                  dispatch({
+                    type: 'SET_NORMALIZE_TO_ANCHOR',
+                    filePaths: [file.path],
+                    value: !file.normalizeToAnchor,
+                  })
+                }
+                className={`text-[9px] font-mono px-1.5 py-0.5 rounded ${
+                  file.normalizeToAnchor
+                    ? 'bg-orange-500/30 text-orange-300 hover:bg-orange-500/40'
+                    : 'text-text-muted bg-black/30 hover:bg-black/50 dark:bg-black/50 hover:text-orange-300'
+                }`}
+                title={file.normalizeToAnchor
+                  ? 'Remove: exposure will NOT be normalized to anchor on import'
+                  : saveFormat === 'original'
+                    ? 'Mark to normalize exposure to anchor (requires a transcoding save format)'
+                    : `Normalize this file's exposure to match the anchor on import`}
+              >
+                {file.normalizeToAnchor ? '⊖ Normalize' : '⊕ Normalize'}
               </button>
             )}
           </div>

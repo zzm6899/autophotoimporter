@@ -54,6 +54,12 @@ export interface MediaFile {
    * consistent?" signal in the detail view.
    */
   exposureValue?: number;
+  /**
+   * When true, this file's exposure will be normalized to the anchor's EV on
+   * import regardless of the global `normalizeExposure` toggle. Set via the
+   * "Normalize to anchor" button in the grid toolbar or detail view.
+   */
+  normalizeToAnchor?: boolean;
 }
 
 export type SourceKind = 'volume' | 'ftp';
@@ -127,6 +133,13 @@ export interface ImportConfig {
    * or the source is underexposed past recovery.
    */
   exposureMaxStops?: number;
+  /**
+   * Explicit per-file list of source paths that should have exposure
+   * normalization applied, regardless of the global `normalizeExposure` flag.
+   * Populated from files the user marked "Normalize to anchor" in the grid.
+   * Requires `exposureAnchorEV` and a transcoding `saveFormat` to take effect.
+   */
+  normalizeAnchorPaths?: string[];
 }
 
 export interface ImportProgress {

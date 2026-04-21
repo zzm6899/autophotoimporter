@@ -107,7 +107,8 @@ export type Action =
   | { type: 'TOGGLE_BURST_COLLAPSE'; burstId: string }
   | { type: 'CLEAR_COLLAPSED_BURSTS' }
   | { type: 'SET_EXPOSURE_ANCHOR'; path: string | null }
-  | { type: 'SET_EXPOSURE_MAX_STOPS'; stops: number };
+  | { type: 'SET_EXPOSURE_MAX_STOPS'; stops: number }
+  | { type: 'SET_NORMALIZE_TO_ANCHOR'; filePaths: string[]; value: boolean };
 
 const systemDark = typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches;
 
@@ -337,6 +338,15 @@ export function reducer(state: State, action: Action): State {
       return { ...state, exposureAnchorPath: action.path };
     case 'SET_EXPOSURE_MAX_STOPS':
       return { ...state, exposureMaxStops: Math.max(0.33, Math.min(4, action.stops)) };
+    case 'SET_NORMALIZE_TO_ANCHOR': {
+      const pathSet = new Set(action.filePaths);
+      return {
+        ...state,
+        files: state.files.map((f) =>
+          pathSet.has(f.path) ? { ...f, normalizeToAnchor: action.value } : f,
+        ),
+      };
+    }
     default:
       return state;
   }
