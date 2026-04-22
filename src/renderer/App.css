@@ -114,6 +114,12 @@ select option {
   color: var(--color-text);
 }
 
+/* Skip rendering offscreen grid cards on slow machines */
+.thumbnail-grid > * {
+  content-visibility: auto;
+  contain-intrinsic-size: 0 180px;
+}
+
 .animate-in {
   animation: slide-up 0.3s ease-out;
 }

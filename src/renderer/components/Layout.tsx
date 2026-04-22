@@ -48,19 +48,19 @@ export function Layout({ left, center, right }: LayoutProps) {
       <div className="flex flex-1 min-h-0 pb-7">
         {/* Left panel - Source */}
         {showLeftPanel && (
-          <div className="w-48 shrink-0 border-r border-border bg-surface-alt overflow-y-auto">
+          <div className="w-44 shrink-0 border-r border-border bg-surface-alt overflow-y-auto">
             {left}
           </div>
         )}
 
         {/* Center panel - Thumbnails */}
-        <div className="flex-1 min-w-0 overflow-y-auto bg-surface">
+        <div className="flex-1 min-w-0 overflow-hidden bg-surface">
           {center}
         </div>
 
         {/* Right panel - Destination + Settings */}
         {showRightPanel && (
-          <div className="w-56 shrink-0 border-l border-border bg-surface-alt overflow-y-auto">
+          <div className="w-52 shrink-0 border-l border-border bg-surface-alt overflow-y-auto">
             {right}
           </div>
         )}

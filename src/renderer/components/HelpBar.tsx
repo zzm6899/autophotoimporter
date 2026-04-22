@@ -4,6 +4,16 @@ import { useFileScanner } from '../hooks/useFileScanner';
 const isMac = typeof window !== 'undefined' && window.electronAPI?.platform === 'darwin';
 const MOD = isMac ? 'Cmd' : 'Ctrl';
 
+// Contextual tip shown at the right of the bar — changes based on what the user should do next.
+function getContextTip(phase: string, fileCount: number, picked: number, queued: number): string {
+  if (phase === 'scanning') return 'Scanning your files — thumbnails will appear shortly.';
+  if (fileCount === 0) return 'Select a source on the left to scan for photos.';
+  if (queued > 0) return `${queued} file${queued !== 1 ? 's' : ''} queued — click Import in the right panel when ready.`;
+  if (picked > 0) return `${picked} picked — add them to the queue or import now.`;
+  if (fileCount > 0 && picked === 0) return 'Press P to pick a photo, X to reject. Double-click for full view.';
+  return '';
+}
+
 export function HelpBar() {
   const {
     files, phase, scanPaused, filter, viewMode, selectedPaths, queuedPaths,
@@ -14,66 +24,141 @@ export function HelpBar() {
 
   const picked = files.filter((f) => f.pick === 'selected').length;
   const rejected = files.filter((f) => f.pick === 'rejected').length;
-  const smart = files.filter((f) => typeof f.reviewScore === 'number').length;
   const focusedLabel = focusedIndex >= 0 && focusedIndex < files.length
-    ? `${focusedIndex + 1}/${files.length}`
-    : `${files.length} files`;
+    ? `${focusedIndex + 1} / ${files.length}`
+    : `${files.length} photo${files.length !== 1 ? 's' : ''}`;
 
-  const status = phase === 'importing' && importProgress
-    ? `Importing ${importProgress.currentIndex}/${importProgress.totalFiles}`
-    : phase === 'scanning'
-      ? scanPaused ? 'Scan paused' : 'Scanning'
-      : viewMode === 'single' || viewMode === 'split'
-        ? focusedLabel
-        : `${files.length} files`;
+  const isImporting = phase === 'importing' && importProgress;
+  const isScanning = phase === 'scanning';
+
+  const tip = getContextTip(phase, files.length, picked, queuedPaths.length);
+
+  // Progress bar width for import
+  const importPct = isImporting
+    ? Math.round((importProgress.currentIndex / Math.max(1, importProgress.totalFiles)) * 100)
+    : 0;
 
   return (
-    <div className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-surface-alt/95 backdrop-blur-sm px-2 py-1">
-      <div className="flex items-center gap-2 text-[10px] text-text-muted overflow-x-auto">
-        <span className="shrink-0 font-medium text-text-secondary">{status}</span>
-        {filter !== 'all' && <span className="shrink-0">Filter: <span className="text-text-secondary">{filter}</span></span>}
-        {selectedPaths.length > 0 && <span className="shrink-0 text-blue-300">{selectedPaths.length} selected</span>}
-        {queuedPaths.length > 0 && <span className="shrink-0 text-emerald-300">{queuedPaths.length} queued</span>}
-        {picked > 0 && <span className="shrink-0 text-yellow-300">{picked} picked</span>}
-        {rejected > 0 && <span className="shrink-0 text-red-300">{rejected} rejected</span>}
-        {smart > 0 && <span className="shrink-0 text-sky-300">{smart} scored</span>}
-        <div className="w-px h-3 bg-border shrink-0" />
-        <span className="shrink-0">P pick</span>
-        <span className="shrink-0">X reject</span>
-        <span className="shrink-0">0-5 stars</span>
-        <span className="shrink-0">{MOD}+Z undo</span>
-        <span className="shrink-0">? shortcuts</span>
-        <div className="ml-auto flex items-center gap-1 shrink-0">
-          {phase === 'scanning' && (
-            <button
-              onClick={() => scanPaused ? resumeScan() : pauseScan()}
-              className="px-2 py-0.5 rounded bg-surface-raised hover:bg-border text-text-secondary"
-            >
-              {scanPaused ? 'Resume' : 'Pause'}
-            </button>
+    <div className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-surface-alt/95 backdrop-blur-sm">
+      {/* Import progress strip */}
+      {isImporting && (
+        <div className="h-0.5 bg-border">
+          <div
+            className="h-full bg-emerald-500 transition-all duration-300"
+            style={{ width: `${importPct}%` }}
+          />
+        </div>
+      )}
+
+      <div className="px-3 py-1.5 flex items-center gap-3 text-[10px] text-text-muted overflow-x-auto">
+        {/* Status pill */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          {isImporting ? (
+            <>
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+              <span className="font-medium text-text-secondary">
+                Importing {importProgress.currentIndex}/{importProgress.totalFiles}
+              </span>
+            </>
+          ) : isScanning ? (
+            <>
+              <span className={`w-2 h-2 rounded-full shrink-0 ${scanPaused ? 'bg-yellow-500' : 'bg-blue-500 animate-pulse'}`} />
+              <span className="font-medium text-text-secondary">{scanPaused ? 'Paused' : 'Scanning…'}</span>
+              <button
+                onClick={() => scanPaused ? resumeScan() : pauseScan()}
+                className="px-1.5 py-0.5 rounded bg-surface-raised hover:bg-border text-text-secondary transition-colors"
+              >
+                {scanPaused ? 'Resume' : 'Pause'}
+              </button>
+            </>
+          ) : (
+            <>
+              <span className={`w-2 h-2 rounded-full shrink-0 ${files.length > 0 ? 'bg-emerald-500' : 'bg-border'}`} />
+              <span className="font-medium text-text-secondary">
+                {viewMode === 'single' || viewMode === 'split' ? focusedLabel : `${files.length} file${files.length !== 1 ? 's' : ''}`}
+              </span>
+            </>
           )}
-          {files.length > 0 && (
+        </div>
+
+        {/* Counters */}
+        {filter !== 'all' && (
+          <span className="shrink-0 flex items-center gap-1">
+            <span className="text-text-muted">Filter:</span>
+            <span className="text-text-secondary">{filter}</span>
+            <button
+              onClick={() => dispatch({ type: 'SET_FILTER', filter: 'all' })}
+              className="text-text-faint hover:text-text transition-colors ml-0.5"
+              title="Clear filter"
+            >✕</button>
+          </span>
+        )}
+        {selectedPaths.length > 0 && (
+          <span className="shrink-0 text-blue-300">{selectedPaths.length} selected</span>
+        )}
+        {queuedPaths.length > 0 && (
+          <span className="shrink-0 text-emerald-300">{queuedPaths.length} queued</span>
+        )}
+        {picked > 0 && (
+          <span className="shrink-0 text-yellow-300">{picked} picked</span>
+        )}
+        {rejected > 0 && (
+          <span className="shrink-0 text-red-300">{rejected} rejected</span>
+        )}
+
+        {/* Separator */}
+        {files.length > 0 && (
+          <>
+            <div className="w-px h-3 bg-border shrink-0" />
+            {/* Key hints */}
+            <span className="shrink-0 hidden sm:inline">P pick</span>
+            <span className="shrink-0 hidden sm:inline">X reject</span>
+            <span className="shrink-0 hidden md:inline">0-5 stars</span>
+            <span className="shrink-0 hidden md:inline">{MOD}+Z undo</span>
+          </>
+        )}
+
+        {/* Contextual tip — guides beginners */}
+        {tip && (
+          <span className="shrink-0 hidden lg:inline text-text-faint italic">{tip}</span>
+        )}
+
+        {/* Right-side quick actions */}
+        <div className="ml-auto flex items-center gap-1 shrink-0">
+          {files.length > 0 && !isImporting && (
             <>
               <button
                 onClick={() => dispatch({ type: 'SET_FILTER', filter: 'review-needed' })}
-                className="px-2 py-0.5 rounded bg-surface-raised hover:bg-border text-text-secondary"
+                className="px-2 py-0.5 rounded bg-surface-raised hover:bg-border text-text-secondary transition-colors"
+                title="Show files that still need a pick/reject decision"
               >
                 Review
               </button>
               <button
                 onClick={() => dispatch({ type: 'SET_FILTER', filter: 'best' })}
-                className="px-2 py-0.5 rounded bg-surface-raised hover:bg-border text-text-secondary"
+                className="px-2 py-0.5 rounded bg-surface-raised hover:bg-border text-text-secondary transition-colors"
+                title="Show top-scored keeper candidates"
               >
                 Best
               </button>
               <button
                 onClick={() => dispatch({ type: 'QUEUE_BEST' })}
-                className="px-2 py-0.5 rounded bg-surface-raised hover:bg-border text-text-secondary"
+                className="px-2 py-0.5 rounded bg-surface-raised hover:bg-border text-text-secondary transition-colors"
+                title="Auto-add high-scored files to the import queue"
               >
                 Queue Best
               </button>
             </>
           )}
+          <button
+            className="px-2 py-0.5 rounded bg-surface-raised hover:bg-border text-text-secondary transition-colors"
+            title="Press ? to see all keyboard shortcuts"
+            onClick={() => {
+              window.dispatchEvent(new KeyboardEvent('keydown', { key: '?', bubbles: true }));
+            }}
+          >
+            ? Help
+          </button>
         </div>
       </div>
     </div>
