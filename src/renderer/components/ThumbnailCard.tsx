@@ -1,17 +1,35 @@
+import { useRef, useEffect, useState } from 'react';
 import type { MediaFile } from '../../shared/types';
 import { formatFileSize, formatExposure } from '../utils/formatters';
 
-// Returns CSS transform to display the stored image upright based on EXIF orientation.
-// Scale 1.34 fills the 4:3 card when a landscape-stored thumbnail is rotated 90°.
-function orientationTransform(o?: number): string | undefined {
-  switch (o) {
-    case 3: return 'rotate(180deg)';
-    case 5: return 'rotate(90deg) scaleX(-1) scale(1.34)';
-    case 6: return 'rotate(90deg) scale(1.34)';
-    case 7: return 'rotate(-90deg) scaleX(-1) scale(1.34)';
-    case 8: return 'rotate(-90deg) scale(1.34)';
-    default: return undefined;
-  }
+// Only set img src when the card is near the viewport.
+// Thumbnails are base64 data URIs — loading="lazy" doesn't work for them,
+// so IntersectionObserver is the reliable way to avoid decoding 1000+ bitmaps
+// that are offscreen. rootMargin 300px pre-loads one row before it's visible.
+function useLazySrc(src: string | undefined) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [activeSrc, setActiveSrc] = useState<string | undefined>(undefined);
+
+  useEffect(() => {
+    if (!src) { setActiveSrc(undefined); return; }
+    const el = containerRef.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) { setActiveSrc(src); obs.disconnect(); } },
+      { rootMargin: '300px' },
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  // Only re-run when src identity changes (new thumbnail arrived).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [src]);
+
+  // If src changes after already visible (e.g. thumbnail replaced), update immediately.
+  useEffect(() => {
+    if (activeSrc && src && activeSrc !== src) setActiveSrc(src);
+  }, [src, activeSrc]);
+
+  return { containerRef, activeSrc };
 }
 
 interface ThumbnailCardProps {
@@ -70,6 +88,7 @@ export function ThumbnailCard({
   const isVideo = file.type === 'video';
   const isPicked = file.pick === 'selected';
   const isRejected = file.pick === 'rejected';
+  const { containerRef, activeSrc } = useLazySrc(file.thumbnail);
 
   return (
     <div
@@ -83,18 +102,13 @@ export function ThumbnailCard({
       <div className={`relative bg-surface overflow-hidden ${
         selected ? 'ring-2 ring-blue-500' : focused ? 'outline-2 outline-offset-2 outline-blue-500' : ''
       }`}>
-        {/* Image */}
-        <div className="aspect-[4/3] relative flex items-center justify-center">
-          {file.thumbnail ? (
+        {/* Image — ref triggers IntersectionObserver so src is only set when near viewport */}
+        <div ref={containerRef} className="aspect-[4/3] relative flex items-center justify-center">
+          {activeSrc ? (
             <img
-              src={file.thumbnail}
+              src={activeSrc}
               alt={file.name}
               className="w-full h-full object-cover"
-              style={{
-                imageOrientation: 'none',
-                transform: orientationTransform(file.orientation),
-              }}
-              loading="lazy"
               decoding="async"
             />
           ) : (
