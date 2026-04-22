@@ -50,6 +50,8 @@ interface State {
   separateProtected: boolean;
   protectedFolderName: string;
   backupDestRoot: string;
+  ftpDestEnabled: boolean;
+  ftpDestConfig: FtpConfig;
   autoEject: boolean;
   playSoundOnComplete: boolean;
   completeSoundPath: string;
@@ -116,9 +118,10 @@ export type Action =
   | { type: 'SET_WORKFLOW_OPTION'; key:
       | 'separateProtected' | 'autoEject' | 'playSoundOnComplete'
       | 'openFolderOnComplete' | 'autoImport'
-      | 'burstGrouping' | 'normalizeExposure' | 'verifyChecksums'; value: boolean }
+      | 'burstGrouping' | 'normalizeExposure' | 'verifyChecksums' | 'ftpDestEnabled'; value: boolean }
   | { type: 'SET_WORKFLOW_STRING'; key:
       | 'protectedFolderName' | 'backupDestRoot' | 'autoImportDestRoot' | 'completeSoundPath'; value: string }
+  | { type: 'SET_FTP_DEST_CONFIG'; config: Partial<FtpConfig> }
   | { type: 'SET_BURST_WINDOW'; seconds: number }
   | { type: 'TOGGLE_BURST_COLLAPSE'; burstId: string }
   | { type: 'COLLAPSE_ALL_BURSTS' }
@@ -140,6 +143,7 @@ export type Action =
   | { type: 'GROUP_VISUAL_DUPLICATES'; threshold?: number }
   | { type: 'PICK_BEST_IN_GROUPS' }
   | { type: 'QUEUE_BEST' }
+  | { type: 'AUTO_CULL_SAFE' }
   | { type: 'REJECT_DUPLICATES' }
   | { type: 'UNDO_FILE_EDIT' }
   /**
@@ -192,6 +196,15 @@ const initialState: State = {
   separateProtected: false,
   protectedFolderName: '_Protected',
   backupDestRoot: '',
+  ftpDestEnabled: false,
+  ftpDestConfig: {
+    host: '',
+    port: 21,
+    user: '',
+    password: '',
+    secure: false,
+    remotePath: '/PhotoImporter',
+  },
   autoEject: false,
   playSoundOnComplete: false,
   completeSoundPath: '',
@@ -326,6 +339,8 @@ export function reducer(state: State, action: Action): State {
       return { ...state, sourceKind: action.kind };
     case 'SET_FTP_CONFIG':
       return { ...state, ftpConfig: { ...state.ftpConfig, ...action.config } };
+    case 'SET_FTP_DEST_CONFIG':
+      return { ...state, ftpDestConfig: { ...state.ftpDestConfig, ...action.config } };
     case 'SET_FTP_STATUS':
       return {
         ...state,
@@ -573,6 +588,41 @@ export function reducer(state: State, action: Action): State {
       const next = new Set(state.queuedPaths);
       for (const f of candidates) next.add(f.path);
       return { ...state, queuedPaths: [...next] };
+    }
+    case 'AUTO_CULL_SAFE': {
+      const groups = new Map<string, MediaFile[]>();
+      for (const f of state.files) {
+        if (f.burstId && f.burstSize && f.burstSize > 1) {
+          groups.set(`burst:${f.burstId}`, [...(groups.get(`burst:${f.burstId}`) ?? []), f]);
+        }
+        if (f.visualGroupId && f.visualGroupSize && f.visualGroupSize > 1) {
+          groups.set(`visual:${f.visualGroupId}`, [...(groups.get(`visual:${f.visualGroupId}`) ?? []), f]);
+        }
+      }
+
+      const reject = new Set<string>();
+      const keep = new Set<string>();
+      for (const group of groups.values()) {
+        const best = bestInGroup(group);
+        if (!best) continue;
+        keep.add(best.path);
+        for (const file of group) {
+          if (file.path === best.path) continue;
+          if (file.isProtected || (file.rating ?? 0) > 0 || file.pick === 'selected') continue;
+          const muchWorse =
+            file.blurRisk === 'high' ||
+            ((best.subjectSharpnessScore ?? 0) - (file.subjectSharpnessScore ?? 0) >= 25) ||
+            ((best.sharpnessScore ?? 0) - (file.sharpnessScore ?? 0) >= 60) ||
+            ((best.reviewScore ?? 0) - (file.reviewScore ?? 0) >= 18);
+          if (muchWorse) reject.add(file.path);
+        }
+      }
+
+      return withFileHistory(state, state.files.map((f) => {
+        if (keep.has(f.path)) return { ...f, pick: 'selected' };
+        if (reject.has(f.path)) return { ...f, pick: 'rejected' };
+        return f;
+      }));
     }
     case 'REJECT_DUPLICATES':
       return withFileHistory(state, state.files.map((f) =>

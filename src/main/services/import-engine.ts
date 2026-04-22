@@ -4,15 +4,37 @@ import { promisify } from 'node:util';
 import path from 'node:path';
 import { constants, createReadStream } from 'node:fs';
 import { createHash } from 'node:crypto';
-import type { MediaFile, ImportConfig, ImportProgress, ImportResult, ImportError, SaveFormat } from '../../shared/types';
+import { Client } from 'basic-ftp';
+import type { MediaFile, ImportConfig, ImportProgress, ImportResult, ImportError, SaveFormat, FtpConfig } from '../../shared/types';
 import { isDuplicate } from './duplicate-detector';
-import { stopsToMultiplier, clampStops } from '../../shared/exposure';
+import { stopsToSafeMultiplier, clampStops } from '../../shared/exposure';
 
 const execFileAsync = promisify(execFile);
 
 let currentAbortController: AbortController | null = null;
 
 const COPY_CONCURRENCY = 8;
+
+function remoteJoin(...parts: string[]): string {
+  const joined = parts
+    .filter(Boolean)
+    .join('/')
+    .replace(/\\/g, '/')
+    .replace(/\/+/g, '/');
+  return joined.startsWith('/') ? joined : `/${joined}`;
+}
+
+async function connectFtp(config: FtpConfig): Promise<Client> {
+  const client = new Client(30000);
+  await client.access({
+    host: config.host,
+    port: config.port || 21,
+    user: config.user || 'anonymous',
+    password: config.password || 'guest',
+    secure: config.secure,
+  });
+  return client;
+}
 
 const FORMAT_EXT: Record<Exclude<SaveFormat, 'original'>, string> = {
   jpeg: '.jpg',
@@ -246,6 +268,11 @@ export async function importFiles(
   const { saveFormat, jpegQuality } = config;
   const createdDirs = new Set<string>();
   let processedCount = 0;
+  const ftpUploads: Array<{ localPath: string; remoteRelPath: string; fileName: string; size: number }> = [];
+  const ftpMirrorActive =
+    !!config.ftpDestEnabled &&
+    !!config.ftpDestConfig?.host &&
+    !!config.ftpDestConfig.remotePath;
 
   // Exposure normalization is only active when the user explicitly asked for
   // it AND we're transcoding AND we have an anchor EV to match. "Active"
@@ -278,7 +305,7 @@ export async function importFiles(
       normalizeStops = file.exposureValue - anchor;
     }
     const correctionStops = clampStops(normalizeStops + manualStops, maxStops);
-    return stopsToMultiplier(correctionStops);
+    return stopsToSafeMultiplier(correctionStops);
   }
 
   async function ensureDir(dirPath: string): Promise<void> {
@@ -351,6 +378,15 @@ export async function importFiles(
         }
       }
 
+      if (ftpMirrorActive) {
+        ftpUploads.push({
+          localPath: destFullPath,
+          remoteRelPath: finalRelPath.replace(/\\/g, '/'),
+          fileName: file.name,
+          size: file.size,
+        });
+      }
+
       imported++;
       try {
         const s = await stat(destFullPath);
@@ -417,6 +453,38 @@ export async function importFiles(
   }
 
   await Promise.all(Array.from({ length: Math.min(COPY_CONCURRENCY, files.length) }, () => worker()));
+
+  if (ftpMirrorActive && ftpUploads.length > 0 && config.ftpDestConfig && !signal.aborted) {
+    let client: Client | null = null;
+    try {
+      client = await connectFtp(config.ftpDestConfig);
+      const baseRemote = config.ftpDestConfig.remotePath || '/';
+      let uploaded = 0;
+      for (const upload of ftpUploads) {
+        if (signal.aborted) break;
+        const remotePath = remoteJoin(baseRemote, upload.remoteRelPath);
+        const remoteDir = path.posix.dirname(remotePath);
+        const remoteName = path.posix.basename(remotePath);
+        await client.ensureDir(remoteDir);
+        await client.uploadFrom(upload.localPath, remoteName);
+        uploaded++;
+        onProgress({
+          currentFile: `${upload.fileName} (FTP ${uploaded}/${ftpUploads.length})`,
+          currentIndex: processedCount,
+          totalFiles: files.length,
+          bytesTransferred,
+          totalBytes,
+          skipped,
+          errors: errors.length,
+        });
+      }
+    } catch (ftpErr: unknown) {
+      const e = ftpErr as Error;
+      errors.push({ file: 'ftp-output', error: e.message || 'FTP upload failed' });
+    } finally {
+      client?.close();
+    }
+  }
 
   // One-line heads-up if the normalizer couldn't apply brightness because IM
   // wasn't on PATH. Reported as an error rather than silent so users know

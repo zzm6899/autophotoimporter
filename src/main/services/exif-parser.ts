@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { app } from 'electron';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import type { MediaFile } from '../../shared/types';
 import { resolvePattern } from '../../shared/types';
 import { computeEV100 } from '../../shared/exposure';
@@ -419,8 +420,7 @@ export async function generatePreview(filePath: string): Promise<string | undefi
 
       try {
         await stat(outPath);
-        const buf = await readFile(outPath);
-        return `data:image/jpeg;base64,${buf.toString('base64')}`;
+        return pathToFileURL(outPath).href;
       } catch {
         // not cached
       }
@@ -432,8 +432,7 @@ export async function generatePreview(filePath: string): Promise<string | undefi
 
       try {
         await platformResize(filePath, outPath, PREVIEW_WIDTH, PREVIEW_QUALITY, 30000);
-        const previewBuffer = await readFile(outPath);
-        return `data:image/jpeg;base64,${previewBuffer.toString('base64')}`;
+        return pathToFileURL(outPath).href;
       } catch {
         return embeddedFallback(filePath, ext);
       }

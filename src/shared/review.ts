@@ -2,6 +2,8 @@ import type { MediaFile } from './types';
 
 export interface ReviewScoreInput {
   sharpnessScore?: number;
+  subjectSharpnessScore?: number;
+  faceCount?: number;
   rating?: number;
   isProtected?: boolean;
   exposureValue?: number;
@@ -35,6 +37,7 @@ export function hammingDistanceHex(a: string, b: string): number {
 
 export function scoreReview(input: ReviewScoreInput): ReviewScore {
   const sharpness = input.sharpnessScore ?? 0;
+  const subjectSharpness = input.subjectSharpnessScore ?? 0;
   const rating = input.rating ?? 0;
   let score = Math.min(55, Math.log10(Math.max(1, sharpness) + 1) * 18);
   const reasons: string[] = [];
@@ -47,14 +50,25 @@ export function scoreReview(input: ReviewScoreInput): ReviewScore {
     score += rating * 8;
     reasons.push(`${rating} star`);
   }
+  if ((input.faceCount ?? 0) > 0) {
+    score += 22;
+    reasons.push(`${input.faceCount} face${input.faceCount === 1 ? '' : 's'}`);
+  }
+  if (subjectSharpness >= 120) {
+    score += 22;
+    reasons.push('subject sharp');
+  } else if (subjectSharpness > 0 && subjectSharpness < 35) {
+    score -= 18;
+    reasons.push('subject soft');
+  }
   if (sharpness >= 180) reasons.push('sharp');
   if (sharpness < 35) reasons.push('soft');
   if (input.visualGroupSize && input.visualGroupSize > 1) reasons.push('similar');
   if (typeof input.exposureValue === 'number') score += 5;
 
   const blurRisk: ReviewScore['blurRisk'] =
-    sharpness < 25 ? 'high'
-    : sharpness < 70 ? 'medium'
+    Math.max(sharpness, subjectSharpness) < 25 ? 'high'
+    : Math.max(sharpness, subjectSharpness) < 70 ? 'medium'
     : 'low';
   if (blurRisk === 'high') score -= 25;
   if (blurRisk === 'medium') score -= 8;
@@ -99,8 +113,11 @@ export function bestInGroup(files: MediaFile[]): MediaFile | null {
   return files.slice().sort((a, b) =>
     Number(!!b.isProtected) - Number(!!a.isProtected) ||
     (b.rating ?? 0) - (a.rating ?? 0) ||
-    (b.reviewScore ?? 0) - (a.reviewScore ?? 0) ||
+    (b.faceCount ?? 0) - (a.faceCount ?? 0) ||
+    (b.subjectSharpnessScore ?? 0) - (a.subjectSharpnessScore ?? 0) ||
+    Number(a.blurRisk === 'high') - Number(b.blurRisk === 'high') ||
     (b.sharpnessScore ?? 0) - (a.sharpnessScore ?? 0) ||
+    (b.reviewScore ?? 0) - (a.reviewScore ?? 0) ||
     (a.burstIndex ?? 0) - (b.burstIndex ?? 0),
   )[0];
 }

@@ -30,7 +30,7 @@ export function DestinationPanel() {
   const {
     destination, skipDuplicates, saveFormat, jpegQuality, folderPreset, customPattern,
     files, phase, selectedSource, selectedPaths, queuedPaths,
-    separateProtected, protectedFolderName, backupDestRoot,
+    separateProtected, protectedFolderName, backupDestRoot, ftpDestEnabled, ftpDestConfig,
     autoEject, playSoundOnComplete, completeSoundPath, openFolderOnComplete,
     verifyChecksums,
     autoImport, autoImportDestRoot,
@@ -120,7 +120,7 @@ export function DestinationPanel() {
 
   const handleWorkflowBool = (
     key: 'separateProtected' | 'autoEject' | 'playSoundOnComplete' | 'openFolderOnComplete'
-      | 'autoImport' | 'burstGrouping' | 'normalizeExposure' | 'verifyChecksums',
+      | 'autoImport' | 'burstGrouping' | 'normalizeExposure' | 'verifyChecksums' | 'ftpDestEnabled',
     value: boolean,
   ) => {
     dispatch({ type: 'SET_WORKFLOW_OPTION', key, value });
@@ -135,6 +135,12 @@ export function DestinationPanel() {
   const handleMaxStops = (stops: number) => {
     dispatch({ type: 'SET_EXPOSURE_MAX_STOPS', stops });
     window.electronAPI.setSettings({ exposureMaxStops: stops });
+  };
+
+  const handleFtpDestConfig = (config: Partial<typeof ftpDestConfig>) => {
+    const next = { ...ftpDestConfig, ...config };
+    dispatch({ type: 'SET_FTP_DEST_CONFIG', config });
+    window.electronAPI.setSettings({ ftpDestConfig: next });
   };
 
   const currentPreset = (name: string): JobPreset => ({
@@ -223,7 +229,8 @@ export function DestinationPanel() {
       : files.filter((f) => f.pick !== 'rejected');
   }, [files, hasClickSelection, hasPicks, hasQueue, queuedPaths, skipDuplicates, selectedPaths]);
 
-  const canImport = selectedSource && destination && importFiles.length > 0 && (phase === 'ready' || phase === 'scanning');
+  const ftpReady = !ftpDestEnabled || (!!ftpDestConfig.host && !!ftpDestConfig.remotePath);
+  const canImport = selectedSource && destination && ftpReady && importFiles.length > 0 && (phase === 'ready' || phase === 'scanning');
   const totalSize = importFiles.reduce((sum, f) => sum + f.size, 0);
   const exposureEditCount = importFiles.filter((f) => f.normalizeToAnchor || f.exposureAdjustmentStops).length;
   const backupSameAsPrimary = !!backupDestRoot && !!destination && backupDestRoot === destination;
@@ -495,6 +502,67 @@ export function DestinationPanel() {
               />
               <span className="text-xs text-text">Eject source when done</span>
             </label>
+
+            <div className="pt-1 border-t border-border">
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={ftpDestEnabled}
+                  onChange={(e) => handleWorkflowBool('ftpDestEnabled', e.target.checked)}
+                />
+                <span className="text-xs text-text">Also upload to FTP</span>
+              </label>
+              {ftpDestEnabled && (
+                <div className="mt-1 ml-5 space-y-1">
+                  <div className="grid grid-cols-[1fr_3.75rem] gap-1">
+                    <input
+                      value={ftpDestConfig.host}
+                      onChange={(e) => handleFtpDestConfig({ host: e.target.value })}
+                      placeholder="ftp.example.com"
+                      className="min-w-0 px-1.5 py-1 text-[11px] bg-surface-raised border border-border rounded text-text placeholder-text-muted focus:border-text focus:outline-none"
+                    />
+                    <input
+                      type="number"
+                      min={1}
+                      max={65535}
+                      value={ftpDestConfig.port}
+                      onChange={(e) => handleFtpDestConfig({ port: Number(e.target.value) || 21 })}
+                      className="px-1.5 py-1 text-[11px] bg-surface-raised border border-border rounded text-text focus:border-text focus:outline-none"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-1">
+                    <input
+                      value={ftpDestConfig.user}
+                      onChange={(e) => handleFtpDestConfig({ user: e.target.value })}
+                      placeholder="user"
+                      className="min-w-0 px-1.5 py-1 text-[11px] bg-surface-raised border border-border rounded text-text placeholder-text-muted focus:border-text focus:outline-none"
+                    />
+                    <input
+                      type="password"
+                      value={ftpDestConfig.password}
+                      onChange={(e) => handleFtpDestConfig({ password: e.target.value })}
+                      placeholder="password"
+                      className="min-w-0 px-1.5 py-1 text-[11px] bg-surface-raised border border-border rounded text-text placeholder-text-muted focus:border-text focus:outline-none"
+                    />
+                  </div>
+                  <input
+                    value={ftpDestConfig.remotePath}
+                    onChange={(e) => handleFtpDestConfig({ remotePath: e.target.value })}
+                    placeholder="/PhotoImporter"
+                    className="w-full px-1.5 py-1 text-[11px] font-mono bg-surface-raised border border-border rounded text-text placeholder-text-muted focus:border-text focus:outline-none"
+                  />
+                  <label className="flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={ftpDestConfig.secure}
+                      onChange={(e) => handleFtpDestConfig({ secure: e.target.checked })}
+                    />
+                    <span className="text-[11px] text-text-secondary">Use FTPS</span>
+                  </label>
+                </div>
+              )}
+            </div>
+
             <label className="flex items-center gap-1.5 cursor-pointer">
               <input
                 type="checkbox"
@@ -702,6 +770,12 @@ export function DestinationPanel() {
             {backupDestRoot && !backupSameAsPrimary && (
               <div className="text-[10px] text-emerald-500">Backup copy enabled.</div>
             )}
+            {ftpDestEnabled && !ftpReady && (
+              <div className="text-[10px] text-red-400">FTP output needs host and remote folder.</div>
+            )}
+            {ftpDestEnabled && ftpReady && (
+              <div className="text-[10px] text-emerald-500">FTP upload enabled.</div>
+            )}
           </div>
         )}
         {files.length > 0 && (
@@ -733,6 +807,7 @@ export function DestinationPanel() {
           title={
             !selectedSource ? 'Select a source volume first'
               : !destination ? 'Choose a destination folder first'
+              : !ftpReady ? 'Finish FTP output settings first'
               : importFiles.length === 0 ? 'No files to import'
               : insufficientSpace ? 'Not enough free space on the destination'
               : !canImport ? `Cannot import while ${phase}`

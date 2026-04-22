@@ -24,6 +24,8 @@ export function HelpBar() {
 
   const picked = files.filter((f) => f.pick === 'selected').length;
   const rejected = files.filter((f) => f.pick === 'rejected').length;
+  const analyzed = files.filter((f) => typeof f.reviewScore === 'number' || typeof f.subjectSharpnessScore === 'number').length;
+  const blurRisk = files.filter((f) => f.blurRisk === 'high' || f.blurRisk === 'medium').length;
   const focusedLabel = focusedIndex >= 0 && focusedIndex < files.length
     ? `${focusedIndex + 1} / ${files.length}`
     : `${files.length} photo${files.length !== 1 ? 's' : ''}`;
@@ -105,6 +107,15 @@ export function HelpBar() {
         {rejected > 0 && (
           <span className="shrink-0 text-red-300">{rejected} rejected</span>
         )}
+        {files.length > 0 && (
+          <span
+            className="shrink-0 text-text-faint"
+            title="Smart review progress: files analyzed for blur risk, subject/facial focus, and keeper score."
+          >
+            smart {analyzed}/{files.length}
+            {blurRisk > 0 ? ` · blur ${blurRisk}` : ''}
+          </span>
+        )}
 
         {/* Separator */}
         {files.length > 0 && (
@@ -113,6 +124,7 @@ export function HelpBar() {
             {/* Key hints */}
             <span className="shrink-0 hidden sm:inline">P pick</span>
             <span className="shrink-0 hidden sm:inline">X reject</span>
+            <span className="shrink-0 hidden md:inline">Shift+B best</span>
             <span className="shrink-0 hidden md:inline">0-5 stars</span>
             <span className="shrink-0 hidden md:inline">{MOD}+Z undo</span>
           </>
@@ -130,26 +142,33 @@ export function HelpBar() {
               <button
                 onClick={() => dispatch({ type: 'SET_FILTER', filter: 'review-needed' })}
                 className="px-2 py-0.5 rounded bg-surface-raised hover:bg-border text-text-secondary transition-colors"
-                title="Show files that still need a pick/reject decision"
+                title="Show files that still need a decision: unpicked, blur-risk, similar, or not fully scored."
               >
                 Review
               </button>
               <button
                 onClick={() => dispatch({ type: 'SET_FILTER', filter: 'best' })}
                 className="px-2 py-0.5 rounded bg-surface-raised hover:bg-border text-text-secondary transition-colors"
-                title="Show top-scored keeper candidates"
+                title="Show top-scored keeper candidates using rating, protected status, subject focus, blur risk, and review score."
               >
                 Best
               </button>
               <button
                 onClick={() => dispatch({ type: 'QUEUE_BEST' })}
                 className="px-2 py-0.5 rounded bg-surface-raised hover:bg-border text-text-secondary transition-colors"
-                title="Auto-add high-scored files to the import queue"
+                title="Auto-add high-scored keeper candidates to the import queue without changing pick/reject flags."
               >
                 Queue Best
               </button>
             </>
           )}
+          <button
+            className="px-2 py-0.5 rounded bg-surface-raised hover:bg-border text-text-secondary transition-colors"
+            title="Open the quick-start tutorial"
+            onClick={() => window.dispatchEvent(new Event('photo-importer:tutorial'))}
+          >
+            Tutorial
+          </button>
           <button
             className="px-2 py-0.5 rounded bg-surface-raised hover:bg-border text-text-secondary transition-colors"
             title="Press ? to see all keyboard shortcuts"

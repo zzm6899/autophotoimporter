@@ -1,27 +1,30 @@
 import { memo, useRef, useEffect, useState } from 'react';
 import type { MediaFile } from '../../shared/types';
 import { formatFileSize, formatExposure } from '../utils/formatters';
+import { clampStops, stopsToSafeMultiplier } from '../../shared/exposure';
 
-// Defer setting img src until the card is near the viewport.
-// data: URIs are not eligible for HTML loading="lazy", so IntersectionObserver
-// is the only reliable way to skip decoding 1000+ offscreen bitmaps.
-// Once visible, isVisible stays true even if src changes — we update immediately.
-function useLazySrc(src: string | undefined) {
+function useLazySrc(src: string | undefined, forceActive: boolean) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [isVisible, setIsVisible] = useState(false);
+  const [activeSrc, setActiveSrc] = useState<string | undefined>(undefined);
 
   useEffect(() => {
+    if (!src) { setActiveSrc(undefined); return; }
+    if (forceActive) { setActiveSrc(src); return; }
     const el = containerRef.current;
     if (!el) return;
     const obs = new IntersectionObserver(
-      ([entry]) => { if (entry.isIntersecting) { setIsVisible(true); obs.disconnect(); } },
+      ([entry]) => { if (entry.isIntersecting) { setActiveSrc(src); obs.disconnect(); } },
       { rootMargin: '300px' },
     );
     obs.observe(el);
     return () => obs.disconnect();
-  }, []); // run once — isVisible is a latch, never reset
+  }, [src, forceActive]);
 
-  return { containerRef, activeSrc: isVisible ? src : undefined };
+  useEffect(() => {
+    if (activeSrc && src && activeSrc !== src) setActiveSrc(src);
+  }, [src, activeSrc]);
+
+  return { containerRef, activeSrc };
 }
 
 interface ThumbnailCardProps {
@@ -30,6 +33,8 @@ interface ThumbnailCardProps {
   focused?: boolean;
   selected?: boolean;
   queued?: boolean;
+  forceLoad?: boolean;
+  exposurePreviewStops?: number;
   compact?: boolean;
   frameNumber?: number;
   burstCollapsed?: boolean;
@@ -60,12 +65,14 @@ function RejectX() {
   );
 }
 
-export const ThumbnailCard = memo(function ThumbnailCard({
+function ThumbnailCardInner({
   index,
   file,
   focused = false,
   selected = false,
   queued = false,
+  forceLoad = false,
+  exposurePreviewStops = 0,
   compact = false,
   frameNumber,
   burstCollapsed = false,
@@ -76,7 +83,12 @@ export const ThumbnailCard = memo(function ThumbnailCard({
   const isVideo = file.type === 'video';
   const isPicked = file.pick === 'selected';
   const isRejected = file.pick === 'rejected';
-  const { containerRef, activeSrc } = useLazySrc(file.thumbnail);
+  const exposureMarked = !!file.normalizeToAnchor || Math.abs(file.exposureAdjustmentStops ?? 0) >= 0.01;
+  const totalPreviewStops = clampStops((file.exposureAdjustmentStops ?? 0) + exposurePreviewStops, 4);
+  const thumbBrightness = Math.abs(totalPreviewStops) >= 0.01
+    ? stopsToSafeMultiplier(totalPreviewStops)
+    : 1;
+  const { containerRef, activeSrc } = useLazySrc(file.thumbnail, forceLoad || focused || selected);
 
   return (
     <div
@@ -86,11 +98,9 @@ export const ThumbnailCard = memo(function ThumbnailCard({
       onClick={(e) => onClickCard(index, e)}
       onDoubleClick={() => onDoubleClickCard(index)}
     >
-      {/* Frame */}
       <div className={`relative bg-surface overflow-hidden ${
         selected ? 'ring-2 ring-blue-500' : focused ? 'outline-2 outline-offset-2 outline-blue-500' : ''
       }`}>
-        {/* ref here triggers IntersectionObserver — src only set when near viewport */}
         <div ref={containerRef} className="aspect-[4/3] relative flex items-center justify-center">
           {activeSrc ? (
             <img
@@ -98,6 +108,8 @@ export const ThumbnailCard = memo(function ThumbnailCard({
               alt={file.name}
               className="w-full h-full object-cover"
               decoding="async"
+              loading={focused ? 'eager' : 'lazy'}
+              style={thumbBrightness !== 1 ? { filter: `brightness(${thumbBrightness.toFixed(3)})` } : undefined}
             />
           ) : (
             <div className="w-full h-full bg-surface-raised animate-pulse flex items-center justify-center">
@@ -114,6 +126,12 @@ export const ThumbnailCard = memo(function ThumbnailCard({
           )}
 
           {isPicked && <CornerBrackets />}
+          {exposureMarked && activeSrc && (
+            <div
+              className="absolute inset-0 pointer-events-none z-[8] ring-2 ring-inset ring-orange-400/70 bg-orange-300/10"
+              title="Exposure normalization/manual EV adjustment is marked for this photo"
+            />
+          )}
           {isRejected && <RejectX />}
 
           {isVideo && (
@@ -133,7 +151,7 @@ export const ThumbnailCard = memo(function ThumbnailCard({
               {file.isProtected && (
                 <div
                   className="bg-emerald-600/90 text-[9px] text-white px-1 py-0.5 rounded font-medium flex items-center gap-0.5"
-                  title="Protected / read-only — prioritized for import"
+                  title="Protected / read-only - prioritized for import"
                 >
                   <svg className="w-2.5 h-2.5" viewBox="0 0 20 20" fill="currentColor">
                     <path fillRule="evenodd" d="M10 1a4.5 4.5 0 00-4.5 4.5V9H5a2 2 0 00-2 2v6a2 2 0 002 2h10a2 2 0 002-2v-6a2 2 0 00-2-2h-.5V5.5A4.5 4.5 0 0010 1zm3 8V5.5a3 3 0 10-6 0V9h6z" clipRule="evenodd" />
@@ -146,7 +164,7 @@ export const ThumbnailCard = memo(function ThumbnailCard({
                   className="bg-orange-500/90 text-[9px] text-white px-1 py-0.5 rounded font-medium"
                   title="Exposure will be normalized to the anchor on import"
                 >
-                  EXP↔
+                  NORM
                 </div>
               )}
               {file.exposureAdjustmentStops && (
@@ -166,8 +184,13 @@ export const ThumbnailCard = memo(function ThumbnailCard({
             </div>
           )}
 
-          {(file.reviewScore || file.blurRisk === 'high' || file.visualGroupId) && (
+          {(file.reviewScore || file.blurRisk === 'high' || file.visualGroupId || file.faceCount) && (
             <div className="absolute left-1.5 bottom-1.5 flex gap-0.5 z-20">
+              {!!file.faceCount && (
+                <span className="bg-emerald-600/90 text-[9px] text-white px-1 py-0.5 rounded font-medium" title={`${file.faceCount} face(s) detected`}>
+                  FACE
+                </span>
+              )}
               {(file.reviewScore ?? 0) >= 70 && (
                 <span className="bg-yellow-500/90 text-[9px] text-black px-1 py-0.5 rounded font-medium" title={file.reviewReasons?.join(', ') || 'High review score'}>
                   BEST
@@ -215,20 +238,10 @@ export const ThumbnailCard = memo(function ThumbnailCard({
                   : 'bg-blue-500/85 hover:bg-blue-500 cursor-pointer'
               }`}
               title={burstCollapsed
-                ? `Burst — ${file.burstSize} shots. Click to expand (G)`
+                ? `Burst - ${file.burstSize} shots. Click to expand (G)`
                 : `Burst shot ${file.burstIndex} of ${file.burstSize}. Click to collapse (G)`}
             >
-              <svg className="w-2.5 h-2.5" viewBox="0 0 20 20" fill="currentColor">
-                {burstCollapsed ? (
-                  <path fillRule="evenodd" d="M3 4a1 1 0 000 2h14a1 1 0 100-2H3zm0 5a1 1 0 000 2h14a1 1 0 100-2H3zm0 5a1 1 0 100 2h14a1 1 0 100-2H3z" clipRule="evenodd" />
-                ) : (
-                  <>
-                    <path d="M10 12a2 2 0 100-4 2 2 0 000 4z" />
-                    <path fillRule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clipRule="evenodd" />
-                  </>
-                )}
-              </svg>
-              {burstCollapsed ? `×${file.burstSize}` : `${file.burstIndex}/${file.burstSize}`}
+              {burstCollapsed ? `x${file.burstSize}` : `${file.burstIndex}/${file.burstSize}`}
             </button>
           )}
 
@@ -259,5 +272,37 @@ export const ThumbnailCard = memo(function ThumbnailCard({
         </div>
       )}
     </div>
+  );
+}
+
+export const ThumbnailCard = memo(ThumbnailCardInner, (prev, next) => {
+  const a = prev.file;
+  const b = next.file;
+  return (
+    a.path === b.path &&
+    a.thumbnail === b.thumbnail &&
+    a.pick === b.pick &&
+    a.duplicate === b.duplicate &&
+    a.isProtected === b.isProtected &&
+    a.rating === b.rating &&
+    a.normalizeToAnchor === b.normalizeToAnchor &&
+    a.exposureAdjustmentStops === b.exposureAdjustmentStops &&
+    a.burstId === b.burstId &&
+    a.burstIndex === b.burstIndex &&
+    a.burstSize === b.burstSize &&
+    a.reviewScore === b.reviewScore &&
+    a.subjectSharpnessScore === b.subjectSharpnessScore &&
+    a.faceCount === b.faceCount &&
+    a.blurRisk === b.blurRisk &&
+    a.visualGroupId === b.visualGroupId &&
+    a.visualGroupSize === b.visualGroupSize &&
+    prev.focused === next.focused &&
+    prev.selected === next.selected &&
+    prev.queued === next.queued &&
+    prev.forceLoad === next.forceLoad &&
+    prev.exposurePreviewStops === next.exposurePreviewStops &&
+    prev.compact === next.compact &&
+    prev.frameNumber === next.frameNumber &&
+    prev.burstCollapsed === next.burstCollapsed
   );
 });

@@ -5,7 +5,7 @@ export function useImport() {
   const {
     selectedSource, destination, skipDuplicates, saveFormat, jpegQuality, phase,
     files, selectedPaths, queuedPaths,
-    separateProtected, protectedFolderName, backupDestRoot,
+    separateProtected, protectedFolderName, backupDestRoot, ftpDestEnabled, ftpDestConfig,
     autoEject, playSoundOnComplete, completeSoundPath, openFolderOnComplete,
     verifyChecksums,
     normalizeExposure, exposureAnchorPath, exposureMaxStops,
@@ -77,6 +77,8 @@ export function useImport() {
         separateProtected,
         protectedFolderName,
         backupDestRoot: backupDestRoot || undefined,
+        ftpDestEnabled,
+        ftpDestConfig: ftpDestEnabled ? ftpDestConfig : undefined,
         autoEject,
         verifyChecksums,
         normalizeExposure: normalizeExposure && saveFormat !== 'original' && typeof exposureAnchorEV === 'number',
@@ -119,6 +121,7 @@ export function useImport() {
     selectedSource, destination, skipDuplicates, saveFormat, jpegQuality, phase, dispatch,
     files, selectedPaths, queuedPaths,
     separateProtected, protectedFolderName, backupDestRoot,
+    ftpDestEnabled, ftpDestConfig,
     autoEject, playSoundOnComplete, completeSoundPath, openFolderOnComplete, verifyChecksums,
     normalizeExposure, exposureAnchorPath, exposureMaxStops,
   ]);

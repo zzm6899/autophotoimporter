@@ -4,6 +4,8 @@ interface HistogramProps {
   src?: string;
 }
 
+const histogramCache = new Map<string, number[]>();
+
 export function Histogram({ src }: HistogramProps) {
   const [bins, setBins] = useState<number[]>([]);
 
@@ -12,14 +14,21 @@ export function Histogram({ src }: HistogramProps) {
       setBins([]);
       return;
     }
+    const cached = histogramCache.get(src);
+    if (cached) {
+      setBins(cached);
+      return;
+    }
     let cancelled = false;
-    const img = new Image();
-    img.decoding = 'async';
-    img.onload = () => {
+    const run = () => {
       if (cancelled) return;
+      const img = new Image();
+      img.decoding = 'async';
+      img.onload = () => {
+        if (cancelled) return;
       const canvas = document.createElement('canvas');
-      const width = 160;
-      const height = 100;
+      const width = 96;
+      const height = 64;
       canvas.width = width;
       canvas.height = height;
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -32,14 +41,29 @@ export function Histogram({ src }: HistogramProps) {
         next[Math.min(63, Math.floor(luma / 4))]++;
       }
       const max = Math.max(1, ...next);
-      setBins(next.map((v) => v / max));
+      const normalized = next.map((v) => v / max);
+      histogramCache.set(src, normalized);
+      if (histogramCache.size > 200) {
+        const oldest = histogramCache.keys().next().value as string | undefined;
+        if (oldest) histogramCache.delete(oldest);
+      }
+      setBins(normalized);
+      };
+      img.onerror = () => {
+        if (!cancelled) setBins([]);
+      };
+      img.src = src;
     };
-    img.onerror = () => {
-      if (!cancelled) setBins([]);
-    };
-    img.src = src;
+    const idle = typeof window.requestIdleCallback === 'function'
+      ? window.requestIdleCallback(run, { timeout: 400 })
+      : window.setTimeout(run, 80);
     return () => {
       cancelled = true;
+      if (typeof window.cancelIdleCallback === 'function') {
+        window.cancelIdleCallback(idle);
+      } else {
+        window.clearTimeout(idle);
+      }
     };
   }, [src]);
 

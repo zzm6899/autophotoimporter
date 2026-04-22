@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import type { MediaFile } from '../../shared/types';
 import { buildExposure } from '../utils/formatters';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
-import { formatEVDelta, stopsToMultiplier, clampStops } from '../../shared/exposure';
+import { formatEVDelta, stopsToSafeMultiplier, clampStops, estimateClippingPercent } from '../../shared/exposure';
 import { Histogram } from './Histogram';
 import { decodeImage, getCachedPreview } from '../utils/previewCache';
 
@@ -35,6 +35,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [previewNormalized, setPreviewNormalized] = useState(false);
   const [holdOriginal, setHoldOriginal] = useState(false);
+  const [clipping, setClipping] = useState<{ highlights: number; shadows: number } | null>(null);
   const isDragging = useRef(false);
   const lastMouse = useRef({ x: 0, y: 0 });
   const containerRef = useRef<HTMLDivElement>(null);
@@ -73,7 +74,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
 
     const timer = window.setTimeout(() => {
       setLoading(true);
-      void getCachedPreview(file.path).then(async (result) => {
+      void getCachedPreview(file.path, 'high').then(async (result) => {
         if (cancelled) return;
         if (result) {
           try {
@@ -167,10 +168,44 @@ export function SingleView({ file, index, total }: SingleViewProps) {
     ? clampStops(normalizedEvDelta + manualStops, exposureMaxStops)
     : 0;
   const brightnessMultiplier = previewStops !== 0
-    ? stopsToMultiplier(previewStops)
+    ? stopsToSafeMultiplier(previewStops)
     : 1;
+  const imageFilter = [
+    showingThumbnailOnly ? 'blur(0.35px)' : '',
+    brightnessMultiplier !== 1 ? `brightness(${brightnessMultiplier.toFixed(3)})` : '',
+  ].filter(Boolean).join(' ');
   const canPreviewAdjust = imageSrc && (canPreviewNorm || Math.abs(manualStops) >= 0.01);
-  const clippingRisk = Math.abs(previewStops) >= exposureMaxStops - 0.01 || brightnessMultiplier >= 3 || brightnessMultiplier <= 0.34;
+  const clippingRisk = Math.abs(previewStops) >= exposureMaxStops - 0.01 || brightnessMultiplier >= 2.25 || brightnessMultiplier <= 0.4;
+
+  useEffect(() => {
+    if (!imageSrc) {
+      setClipping(null);
+      return;
+    }
+    let cancelled = false;
+    const img = new Image();
+    img.decoding = 'async';
+    img.onload = () => {
+      if (cancelled) return;
+      const canvas = document.createElement('canvas');
+      const width = 96;
+      const height = 72;
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) return;
+      ctx.drawImage(img, 0, 0, width, height);
+      const data = ctx.getImageData(0, 0, width, height).data;
+      if (!cancelled) setClipping(estimateClippingPercent(data, brightnessMultiplier));
+    };
+    img.onerror = () => {
+      if (!cancelled) setClipping(null);
+    };
+    img.src = imageSrc;
+    return () => {
+      cancelled = true;
+    };
+  }, [imageSrc, brightnessMultiplier]);
 
   return (
     <div
@@ -195,9 +230,13 @@ export function SingleView({ file, index, total }: SingleViewProps) {
           <img
             src={imageSrc}
             alt={file.name}
-            className={`max-h-[calc(100vh-6rem)] max-w-full object-contain ${showingThumbnailOnly ? 'blur-[0.5px]' : ''}`}
+            className="max-h-[calc(100vh-6rem)] max-w-full object-contain"
             draggable={false}
-            style={brightnessMultiplier !== 1 ? { filter: `brightness(${brightnessMultiplier.toFixed(3)})` } : undefined}
+            style={{
+              filter: imageFilter || undefined,
+              width: showingThumbnailOnly ? 'min(94vw, 1280px)' : undefined,
+              height: showingThumbnailOnly ? 'calc(100vh - 6rem)' : undefined,
+            }}
           />
         ) : (
           <div className="text-text-muted text-sm">No preview</div>
@@ -245,7 +284,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
         </div>
       )}
 
-      {!isZoomed && imageSrc && <Histogram src={imageSrc} />}
+      {!isZoomed && imageSrc && <Histogram src={file.thumbnail || imageSrc} />}
 
       {!isZoomed && (file.isProtected || (file.rating && file.rating > 0)) && (
         <div className="absolute top-3 left-3 flex items-center gap-1.5 z-20">
@@ -310,6 +349,18 @@ export function SingleView({ file, index, total }: SingleViewProps) {
             {clippingRisk && (
               <span className="text-[9px] font-mono text-red-300 bg-red-500/30 px-1.5 py-0.5 rounded">
                 clipping risk
+              </span>
+            )}
+            {clipping && (clipping.highlights > 0.5 || clipping.shadows > 0.5) && (
+              <span
+                className={`text-[9px] font-mono px-1.5 py-0.5 rounded ${
+                  clipping.highlights > 3 || clipping.shadows > 6
+                    ? 'text-red-300 bg-red-500/30'
+                    : 'text-yellow-300 bg-yellow-500/30'
+                }`}
+                title="Estimated clipped pixels in the current preview after EV adjustment"
+              >
+                clip H{clipping.highlights.toFixed(1)}% S{clipping.shadows.toFixed(1)}%
               </span>
             )}
             {isAnchor && (
@@ -391,9 +442,19 @@ export function SingleView({ file, index, total }: SingleViewProps) {
                 Score {file.reviewScore}
               </span>
             )}
-            {file.visualGroupId && (
-              <span className="text-[9px] font-mono text-blue-300 bg-blue-500/30 px-1.5 py-0.5 rounded" title={file.visualGroupId}>
-                Similar {file.visualGroupSize ?? 0}
+          {file.visualGroupId && (
+            <span className="text-[9px] font-mono text-blue-300 bg-blue-500/30 px-1.5 py-0.5 rounded" title={file.visualGroupId}>
+              Similar {file.visualGroupSize ?? 0}
+            </span>
+          )}
+            {file.faceCount ? (
+              <span className="text-[9px] font-mono text-emerald-300 bg-emerald-500/30 px-1.5 py-0.5 rounded" title="Local face detection signal">
+                Face {file.faceCount}
+              </span>
+            ) : null}
+            {typeof file.subjectSharpnessScore === 'number' && (
+              <span className="text-[9px] font-mono text-yellow-300 bg-yellow-500/30 px-1.5 py-0.5 rounded" title={file.subjectReasons?.join(', ') || 'Subject focus score'}>
+                Subject {file.subjectSharpnessScore}
               </span>
             )}
           </div>
