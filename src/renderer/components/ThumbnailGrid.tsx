@@ -270,9 +270,10 @@ export function ThumbnailGrid() {
   }, [focusedIndex, sortedFiles, dispatch, setFocused, selectedIndices]);
 
   // Keep a ref so handleCardClick/handleGridDoubleClick/handleBurstToggle stay
-  // stable across renders — required for React.memo on ThumbnailCard to bail out.
+  // Sync during render so event handlers never observe a stale Set.
+  // Required for React.memo on ThumbnailCard to bail out across renders.
   const selectedIndicesRef = useRef(selectedIndices);
-  useEffect(() => { selectedIndicesRef.current = selectedIndices; });
+  selectedIndicesRef.current = selectedIndices;
 
   const handleCardClick = useCallback((index: number, e: React.MouseEvent) => {
     const sel = selectedIndicesRef.current;
@@ -961,11 +962,11 @@ export function ThumbnailGrid() {
     <div className="h-full flex flex-col">
       {showShortcuts && <ShortcutsOverlay onClose={() => setShowShortcuts(false)} />}
       {/* Unified header */}
-      <div className="shrink-0 px-2 py-1.5 flex items-center border-b border-border">
+      <div className="shrink-0 px-2 py-1 flex items-center gap-1 border-b border-border">
         {/* Left panel toggle */}
         <button
           onClick={() => dispatch({ type: 'TOGGLE_LEFT_PANEL' })}
-          className="p-0.5 rounded transition-colors hover:bg-surface-raised shrink-0"
+          className="p-0.5 rounded hover:bg-surface-raised shrink-0"
           title={showLeftPanel ? 'Hide source panel' : 'Show source panel'}
         >
           <svg className="w-4 h-4" viewBox="0 0 16 16" fill="none">
@@ -974,447 +975,192 @@ export function ThumbnailGrid() {
           </svg>
         </button>
 
-        <div className="w-px h-3.5 bg-border mx-2 shrink-0" />
+        <div className="w-px h-3 bg-border mx-1 shrink-0" />
 
-        {/* Title */}
-        <div className="flex items-center gap-2 min-w-0">
+        {/* File count / selection label */}
+        <div className="flex items-center gap-1.5 min-w-0 shrink-0">
           {hasBatchSelection ? (
             <span className="text-xs text-blue-400 font-medium">{selectedIndices.size} selected</span>
           ) : isSingle ? (
             <>
-              <span className="text-xs font-mono text-text truncate">{focusedFile.name}</span>
+              <span className="text-xs font-mono text-text truncate max-w-[120px]">{focusedFile.name}</span>
               <span className="text-[10px] text-text-muted font-mono shrink-0">{focusedIndex + 1}/{sortedFiles.length}</span>
             </>
           ) : (
             <>
-              <span className="text-xs text-text">{files.length} photo{files.length !== 1 ? 's' : ''}</span>
+              <span className="text-xs text-text-secondary">{files.length} photo{files.length !== 1 ? 's' : ''}</span>
               {thumbsLoading && (
-                <div className="flex items-center gap-1.5">
-                  <div className="w-3 h-3 border-[1.5px] border-text-muted border-t-text rounded-full animate-spin" />
-                  <span className="text-[10px] text-text-muted">{thumbCount}/{files.length}</span>
+                <div className="flex items-center gap-1">
+                  <div className="w-2.5 h-2.5 border border-text-muted border-t-text rounded-full animate-spin" />
+                  <span className="text-[9px] text-text-faint">{thumbCount}/{files.length}</span>
                 </div>
               )}
             </>
           )}
         </div>
 
-        {/* Pick/selection actions */}
+        {/* Pick actions — batch vs single */}
         {sortedFiles.length > 0 && phase !== 'scanning' && (
-          <div className="mx-auto flex items-center gap-px shrink-0">
+          <div className="flex items-center gap-px ml-2 shrink-0">
             {hasBatchSelection ? (
               <>
-                <button
-                  onClick={() => pickFile('selected', false)}
-                  className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-yellow-400 hover:bg-yellow-400/10 rounded transition-colors"
-                  title="Pick selected files (P)"
-                >
-                  Pick
-                </button>
-                <button
-                  onClick={() => pickFile('rejected', false)}
-                  className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
-                  title="Reject selected files (X)"
-                >
-                  Reject
-                </button>
-                <button
-                  onClick={() => pickFile(undefined, false)}
-                  className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-text hover:bg-surface-raised rounded transition-colors"
-                  title="Clear flags on selected (U)"
-                >
-                  Unflag
-                </button>
-                <button
-                  onClick={() => queuePaths(normalizeTargetPaths)}
-                  className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-emerald-400 hover:bg-emerald-500/10 rounded transition-colors"
-                  title="Add selected files to import queue"
-                >
-                  Queue
-                </button>
-                {filter === 'queue' && (
-                  <button
-                    onClick={() => dispatch({ type: 'QUEUE_REMOVE_PATHS', paths: normalizeTargetPaths })}
-                    className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
-                    title="Remove selected files from import queue"
-                  >
-                    Unqueue
-                  </button>
-                )}
-                <button
-                  onClick={saveSelectionSet}
-                  className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-blue-400 hover:bg-blue-500/10 rounded transition-colors"
-                  title="Save selected files as a named selection set"
-                >
-                  Save Set
-                </button>
+                <button onClick={() => pickFile('selected', false)} title="Pick selected (P)" className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-yellow-400 hover:bg-yellow-400/10 rounded transition-colors">Pick</button>
+                <button onClick={() => pickFile('rejected', false)} title="Reject selected (X)" className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-red-400 hover:bg-red-500/10 rounded transition-colors">Reject</button>
+                <button onClick={() => pickFile(undefined, false)} title="Clear flags (U)" className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-text hover:bg-surface-raised rounded transition-colors">Unflag</button>
+                <button onClick={() => queuePaths(normalizeTargetPaths)} title="Add selected to import queue" className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-emerald-400 hover:bg-emerald-500/10 rounded transition-colors">Queue</button>
                 <div className="w-px h-3 bg-border mx-1" />
-                <button
-                  onClick={() => setSelectedIndices(new Set())}
-                  className="px-2 py-0.5 text-[11px] text-text-muted hover:text-text hover:bg-surface-raised rounded transition-colors"
-                  title="Deselect all (Esc)"
-                >
-                  Deselect
-                </button>
-                <button
-                  onClick={() => {
-                    const next = new Set<number>();
-                    for (let i = 0; i < sortedFiles.length; i++) {
-                      if (!selectedIndices.has(i)) next.add(i);
-                    }
-                    setSelectedIndices(next);
-                  }}
-                  className="px-2 py-0.5 text-[11px] text-text-muted hover:text-text hover:bg-surface-raised rounded transition-colors"
-                  title="Invert visible selection"
-                >
-                  Invert
-                </button>
+                <button onClick={() => setSelectedIndices(new Set())} title="Deselect all (Esc)" className="px-2 py-0.5 text-[11px] text-text-muted hover:text-text hover:bg-surface-raised rounded transition-colors">Deselect</button>
               </>
             ) : (
               <>
                 <button
-                  onClick={() => {
-                    const paths = sortedFiles.map((f) => f.path);
-                    dispatch({ type: 'SET_PICK_BATCH', filePaths: paths, pick: 'selected' });
-                  }}
+                  onClick={() => { const paths = sortedFiles.map((f) => f.path); dispatch({ type: 'SET_PICK_BATCH', filePaths: paths, pick: 'selected' }); }}
+                  title="Pick all visible files for import"
                   className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-yellow-400 hover:bg-yellow-400/10 rounded transition-colors"
-                  title="Pick all files for import"
-                >
-                  Pick All
-                </button>
+                >Pick All</button>
                 <button
                   onClick={() => dispatch({ type: 'CLEAR_PICKS' })}
-                  className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-text hover:bg-surface-raised rounded transition-colors"
                   title="Clear all pick/reject flags"
-                >
-                  Clear All
-                </button>
-                <button
-                  onClick={() => {
-                    const all = new Set<number>();
-                    for (let i = 0; i < sortedFiles.length; i++) all.add(i);
-                    setSelectedIndices(all);
-                  }}
-                  className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-blue-400 hover:bg-blue-500/10 rounded transition-colors"
-                  title="Select all currently visible files"
-                >
-                  Select Visible
-                </button>
-                <button
-                  onClick={() => queuePaths(sortedFiles.map((f) => f.path))}
-                  className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-emerald-400 hover:bg-emerald-500/10 rounded transition-colors"
-                  title="Add all visible files to import queue"
-                >
-                  Queue Visible
-                </button>
-                <button
-                  onClick={() => queuePaths(files.filter((f) => f.pick === 'selected').map((f) => f.path))}
-                  className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-yellow-400 hover:bg-yellow-400/10 rounded transition-colors"
-                  title="Add picked files to import queue"
-                >
-                  Queue Picks
-                </button>
-                <button
-                  onClick={() => queuePaths(files.filter((f) => f.isProtected).map((f) => f.path))}
-                  className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-emerald-400 hover:bg-emerald-500/10 rounded transition-colors"
-                  title="Add protected files to import queue"
-                >
-                  Queue Protected
-                </button>
+                  className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-text hover:bg-surface-raised rounded transition-colors"
+                >Clear</button>
               </>
             )}
           </div>
         )}
 
-        <div className="ml-auto w-px h-3.5 bg-border mx-2 shrink-0" />
+        {/* Spacer pushes filters to the right */}
+        <div className="flex-1 min-w-0" />
 
-        {/* Filter chips + cull + export */}
+        {/* Search + filter pills + consolidated filter dropdown */}
         {(sortedFiles.length > 0 || filter !== 'all') && (
-          <div className="flex items-center gap-px shrink-0 mr-2">
+          <div className="flex items-center gap-0.5 shrink-0">
             <input
               value={searchText}
               onChange={(e) => setSearchText(e.target.value)}
-              placeholder="Search"
-              className="w-24 px-1.5 py-0.5 text-[10px] bg-surface border border-border rounded text-text placeholder-text-muted focus:outline-none focus:border-text"
-              title="Search filename, path, camera, lens, date, or extension"
+              placeholder="Search…"
+              className="w-24 px-1.5 py-0.5 text-[10px] bg-surface border border-border rounded text-text placeholder-text-muted focus:outline-none focus:border-text-secondary"
+              title="Search by filename, camera, lens, date or file type"
             />
-            {(filter !== 'all' || searchText.trim()) && (
-              <button
-                onClick={() => {
-                  setSearchText('');
-                  dispatch({ type: 'SET_FILTER', filter: 'all' });
-                }}
-                className="px-1.5 py-0.5 text-[10px] text-text-muted hover:text-text rounded"
-                title="Clear search and filters"
-              >
-                Clear
-              </button>
-            )}
-            {selectionSets.length > 0 && (
-              <select
-                value=""
-                onChange={(e) => {
-                  if (!e.target.value) return;
-                  if (e.target.value.startsWith('delete:')) {
-                    deleteSelectionSet(e.target.value.slice(7));
-                  } else {
-                    applySelectionSet(e.target.value);
-                  }
-                  e.currentTarget.value = '';
-                }}
-                className="max-w-[94px] px-1 py-0.5 text-[10px] bg-surface border border-border rounded text-text-muted hover:text-text focus:outline-none focus:border-text cursor-pointer"
-                title="Apply or delete a saved selection set"
-              >
-                <option value="">Sets</option>
-                {selectionSets.map((s) => <option key={s.name} value={s.name}>{s.name}</option>)}
-                {selectionSets.map((s) => <option key={`delete-${s.name}`} value={`delete:${s.name}`}>Delete {s.name}</option>)}
-              </select>
-            )}
-            {(['all', 'protected', 'picked', 'rejected', 'unrated', 'duplicates', 'queue'] as const).map((f) => (
+
+            {/* Core filter pills */}
+            {(['all', 'picked', 'rejected'] as const).map((f) => (
               <button
                 key={f}
                 onClick={() => dispatch({ type: 'SET_FILTER', filter: f })}
-                className={`px-1.5 py-0.5 text-[10px] rounded transition-colors ${
-                  filter === f
-                    ? 'bg-surface-raised text-text'
-                    : 'text-text-muted hover:text-text'
-                }`}
+                className={`px-1.5 py-0.5 text-[10px] rounded transition-colors ${filter === f ? 'bg-surface-raised text-text' : 'text-text-muted hover:text-text'}`}
               >
-                {f === 'all' ? 'All' : f === 'queue' ? `Queue${queuedPaths.length ? ` ${queuedPaths.length}` : ''}` : f[0].toUpperCase() + f.slice(1)}
+                {f === 'all' ? 'All' : f[0].toUpperCase() + f.slice(1)}
               </button>
             ))}
+            <button
+              onClick={() => dispatch({ type: 'SET_FILTER', filter: 'queue' })}
+              className={`px-1.5 py-0.5 text-[10px] rounded transition-colors ${filter === 'queue' ? 'bg-surface-raised text-text' : 'text-text-muted hover:text-text'}`}
+            >
+              Queue{queuedPaths.length > 0 ? ` ${queuedPaths.length}` : ''}
+            </button>
+
+            {/* Single consolidated filter dropdown — replaces 6 individual ones */}
             <select
-              value={['unmarked', 'best', 'blur-risk', 'near-duplicates', 'review-needed', 'needs-exposure', 'normalized', 'adjusted', 'photos', 'videos', 'raw'].includes(filter) ? filter : ''}
-              onChange={(e) => dispatch({ type: 'SET_FILTER', filter: (e.target.value || 'all') as typeof filter })}
+              value=""
+              onChange={(e) => {
+                if (!e.target.value) return;
+                dispatch({ type: 'SET_FILTER', filter: e.target.value as typeof filter });
+                e.currentTarget.value = '';
+              }}
               className="px-1 py-0.5 text-[10px] bg-surface border border-border rounded text-text-muted hover:text-text focus:outline-none focus:border-text cursor-pointer"
               title="More filters"
             >
-              <option value="">More</option>
-              <option value="unmarked">Unmarked</option>
-              <option value="best">Best</option>
-              <option value="blur-risk">Blur risk</option>
-              <option value="near-duplicates">Similar</option>
-              <option value="review-needed">Review needed</option>
-              <option value="needs-exposure">Needs exposure</option>
-              <option value="normalized">Normalized</option>
-              <option value="adjusted">Manual EV</option>
-              <option value="photos">Photos</option>
-              <option value="videos">Videos</option>
-              <option value="raw">RAW</option>
+              <option value="">Filter ▾</option>
+              <optgroup label="Status">
+                <option value="unmarked">Unmarked</option>
+                <option value="protected">Protected</option>
+                <option value="unrated">Unrated</option>
+                <option value="duplicates">Duplicates</option>
+                <option value="best">Best shots</option>
+                <option value="blur-risk">Blur risk</option>
+                <option value="near-duplicates">Similar photos</option>
+              </optgroup>
+              <optgroup label="Type">
+                <option value="photos">Photos only</option>
+                <option value="videos">Videos only</option>
+                <option value="raw">RAW files</option>
+              </optgroup>
+              <optgroup label="Stars">
+                <option value="rating-5">★★★★★ only</option>
+                <option value="rating-4">★★★★ and up</option>
+                <option value="rating-3">★★★ and up</option>
+                <option value="rating-2">★★ and up</option>
+                <option value="rating-1">★ and up</option>
+              </optgroup>
+              {metadataFilters.cameras.length > 1 && (
+                <optgroup label="Camera">
+                  {metadataFilters.cameras.map((v) => <option key={v} value={`camera:${encodeURIComponent(v)}`}>{v}</option>)}
+                </optgroup>
+              )}
+              {metadataFilters.lenses.length > 1 && (
+                <optgroup label="Lens">
+                  {metadataFilters.lenses.map((v) => <option key={v} value={`lens:${encodeURIComponent(v)}`}>{v}</option>)}
+                </optgroup>
+              )}
+              {metadataFilters.dates.length > 0 && (
+                <optgroup label="Date">
+                  {metadataFilters.dates.map((v) => <option key={v} value={`date:${encodeURIComponent(v)}`}>{v}</option>)}
+                </optgroup>
+              )}
+              {metadataFilters.exts.length > 1 && (
+                <optgroup label="File type">
+                  {metadataFilters.exts.map((v) => <option key={v} value={`ext:${encodeURIComponent(v)}`}>{v}</option>)}
+                </optgroup>
+              )}
             </select>
-            <select
-              value={filter.startsWith('rating-') ? filter : ''}
-              onChange={(e) => dispatch({ type: 'SET_FILTER', filter: (e.target.value || 'all') as typeof filter })}
-              className="px-1 py-0.5 text-[10px] bg-surface border border-border rounded text-text-muted hover:text-text focus:outline-none focus:border-text cursor-pointer"
-              title="Filter by minimum star rating"
-            >
-              <option value="">Stars</option>
-              <option value="rating-5">5 stars</option>
-              <option value="rating-4">4+ stars</option>
-              <option value="rating-3">3+ stars</option>
-              <option value="rating-2">2+ stars</option>
-              <option value="rating-1">1+ star</option>
-            </select>
-            <select
-              value={filter.startsWith('camera:') ? filter : ''}
-              onChange={(e) => dispatch({ type: 'SET_FILTER', filter: (e.target.value || 'all') as typeof filter })}
-              className="max-w-[92px] px-1 py-0.5 text-[10px] bg-surface border border-border rounded text-text-muted hover:text-text focus:outline-none focus:border-text cursor-pointer"
-              title="Filter by camera"
-            >
-              <option value="">Camera</option>
-              {metadataFilters.cameras.map((v) => <option key={v} value={`camera:${encodeURIComponent(v)}`}>{v}</option>)}
-            </select>
-            <select
-              value={filter.startsWith('lens:') ? filter : ''}
-              onChange={(e) => dispatch({ type: 'SET_FILTER', filter: (e.target.value || 'all') as typeof filter })}
-              className="max-w-[92px] px-1 py-0.5 text-[10px] bg-surface border border-border rounded text-text-muted hover:text-text focus:outline-none focus:border-text cursor-pointer"
-              title="Filter by lens"
-            >
-              <option value="">Lens</option>
-              {metadataFilters.lenses.map((v) => <option key={v} value={`lens:${encodeURIComponent(v)}`}>{v}</option>)}
-            </select>
-            <select
-              value={filter.startsWith('date:') ? filter : ''}
-              onChange={(e) => dispatch({ type: 'SET_FILTER', filter: (e.target.value || 'all') as typeof filter })}
-              className="max-w-[88px] px-1 py-0.5 text-[10px] bg-surface border border-border rounded text-text-muted hover:text-text focus:outline-none focus:border-text cursor-pointer"
-              title="Filter by date"
-            >
-              <option value="">Date</option>
-              {metadataFilters.dates.map((v) => <option key={v} value={`date:${encodeURIComponent(v)}`}>{v}</option>)}
-            </select>
-            <select
-              value={filter.startsWith('ext:') ? filter : ''}
-              onChange={(e) => dispatch({ type: 'SET_FILTER', filter: (e.target.value || 'all') as typeof filter })}
-              className="max-w-[68px] px-1 py-0.5 text-[10px] bg-surface border border-border rounded text-text-muted hover:text-text focus:outline-none focus:border-text cursor-pointer"
-              title="Filter by file type"
-            >
-              <option value="">Ext</option>
-              {metadataFilters.exts.map((v) => <option key={v} value={`ext:${encodeURIComponent(v)}`}>{v}</option>)}
-            </select>
-            <div className="w-px h-3 bg-border mx-1" />
-            <button
-              onClick={() => dispatch({ type: 'TOGGLE_CULL_MODE' })}
-              className={`px-1.5 py-0.5 text-[10px] rounded transition-colors ${
-                cullMode
-                  ? 'bg-emerald-500/20 text-emerald-400'
-                  : 'text-text-muted hover:text-text'
-              }`}
-              title="Quick cull (C): detail view + auto-advance on rate"
-            >
-              Cull
-            </button>
-            <button
-              onClick={() => {
-                dispatch({ type: 'SET_FILTER', filter: 'unmarked' });
-                dispatch({ type: 'SET_VIEW_MODE', mode: 'single' });
-                if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0);
-              }}
-              className="px-1.5 py-0.5 text-[10px] text-text-muted hover:text-text rounded transition-colors"
-              title="Review unmarked files"
-            >
-              Review
-            </button>
-            {duplicateCount > 0 && (
-              <>
-                <button
-                  onClick={() => {
-                    dispatch({ type: 'SET_FILTER', filter: 'duplicates' });
-                    dispatch({ type: 'SET_VIEW_MODE', mode: 'compare' });
-                    if (focusedIndex < 0) setFocused(0);
-                  }}
-                  className="px-1.5 py-0.5 text-[10px] text-text-muted hover:text-blue-400 rounded"
-                  title="Show duplicate files in compare view"
-                >
-                  Compare dupes
-                </button>
-                <button
-                  onClick={() => dispatch({ type: 'REJECT_DUPLICATES' })}
-                  className="px-1.5 py-0.5 text-[10px] text-text-muted hover:text-red-400 rounded"
-                  title="Mark duplicate files as rejected; Ctrl+Z to undo"
-                >
-                  Reject dupes
-                </button>
-              </>
-            )}
-            <button
-              onClick={() => window.electronAPI.exportManifest('csv')}
-              className="px-1.5 py-0.5 text-[10px] text-text-muted hover:text-text rounded"
-              title="Export CSV manifest of the current scan"
-            >
-              CSV
-            </button>
-            <button
-              onClick={() => window.electronAPI.exportManifest('json')}
-              className="px-1.5 py-0.5 text-[10px] text-text-muted hover:text-text rounded"
-              title="Export JSON manifest of the current scan"
-            >
-              JSON
-            </button>
-            <button
-              onClick={() => setShowShortcuts(true)}
-              className="px-1.5 py-0.5 text-[10px] text-text-muted hover:text-text rounded"
-              title="Show keyboard shortcuts (?)"
-            >
-              ?
-            </button>
-            {burstGrouping && burstIds.size > 0 && (
-              <>
-                <div className="w-px h-3 bg-border mx-1" />
-                <button
-                  onClick={() => dispatch({ type: allBurstsCollapsed ? 'CLEAR_COLLAPSED_BURSTS' : 'COLLAPSE_ALL_BURSTS' })}
-                  className="px-1.5 py-0.5 text-[10px] text-text-muted hover:text-text rounded transition-colors"
-                  title={allBurstsCollapsed ? 'Expand all bursts' : 'Collapse all bursts'}
-                >
-                  {allBurstsCollapsed ? 'Expand bursts' : 'Collapse bursts'}
-                </button>
-                <button
-                  onClick={() => dispatch({ type: 'PICK_BURST_KEEPERS' })}
-                  className="px-1.5 py-0.5 text-[10px] text-text-muted hover:text-yellow-400 rounded transition-colors"
-                  title="Pick best frame in each burst and reject the rest"
-                >
-                  Burst keepers
-                </button>
-                <button
-                  onClick={() => dispatch({ type: 'PICK_BEST_IN_GROUPS' })}
-                  className="px-1.5 py-0.5 text-[10px] text-text-muted hover:text-yellow-400 rounded transition-colors"
-                  title="Pick best shot in each burst and visual-similar group"
-                >
-                  Pick best
-                </button>
-              </>
+
+            {/* Clear active filter */}
+            {(filter !== 'all' || searchText.trim()) && (
+              <button
+                onClick={() => { setSearchText(''); dispatch({ type: 'SET_FILTER', filter: 'all' }); }}
+                className="px-1 py-0.5 text-[10px] text-text-faint hover:text-text rounded transition-colors"
+                title="Clear filter"
+              >✕</button>
             )}
           </div>
         )}
 
-        {/* View mode toggle */}
+        <div className="w-px h-3 bg-border mx-1 shrink-0" />
+
+        {/* View mode toggles */}
         <div className="flex items-center gap-0.5 shrink-0">
-          <button
-            onClick={() => dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' })}
-            className={`p-0.5 rounded transition-colors ${viewMode === 'grid' ? 'text-text bg-surface-raised' : 'text-text-muted hover:text-text'}`}
-            title="Grid view"
-          >
-            <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
-              <path fillRule="evenodd" d="M4.25 2A2.25 2.25 0 002 4.25v2.5A2.25 2.25 0 004.25 9h2.5A2.25 2.25 0 009 6.75v-2.5A2.25 2.25 0 006.75 2h-2.5zm0 9A2.25 2.25 0 002 13.25v2.5A2.25 2.25 0 004.25 18h2.5A2.25 2.25 0 009 15.75v-2.5A2.25 2.25 0 006.75 11h-2.5zm9-9A2.25 2.25 0 0011 4.25v2.5A2.25 2.25 0 0013.25 9h2.5A2.25 2.25 0 0018 6.75v-2.5A2.25 2.25 0 0015.75 2h-2.5zm0 9A2.25 2.25 0 0011 13.25v2.5A2.25 2.25 0 0013.25 18h2.5A2.25 2.25 0 0018 15.75v-2.5A2.25 2.25 0 0015.75 11h-2.5z" clipRule="evenodd" />
-            </svg>
+          <button onClick={() => dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' })} className={`p-0.5 rounded transition-colors ${viewMode === 'grid' ? 'text-text bg-surface-raised' : 'text-text-muted hover:text-text'}`} title="Grid view">
+            <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M4.25 2A2.25 2.25 0 002 4.25v2.5A2.25 2.25 0 004.25 9h2.5A2.25 2.25 0 009 6.75v-2.5A2.25 2.25 0 006.75 2h-2.5zm0 9A2.25 2.25 0 002 13.25v2.5A2.25 2.25 0 004.25 18h2.5A2.25 2.25 0 009 15.75v-2.5A2.25 2.25 0 006.75 11h-2.5zm9-9A2.25 2.25 0 0011 4.25v2.5A2.25 2.25 0 0013.25 9h2.5A2.25 2.25 0 0018 6.75v-2.5A2.25 2.25 0 0015.75 2h-2.5zm0 9A2.25 2.25 0 0011 13.25v2.5A2.25 2.25 0 0013.25 18h2.5A2.25 2.25 0 0018 15.75v-2.5A2.25 2.25 0 0015.75 11h-2.5z" clipRule="evenodd" /></svg>
           </button>
-          <button
-            onClick={() => {
-              dispatch({ type: 'SET_VIEW_MODE', mode: 'split' });
-              if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0);
-            }}
-            className={`p-0.5 rounded transition-colors ${viewMode === 'split' ? 'text-text bg-surface-raised' : 'text-text-muted hover:text-text'}`}
-            title="Split view"
-          >
-            <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
-              <path fillRule="evenodd" d="M2 4.75C2 3.784 2.784 3 3.75 3h4.836c.464 0 .914.184 1.244.513l.17.169V16.318l-.17-.169a1.76 1.76 0 00-1.244-.513H3.75A1.75 1.75 0 012 13.886V4.75zm1.5 0a.25.25 0 01.25-.25h4.836a.25.25 0 01.177.073L9 4.81v10.38l-.237-.237a.25.25 0 00-.177-.073H3.75a.25.25 0 01-.25-.25V4.75z" clipRule="evenodd" />
-              <path fillRule="evenodd" d="M18 4.75c0-.966-.784-1.75-1.75-1.75h-4.836a1.76 1.76 0 00-1.244.513L10 3.682V15.68l.17-.169a1.76 1.76 0 011.244-.513h4.836A1.75 1.75 0 0018 13.25V4.75zm-1.5 0a.25.25 0 00-.25-.25h-4.836a.25.25 0 00-.177.073L11 4.81v10.38l.237-.237a.25.25 0 01.177-.073h4.836a.25.25 0 00.25-.25V4.75z" clipRule="evenodd" />
-            </svg>
+          <button onClick={() => { dispatch({ type: 'SET_VIEW_MODE', mode: 'split' }); if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0); }} className={`p-0.5 rounded transition-colors ${viewMode === 'split' ? 'text-text bg-surface-raised' : 'text-text-muted hover:text-text'}`} title="Split view (filmstrip + detail)">
+            <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M2 4.75C2 3.784 2.784 3 3.75 3h4.836c.464 0 .914.184 1.244.513l.17.169V16.318l-.17-.169a1.76 1.76 0 00-1.244-.513H3.75A1.75 1.75 0 012 13.886V4.75zm1.5 0a.25.25 0 01.25-.25h4.836a.25.25 0 01.177.073L9 4.81v10.38l-.237-.237a.25.25 0 00-.177-.073H3.75a.25.25 0 01-.25-.25V4.75z" clipRule="evenodd" /><path fillRule="evenodd" d="M18 4.75c0-.966-.784-1.75-1.75-1.75h-4.836a1.76 1.76 0 00-1.244.513L10 3.682V15.68l.17-.169a1.76 1.76 0 011.244-.513h4.836A1.75 1.75 0 0018 13.25V4.75zm-1.5 0a.25.25 0 00-.25-.25h-4.836a.25.25 0 00-.177.073L11 4.81v10.38l.237-.237a.25.25 0 01.177-.073h4.836a.25.25 0 00.25-.25V4.75z" clipRule="evenodd" /></svg>
           </button>
-          <button
-            onClick={() => {
-              dispatch({ type: 'SET_VIEW_MODE', mode: 'single' });
-              if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0);
-            }}
-            className={`p-0.5 rounded transition-colors ${viewMode === 'single' ? 'text-text bg-surface-raised' : 'text-text-muted hover:text-text'}`}
-            title="Detail view"
-          >
-            <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
-              <path fillRule="evenodd" d="M1 4.75C1 3.784 1.784 3 2.75 3h14.5c.966 0 1.75.784 1.75 1.75v10.515a1.75 1.75 0 01-1.75 1.75H2.75A1.75 1.75 0 011 15.265V4.75zm1.5 0a.25.25 0 01.25-.25h14.5a.25.25 0 01.25.25v10.515a.25.25 0 01-.25.25H2.75a.25.25 0 01-.25-.25V4.75z" clipRule="evenodd" />
-            </svg>
+          <button onClick={() => { dispatch({ type: 'SET_VIEW_MODE', mode: 'single' }); if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0); }} className={`p-0.5 rounded transition-colors ${viewMode === 'single' ? 'text-text bg-surface-raised' : 'text-text-muted hover:text-text'}`} title="Detail view (double-click a photo)">
+            <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M1 4.75C1 3.784 1.784 3 2.75 3h14.5c.966 0 1.75.784 1.75 1.75v10.515a1.75 1.75 0 01-1.75 1.75H2.75A1.75 1.75 0 011 15.265V4.75zm1.5 0a.25.25 0 01.25-.25h14.5a.25.25 0 01.25.25v10.515a.25.25 0 01-.25.25H2.75a.25.25 0 01-.25-.25V4.75z" clipRule="evenodd" /></svg>
           </button>
-          <button
-            onClick={() => {
-              dispatch({ type: 'SET_VIEW_MODE', mode: 'compare' });
-              if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0);
-            }}
-            className={`p-0.5 rounded transition-colors ${viewMode === 'compare' ? 'text-text bg-surface-raised' : 'text-text-muted hover:text-text'}`}
-            title="Compare selected images"
-          >
-            <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
-              <path d="M2 4.5A2.5 2.5 0 014.5 2h4A2.5 2.5 0 0111 4.5v11A2.5 2.5 0 018.5 18h-4A2.5 2.5 0 012 15.5v-11zM12 4.5A2.5 2.5 0 0114.5 2h1A2.5 2.5 0 0118 4.5v11a2.5 2.5 0 01-2.5 2.5h-1a2.5 2.5 0 01-2.5-2.5v-11z" />
-            </svg>
+          <button onClick={() => { dispatch({ type: 'SET_VIEW_MODE', mode: 'compare' }); if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0); }} className={`p-0.5 rounded transition-colors ${viewMode === 'compare' ? 'text-text bg-surface-raised' : 'text-text-muted hover:text-text'}`} title="Compare view (select 2–4 photos)">
+            <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path d="M2 4.5A2.5 2.5 0 014.5 2h4A2.5 2.5 0 0111 4.5v11A2.5 2.5 0 018.5 18h-4A2.5 2.5 0 012 15.5v-11zM12 4.5A2.5 2.5 0 0114.5 2h1A2.5 2.5 0 0118 4.5v11a2.5 2.5 0 01-2.5 2.5h-1a2.5 2.5 0 01-2.5-2.5v-11z" /></svg>
           </button>
         </div>
 
-        <div className="w-px h-3.5 bg-border mx-2 shrink-0" />
+        <div className="w-px h-3 bg-border mx-1 shrink-0" />
 
-        {/* Settings gear button */}
+        {/* Settings */}
         <button
           onClick={() => dispatch({ type: 'SET_VIEW_MODE', mode: viewMode === 'settings' ? 'grid' : 'settings' })}
-          className={`p-0.5 rounded transition-colors shrink-0 ${viewMode === 'settings' ? 'text-text bg-surface-raised' : 'text-text-muted hover:text-text hover:bg-surface-raised'}`}
-          title={viewMode === 'settings' ? 'Back to grid (Esc)' : 'Settings'}
+          className={`p-0.5 rounded transition-colors shrink-0 ${viewMode === 'settings' ? 'text-text bg-surface-raised' : 'text-text-muted hover:text-text'}`}
+          title="Settings"
         >
-          <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
-            <path fillRule="evenodd" d="M7.84 1.804A1 1 0 018.82 1h2.36a1 1 0 01.98.804l.331 1.652a6.993 6.993 0 011.929 1.115l1.598-.54a1 1 0 011.186.447l1.18 2.044a1 1 0 01-.205 1.251l-1.267 1.113a7.047 7.047 0 010 2.228l1.267 1.113a1 1 0 01.206 1.25l-1.18 2.045a1 1 0 01-1.187.447l-1.598-.54a6.993 6.993 0 01-1.929 1.115l-.33 1.652a1 1 0 01-.98.804H8.82a1 1 0 01-.98-.804l-.331-1.652a6.993 6.993 0 01-1.929-1.115l-1.598.54a1 1 0 01-1.186-.447l-1.18-2.044a1 1 0 01.205-1.251l1.267-1.114a7.05 7.05 0 010-2.227L1.821 7.773a1 1 0 01-.206-1.25l1.18-2.045a1 1 0 011.187-.447l1.598.54A6.993 6.993 0 017.51 3.456l.33-1.652zM10 13a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" />
-          </svg>
+          <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M7.84 1.804A1 1 0 018.82 1h2.36a1 1 0 01.98.804l.331 1.652a6.993 6.993 0 011.929 1.115l1.598-.54a1 1 0 011.186.447l1.18 2.044a1 1 0 01-.205 1.251l-1.267 1.113a7.047 7.047 0 010 2.228l1.267 1.113a1 1 0 01.206 1.25l-1.18 2.045a1 1 0 01-1.187.447l-1.598-.54a6.993 6.993 0 01-1.929 1.115l-.33 1.652a1 1 0 01-.98.804H8.82a1 1 0 01-.98-.804l-.331-1.652a6.993 6.993 0 01-1.929-1.115l-1.598.54a1 1 0 01-1.186-.447l-1.18-2.044a1 1 0 01.205-1.251l1.267-1.114a7.05 7.05 0 010-2.227L1.821 7.773a1 1 0 01-.206-1.25l1.18-2.045a1 1 0 011.187-.447l1.598.54A6.993 6.993 0 017.51 3.456l.33-1.652zM10 13a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" /></svg>
         </button>
 
-        <div className="w-px h-3.5 bg-border mx-2 shrink-0" />
+        <div className="w-px h-3 bg-border mx-1 shrink-0" />
 
         {/* Right panel toggle */}
         <button
           onClick={() => dispatch({ type: 'TOGGLE_RIGHT_PANEL' })}
-          className="p-0.5 rounded transition-colors hover:bg-surface-raised shrink-0"
-          title={showRightPanel ? 'Hide settings panel' : 'Show settings panel'}
+          className="p-0.5 rounded hover:bg-surface-raised shrink-0"
+          title={showRightPanel ? 'Hide output panel' : 'Show output panel'}
         >
           <svg className="w-4 h-4" viewBox="0 0 16 16" fill="none">
             <rect x="0.5" y="0.5" width="15" height="15" rx="1.5" stroke="var(--color-text-muted)" strokeWidth="1" />
