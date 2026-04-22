@@ -207,9 +207,10 @@ export function ThumbnailGrid() {
 
   useEffect(() => {
     if (sharpnessInFlightRef.current) return;
+    // Keep batch small so scoring doesn't freeze the UI on slow machines.
     const candidates = files
       .filter((f) => f.type === 'photo' && f.thumbnail && (typeof f.sharpnessScore !== 'number' || !f.visualHash))
-      .slice(0, 32);
+      .slice(0, 8);
     if (candidates.length === 0) return;
     sharpnessInFlightRef.current = true;
     void Promise.all(candidates.map(async (f) => {
@@ -849,99 +850,98 @@ export function ThumbnailGrid() {
   ) : null;
 
   const nextActionToolbar = files.length > 0 ? (
-    <div className="shrink-0 px-2 py-1 flex items-center gap-1 border-b border-border bg-surface/70 overflow-x-auto">
+    <div className="shrink-0 px-3 py-1.5 flex items-center gap-1.5 border-b border-border bg-surface-alt/60 overflow-x-auto">
+      {/* Workflow steps — guide beginners left to right */}
+      <span className="text-[9px] font-medium text-text-faint uppercase tracking-wider shrink-0 pr-1">Steps:</span>
+
       <button
         onClick={() => {
           dispatch({ type: 'SET_FILTER', filter: 'unmarked' });
           dispatch({ type: 'SET_VIEW_MODE', mode: 'single' });
           if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0);
         }}
-        className="px-2 py-0.5 text-[10px] rounded bg-surface-raised text-text-secondary hover:text-text transition-colors shrink-0"
-        title="Review unmarked files"
+        className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-surface-raised text-text-secondary hover:text-text hover:bg-border transition-colors shrink-0"
+        title="Open each unmarked photo to pick or reject it"
       >
-        Review Unmarked
+        1. Review
       </button>
+
+      <button
+        onClick={() => dispatch({ type: 'QUEUE_BEST' })}
+        className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-surface-raised text-text-secondary hover:text-yellow-300 hover:bg-yellow-500/10 transition-colors shrink-0"
+        title="Automatically add high-scoring photos to the import queue"
+      >
+        2. Queue Best
+      </button>
+
       {queuedPaths.length > 0 ? (
         <button
           onClick={startImport}
-          className="px-2 py-0.5 text-[10px] rounded bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 transition-colors shrink-0"
-          title="Import queued files"
+          className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 transition-colors shrink-0"
+          title="Import all queued files now"
         >
-          Import Queue {queuedPaths.length}
+          3. Import ({queuedPaths.length})
         </button>
       ) : (
         <button
           onClick={() => queuePaths(sortedFiles.map((f) => f.path))}
-          className="px-2 py-0.5 text-[10px] rounded bg-surface-raised text-text-secondary hover:text-emerald-300 transition-colors shrink-0"
-          title="Add current visible files to queue"
+          className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-surface-raised text-text-secondary hover:text-emerald-300 hover:bg-emerald-500/10 transition-colors shrink-0"
+          title="Add all visible photos to the import queue"
         >
-          Queue Visible
+          3. Queue All
         </button>
       )}
-      {duplicateCount > 0 && (
-        <button
-          onClick={() => {
-            dispatch({ type: 'SET_FILTER', filter: 'duplicates' });
-            dispatch({ type: 'SET_VIEW_MODE', mode: 'compare' });
-          }}
-          className="px-2 py-0.5 text-[10px] rounded bg-surface-raised text-text-secondary hover:text-blue-300 transition-colors shrink-0"
-          title="Compare duplicate files"
-        >
-          Compare Dupes
-        </button>
-      )}
+
+      <div className="w-px h-4 bg-border shrink-0 mx-1" />
+
+      {/* Secondary tools */}
       <button
         onClick={() => dispatch({ type: 'SET_FILTER', filter: 'best' })}
-        className="px-2 py-0.5 text-[10px] rounded bg-surface-raised text-text-secondary hover:text-yellow-300 transition-colors shrink-0"
-        title="Show high-scoring keeper candidates"
+        className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-yellow-300 transition-colors shrink-0"
+        title="Filter to show only high-scored keeper candidates"
       >
         Find Best
       </button>
       <button
         onClick={() => dispatch({ type: 'SET_FILTER', filter: 'blur-risk' })}
-        className="px-2 py-0.5 text-[10px] rounded bg-surface-raised text-text-secondary hover:text-red-300 transition-colors shrink-0"
-        title="Show soft or risky images"
+        className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-red-300 transition-colors shrink-0"
+        title="Show potentially soft or blurry photos"
       >
         Blur Check
       </button>
-      <button
-        onClick={() => {
-          dispatch({ type: 'SET_FILTER', filter: 'near-duplicates' });
-          dispatch({ type: 'SET_VIEW_MODE', mode: 'compare' });
-        }}
-        className="px-2 py-0.5 text-[10px] rounded bg-surface-raised text-text-secondary hover:text-blue-300 transition-colors shrink-0"
-        title="Review visually similar groups"
-      >
-        Review Similar
-      </button>
-      <button
-        onClick={() => dispatch({ type: 'QUEUE_BEST' })}
-        className="px-2 py-0.5 text-[10px] rounded bg-surface-raised text-text-secondary hover:text-emerald-300 transition-colors shrink-0"
-        title="Add high-scoring files to import queue"
-      >
-        Queue Best
-      </button>
+      {duplicateCount > 0 && (
+        <button
+          onClick={() => {
+            dispatch({ type: 'SET_FILTER', filter: 'near-duplicates' });
+            dispatch({ type: 'SET_VIEW_MODE', mode: 'compare' });
+          }}
+          className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-blue-300 transition-colors shrink-0"
+          title="Compare visually similar or duplicate photos side-by-side"
+        >
+          Dupes
+        </button>
+      )}
       {burstGrouping && burstIds.size > 0 && (
         <button
           onClick={() => dispatch({ type: 'PICK_BEST_IN_GROUPS' })}
-          className="px-2 py-0.5 text-[10px] rounded bg-surface-raised text-text-secondary hover:text-yellow-300 transition-colors shrink-0"
-          title="Pick best frame in bursts and visual groups"
+          className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-yellow-300 transition-colors shrink-0"
+          title="Automatically pick the sharpest shot in each burst group"
         >
           Pick Best
         </button>
       )}
       <button
         onClick={() => window.electronAPI.exportContactSheet(files.filter((f) => f.pick !== 'rejected'))}
-        className="px-2 py-0.5 text-[10px] rounded bg-surface-raised text-text-secondary hover:text-text transition-colors shrink-0"
-        title="Export contact sheet PDF"
+        className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-text transition-colors shrink-0"
+        title="Export a contact sheet PDF of non-rejected photos"
       >
         Contact Sheet
       </button>
       {queuedPaths.length > 0 && (
         <button
           onClick={() => dispatch({ type: 'QUEUE_CLEAR' })}
-          className="px-2 py-0.5 text-[10px] rounded text-text-muted hover:text-red-300 transition-colors shrink-0"
-          title="Clear queue"
+          className="px-2 py-1 text-[10px] rounded-md text-text-faint hover:text-red-300 transition-colors shrink-0"
+          title="Remove all files from the import queue"
         >
           Clear Queue
         </button>
@@ -1481,7 +1481,7 @@ export function ThumbnailGrid() {
             <div className="h-full overflow-y-auto px-4 pt-3 pb-16">
               <div
                 ref={gridRef}
-                className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-3"
+                className="thumbnail-grid grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-3"
               >
                 {sortedFiles.map((file, i) => (
                   <ThumbnailCard
