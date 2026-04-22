@@ -8,13 +8,23 @@ const isMac = typeof window !== 'undefined' && window.electronAPI?.platform === 
 const MOD = isMac ? '\u2318' : 'Ctrl';
 
 export function SourcePanel() {
-  const { volumes, selectedSource, files, phase, sourceKind, scanPaused } = useAppState();
+  const { volumes, selectedSource, files, phase, sourceKind, scanPaused, volumeImportQueue } = useAppState();
   const dispatch = useAppDispatch();
   const { startScan, pauseScan, resumeScan } = useFileScanner();
 
   const handleSelectVolume = (volumePath: string) => {
     dispatch({ type: 'SELECT_SOURCE', path: volumePath });
     startScan(volumePath);
+  };
+
+  const handleImportAllCards = () => {
+    const dcimVolumes = [...volumes]
+      .filter((v) => v.hasDcim)
+      .sort((a, b) => Number(b.hasDcim ?? false) - Number(a.hasDcim ?? false));
+    if (dcimVolumes.length === 0) return;
+    dispatch({ type: 'SET_VOLUME_IMPORT_QUEUE', paths: dcimVolumes.map((v) => v.path) });
+    dispatch({ type: 'SELECT_SOURCE', path: dcimVolumes[0].path });
+    startScan(dcimVolumes[0].path);
   };
 
   const handleChooseFolder = async () => {
@@ -70,7 +80,20 @@ export function SourcePanel() {
             <div className="border-b border-border">
               <div className="px-2.5 pb-0.5 flex items-center justify-between">
                 <span className="text-[10px] text-text-secondary">Detected Devices</span>
-                <span className="text-[9px] text-text-muted">DCIM first</span>
+                {volumes.filter((v) => v.hasDcim).length >= 2 ? (
+                  <button
+                    onClick={handleImportAllCards}
+                    disabled={phase === 'importing' || (phase === 'scanning' && volumeImportQueue.length > 0)}
+                    className="text-[9px] font-medium text-emerald-400 hover:text-emerald-300 disabled:opacity-40 transition-colors"
+                    title={`Import all ${volumes.filter((v) => v.hasDcim).length} cards sequentially, one after another.`}
+                  >
+                    {volumeImportQueue.length > 1
+                      ? `Importing ${volumeImportQueue.length} cards…`
+                      : `Import All (${volumes.filter((v) => v.hasDcim).length})`}
+                  </button>
+                ) : (
+                  <span className="text-[9px] text-text-muted">DCIM first</span>
+                )}
               </div>
               {[...volumes]
                 .sort((a, b) => Number(b.hasDcim ?? false) - Number(a.hasDcim ?? false))

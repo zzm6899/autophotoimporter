@@ -1,8 +1,10 @@
 import { useEffect, useRef } from 'react';
-import { ImportProvider, useAppDispatch, useAppState } from './context/ImportContext';
+import { ImportProvider, useAppDispatch, useAppState, type AppPhase } from './context/ImportContext';
 import { useVolumes } from './hooks/useVolumes';
 import { useSettings } from './hooks/useSettings';
 import { useScanListeners } from './hooks/useScanListeners';
+import { useFileScanner } from './hooks/useFileScanner';
+import { useImport } from './hooks/useImport';
 import { Layout } from './components/Layout';
 import { SourcePanel } from './components/SourcePanel';
 import { ThumbnailGrid } from './components/ThumbnailGrid';
@@ -25,8 +27,43 @@ function AppInner() {
     completeSoundPath,
     openFolderOnComplete,
     autoImportDestRoot,
+    phase,
+    volumeImportQueue,
   } = useAppState();
+  const { startScan } = useFileScanner();
+  const { startImport } = useImport();
   const lastAutoImportDestRef = useRef<string>('');
+
+  // Stable refs so queue-orchestration effect doesn't go stale
+  const volumeImportQueueRef = useRef(volumeImportQueue);
+  volumeImportQueueRef.current = volumeImportQueue;
+  const startImportRef = useRef(startImport);
+  startImportRef.current = startImport;
+  const startScanRef = useRef(startScan);
+  startScanRef.current = startScan;
+  const prevPhaseRef = useRef<AppPhase>('idle');
+
+  // Multi-SD sequential import orchestration
+  useEffect(() => {
+    const prev = prevPhaseRef.current;
+    prevPhaseRef.current = phase;
+    const queue = volumeImportQueueRef.current;
+    if (queue.length === 0) return;
+
+    if (phase === 'ready' && prev !== 'ready') {
+      // Scan finished — auto-start import for this card
+      void startImportRef.current();
+    } else if (phase === 'complete' && prev === 'importing') {
+      if (queue.length > 1) {
+        // More cards to import — advance and start next scan
+        dispatch({ type: 'ADVANCE_VOLUME_IMPORT_QUEUE' });
+        void startScanRef.current(queue[1]);
+      } else {
+        // Last card done — clear queue so ImportSummary stays visible
+        dispatch({ type: 'SET_VOLUME_IMPORT_QUEUE', paths: [] });
+      }
+    }
+  }, [phase, dispatch]);
 
   // Listen for auto-import events from the main process. When the user has
   // opted in and plugs in a card, the main process kicks off the import and

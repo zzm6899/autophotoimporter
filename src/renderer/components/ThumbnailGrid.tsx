@@ -1480,13 +1480,6 @@ export function ThumbnailGrid() {
           Pick Burst Keepers
         </button>
       )}
-      <button
-        onClick={() => window.electronAPI.exportContactSheet(files.filter((f) => f.pick !== 'rejected'))}
-        className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-text transition-colors shrink-0"
-        title="Export a PDF contact sheet of every non-rejected photo. Useful for client selects or a quick review handoff."
-      >
-        Contact Sheet
-      </button>
       {queuedPaths.length > 0 && (
         <button
           onClick={() => dispatch({ type: 'QUEUE_CLEAR' })}

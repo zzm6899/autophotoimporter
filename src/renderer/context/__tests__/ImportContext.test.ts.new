@@ -49,6 +49,7 @@ function makeState(overrides: Record<string, unknown> = {}) {
     openFolderOnComplete: false,
     autoImport: false,
     autoImportDestRoot: '',
+    volumeImportQueue: [] as string[],
     ...overrides,
   };
 }

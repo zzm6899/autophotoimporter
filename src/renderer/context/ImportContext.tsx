@@ -59,6 +59,7 @@ interface State {
   verifyChecksums: boolean;
   autoImport: boolean;
   autoImportDestRoot: string;
+  volumeImportQueue: string[];
   // Burst
   burstGrouping: boolean;
   burstWindowSec: number;
@@ -156,7 +157,9 @@ export type Action =
    * Wipe faceBoxes + subjectSharpnessScore from every photo so the background
    * reviewer re-runs analyzeSubject with the now-available FaceDetector.
    */
-  | { type: 'CLEAR_FACE_DATA' };
+  | { type: 'CLEAR_FACE_DATA' }
+  | { type: 'SET_VOLUME_IMPORT_QUEUE'; paths: string[] }
+  | { type: 'ADVANCE_VOLUME_IMPORT_QUEUE' };
 
 const systemDark = typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches;
 
@@ -217,6 +220,7 @@ const initialState: State = {
   verifyChecksums: false,
   autoImport: false,
   autoImportDestRoot: '',
+  volumeImportQueue: [],
   burstGrouping: true,
   burstWindowSec: 2,
   collapsedBursts: [],
@@ -672,6 +676,27 @@ export function reducer(state: State, action: Action): State {
           return { ...f, normalizeToAnchor: true };
         })),
         exposureAnchorPath: anchor.path,
+      };
+    }
+    case 'SET_VOLUME_IMPORT_QUEUE':
+      return { ...state, volumeImportQueue: action.paths };
+    case 'ADVANCE_VOLUME_IMPORT_QUEUE': {
+      const [, ...rest] = state.volumeImportQueue;
+      const nextSource = state.volumeImportQueue[1] ?? state.selectedSource;
+      return {
+        ...state,
+        volumeImportQueue: rest,
+        selectedSource: nextSource,
+        files: [],
+        phase: 'idle',
+        exposureAnchorPath: null,
+        queuedPaths: [],
+        selectedPaths: [],
+        importResult: null,
+        importProgress: null,
+        fileHistory: [],
+        focusedIndex: -1,
+        filter: 'all',
       };
     }
     default:

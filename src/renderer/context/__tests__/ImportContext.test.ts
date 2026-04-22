@@ -64,6 +64,7 @@ function makeState(overrides: Record<string, unknown> = {}) {
     verifyChecksums: false,
     autoImport: false,
     autoImportDestRoot: '',
+    volumeImportQueue: [] as string[],
     // Burst grouping
     burstGrouping: true,
     burstWindowSec: 2,

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import type { MediaFile } from '../../shared/types';
 import { buildExposure } from '../utils/formatters';
 import { decodeImage, getCachedPreview } from '../utils/previewCache';
@@ -8,10 +8,11 @@ interface CompareViewProps {
 }
 
 export function CompareView({ files }: CompareViewProps) {
-  const visible = files.slice(0, 4);
+  const visible = useMemo(() => files.slice(0, 4), [files]);
   const [previews, setPreviews] = useState<Record<string, string | undefined>>({});
   const [zoom, setZoom] = useState(1);
   const gridRef = useRef<HTMLDivElement>(null);
+  const loadedRef = useRef(new Set<string>());
 
   const handleWheel = useCallback((e: WheelEvent) => {
     if (!e.ctrlKey && !e.metaKey) return;
@@ -27,18 +28,15 @@ export function CompareView({ files }: CompareViewProps) {
   }, [handleWheel]);
 
   useEffect(() => {
-    let cancelled = false;
     for (const file of visible) {
-      if (previews[file.path]) continue;
+      if (loadedRef.current.has(file.path)) continue;
+      loadedRef.current.add(file.path);
       void getCachedPreview(file.path, 'high').then(async (preview) => {
-        if (preview) {
-          await decodeImage(preview).catch(() => undefined);
-        }
-        if (!cancelled) setPreviews((p) => ({ ...p, [file.path]: preview }));
+        if (preview) await decodeImage(preview).catch(() => undefined);
+        setPreviews((p) => ({ ...p, [file.path]: preview }));
       }).catch(() => undefined);
     }
-    return () => { cancelled = true; };
-  }, [visible, previews]);
+  }, [visible]); // previews removed from deps — loadedRef prevents duplicate fetches
 
   if (visible.length === 0) {
     return <div className="h-full flex items-center justify-center text-sm text-text-muted">Select images to compare</div>;
