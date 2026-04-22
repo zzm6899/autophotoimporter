@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import type { MediaFile } from '../../shared/types';
 import { buildExposure } from '../utils/formatters';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
-import { formatEVDelta } from '../../shared/exposure';
+import { formatEVDelta, stopsToMultiplier, clampStops } from '../../shared/exposure';
 
 interface SingleViewProps {
   file: MediaFile;
@@ -19,7 +19,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
   const [loading, setLoading] = useState(false);
   const isPicked = file.pick === 'selected';
   const isRejected = file.pick === 'rejected';
-  const { files, exposureAnchorPath, normalizeExposure, saveFormat } = useAppState();
+  const { files, exposureAnchorPath, normalizeExposure, saveFormat, exposureMaxStops } = useAppState();
   const dispatch = useAppDispatch();
   const anchor = exposureAnchorPath ? files.find((f) => f.path === exposureAnchorPath) : null;
   const isAnchor = anchor?.path === file.path;
@@ -31,14 +31,16 @@ export function SingleView({ file, index, total }: SingleViewProps) {
 
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [previewNormalized, setPreviewNormalized] = useState(false);
   const isDragging = useRef(false);
   const lastMouse = useRef({ x: 0, y: 0 });
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Reset zoom/pan when file changes
+  // Reset zoom/pan and preview toggle when file changes
   useEffect(() => {
     setZoom(1);
     setPan({ x: 0, y: 0 });
+    setPreviewNormalized(false);
   }, [file.path]);
 
   useEffect(() => {
@@ -102,6 +104,18 @@ export function SingleView({ file, index, total }: SingleViewProps) {
   const exposure = buildExposure(file);
   const cameraName = file.cameraModel || null;
 
+  // Live normalization preview: compute brightness multiplier from EV delta.
+  // The toggle is only active when there's a meaningful delta to show.
+  const canPreviewNorm =
+    evDelta !== undefined && !isAnchor && Math.abs(evDelta) >= 0.05 && imageSrc;
+  const normalizedEvDelta =
+    canPreviewNorm && typeof evDelta === 'number' && typeof file.exposureValue === 'number' && anchor
+      ? clampStops(-evDelta, exposureMaxStops)
+      : 0;
+  const brightnessMultiplier = canPreviewNorm && previewNormalized
+    ? stopsToMultiplier(normalizedEvDelta)
+    : 1;
+
   return (
     <div
       ref={containerRef}
@@ -127,6 +141,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
             alt={file.name}
             className="max-h-[calc(100vh-6rem)] max-w-full object-contain"
             draggable={false}
+            style={brightnessMultiplier !== 1 ? { filter: `brightness(${brightnessMultiplier.toFixed(3)})` } : undefined}
           />
         ) : (
           <div className="text-text-muted text-sm">No preview</div>
@@ -206,15 +221,16 @@ export function SingleView({ file, index, total }: SingleViewProps) {
             {typeof file.exposureValue === 'number' && (
               <button
                 type="button"
-                onClick={() =>
-                  dispatch({
-                    type: 'SET_EXPOSURE_ANCHOR',
-                    path: isAnchor ? null : file.path,
-                  })
-                }
+                onClick={() => {
+                  if (isAnchor) {
+                    dispatch({ type: 'CLEAR_EXPOSURE_ANCHOR' });
+                  } else {
+                    dispatch({ type: 'SET_EXPOSURE_ANCHOR', path: file.path });
+                  }
+                }}
                 className="text-[9px] font-mono text-text-muted hover:text-text bg-black/30 hover:bg-black/50 dark:bg-black/50 px-1.5 py-0.5 rounded"
                 title={isAnchor
-                  ? 'Clear the exposure anchor'
+                  ? 'Clear the exposure anchor and reset all normalization flags'
                   : normalizeExposure
                     ? 'Use this shot as the exposure anchor — others will be matched to it on import'
                     : 'Set as exposure anchor (enable Normalize Exposure in the Output panel to apply on import)'}
@@ -244,6 +260,22 @@ export function SingleView({ file, index, total }: SingleViewProps) {
                     : `Normalize this file's exposure to match the anchor on import`}
               >
                 {file.normalizeToAnchor ? '⊖ Normalize' : '⊕ Normalize'}
+              </button>
+            )}
+            {canPreviewNorm && (
+              <button
+                type="button"
+                onClick={() => setPreviewNormalized((v) => !v)}
+                className={`text-[9px] font-mono px-1.5 py-0.5 rounded ${
+                  previewNormalized
+                    ? 'bg-sky-500/30 text-sky-300 hover:bg-sky-500/40'
+                    : 'text-text-muted bg-black/30 hover:bg-black/50 dark:bg-black/50 hover:text-sky-300'
+                }`}
+                title={previewNormalized
+                  ? `Showing normalized preview (${formatEVDelta(-evDelta!)}). Click to show original`
+                  : `Preview how this image would look after exposure normalization to anchor (${formatEVDelta(-evDelta!)})`}
+              >
+                {previewNormalized ? '◑ Normalized' : '◐ Preview norm'}
               </button>
             )}
           </div>

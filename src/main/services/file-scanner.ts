@@ -5,8 +5,8 @@ import type { MediaFile } from '../../shared/types';
 import { parseExifDate, generateThumbnail, extractEmbeddedThumbnail, EXIFR_SUPPORTED } from './exif-parser';
 
 const BATCH_SIZE = 50;
-const FAST_THUMB_CONCURRENCY = 20; // exifr embedded thumbs — just file reads, no CPU
-const SLOW_THUMB_CONCURRENCY = 4;  // sips — spawns process, decodes RAW
+const FAST_THUMB_CONCURRENCY = 30; // exifr embedded thumbs — just file reads, no CPU
+const SLOW_THUMB_CONCURRENCY = 6;  // sips — spawns process, decodes RAW
 
 let currentAbortController: AbortController | null = null;
 

@@ -8,11 +8,10 @@ import { EmptyState } from './EmptyState';
 import { SettingsPage } from './SettingsPage';
 
 export function ThumbnailGrid() {
-  const { files, phase, selectedSource, scanError, focusedIndex, viewMode, showLeftPanel, showRightPanel, filter, cullMode, collapsedBursts, exposureAnchorPath, saveFormat, burstGrouping } = useAppState();
+  const { files, phase, selectedSource, scanError, focusedIndex, viewMode, showLeftPanel, showRightPanel, filter, cullMode, collapsedBursts, exposureAnchorPath, saveFormat, burstGrouping, normalizeExposure } = useAppState();
   const { startScan } = useFileScanner();
   const dispatch = useAppDispatch();
   const gridRef = useRef<HTMLDivElement>(null);
-  const [showSettings, setShowSettings] = useState(false);
   const splitGridRef = useRef<HTMLDivElement>(null);
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
   const lastClickedRef = useRef<number>(-1);
@@ -289,6 +288,9 @@ export function ThumbnailGrid() {
           if (selectedIndices.size > 0) {
             e.preventDefault();
             setSelectedIndices(new Set());
+          } else if (viewMode === 'settings') {
+            e.preventDefault();
+            dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' });
           } else if (viewMode === 'single' || viewMode === 'split') {
             e.preventDefault();
             dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' });
@@ -313,15 +315,23 @@ export function ThumbnailGrid() {
 
   // Preload adjacent photos so SingleView navigation feels instant.
   // Fire-and-forget: generatePreview deduplicates in-flight requests.
+  // Uses setTimeout to defer requests so they don't block the current render.
   useEffect(() => {
     if (viewMode !== 'single' && viewMode !== 'split') return;
     if (focusedIndex < 0 || sortedFiles.length === 0) return;
-    const neighbors = [focusedIndex - 1, focusedIndex + 1, focusedIndex + 2];
-    for (const i of neighbors) {
-      if (i >= 0 && i < sortedFiles.length) {
-        void window.electronAPI.getPreview(sortedFiles[i].path);
+    // ±3 lookahead so both forward and backward navigation feel instant.
+    const neighbors = [
+      focusedIndex - 3, focusedIndex - 2, focusedIndex - 1,
+      focusedIndex + 1, focusedIndex + 2, focusedIndex + 3,
+    ];
+    const id = setTimeout(() => {
+      for (const i of neighbors) {
+        if (i >= 0 && i < sortedFiles.length) {
+          void window.electronAPI.getPreview(sortedFiles[i].path);
+        }
       }
-    }
+    }, 0);
+    return () => clearTimeout(id);
   }, [focusedIndex, viewMode, sortedFiles]);
 
   // Expose-normalize button state (computed before early returns so the
@@ -497,6 +507,18 @@ export function ThumbnailGrid() {
           </button>
         </>
       )}
+      {!canNormalize && normalizeTargetPaths.length > 0 && anchorHasEV && saveFormat === 'original' && (
+        <>
+          <div className="w-px h-4 bg-border" />
+          <button
+            disabled
+            className="px-3 py-1.5 text-[11px] text-text-faint opacity-40 cursor-not-allowed"
+            title="Exposure normalization requires a non-original save format (JPEG / TIFF / HEIC)"
+          >
+            ⊕ Anchor
+          </button>
+        </>
+      )}
       {hasBatchSelection && saveFormat !== 'original' && batchEVStats && (
         <>
           <div className="w-px h-4 bg-border" />
@@ -521,6 +543,18 @@ export function ThumbnailGrid() {
               Match
             </button>
           )}
+        </>
+      )}
+      {hasBatchSelection && batchEVStats && normalizeTargetPaths.length >= 2 && saveFormat === 'original' && (
+        <>
+          <div className="w-px h-4 bg-border" />
+          <button
+            disabled
+            className="px-3 py-1.5 text-[11px] text-text-faint opacity-40 cursor-not-allowed"
+            title="Auto-normalize batch requires a non-original save format (JPEG / TIFF / HEIC)"
+          >
+            Auto-norm
+          </button>
         </>
       )}
       {!hasBatchSelection && (
@@ -732,6 +766,19 @@ export function ThumbnailGrid() {
 
         <div className="w-px h-3.5 bg-border mx-2 shrink-0" />
 
+        {/* Settings gear button */}
+        <button
+          onClick={() => dispatch({ type: 'SET_VIEW_MODE', mode: viewMode === 'settings' ? 'grid' : 'settings' })}
+          className={`p-0.5 rounded transition-colors shrink-0 ${viewMode === 'settings' ? 'text-text bg-surface-raised' : 'text-text-muted hover:text-text hover:bg-surface-raised'}`}
+          title={viewMode === 'settings' ? 'Back to grid (Esc)' : 'Settings'}
+        >
+          <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
+            <path fillRule="evenodd" d="M7.84 1.804A1 1 0 018.82 1h2.36a1 1 0 01.98.804l.331 1.652a6.993 6.993 0 011.929 1.115l1.598-.54a1 1 0 011.186.447l1.18 2.044a1 1 0 01-.205 1.251l-1.267 1.113a7.047 7.047 0 010 2.228l1.267 1.113a1 1 0 01.206 1.25l-1.18 2.045a1 1 0 01-1.187.447l-1.598-.54a6.993 6.993 0 01-1.929 1.115l-.33 1.652a1 1 0 01-.98.804H8.82a1 1 0 01-.98-.804l-.331-1.652a6.993 6.993 0 01-1.929-1.115l-1.598.54a1 1 0 01-1.186-.447l-1.18-2.044a1 1 0 01.205-1.251l1.267-1.114a7.05 7.05 0 010-2.227L1.821 7.773a1 1 0 01-.206-1.25l1.18-2.045a1 1 0 011.187-.447l1.598.54A6.993 6.993 0 017.51 3.456l.33-1.652zM10 13a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" />
+          </svg>
+        </button>
+
+        <div className="w-px h-3.5 bg-border mx-2 shrink-0" />
+
         {/* Right panel toggle */}
         <button
           onClick={() => dispatch({ type: 'TOGGLE_RIGHT_PANEL' })}
@@ -747,7 +794,12 @@ export function ThumbnailGrid() {
 
       {/* Content */}
       <div className="flex-1 min-h-0">
-        {viewMode === 'single' && focusedFile ? (
+        {viewMode === 'settings' ? (
+          <SettingsPage
+            inline
+            onClose={() => dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' })}
+          />
+        ) : viewMode === 'single' && focusedFile ? (
           <div className="h-full relative">
             <SingleView
               file={focusedFile}
