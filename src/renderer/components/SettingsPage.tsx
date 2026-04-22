@@ -20,6 +20,8 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     separateProtected,
     protectedFolderName,
     backupDestRoot,
+    ftpDestEnabled,
+    ftpDestConfig,
     autoEject,
     playSoundOnComplete,
     completeSoundPath,
@@ -107,6 +109,17 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const handleChooseAutoImportDest = async () => {
     const folder = await window.electronAPI.selectFolder('Select Auto-Import Destination');
     if (folder) handleWorkflowString('autoImportDestRoot', folder);
+  };
+
+  const handleFtpDestEnabled = (value: boolean) => {
+    dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'ftpDestEnabled', value });
+    set('ftpDestEnabled', value);
+  };
+
+  const handleFtpDestConfig = (config: Partial<typeof ftpDestConfig>) => {
+    const next = { ...ftpDestConfig, ...config };
+    dispatch({ type: 'SET_FTP_DEST_CONFIG', config });
+    set('ftpDestConfig', next);
   };
 
   const handleChooseCompleteSound = async () => {
@@ -201,6 +214,12 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                 <div className="text-xs text-text">Back to culling</div>
                 <div className="text-[10px] text-text-muted mt-0.5">P pick, X reject, Shift+B best</div>
               </button>
+            </div>
+            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-1 text-[10px] text-text-muted">
+              <div className="bg-surface-alt border border-border rounded px-2 py-1" title="Keep review analysis local and pauseable from the toolbar.">Pause review</div>
+              <div className="bg-surface-alt border border-border rounded px-2 py-1" title="Stop background preview generation when the laptop feels busy.">Stop loading</div>
+              <div className="bg-surface-alt border border-border rounded px-2 py-1" title="Conservative burst/duplicate culling that never rejects protected, starred, or picked files.">Safe cull</div>
+              <div className="bg-surface-alt border border-border rounded px-2 py-1" title="Copy and paste manual EV offsets across a batch.">Copy EV</div>
             </div>
             <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-1 text-[10px] text-text-muted">
               <div className="bg-surface-alt border border-border rounded px-2 py-1">Arrow keys move</div>
@@ -470,6 +489,68 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                 <p className="ml-5 text-[10px] text-text-muted">{postImportStatus}</p>
               )}
             </div>
+          </section>
+
+          {/* FTP output */}
+          <section>
+            <h3 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-2">FTP Output</h3>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={ftpDestEnabled}
+                onChange={(e) => handleFtpDestEnabled(e.target.checked)}
+              />
+              <span className="text-xs text-text">Also upload imported files to FTP/FTPS</span>
+            </label>
+            {ftpDestEnabled && (
+              <div className="mt-2 ml-5 space-y-1.5">
+                <div className="grid grid-cols-[1fr_4.5rem] gap-1.5">
+                  <input
+                    value={ftpDestConfig.host}
+                    onChange={(e) => handleFtpDestConfig({ host: e.target.value })}
+                    placeholder="ftp.example.com"
+                    className="min-w-0 px-2 py-1 text-xs bg-surface-raised border border-border rounded text-text placeholder-text-muted focus:border-text focus:outline-none"
+                  />
+                  <input
+                    type="number"
+                    min={1}
+                    max={65535}
+                    value={ftpDestConfig.port}
+                    onChange={(e) => handleFtpDestConfig({ port: Number(e.target.value) || 21 })}
+                    className="px-2 py-1 text-xs bg-surface-raised border border-border rounded text-text focus:border-text focus:outline-none"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <input
+                    value={ftpDestConfig.user}
+                    onChange={(e) => handleFtpDestConfig({ user: e.target.value })}
+                    placeholder="user"
+                    className="min-w-0 px-2 py-1 text-xs bg-surface-raised border border-border rounded text-text placeholder-text-muted focus:border-text focus:outline-none"
+                  />
+                  <input
+                    type="password"
+                    value={ftpDestConfig.password}
+                    onChange={(e) => handleFtpDestConfig({ password: e.target.value })}
+                    placeholder="password"
+                    className="min-w-0 px-2 py-1 text-xs bg-surface-raised border border-border rounded text-text placeholder-text-muted focus:border-text focus:outline-none"
+                  />
+                </div>
+                <input
+                  value={ftpDestConfig.remotePath}
+                  onChange={(e) => handleFtpDestConfig({ remotePath: e.target.value })}
+                  placeholder="/PhotoImporter"
+                  className="w-full px-2 py-1 text-xs font-mono bg-surface-raised border border-border rounded text-text placeholder-text-muted focus:border-text focus:outline-none"
+                />
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={ftpDestConfig.secure}
+                    onChange={(e) => handleFtpDestConfig({ secure: e.target.checked })}
+                  />
+                  <span className="text-xs text-text">Use FTPS</span>
+                </label>
+              </div>
+            )}
           </section>
 
           {/* Auto-import */}

@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { Client } from 'basic-ftp';
 import type { MediaFile, ImportConfig, ImportProgress, ImportResult, ImportError, SaveFormat, FtpConfig } from '../../shared/types';
 import { isDuplicate } from './duplicate-detector';
-import { stopsToMultiplier, clampStops } from '../../shared/exposure';
+import { stopsToSafeMultiplier, clampStops } from '../../shared/exposure';
 
 const execFileAsync = promisify(execFile);
 
@@ -305,7 +305,7 @@ export async function importFiles(
       normalizeStops = file.exposureValue - anchor;
     }
     const correctionStops = clampStops(normalizeStops + manualStops, maxStops);
-    return stopsToMultiplier(correctionStops);
+    return stopsToSafeMultiplier(correctionStops);
   }
 
   async function ensureDir(dirPath: string): Promise<void> {

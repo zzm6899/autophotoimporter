@@ -1,11 +1,8 @@
 import { memo, useRef, useEffect, useState } from 'react';
 import type { MediaFile } from '../../shared/types';
 import { formatFileSize, formatExposure } from '../utils/formatters';
+import { clampStops, stopsToSafeMultiplier } from '../../shared/exposure';
 
-// Only set img src when the card is near the viewport.
-// Thumbnails are base64 data URIs — loading="lazy" doesn't work for them,
-// so IntersectionObserver is the reliable way to avoid decoding 1000+ bitmaps
-// that are offscreen. rootMargin 300px pre-loads one row before it's visible.
 function useLazySrc(src: string | undefined, forceActive: boolean) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [activeSrc, setActiveSrc] = useState<string | undefined>(undefined);
@@ -21,11 +18,8 @@ function useLazySrc(src: string | undefined, forceActive: boolean) {
     );
     obs.observe(el);
     return () => obs.disconnect();
-  // Only re-run when src identity changes (new thumbnail arrived).
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [src, forceActive]);
 
-  // If src changes after already visible (e.g. thumbnail replaced), update immediately.
   useEffect(() => {
     if (activeSrc && src && activeSrc !== src) setActiveSrc(src);
   }, [src, activeSrc]);
@@ -38,19 +32,16 @@ interface ThumbnailCardProps {
   focused?: boolean;
   selected?: boolean;
   queued?: boolean;
+  forceLoad?: boolean;
+  exposurePreviewStops?: number;
   compact?: boolean;
   frameNumber?: number;
-  /**
-   * True when this card represents the leader of a collapsed burst. The card
-   * renders a "+N" stack affordance instead of the normal burst index badge.
-   */
   burstCollapsed?: boolean;
   onClick?: (e: React.MouseEvent) => void;
   onDoubleClick?: () => void;
   onBurstToggle?: (burstId: string) => void;
 }
 
-// Subtle corner brackets (thin pick marks)
 function CornerBrackets() {
   return (
     <div className="absolute inset-0 pointer-events-none z-10">
@@ -62,7 +53,6 @@ function CornerBrackets() {
   );
 }
 
-// Thin full-frame reject cross
 function RejectX() {
   return (
     <div className="absolute inset-0 pointer-events-none z-10">
@@ -79,6 +69,8 @@ function ThumbnailCardInner({
   focused = false,
   selected = false,
   queued = false,
+  forceLoad = false,
+  exposurePreviewStops = 0,
   compact = false,
   frameNumber,
   burstCollapsed = false,
@@ -89,7 +81,12 @@ function ThumbnailCardInner({
   const isVideo = file.type === 'video';
   const isPicked = file.pick === 'selected';
   const isRejected = file.pick === 'rejected';
-  const { containerRef, activeSrc } = useLazySrc(file.thumbnail, focused || selected);
+  const exposureMarked = !!file.normalizeToAnchor || Math.abs(file.exposureAdjustmentStops ?? 0) >= 0.01;
+  const totalPreviewStops = clampStops((file.exposureAdjustmentStops ?? 0) + exposurePreviewStops, 4);
+  const thumbBrightness = Math.abs(totalPreviewStops) >= 0.01
+    ? stopsToSafeMultiplier(totalPreviewStops)
+    : 1;
+  const { containerRef, activeSrc } = useLazySrc(file.thumbnail, forceLoad || focused || selected);
 
   return (
     <div
@@ -99,11 +96,9 @@ function ThumbnailCardInner({
       onClick={onClick}
       onDoubleClick={onDoubleClick}
     >
-      {/* Frame */}
       <div className={`relative bg-surface overflow-hidden ${
         selected ? 'ring-2 ring-blue-500' : focused ? 'outline-2 outline-offset-2 outline-blue-500' : ''
       }`}>
-        {/* Image — ref triggers IntersectionObserver so src is only set when near viewport */}
         <div ref={containerRef} className="aspect-[4/3] relative flex items-center justify-center">
           {activeSrc ? (
             <img
@@ -112,6 +107,7 @@ function ThumbnailCardInner({
               className="w-full h-full object-cover"
               decoding="async"
               loading={focused ? 'eager' : 'lazy'}
+              style={thumbBrightness !== 1 ? { filter: `brightness(${thumbBrightness.toFixed(3)})` } : undefined}
             />
           ) : (
             <div className="w-full h-full bg-surface-raised animate-pulse flex items-center justify-center">
@@ -127,33 +123,33 @@ function ThumbnailCardInner({
             </div>
           )}
 
-          {/* Pick: yellow corner brackets */}
           {isPicked && <CornerBrackets />}
-
-          {/* Reject: red X */}
+          {exposureMarked && activeSrc && (
+            <div
+              className="absolute inset-0 pointer-events-none z-[8] ring-2 ring-inset ring-orange-400/70 bg-orange-300/10"
+              title="Exposure normalization/manual EV adjustment is marked for this photo"
+            />
+          )}
           {isRejected && <RejectX />}
 
-          {/* Video badge */}
           {isVideo && (
             <div className="absolute top-1.5 right-1.5 bg-black/70 text-[9px] text-white/80 px-1 py-0.5 rounded font-medium z-20">
               VID
             </div>
           )}
 
-          {/* Imported badge */}
           {file.duplicate && !file.pick && (
             <div className="absolute top-1.5 left-1.5 bg-yellow-600/80 text-[9px] text-white px-1 py-0.5 rounded font-medium z-20">
               IMPORTED
             </div>
           )}
 
-          {/* Left-side stacked badges: Protected and/or Normalize-to-anchor */}
           {(file.isProtected || file.normalizeToAnchor || file.exposureAdjustmentStops) && (
             <div className="absolute top-1.5 left-1.5 flex flex-col gap-0.5 z-20">
               {file.isProtected && (
                 <div
                   className="bg-emerald-600/90 text-[9px] text-white px-1 py-0.5 rounded font-medium flex items-center gap-0.5"
-                  title="Protected / read-only — prioritized for import"
+                  title="Protected / read-only - prioritized for import"
                 >
                   <svg className="w-2.5 h-2.5" viewBox="0 0 20 20" fill="currentColor">
                     <path fillRule="evenodd" d="M10 1a4.5 4.5 0 00-4.5 4.5V9H5a2 2 0 00-2 2v6a2 2 0 002 2h10a2 2 0 002-2v-6a2 2 0 00-2-2h-.5V5.5A4.5 4.5 0 0010 1zm3 8V5.5a3 3 0 10-6 0V9h6z" clipRule="evenodd" />
@@ -166,7 +162,7 @@ function ThumbnailCardInner({
                   className="bg-orange-500/90 text-[9px] text-white px-1 py-0.5 rounded font-medium"
                   title="Exposure will be normalized to the anchor on import"
                 >
-                  EXP↔
+                  NORM
                 </div>
               )}
               {file.exposureAdjustmentStops && (
@@ -186,8 +182,13 @@ function ThumbnailCardInner({
             </div>
           )}
 
-          {(file.reviewScore || file.blurRisk === 'high' || file.visualGroupId) && (
+          {(file.reviewScore || file.blurRisk === 'high' || file.visualGroupId || file.faceCount) && (
             <div className="absolute left-1.5 bottom-1.5 flex gap-0.5 z-20">
+              {!!file.faceCount && (
+                <span className="bg-emerald-600/90 text-[9px] text-white px-1 py-0.5 rounded font-medium" title={`${file.faceCount} face(s) detected`}>
+                  FACE
+                </span>
+              )}
               {(file.reviewScore ?? 0) >= 70 && (
                 <span className="bg-yellow-500/90 text-[9px] text-black px-1 py-0.5 rounded font-medium" title={file.reviewReasons?.join(', ') || 'High review score'}>
                   BEST
@@ -206,7 +207,6 @@ function ThumbnailCardInner({
             </div>
           )}
 
-          {/* Star rating (top-right, under VID badge space) */}
           {file.rating && file.rating > 0 && (
             <div className="absolute bottom-1.5 right-1.5 flex gap-px bg-black/60 rounded px-1 py-0.5 z-20">
               {Array.from({ length: Math.min(file.rating, 5) }).map((_, i) => (
@@ -217,15 +217,12 @@ function ThumbnailCardInner({
             </div>
           )}
 
-          {/* Frame number (compact/filmstrip mode) */}
           {compact && frameNumber !== undefined && (
             <div className="absolute bottom-1 left-1 text-[9px] text-neutral-500 dark:text-neutral-400 font-mono z-20">
               {String(frameNumber).padStart(3, '0')}
             </div>
           )}
 
-          {/* Burst badge: shows position within the burst, or the total
-              count when the burst is collapsed. Clicking toggles collapse. */}
           {file.burstId && file.burstSize && file.burstSize > 1 && (
             <button
               type="button"
@@ -241,20 +238,10 @@ function ThumbnailCardInner({
                   : 'bg-blue-500/85 hover:bg-blue-500 cursor-pointer'
               }`}
               title={burstCollapsed
-                ? `Burst — ${file.burstSize} shots. Click to expand (G)`
+                ? `Burst - ${file.burstSize} shots. Click to expand (G)`
                 : `Burst shot ${file.burstIndex} of ${file.burstSize}. Click to collapse (G)`}
             >
-              <svg className="w-2.5 h-2.5" viewBox="0 0 20 20" fill="currentColor">
-                {burstCollapsed ? (
-                  <path fillRule="evenodd" d="M3 4a1 1 0 000 2h14a1 1 0 100-2H3zm0 5a1 1 0 000 2h14a1 1 0 100-2H3zm0 5a1 1 0 100 2h14a1 1 0 100-2H3z" clipRule="evenodd" />
-                ) : (
-                  <>
-                    <path d="M10 12a2 2 0 100-4 2 2 0 000 4z" />
-                    <path fillRule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clipRule="evenodd" />
-                  </>
-                )}
-              </svg>
-              {burstCollapsed ? `×${file.burstSize}` : `${file.burstIndex}/${file.burstSize}`}
+              {burstCollapsed ? `x${file.burstSize}` : `${file.burstIndex}/${file.burstSize}`}
             </button>
           )}
 
@@ -266,18 +253,9 @@ function ThumbnailCardInner({
               S {file.sharpnessScore}
             </div>
           )}
-
-          {/* Stacked-shadow affordance for collapsed bursts */}
-          {burstCollapsed && (
-            <>
-              <div className="absolute -top-0.5 -right-0.5 -bottom-0.5 -left-0.5 border border-border/60 rounded-sm -z-10 translate-x-0.5 translate-y-0.5" />
-              <div className="absolute -top-1 -right-1 -bottom-1 -left-1 border border-border/40 rounded-sm -z-20 translate-x-1 translate-y-1" />
-            </>
-          )}
         </div>
       </div>
 
-      {/* File info — hidden in compact/filmstrip mode */}
       {!compact && (
         <div className="mt-1 flex items-center justify-between px-0.5">
           <span className="text-[10px] text-text-secondary font-mono truncate">{file.name}</span>
@@ -306,12 +284,16 @@ export const ThumbnailCard = memo(ThumbnailCardInner, (prev, next) => {
     a.burstIndex === b.burstIndex &&
     a.burstSize === b.burstSize &&
     a.reviewScore === b.reviewScore &&
+    a.subjectSharpnessScore === b.subjectSharpnessScore &&
+    a.faceCount === b.faceCount &&
     a.blurRisk === b.blurRisk &&
     a.visualGroupId === b.visualGroupId &&
     a.visualGroupSize === b.visualGroupSize &&
     prev.focused === next.focused &&
     prev.selected === next.selected &&
     prev.queued === next.queued &&
+    prev.forceLoad === next.forceLoad &&
+    prev.exposurePreviewStops === next.exposurePreviewStops &&
     prev.compact === next.compact &&
     prev.frameNumber === next.frameNumber &&
     prev.burstCollapsed === next.burstCollapsed

@@ -36,10 +36,10 @@ describe('review utilities', () => {
     expect(weak.blurRisk).toBe('high');
   });
 
-  it('chooses protected/rated files before sharpness alone', () => {
+  it('chooses protected and rated files before face/subject tie-breakers', () => {
     const chosen = bestInGroup([
-      file('/sharp.jpg', undefined, { sharpnessScore: 500, reviewScore: 90 }),
-      file('/protected.jpg', undefined, { isProtected: true, sharpnessScore: 50, reviewScore: 40 }),
+      file('/protected.jpg', undefined, { isProtected: true, rating: 5, sharpnessScore: 200, reviewScore: 95 }),
+      file('/face.jpg', undefined, { faceCount: 1, subjectSharpnessScore: 120, sharpnessScore: 80, reviewScore: 70 }),
     ]);
     expect(chosen?.path).toBe('/protected.jpg');
   });

@@ -143,6 +143,7 @@ export type Action =
   | { type: 'GROUP_VISUAL_DUPLICATES'; threshold?: number }
   | { type: 'PICK_BEST_IN_GROUPS' }
   | { type: 'QUEUE_BEST' }
+  | { type: 'AUTO_CULL_SAFE' }
   | { type: 'REJECT_DUPLICATES' }
   | { type: 'UNDO_FILE_EDIT' }
   /**
@@ -587,6 +588,41 @@ export function reducer(state: State, action: Action): State {
       const next = new Set(state.queuedPaths);
       for (const f of candidates) next.add(f.path);
       return { ...state, queuedPaths: [...next] };
+    }
+    case 'AUTO_CULL_SAFE': {
+      const groups = new Map<string, MediaFile[]>();
+      for (const f of state.files) {
+        if (f.burstId && f.burstSize && f.burstSize > 1) {
+          groups.set(`burst:${f.burstId}`, [...(groups.get(`burst:${f.burstId}`) ?? []), f]);
+        }
+        if (f.visualGroupId && f.visualGroupSize && f.visualGroupSize > 1) {
+          groups.set(`visual:${f.visualGroupId}`, [...(groups.get(`visual:${f.visualGroupId}`) ?? []), f]);
+        }
+      }
+
+      const reject = new Set<string>();
+      const keep = new Set<string>();
+      for (const group of groups.values()) {
+        const best = bestInGroup(group);
+        if (!best) continue;
+        keep.add(best.path);
+        for (const file of group) {
+          if (file.path === best.path) continue;
+          if (file.isProtected || (file.rating ?? 0) > 0 || file.pick === 'selected') continue;
+          const muchWorse =
+            file.blurRisk === 'high' ||
+            ((best.subjectSharpnessScore ?? 0) - (file.subjectSharpnessScore ?? 0) >= 25) ||
+            ((best.sharpnessScore ?? 0) - (file.sharpnessScore ?? 0) >= 60) ||
+            ((best.reviewScore ?? 0) - (file.reviewScore ?? 0) >= 18);
+          if (muchWorse) reject.add(file.path);
+        }
+      }
+
+      return withFileHistory(state, state.files.map((f) => {
+        if (keep.has(f.path)) return { ...f, pick: 'selected' };
+        if (reject.has(f.path)) return { ...f, pick: 'rejected' };
+        return f;
+      }));
     }
     case 'REJECT_DUPLICATES':
       return withFileHistory(state, state.files.map((f) =>

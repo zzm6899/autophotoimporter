@@ -5,6 +5,7 @@ const MAX_PREVIEWS = 96;
 const MAX_DECODED = 160;
 const MAX_ACTIVE_REQUESTS = 2;
 let activeRequests = 0;
+let backgroundPaused = false;
 const queuedRequests: Array<() => void> = [];
 
 function rememberPreview(filePath: string, preview: string | undefined): void {
@@ -81,7 +82,34 @@ export async function decodeImage(src: string): Promise<void> {
 }
 
 export function warmPreview(filePath: string, priority: 'normal' | 'low' = 'low'): void {
+  if (backgroundPaused) return;
   void getCachedPreview(filePath, priority)
     .then((src) => src ? decodeImage(src) : undefined)
     .catch(() => undefined);
+}
+
+export function setBackgroundPreviewPaused(paused: boolean): void {
+  backgroundPaused = paused;
+}
+
+export function isBackgroundPreviewPaused(): boolean {
+  return backgroundPaused;
+}
+
+export function getPreviewCacheStats(): {
+  cached: number;
+  decoded: number;
+  inflight: number;
+  active: number;
+  queued: number;
+  paused: boolean;
+} {
+  return {
+    cached: previewCache.size,
+    decoded: decodedCache.size,
+    inflight: previewInflight.size,
+    active: activeRequests,
+    queued: queuedRequests.length,
+    paused: backgroundPaused,
+  };
 }

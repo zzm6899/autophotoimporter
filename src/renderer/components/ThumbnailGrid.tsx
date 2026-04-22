@@ -10,7 +10,16 @@ import { EmptyState } from './EmptyState';
 import { SettingsPage } from './SettingsPage';
 import { ShortcutsOverlay } from './ShortcutsOverlay';
 import { BestOfSelectionPanel, rankBestOfSelection } from './BestOfSelectionPanel';
-import { warmPreview } from '../utils/previewCache';
+import { getPreviewCacheStats, setBackgroundPreviewPaused, warmPreview } from '../utils/previewCache';
+import { clampStops } from '../../shared/exposure';
+
+declare global {
+  interface Window {
+    FaceDetector?: new (options?: { fastMode?: boolean; maxDetectedFaces?: number }) => {
+      detect: (source: CanvasImageSource) => Promise<Array<{ boundingBox: DOMRectReadOnly }>>;
+    };
+  }
+}
 
 async function scoreSharpness(src: string): Promise<number> {
   const img = new Image();
@@ -48,6 +57,78 @@ async function scoreSharpness(src: string): Promise<number> {
   return Math.round(Math.max(0, sumSq / Math.max(1, count) - mean * mean));
 }
 
+function regionSharpness(data: Uint8ClampedArray, width: number, height: number, region?: { x: number; y: number; w: number; h: number }): number {
+  const left = Math.max(1, Math.floor(region?.x ?? 1));
+  const top = Math.max(1, Math.floor(region?.y ?? 1));
+  const right = Math.min(width - 1, Math.ceil((region?.x ?? 0) + (region?.w ?? width - 2)));
+  const bottom = Math.min(height - 1, Math.ceil((region?.y ?? 0) + (region?.h ?? height - 2)));
+  let sum = 0;
+  let sumSq = 0;
+  let count = 0;
+  const gray = (idx: number) => data[idx] * 0.299 + data[idx + 1] * 0.587 + data[idx + 2] * 0.114;
+  for (let y = top; y < bottom; y++) {
+    for (let x = left; x < right; x++) {
+      const i = (y * width + x) * 4;
+      const lap = Math.abs(gray(i - width * 4) + gray(i + width * 4) + gray(i - 4) + gray(i + 4) - 4 * gray(i));
+      sum += lap;
+      sumSq += lap * lap;
+      count++;
+    }
+  }
+  const mean = sum / Math.max(1, count);
+  return Math.round(Math.max(0, sumSq / Math.max(1, count) - mean * mean));
+}
+
+async function analyzeSubject(src: string): Promise<{
+  subjectSharpnessScore: number;
+  faceCount: number;
+  faceBoxes: Array<{ x: number; y: number; width: number; height: number }>;
+  subjectReasons: string[];
+}> {
+  const img = new Image();
+  img.decoding = 'async';
+  const loaded = new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error('image load failed'));
+  });
+  img.src = src;
+  await loaded;
+  const canvas = document.createElement('canvas');
+  const width = 160;
+  const height = 120;
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return { subjectSharpnessScore: 0, faceCount: 0, faceBoxes: [], subjectReasons: [] };
+  ctx.drawImage(img, 0, 0, width, height);
+  const data = ctx.getImageData(0, 0, width, height).data;
+  const center = regionSharpness(data, width, height, { x: width * 0.24, y: height * 0.18, w: width * 0.52, h: height * 0.6 });
+  if (!window.FaceDetector) {
+    return { subjectSharpnessScore: center, faceCount: 0, faceBoxes: [], subjectReasons: ['center subject'] };
+  }
+  try {
+    const faces = await new window.FaceDetector({ fastMode: true, maxDetectedFaces: 8 }).detect(canvas);
+    if (faces.length === 0) return { subjectSharpnessScore: center, faceCount: 0, faceBoxes: [], subjectReasons: ['center subject'] };
+    const faceScores = faces.map((face) => {
+      const box = face.boundingBox;
+      return regionSharpness(data, width, height, { x: box.x, y: box.y, w: box.width, h: box.height });
+    });
+    return {
+      subjectSharpnessScore: Math.max(center, ...faceScores),
+      faceCount: faces.length,
+      faceBoxes: faces.map((face) => ({
+        x: face.boundingBox.x / width,
+        y: face.boundingBox.y / height,
+        width: face.boundingBox.width / width,
+        height: face.boundingBox.height / height,
+      })),
+      subjectReasons: ['face focus'],
+    };
+  } catch {
+    return { subjectSharpnessScore: center, faceCount: 0, faceBoxes: [], subjectReasons: ['center subject'] };
+  }
+}
+
 async function visualHash(src: string): Promise<string> {
   const img = new Image();
   img.decoding = 'async';
@@ -81,7 +162,7 @@ async function visualHash(src: string): Promise<string> {
 }
 
 export function ThumbnailGrid() {
-  const { files, phase, selectedSource, scanError, focusedIndex, viewMode, showLeftPanel, showRightPanel, filter, cullMode, collapsedBursts, exposureAnchorPath, saveFormat, burstGrouping, normalizeExposure, queuedPaths, selectionSets, scanPaused } = useAppState();
+  const { files, phase, selectedSource, scanError, focusedIndex, viewMode, showLeftPanel, showRightPanel, filter, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, saveFormat, burstGrouping, normalizeExposure, queuedPaths, selectionSets, scanPaused } = useAppState();
   const { startScan, pauseScan, resumeScan } = useFileScanner();
   const { startImport } = useImport();
   const dispatch = useAppDispatch();
@@ -91,6 +172,11 @@ export function ThumbnailGrid() {
   const [searchText, setSearchText] = useState('');
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showBestOfSelection, setShowBestOfSelection] = useState(false);
+  const [bestScope, setBestScope] = useState<{ paths: string[]; title: string; subtitle?: string } | null>(null);
+  const [reviewPaused, setReviewPaused] = useState(false);
+  const [backgroundLoadingPaused, setBackgroundLoadingPaused] = useState(false);
+  const [exposureClipboard, setExposureClipboard] = useState<number | null>(null);
+  const [cacheStats, setCacheStats] = useState(getPreviewCacheStats());
   const lastClickedRef = useRef<number>(-1);
   const sharpnessInFlightRef = useRef(false);
   const collapsedSet = useMemo(() => new Set(collapsedBursts), [collapsedBursts]);
@@ -209,20 +295,24 @@ export function ThumbnailGrid() {
 
   useEffect(() => {
     if (sharpnessInFlightRef.current) return;
+    if (reviewPaused) return;
     if (viewMode === 'single' || viewMode === 'split') return;
     // Keep batch small so scoring doesn't freeze the UI on slow machines.
     const candidates = files
-      .filter((f) => f.type === 'photo' && f.thumbnail && (typeof f.sharpnessScore !== 'number' || !f.visualHash))
+      .filter((f) => f.type === 'photo' && f.thumbnail && (typeof f.sharpnessScore !== 'number' || !f.visualHash || typeof f.subjectSharpnessScore !== 'number'))
       .slice(0, 4);
     if (candidates.length === 0) return;
     sharpnessInFlightRef.current = true;
     const run = () => void Promise.all(candidates.map(async (f) => {
       const thumbnail = f.thumbnail as string;
-      const [sharpnessScore, hash] = await Promise.all([
+      const [sharpnessScore, hash, subject] = await Promise.all([
         typeof f.sharpnessScore === 'number' ? Promise.resolve(f.sharpnessScore) : scoreSharpness(thumbnail),
         f.visualHash ? Promise.resolve(f.visualHash) : visualHash(thumbnail),
+        typeof f.subjectSharpnessScore === 'number'
+          ? Promise.resolve({ subjectSharpnessScore: f.subjectSharpnessScore, faceCount: f.faceCount ?? 0, faceBoxes: f.faceBoxes ?? [], subjectReasons: f.subjectReasons ?? [] })
+          : analyzeSubject(thumbnail),
       ]);
-      return [f.path, { sharpnessScore, visualHash: hash }] as const;
+      return [f.path, { sharpnessScore, visualHash: hash, ...subject }] as const;
     }))
       .then((entries) => {
         dispatch({ type: 'SET_REVIEW_SCORES', scores: Object.fromEntries(entries) });
@@ -244,7 +334,16 @@ export function ThumbnailGrid() {
       }
       sharpnessInFlightRef.current = false;
     };
-  }, [files, dispatch, viewMode]);
+  }, [files, dispatch, viewMode, reviewPaused]);
+
+  useEffect(() => {
+    setBackgroundPreviewPaused(backgroundLoadingPaused);
+  }, [backgroundLoadingPaused]);
+
+  useEffect(() => {
+    const id = window.setInterval(() => setCacheStats(getPreviewCacheStats()), 750);
+    return () => window.clearInterval(id);
+  }, []);
 
   const getColumnsCount = useCallback(() => {
     const grid = gridRef.current;
@@ -315,13 +414,80 @@ export function ThumbnailGrid() {
   }, [selectedIndices, setFocused]);
 
   const openBestOfSelection = useCallback(() => {
-    if (selectedIndices.size < 2 && sortedFiles.length > 0) {
+    const focused = focusedIndex >= 0 && focusedIndex < sortedFiles.length ? sortedFiles[focusedIndex] : null;
+    if (focused?.burstId) {
+      const burstFiles = files
+        .filter((f) => f.burstId === focused.burstId)
+        .sort((a, b) => (a.burstIndex ?? 0) - (b.burstIndex ?? 0));
+      const burstPaths = new Set(burstFiles.map((f) => f.path));
+      const visibleIndices = new Set<number>();
+      sortedFiles.forEach((f, i) => {
+        if (burstPaths.has(f.path)) visibleIndices.add(i);
+      });
+      setSelectedIndices(visibleIndices);
+      setBestScope({
+        paths: burstFiles.map((f) => f.path),
+        title: 'Best of Burst',
+        subtitle: `Burst ${focused.burstIndex ?? 1}/${focused.burstSize ?? burstFiles.length}`,
+      });
+    } else if (selectedIndices.size >= 2) {
+      setBestScope({
+        paths: Array.from(selectedIndices)
+          .filter((i) => i >= 0 && i < sortedFiles.length)
+          .map((i) => sortedFiles[i].path),
+        title: 'Best of Selection',
+      });
+    } else if (sortedFiles.length > 0) {
       const start = Math.max(0, focusedIndex);
       const windowFiles = sortedFiles.slice(start, Math.min(sortedFiles.length, start + 8));
       setSelectedIndices(new Set(windowFiles.map((_, offset) => start + offset)));
+      setBestScope({
+        paths: windowFiles.map((f) => f.path),
+        title: 'Best Nearby',
+        subtitle: 'No burst found',
+      });
     }
     setShowBestOfSelection(true);
-  }, [focusedIndex, selectedIndices.size, sortedFiles]);
+  }, [files, focusedIndex, selectedIndices, sortedFiles]);
+
+  const openAdjacentBurst = useCallback((direction: 1 | -1) => {
+    if (files.length === 0) return;
+    const burstIdsInOrder: string[] = [];
+    const seen = new Set<string>();
+    for (const file of files) {
+      if (file.burstId && !seen.has(file.burstId)) {
+        seen.add(file.burstId);
+        burstIdsInOrder.push(file.burstId);
+      }
+    }
+    if (burstIdsInOrder.length === 0) return;
+    const current = bestScope?.paths
+      .map((p) => files.find((f) => f.path === p)?.burstId)
+      .find(Boolean)
+      ?? (focusedIndex >= 0 ? sortedFiles[focusedIndex]?.burstId : undefined);
+    const currentIndex = current ? burstIdsInOrder.indexOf(current) : -1;
+    const nextIndex = currentIndex >= 0
+      ? (currentIndex + direction + burstIdsInOrder.length) % burstIdsInOrder.length
+      : direction > 0 ? 0 : burstIdsInOrder.length - 1;
+    const burstId = burstIdsInOrder[nextIndex];
+    const burstFiles = files
+      .filter((f) => f.burstId === burstId)
+      .sort((a, b) => (a.burstIndex ?? 0) - (b.burstIndex ?? 0));
+    const firstVisibleIndex = sortedFiles.findIndex((f) => f.burstId === burstId);
+    if (firstVisibleIndex >= 0) setFocused(firstVisibleIndex);
+    const burstPaths = new Set(burstFiles.map((f) => f.path));
+    const visibleIndices = new Set<number>();
+    sortedFiles.forEach((f, i) => {
+      if (burstPaths.has(f.path)) visibleIndices.add(i);
+    });
+    setSelectedIndices(visibleIndices);
+    setBestScope({
+      paths: burstFiles.map((f) => f.path),
+      title: 'Best of Burst',
+      subtitle: `Burst ${nextIndex + 1}/${burstIdsInOrder.length}`,
+    });
+    setShowBestOfSelection(true);
+  }, [bestScope?.paths, files, focusedIndex, setFocused, sortedFiles]);
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
@@ -561,6 +727,12 @@ export function ThumbnailGrid() {
   const anchorFile = exposureAnchorPath ? files.find((f) => f.path === exposureAnchorPath) : null;
   const anchorHasEV = typeof anchorFile?.exposureValue === 'number';
   const canNormalize = anchorHasEV && saveFormat !== 'original';
+  const getThumbnailExposureStops = useCallback((file: typeof files[number]): number => {
+    if (!file.normalizeToAnchor || !anchorHasEV || typeof anchorFile?.exposureValue !== 'number' || typeof file.exposureValue !== 'number') {
+      return 0;
+    }
+    return clampStops(file.exposureValue - anchorFile.exposureValue, exposureMaxStops);
+  }, [anchorFile?.exposureValue, anchorHasEV, exposureMaxStops]);
   const normalizeTargetPaths = hasBatchSelection
     ? Array.from(selectedIndices).filter((i) => i >= 0 && i < sortedFiles.length).map((i) => sortedFiles[i].path)
     : focusedFile ? [focusedFile.path] : [];
@@ -575,7 +747,29 @@ export function ThumbnailGrid() {
           .map((i) => sortedFiles[i])
       : focusedFile ? [focusedFile] : []
   ), [focusedFile, hasBatchSelection, selectedIndices, sortedFiles]);
-  const bestOfSelection = selectedFiles.length > 0 ? rankBestOfSelection(selectedFiles)[0] : null;
+  const bestPanelFiles = useMemo(() => {
+    if (!bestScope) return selectedFiles;
+    const byPath = new Map(files.map((f) => [f.path, f]));
+    return bestScope.paths.map((p) => byPath.get(p)).filter((f): f is NonNullable<typeof f> => !!f);
+  }, [bestScope, files, selectedFiles]);
+  const bestOfSelection = bestPanelFiles.length > 0 ? rankBestOfSelection(bestPanelFiles)[0] : null;
+  const forceVisibleThumbnails = filter !== 'all' || sortedFiles.length <= 160;
+  const reviewStats = useMemo(() => {
+    const photoFiles = files.filter((f) => f.type === 'photo');
+    const analyzed = photoFiles.filter((f) =>
+      typeof f.sharpnessScore === 'number' ||
+      typeof f.subjectSharpnessScore === 'number' ||
+      typeof f.reviewScore === 'number'
+    ).length;
+    const faces = photoFiles.filter((f) => (f.faceCount ?? 0) > 0).length;
+    const blur = photoFiles.filter((f) => f.blurRisk === 'high' || f.blurRisk === 'medium').length;
+    return { total: photoFiles.length, analyzed, faces, blur };
+  }, [files]);
+  const visibleThumbStats = useMemo(() => {
+    const total = sortedFiles.length;
+    const ready = sortedFiles.filter((f) => !!f.thumbnail).length;
+    return { total, ready };
+  }, [sortedFiles]);
   const allTargetsNormalized = normalizeTargetPaths.length > 0 &&
     normalizeTargetPaths.every((p) => files.find((f) => f.path === p)?.normalizeToAnchor);
   const duplicateCount = files.filter((f) => f.duplicate).length;
@@ -608,6 +802,17 @@ export function ThumbnailGrid() {
     if (normalizeTargetPaths.length < 2) return;
     dispatch({ type: 'NORMALIZE_SELECTION_TO_MEDIAN', filePaths: normalizeTargetPaths });
   }, [dispatch, normalizeTargetPaths]);
+
+  const copyExposureAdjustment = useCallback(() => {
+    const source = focusedFile ?? selectedFiles[0];
+    if (!source) return;
+    setExposureClipboard(source.exposureAdjustmentStops ?? 0);
+  }, [focusedFile, selectedFiles]);
+
+  const pasteExposureAdjustment = useCallback(() => {
+    if (exposureClipboard === null || normalizeTargetPaths.length === 0) return;
+    dispatch({ type: 'SET_EXPOSURE_ADJUSTMENT', filePaths: normalizeTargetPaths, stops: exposureClipboard });
+  }, [dispatch, exposureClipboard, normalizeTargetPaths]);
 
   const queuePaths = useCallback((paths: string[]) => {
     dispatch({ type: 'QUEUE_ADD_PATHS', paths });
@@ -828,6 +1033,21 @@ export function ThumbnailGrid() {
           >
             0
           </button>
+          <button
+            onClick={copyExposureAdjustment}
+            className="px-2 py-1.5 text-[11px] text-text-muted hover:text-sky-300 hover:bg-sky-500/10 transition-colors"
+            title="Copy the focused file's manual EV offset"
+          >
+            Copy EV
+          </button>
+          <button
+            onClick={pasteExposureAdjustment}
+            disabled={exposureClipboard === null}
+            className="px-2 py-1.5 text-[11px] text-text-muted hover:text-sky-300 hover:bg-sky-500/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+            title={exposureClipboard === null ? 'Copy an EV offset first' : `Paste ${exposureClipboard >= 0 ? '+' : ''}${exposureClipboard.toFixed(2)} EV to current target`}
+          >
+            Paste
+          </button>
         </>
       )}
       {hasBatchSelection && saveFormat !== 'original' && batchEVStats && (
@@ -898,7 +1118,7 @@ export function ThumbnailGrid() {
           if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0);
         }}
         className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-surface-raised text-text-secondary hover:text-text hover:bg-border transition-colors shrink-0"
-        title="Open each unmarked photo to pick or reject it"
+        title="Review unmarked files one by one in the large viewer. Use P to pick, X to reject, arrows to move."
       >
         1. Review
       </button>
@@ -906,7 +1126,7 @@ export function ThumbnailGrid() {
       <button
         onClick={() => dispatch({ type: 'QUEUE_BEST' })}
         className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-surface-raised text-text-secondary hover:text-yellow-300 hover:bg-yellow-500/10 transition-colors shrink-0"
-        title="Automatically add high-scoring photos to the import queue"
+        title={`Add high-scoring keeper candidates to the queue. Based on review score, protected flag, star rating, blur risk, and subject focus. Analyzed ${reviewStats.analyzed}/${reviewStats.total}.`}
       >
         2. Queue Best
       </button>
@@ -915,7 +1135,7 @@ export function ThumbnailGrid() {
         <button
           onClick={startImport}
           className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 transition-colors shrink-0"
-          title="Import all queued files now"
+          title="Import the queued files using the destination/output settings on the right panel."
         >
           3. Import ({queuedPaths.length})
         </button>
@@ -923,7 +1143,7 @@ export function ThumbnailGrid() {
         <button
           onClick={() => queuePaths(sortedFiles.map((f) => f.path))}
           className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-surface-raised text-text-secondary hover:text-emerald-300 hover:bg-emerald-500/10 transition-colors shrink-0"
-          title="Add all visible photos to the import queue"
+          title={`Add every currently visible file to the queue. Visible thumbnails ready: ${visibleThumbStats.ready}/${visibleThumbStats.total}.`}
         >
           3. Queue All
         </button>
@@ -935,24 +1155,73 @@ export function ThumbnailGrid() {
       <button
         onClick={() => dispatch({ type: 'SET_FILTER', filter: 'best' })}
         className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-yellow-300 transition-colors shrink-0"
-        title="Filter to show only high-scored keeper candidates"
+        title={`Show files with strong local keeper scores. Review analyzed ${reviewStats.analyzed}/${reviewStats.total}; faces found in ${reviewStats.faces}.`}
       >
         Find Best
       </button>
       <button
         onClick={openBestOfSelection}
         className="px-2 py-1 text-[10px] rounded-md bg-yellow-500/10 text-yellow-300 hover:bg-yellow-500/20 transition-colors shrink-0"
-        title="Rank the current selection and show the sharpest/top candidates (Shift+B)"
+        title="Rank the focused burst first. Priority: protected/rating, then faces, subject sharpness, blur risk, whole-image sharpness, and smart score. Shortcut: Shift+B."
       >
-        Best of Selection
+        Best of Burst
       </button>
       <button
-        onClick={() => dispatch({ type: 'SET_FILTER', filter: 'blur-risk' })}
+        onClick={() => {
+          setReviewPaused(false);
+          dispatch({ type: 'SET_FILTER', filter: 'blur-risk' });
+        }}
         className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-red-300 transition-colors shrink-0"
-        title="Show potentially soft or blurry photos"
+        title={`Show photos marked medium/high blur risk. ${reviewStats.blur} found so far; analysis ${reviewStats.analyzed}/${reviewStats.total}.`}
       >
         Blur Check
       </button>
+      <button
+        onClick={() => setReviewPaused((v) => !v)}
+        className={`px-2 py-1 text-[10px] rounded-md transition-colors shrink-0 ${
+          reviewPaused ? 'bg-yellow-500/15 text-yellow-300' : 'bg-surface-raised text-text-muted hover:text-text'
+        }`}
+        title={`Pause or resume local review analysis. It computes blur risk, subject focus, face count, visual similarity, and keeper score. Done ${reviewStats.analyzed}/${reviewStats.total}.`}
+      >
+        {reviewPaused ? 'Resume Review' : 'Pause Review'} {reviewStats.analyzed}/{reviewStats.total}
+      </button>
+      <button
+        onClick={() => setBackgroundLoadingPaused((v) => !v)}
+        className={`px-2 py-1 text-[10px] rounded-md transition-colors shrink-0 ${
+          backgroundLoadingPaused ? 'bg-yellow-500/15 text-yellow-300' : 'bg-surface-raised text-text-muted hover:text-text'
+        }`}
+        title={`Pause or resume background preview preloading. The current full photo still loads. Visible thumbnails ready ${visibleThumbStats.ready}/${visibleThumbStats.total}.`}
+      >
+        {backgroundLoadingPaused ? 'Start Loading' : 'Stop Loading'} {visibleThumbStats.ready}/{visibleThumbStats.total}
+      </button>
+      <span
+        className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-faint shrink-0"
+        title={`Preview cache: ${cacheStats.cached} cached, ${cacheStats.decoded} decoded, ${cacheStats.inflight} in flight, ${cacheStats.queued} queued.`}
+      >
+        Cache {cacheStats.cached}/{cacheStats.active + cacheStats.queued}
+      </span>
+      {files.some((f) => f.blurRisk === 'high') && (
+        <button
+          onClick={() => dispatch({
+            type: 'SET_PICK_BATCH',
+            filePaths: files.filter((f) => f.blurRisk === 'high' && f.pick !== 'selected').map((f) => f.path),
+            pick: 'rejected',
+          })}
+          className="px-2 py-1 text-[10px] rounded-md bg-red-500/10 text-red-300 hover:bg-red-500/20 transition-colors shrink-0"
+          title={`Reject high blur-risk photos that are not already picked. Current blur-risk count: ${reviewStats.blur}.`}
+        >
+          Reject Blur
+        </button>
+      )}
+      {files.some((f) => (f.burstId && f.burstSize && f.burstSize > 1) || (f.visualGroupId && f.visualGroupSize && f.visualGroupSize > 1)) && (
+        <button
+          onClick={() => dispatch({ type: 'AUTO_CULL_SAFE' })}
+          className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-red-300 transition-colors shrink-0"
+          title="Conservative auto-cull: never rejects protected, starred, or picked files; only rejects clearly worse blur/similar/burst alternatives when a stronger keeper exists. Undo with Ctrl+Z."
+        >
+          Safe Cull
+        </button>
+      )}
       {duplicateCount > 0 && (
         <button
           onClick={() => {
@@ -960,7 +1229,7 @@ export function ThumbnailGrid() {
             dispatch({ type: 'SET_VIEW_MODE', mode: 'compare' });
           }}
           className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-blue-300 transition-colors shrink-0"
-          title="Compare visually similar or duplicate photos side-by-side"
+          title="Compare visually similar or duplicate photos side-by-side so you can keep one and reject the rest."
         >
           Dupes
         </button>
@@ -969,15 +1238,15 @@ export function ThumbnailGrid() {
         <button
           onClick={() => dispatch({ type: 'PICK_BEST_IN_GROUPS' })}
           className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-yellow-300 transition-colors shrink-0"
-          title="Automatically pick the sharpest shot in each burst group"
+          title="For every burst/similar group, pick the top-ranked file and reject the rest. Priority: protected/rating, then faces/subject sharpness, blur risk, whole-image sharpness, and smart score."
         >
-          Pick Best
+          Pick Burst Keepers
         </button>
       )}
       <button
         onClick={() => window.electronAPI.exportContactSheet(files.filter((f) => f.pick !== 'rejected'))}
-        className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-text transition-colors shrink-0"
-        title="Export a contact sheet PDF of non-rejected photos"
+        className="hidden px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-text transition-colors shrink-0"
+        title="Export a PDF contact sheet of every non-rejected photo. Useful for client selects or a quick review handoff."
       >
         Contact Sheet
       </button>
@@ -985,7 +1254,7 @@ export function ThumbnailGrid() {
         <button
           onClick={() => dispatch({ type: 'QUEUE_CLEAR' })}
           className="px-2 py-1 text-[10px] rounded-md text-text-faint hover:text-red-300 transition-colors shrink-0"
-          title="Remove all files from the import queue"
+          title={`Remove all ${queuedPaths.length} queued files. Does not clear pick/reject flags.`}
         >
           Clear Queue
         </button>
@@ -996,10 +1265,18 @@ export function ThumbnailGrid() {
   return (
     <div className="h-full flex flex-col relative">
       {showShortcuts && <ShortcutsOverlay onClose={() => setShowShortcuts(false)} />}
-      {showBestOfSelection && selectedFiles.length > 0 && (
+      {showBestOfSelection && bestPanelFiles.length > 0 && (
         <BestOfSelectionPanel
-          files={selectedFiles}
-          onClose={() => setShowBestOfSelection(false)}
+          files={bestPanelFiles}
+          title={bestScope?.title}
+          subtitle={bestScope?.subtitle}
+          isBurst={bestScope?.title === 'Best of Burst'}
+          onPrevBurst={() => openAdjacentBurst(-1)}
+          onNextBurst={() => openAdjacentBurst(1)}
+          onClose={() => {
+            setShowBestOfSelection(false);
+            setBestScope(null);
+          }}
           onPickBest={(file) => {
             dispatch({ type: 'SET_PICK', filePath: file.path, pick: 'selected' });
             setFocused(sortedFiles.findIndex((f) => f.path === file.path));
@@ -1008,7 +1285,7 @@ export function ThumbnailGrid() {
           onRejectRest={(best) => {
             dispatch({
               type: 'SET_PICK_BATCH',
-              filePaths: selectedFiles.filter((f) => f.path !== best.path).map((f) => f.path),
+              filePaths: bestPanelFiles.filter((f) => f.path !== best.path).map((f) => f.path),
               pick: 'rejected',
             });
             dispatch({ type: 'SET_PICK', filePath: best.path, pick: 'selected' });
@@ -1062,7 +1339,7 @@ export function ThumbnailGrid() {
                 <button onClick={() => pickFile('rejected', false)} title="Reject selected (X)" className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-red-400 hover:bg-red-500/10 rounded transition-colors">Reject</button>
                 <button onClick={() => pickFile(undefined, false)} title="Clear flags (U)" className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-text hover:bg-surface-raised rounded transition-colors">Unflag</button>
                 <button onClick={() => queuePaths(normalizeTargetPaths)} title="Add selected to import queue" className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-emerald-400 hover:bg-emerald-500/10 rounded transition-colors">Queue</button>
-                <button onClick={openBestOfSelection} title="Show the best/sharpest selected candidates (Shift+B)" className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-yellow-300 hover:bg-yellow-500/10 rounded transition-colors">Best</button>
+                <button onClick={openBestOfSelection} title="If the focused photo is in a burst, rank that whole burst. Otherwise rank the selected candidates. Shortcut: Shift+B." className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-yellow-300 hover:bg-yellow-500/10 rounded transition-colors">Best</button>
                 <div className="w-px h-3 bg-border mx-1" />
                 <button onClick={() => setSelectedIndices(new Set())} title="Deselect all (Esc)" className="px-2 py-0.5 text-[11px] text-text-muted hover:text-text hover:bg-surface-raised rounded transition-colors">Deselect</button>
               </>
@@ -1260,6 +1537,8 @@ export function ThumbnailGrid() {
                     focused={i === focusedIndex}
                     selected={selectedIndices.has(i)}
                     queued={queuedSet.has(file.path)}
+                    forceLoad={forceVisibleThumbnails}
+                    exposurePreviewStops={getThumbnailExposureStops(file)}
                     compact
                     frameNumber={i + 1}
                     burstCollapsed={!!file.burstId && collapsedSet.has(file.burstId)}
@@ -1299,6 +1578,8 @@ export function ThumbnailGrid() {
                     focused={i === focusedIndex}
                   selected={selectedIndices.has(i)}
                   queued={queuedSet.has(file.path)}
+                  forceLoad={forceVisibleThumbnails}
+                  exposurePreviewStops={getThumbnailExposureStops(file)}
                     burstCollapsed={!!file.burstId && collapsedSet.has(file.burstId)}
                     onBurstToggle={(id) => dispatch({ type: 'TOGGLE_BURST_COLLAPSE', burstId: id })}
                     onClick={(e) => handleCardClick(i, e)}

@@ -64,6 +64,14 @@ export interface MediaFile {
   exposureAdjustmentStops?: number;
   /** Renderer-computed focus metric used to pick burst keepers. Higher = sharper. */
   sharpnessScore?: number;
+  /** Face/subject-aware focus metric. Higher = sharper subject area. */
+  subjectSharpnessScore?: number;
+  /** Number of faces found by local browser face detection, when available. */
+  faceCount?: number;
+  /** Normalized face boxes from local browser face detection. */
+  faceBoxes?: Array<{ x: number; y: number; width: number; height: number }>;
+  /** Local review notes for subject/face focus. */
+  subjectReasons?: string[];
   /** Heuristic blur risk derived from thumbnail/previews. */
   blurRisk?: 'low' | 'medium' | 'high';
   /** 64-bit perceptual hash encoded as 16 hex chars. */
