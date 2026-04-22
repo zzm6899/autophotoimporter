@@ -375,6 +375,7 @@ export const IPC = {
   // Auto-import + device events
   DEVICE_INSERTED: 'device:inserted',
   AUTO_IMPORT_STARTED: 'auto-import:started',
+  AUTO_IMPORT_COMPLETE: 'auto-import:complete',
   EJECT_VOLUME: 'volume:eject',
   DISK_FREE_SPACE: 'disk:free-space',
 } as const;
