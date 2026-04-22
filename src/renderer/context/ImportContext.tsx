@@ -105,6 +105,7 @@ export type Action =
       | 'protectedFolderName' | 'backupDestRoot' | 'autoImportDestRoot'; value: string }
   | { type: 'SET_BURST_WINDOW'; seconds: number }
   | { type: 'TOGGLE_BURST_COLLAPSE'; burstId: string }
+  | { type: 'COLLAPSE_ALL_BURSTS' }
   | { type: 'CLEAR_COLLAPSED_BURSTS' }
   | { type: 'SET_EXPOSURE_ANCHOR'; path: string | null }
   | { type: 'SET_EXPOSURE_MAX_STOPS'; stops: number }
@@ -331,6 +332,13 @@ export function reducer(state: State, action: Action): State {
           ? state.collapsedBursts.filter((id) => id !== action.burstId)
           : [...state.collapsedBursts, action.burstId],
       };
+    }
+    case 'COLLAPSE_ALL_BURSTS': {
+      const ids = new Set<string>();
+      for (const f of state.files) {
+        if (f.burstId && f.burstSize && f.burstSize > 1) ids.add(f.burstId);
+      }
+      return { ...state, collapsedBursts: [...ids] };
     }
     case 'CLEAR_COLLAPSED_BURSTS':
       return { ...state, collapsedBursts: [] };

@@ -4,12 +4,14 @@ import { useFileScanner } from '../hooks/useFileScanner';
 import { ThumbnailCard } from './ThumbnailCard';
 import { SingleView } from './SingleView';
 import { EmptyState } from './EmptyState';
+import { SettingsPage } from './SettingsPage';
 
 export function ThumbnailGrid() {
-  const { files, phase, selectedSource, scanError, focusedIndex, viewMode, showLeftPanel, showRightPanel, filter, cullMode, collapsedBursts, exposureAnchorPath, saveFormat } = useAppState();
+  const { files, phase, selectedSource, scanError, focusedIndex, viewMode, showLeftPanel, showRightPanel, filter, cullMode, collapsedBursts, exposureAnchorPath, saveFormat, burstGrouping } = useAppState();
   const { startScan } = useFileScanner();
   const dispatch = useAppDispatch();
   const gridRef = useRef<HTMLDivElement>(null);
+  const [showSettings, setShowSettings] = useState(false);
   const splitGridRef = useRef<HTMLDivElement>(null);
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
   const lastClickedRef = useRef<number>(-1);
@@ -287,6 +289,19 @@ export function ThumbnailGrid() {
     }
   }, [focusedIndex, viewMode]);
 
+  // Preload adjacent photos so SingleView navigation feels instant.
+  // Fire-and-forget: generatePreview deduplicates in-flight requests.
+  useEffect(() => {
+    if (viewMode !== 'single' && viewMode !== 'split') return;
+    if (focusedIndex < 0 || sortedFiles.length === 0) return;
+    const neighbors = [focusedIndex - 1, focusedIndex + 1, focusedIndex + 2];
+    for (const i of neighbors) {
+      if (i >= 0 && i < sortedFiles.length) {
+        void window.electronAPI.getPreview(sortedFiles[i].path);
+      }
+    }
+  }, [focusedIndex, viewMode, sortedFiles]);
+
   // Expose-normalize button state (computed before early returns so the
   // handleNormalizeToggle useCallback is always called unconditionally).
   const focusedFile = focusedIndex >= 0 && focusedIndex < sortedFiles.length ? sortedFiles[focusedIndex] : null;
@@ -299,6 +314,14 @@ export function ThumbnailGrid() {
     : focusedFile ? [focusedFile.path] : [];
   const allTargetsNormalized = normalizeTargetPaths.length > 0 &&
     normalizeTargetPaths.every((p) => files.find((f) => f.path === p)?.normalizeToAnchor);
+
+  // Burst collapse/expand state (useMemo must be before early returns to
+  // satisfy the Rules of Hooks).
+  const burstIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const f of files) if (f.burstId && f.burstSize && f.burstSize > 1) ids.add(f.burstId);
+    return ids;
+  }, [files]);
 
   const handleNormalizeToggle = useCallback(() => {
     if (normalizeTargetPaths.length === 0) return;
@@ -342,6 +365,7 @@ export function ThumbnailGrid() {
   const thumbCount = files.filter((f) => f.thumbnail).length;
   const thumbsLoading = phase === 'scanning' && files.length > 0 && thumbCount < files.length;
   const isSingle = (viewMode === 'single' || viewMode === 'split') && focusedFile;
+  const allBurstsCollapsed = burstIds.size > 0 && burstIds.size === collapsedBursts.length;
 
   const floatingToolbar = (focusedFile || hasBatchSelection) ? (
     <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-px bg-surface-alt/95 backdrop-blur-sm border border-border rounded-lg shadow-lg overflow-hidden z-20">
@@ -573,6 +597,18 @@ export function ThumbnailGrid() {
             >
               CSV
             </button>
+            {burstGrouping && burstIds.size > 0 && (
+              <>
+                <div className="w-px h-3 bg-border mx-1" />
+                <button
+                  onClick={() => dispatch({ type: allBurstsCollapsed ? 'CLEAR_COLLAPSED_BURSTS' : 'COLLAPSE_ALL_BURSTS' })}
+                  className="px-1.5 py-0.5 text-[10px] text-text-muted hover:text-text rounded transition-colors"
+                  title={allBurstsCollapsed ? 'Expand all bursts' : 'Collapse all bursts'}
+                >
+                  {allBurstsCollapsed ? 'Expand bursts' : 'Collapse bursts'}
+                </button>
+              </>
+            )}
           </div>
         )}
 

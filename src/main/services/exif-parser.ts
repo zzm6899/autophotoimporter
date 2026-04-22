@@ -432,7 +432,10 @@ export async function generateThumbnail(filePath: string, _fileName: string): Pr
       // not cached
     }
 
-    if (RAW_EXTENSIONS.has(ext) && process.platform !== 'darwin') {
+    // For RAW files on any platform, try to extract the embedded full-size JPEG
+    // preview first — this avoids spawning sips / ImageMagick / PowerShell for
+    // files that already contain a usable preview in their header.
+    if (RAW_EXTENSIONS.has(ext)) {
       const fallback = await embeddedFallback(filePath, ext);
       if (fallback) return fallback;
     }
