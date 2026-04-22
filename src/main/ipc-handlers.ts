@@ -169,9 +169,19 @@ export function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC.SCAN_CHECK_DUPLICATES, async (_event, destRoot: string) => {
+    // Use the same path composition as the import pipeline so protected files
+    // land in _Protected/ and are matched there (otherwise they look like new
+    // files forever because we'd check `destRoot/destPath` while they're
+    // actually at `destRoot/_Protected/destPath`).
+    const settings = await loadSettings();
+    const sep = settings.separateProtected;
+    const folder = (settings.protectedFolderName || '_Protected').replace(/^[/\\]+|[/\\]+$/g, '');
     for (const file of scannedFiles) {
       if (!file.destPath) continue;
-      const dup = await isDuplicate(destRoot, file.destPath, file.size);
+      const relPath = file.isProtected && sep
+        ? path.join(folder, file.destPath)
+        : file.destPath;
+      const dup = await isDuplicate(destRoot, relPath, file.size);
       if (dup) {
         file.duplicate = true;
         sendToRenderer(IPC.SCAN_DUPLICATE, file.path);

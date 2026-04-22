@@ -2,7 +2,13 @@ import { useEffect } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 
 export function useScanListeners() {
-  const { destination, files, phase } = useAppState();
+  const {
+    destination,
+    files,
+    phase,
+    separateProtected,
+    protectedFolderName,
+  } = useAppState();
   const dispatch = useAppDispatch();
 
   useEffect(() => {
@@ -32,7 +38,11 @@ export function useScanListeners() {
 
   useEffect(() => {
     if (!destination || files.length === 0 || phase !== 'ready') return;
+    // Re-run when the protected-subfolder settings change too — otherwise
+    // toggling "separate protected" after a scan leaves duplicates pointing
+    // at the wrong path and protected files stay stuck as "ready to import"
+    // even when they've already been imported into _Protected/.
     dispatch({ type: 'CLEAR_DUPLICATES' });
     window.electronAPI.checkDuplicates(destination);
-  }, [destination, phase, dispatch]);
+  }, [destination, phase, separateProtected, protectedFolderName, dispatch]);
 }

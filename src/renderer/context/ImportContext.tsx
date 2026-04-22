@@ -109,7 +109,13 @@ export type Action =
   | { type: 'CLEAR_COLLAPSED_BURSTS' }
   | { type: 'SET_EXPOSURE_ANCHOR'; path: string | null }
   | { type: 'SET_EXPOSURE_MAX_STOPS'; stops: number }
-  | { type: 'SET_NORMALIZE_TO_ANCHOR'; filePaths: string[]; value: boolean };
+  | { type: 'SET_NORMALIZE_TO_ANCHOR'; filePaths: string[]; value: boolean }
+  /**
+   * Pick the median-EV file among the given paths as the exposure anchor,
+   * and mark every other path in the set as "normalize-to-anchor". This is
+   * the one-shot "make this batch consistent" workflow for bulk selection.
+   */
+  | { type: 'NORMALIZE_SELECTION_TO_MEDIAN'; filePaths: string[] };
 
 const systemDark = typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches;
 
@@ -168,9 +174,11 @@ export function reducer(state: State, action: Action): State {
     case 'SET_VOLUMES':
       return { ...state, volumes: action.volumes };
     case 'SELECT_SOURCE':
-      return { ...state, selectedSource: action.path, files: [], phase: 'idle' };
+      // Clear exposure anchor — its path belongs to the old source and would
+      // resolve to `undefined` in `files.find()` once the new scan lands.
+      return { ...state, selectedSource: action.path, files: [], phase: 'idle', exposureAnchorPath: null };
     case 'SCAN_START':
-      return { ...state, files: [], phase: 'scanning', scanError: null, focusedIndex: -1 };
+      return { ...state, files: [], phase: 'scanning', scanError: null, focusedIndex: -1, exposureAnchorPath: null };
     case 'SCAN_BATCH':
       return { ...state, files: [...state.files, ...action.files] };
     case 'SCAN_COMPLETE': {
@@ -353,6 +361,30 @@ export function reducer(state: State, action: Action): State {
         files: state.files.map((f) =>
           pathSet.has(f.path) ? { ...f, normalizeToAnchor: action.value } : f,
         ),
+      };
+    }
+    case 'NORMALIZE_SELECTION_TO_MEDIAN': {
+      // Find files in the selection that actually have an EV — the median is
+      // only meaningful over computed values. Ties break toward the lower
+      // index (stable sort), which tends to be the earlier shot.
+      const pathSet = new Set(action.filePaths);
+      const candidates = state.files
+        .filter((f) => pathSet.has(f.path) && typeof f.exposureValue === 'number')
+        .slice()
+        .sort((a, b) => (a.exposureValue as number) - (b.exposureValue as number));
+      if (candidates.length === 0) return state;
+      const anchor = candidates[Math.floor((candidates.length - 1) / 2)];
+      return {
+        ...state,
+        exposureAnchorPath: anchor.path,
+        files: state.files.map((f) => {
+          if (!pathSet.has(f.path)) return f;
+          if (f.path === anchor.path) {
+            // The anchor itself never needs normalizing.
+            return { ...f, normalizeToAnchor: false };
+          }
+          return { ...f, normalizeToAnchor: true };
+        }),
       };
     }
     default:

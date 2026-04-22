@@ -1,4 +1,5 @@
 import { useMemo, useEffect, useCallback, useRef, useState } from 'react';
+// Main grid / single / split view orchestrator.
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import { useFileScanner } from '../hooks/useFileScanner';
 import { ThumbnailCard } from './ThumbnailCard';
@@ -263,6 +264,27 @@ export function ThumbnailGrid() {
           dispatch({ type: 'TOGGLE_BURST_COLLAPSE', burstId: focused.burstId });
           break;
         }
+        case 'a':
+        case 'A': {
+          // 'A' toggles normalize-to-anchor on the focused file or the
+          // whole batch selection. Cmd/Ctrl+A is select-all (handled above).
+          if (e.metaKey || e.ctrlKey) break;
+          e.preventDefault();
+          const targets = selectedIndices.size > 0
+            ? Array.from(selectedIndices)
+                .filter((i) => i >= 0 && i < sortedFiles.length)
+                .map((i) => sortedFiles[i].path)
+            : focusedIndex >= 0 && focusedIndex < sortedFiles.length
+              ? [sortedFiles[focusedIndex].path]
+              : [];
+          if (targets.length === 0) break;
+          // If any target is already flagged, clear them all. Otherwise flag
+          // them all. Matches the toolbar button behavior.
+          const targetSet = new Set(targets);
+          const anyFlagged = files.some((f) => targetSet.has(f.path) && f.normalizeToAnchor);
+          dispatch({ type: 'SET_NORMALIZE_TO_ANCHOR', filePaths: targets, value: !anyFlagged });
+          break;
+        }
         case 'Escape':
           if (selectedIndices.size > 0) {
             e.preventDefault();
@@ -276,7 +298,7 @@ export function ThumbnailGrid() {
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [focusedIndex, sortedFiles, viewMode, getColumnsCount, setFocused, pickFile, dispatch, selectedIndices, cullMode]);
+  }, [focusedIndex, sortedFiles, viewMode, getColumnsCount, setFocused, pickFile, dispatch, selectedIndices, cullMode, files]);
 
   useEffect(() => {
     if (focusedIndex < 0) return;
@@ -327,6 +349,38 @@ export function ThumbnailGrid() {
     if (normalizeTargetPaths.length === 0) return;
     dispatch({ type: 'SET_NORMALIZE_TO_ANCHOR', filePaths: normalizeTargetPaths, value: !allTargetsNormalized });
   }, [dispatch, normalizeTargetPaths, allTargetsNormalized]);
+
+  // "Match" picks the median-exposure shot in the selection as the anchor and
+  // flags the rest for normalization. Median (not mean) because the goal is
+  // the smallest total adjustment — picking either extreme would force every
+  // other shot to move farther. Needs 2+ files with EV to be meaningful.
+  const handleMatchToMedian = useCallback(() => {
+    if (normalizeTargetPaths.length < 2) return;
+    dispatch({ type: 'NORMALIZE_SELECTION_TO_MEDIAN', filePaths: normalizeTargetPaths });
+  }, [dispatch, normalizeTargetPaths]);
+
+  // Batch EV stats — spread across the current selection, used to decide
+  // whether normalization would actually help. Under ~1/3 stop is already
+  // within one-bin quantization for most renderers so we color-code the
+  // chip to hint at "this batch is fine" vs "this batch will benefit".
+  const batchEVStats = useMemo(() => {
+    if (normalizeTargetPaths.length < 2) return null;
+    const targetSet = new Set(normalizeTargetPaths);
+    const evs: number[] = [];
+    for (const f of files) {
+      if (targetSet.has(f.path) && typeof f.exposureValue === 'number') {
+        evs.push(f.exposureValue);
+      }
+    }
+    if (evs.length < 2) return null;
+    let min = evs[0];
+    let max = evs[0];
+    for (const v of evs) {
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+    return { count: evs.length, min, max, range: max - min };
+  }, [files, normalizeTargetPaths]);
 
   if (!selectedSource) {
     return <EmptyState />;
@@ -441,6 +495,32 @@ export function ThumbnailGrid() {
           >
             {allTargetsNormalized ? '⊖ Anchor' : '⊕ Anchor'}
           </button>
+        </>
+      )}
+      {hasBatchSelection && saveFormat !== 'original' && batchEVStats && (
+        <>
+          <div className="w-px h-4 bg-border" />
+          <span
+            className={`px-2 py-1.5 text-[10px] font-mono ${
+              batchEVStats.range < 0.34
+                ? 'text-emerald-400'
+                : batchEVStats.range < 1
+                  ? 'text-yellow-400'
+                  : 'text-red-400'
+            }`}
+            title={`${batchEVStats.count} files with EV · spread ${batchEVStats.range.toFixed(2)} stops (EV ${batchEVStats.min.toFixed(2)} → ${batchEVStats.max.toFixed(2)})`}
+          >
+            Δ{batchEVStats.range.toFixed(1)}
+          </span>
+          {normalizeTargetPaths.length >= 2 && (
+            <button
+              onClick={handleMatchToMedian}
+              className="px-3 py-1.5 text-[11px] text-text-secondary hover:text-orange-400 hover:bg-orange-500/10 transition-colors"
+              title="Pick the median-exposure shot as the anchor and flag the rest for normalization"
+            >
+              Match
+            </button>
+          )}
         </>
       )}
       {!hasBatchSelection && (
