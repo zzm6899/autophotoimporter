@@ -1,8 +1,9 @@
-import { copyFile, mkdir } from 'node:fs/promises';
+import { copyFile, mkdir, stat } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
-import { constants } from 'node:fs';
+import { constants, createReadStream } from 'node:fs';
+import { createHash } from 'node:crypto';
 import type { MediaFile, ImportConfig, ImportProgress, ImportResult, ImportError, SaveFormat } from '../../shared/types';
 import { isDuplicate } from './duplicate-detector';
 import { stopsToMultiplier, clampStops } from '../../shared/exposure';
@@ -19,11 +20,22 @@ const FORMAT_EXT: Record<Exclude<SaveFormat, 'original'>, string> = {
   heic: '.heic',
 };
 
+async function sha256File(filePath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = createHash('sha256');
+    const stream = createReadStream(filePath);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('error', reject);
+    stream.on('end', () => resolve(hash.digest('hex')));
+  });
+}
+
 export function convertedDestPath(destPath: string, format: SaveFormat): string {
   if (format === 'original') return destPath;
   const ext = FORMAT_EXT[format];
-  const parsed = path.parse(destPath);
-  return path.join(parsed.dir, `${parsed.name}${ext}`);
+  const pathApi = destPath.includes('/') && !destPath.includes('\\') ? path.posix : path;
+  const parsed = pathApi.parse(destPath);
+  return pathApi.join(parsed.dir, `${parsed.name}${ext}`);
 }
 
 /**
@@ -226,6 +238,8 @@ export async function importFiles(
   const startTime = Date.now();
   let imported = 0;
   let skipped = 0;
+  let verified = 0;
+  let checksumVerified = 0;
   let bytesTransferred = 0;
   const errors: ImportError[] = [];
   const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
@@ -255,12 +269,15 @@ export async function importFiles(
 
   function brightnessFor(file: MediaFile): number {
     const shouldNormalize = normalizeActive || perFileNormalizePaths.has(file.path);
-    if (!shouldNormalize) return 1;
-    if (typeof file.exposureValue !== 'number') return 1;
-    const anchor = config.exposureAnchorEV as number;
-    // EV delta of +1 means the shot is 1 stop brighter than the anchor, so
-    // we want to *darken* it by 1 stop (multiplier 0.5).
-    const correctionStops = clampStops(anchor - file.exposureValue, maxStops);
+    const manualStops = config.exposureAdjustments?.[file.path] ?? file.exposureAdjustmentStops ?? 0;
+    let normalizeStops = 0;
+    if (shouldNormalize && typeof file.exposureValue === 'number') {
+      const anchor = config.exposureAnchorEV as number;
+      // Higher EV means less exposure captured. If this file's EV is above
+      // the anchor, brighten it; if below, darken it.
+      normalizeStops = file.exposureValue - anchor;
+    }
+    const correctionStops = clampStops(normalizeStops + manualStops, maxStops);
     return stopsToMultiplier(correctionStops);
   }
 
@@ -335,6 +352,30 @@ export async function importFiles(
       }
 
       imported++;
+      try {
+        const s = await stat(destFullPath);
+        if (s.size > 0 || saveFormat !== 'original') verified++;
+        if (config.verifyChecksums && saveFormat === 'original') {
+          const [srcHash, destHash] = await Promise.all([
+            sha256File(file.path),
+            sha256File(destFullPath),
+          ]);
+          if (srcHash !== destHash) {
+            errors.push({ file: `${file.name} (checksum)`, error: 'Primary copy checksum mismatch' });
+          } else {
+            checksumVerified++;
+          }
+          if (backupFullPath) {
+            const backupHash = await sha256File(backupFullPath);
+            if (backupHash !== srcHash) {
+              errors.push({ file: `${file.name} (backup checksum)`, error: 'Backup copy checksum mismatch' });
+            }
+          }
+        }
+      } catch (verifyErr: unknown) {
+        const e = verifyErr as NodeJS.ErrnoException;
+        errors.push({ file: `${file.name} (verify)`, error: e.message || 'Verification failed' });
+      }
       bytesTransferred += file.size;
     } catch (err: unknown) {
       const error = err as NodeJS.ErrnoException;
@@ -390,6 +431,8 @@ export async function importFiles(
   return {
     imported,
     skipped,
+    verified,
+    checksumVerified,
     errors,
     totalBytes: bytesTransferred,
     durationMs: Date.now() - startTime,

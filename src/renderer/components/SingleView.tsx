@@ -3,6 +3,7 @@ import type { MediaFile } from '../../shared/types';
 import { buildExposure } from '../utils/formatters';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import { formatEVDelta, stopsToMultiplier, clampStops } from '../../shared/exposure';
+import { Histogram } from './Histogram';
 
 interface SingleViewProps {
   file: MediaFile;
@@ -32,6 +33,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [previewNormalized, setPreviewNormalized] = useState(false);
+  const [holdOriginal, setHoldOriginal] = useState(false);
   const isDragging = useRef(false);
   const lastMouse = useRef({ x: 0, y: 0 });
   const containerRef = useRef<HTMLDivElement>(null);
@@ -41,7 +43,27 @@ export function SingleView({ file, index, total }: SingleViewProps) {
     setZoom(1);
     setPan({ x: 0, y: 0 });
     setPreviewNormalized(false);
+    setHoldOriginal(false);
   }, [file.path]);
+
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.code === 'Space') {
+        e.preventDefault();
+        setHoldOriginal(true);
+      }
+    };
+    const up = (e: KeyboardEvent) => {
+      if (e.code === 'Space') setHoldOriginal(false);
+    };
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
+    return () => {
+      window.removeEventListener('keydown', down);
+      window.removeEventListener('keyup', up);
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -110,11 +132,17 @@ export function SingleView({ file, index, total }: SingleViewProps) {
     evDelta !== undefined && !isAnchor && Math.abs(evDelta) >= 0.05 && imageSrc;
   const normalizedEvDelta =
     canPreviewNorm && typeof evDelta === 'number' && typeof file.exposureValue === 'number' && anchor
-      ? clampStops(-evDelta, exposureMaxStops)
+      ? clampStops(evDelta, exposureMaxStops)
       : 0;
-  const brightnessMultiplier = canPreviewNorm && previewNormalized
-    ? stopsToMultiplier(normalizedEvDelta)
+  const manualStops = file.exposureAdjustmentStops ?? 0;
+  const previewStops = previewNormalized && !holdOriginal
+    ? clampStops(normalizedEvDelta + manualStops, exposureMaxStops)
+    : 0;
+  const brightnessMultiplier = previewStops !== 0
+    ? stopsToMultiplier(previewStops)
     : 1;
+  const canPreviewAdjust = imageSrc && (canPreviewNorm || Math.abs(manualStops) >= 0.01);
+  const clippingRisk = Math.abs(previewStops) >= exposureMaxStops - 0.01 || brightnessMultiplier >= 3 || brightnessMultiplier <= 0.34;
 
   return (
     <div
@@ -174,11 +202,43 @@ export function SingleView({ file, index, total }: SingleViewProps) {
             </svg>
           </div>
         )}
+        {clippingRisk && imageSrc && (
+          <div className="absolute inset-0 pointer-events-none z-20">
+            <div className={`absolute inset-x-0 top-0 h-8 ${previewStops > 0 ? 'bg-red-500/25' : 'bg-blue-500/25'}`} />
+            <div className={`absolute inset-x-0 bottom-0 h-8 ${previewStops > 0 ? 'bg-red-500/25' : 'bg-blue-500/25'}`} />
+          </div>
+        )}
       </div>
 
       {loading && file.thumbnail && (
         <div className="absolute top-3 right-3 flex items-center gap-1.5">
           <div className="w-3 h-3 border-[1.5px] border-text-muted border-t-text rounded-full animate-spin" />
+        </div>
+      )}
+
+      {!isZoomed && imageSrc && <Histogram src={imageSrc} />}
+
+      {!isZoomed && (file.isProtected || (file.rating && file.rating > 0)) && (
+        <div className="absolute top-3 left-3 flex items-center gap-1.5 z-20">
+          {file.isProtected && (
+            <span className="text-[10px] font-semibold text-emerald-200 bg-emerald-600/80 px-2 py-0.5 rounded">
+              Protected
+            </span>
+          )}
+          {file.rating && file.rating > 0 && (
+            <span className="flex items-center gap-0.5 bg-black/45 dark:bg-black/65 px-1.5 py-0.5 rounded" title={`${file.rating} star rating`}>
+              {Array.from({ length: 5 }).map((_, i) => (
+                <svg
+                  key={i}
+                  className={`w-3 h-3 ${i < file.rating! ? 'text-yellow-400' : 'text-white/25'}`}
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                >
+                  <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                </svg>
+              ))}
+            </span>
+          )}
         </div>
       )}
 
@@ -211,6 +271,16 @@ export function SingleView({ file, index, total }: SingleViewProps) {
                 title={`Difference vs anchor (${anchor?.name})`}
               >
                 Δ {formatEVDelta(evDelta)}
+              </span>
+            )}
+            {Math.abs(manualStops) >= 0.01 && (
+              <span className="text-[9px] font-mono text-sky-300 bg-sky-500/30 px-1.5 py-0.5 rounded" title="Manual exposure offset">
+                EV {manualStops > 0 ? '+' : ''}{manualStops.toFixed(2)}
+              </span>
+            )}
+            {clippingRisk && (
+              <span className="text-[9px] font-mono text-red-300 bg-red-500/30 px-1.5 py-0.5 rounded">
+                clipping risk
               </span>
             )}
             {isAnchor && (
@@ -262,7 +332,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
                 {file.normalizeToAnchor ? '⊖ Normalize' : '⊕ Normalize'}
               </button>
             )}
-            {canPreviewNorm && (
+            {canPreviewAdjust && (
               <button
                 type="button"
                 onClick={() => setPreviewNormalized((v) => !v)}
@@ -272,11 +342,30 @@ export function SingleView({ file, index, total }: SingleViewProps) {
                     : 'text-text-muted bg-black/30 hover:bg-black/50 dark:bg-black/50 hover:text-sky-300'
                 }`}
                 title={previewNormalized
-                  ? `Showing normalized preview (${formatEVDelta(-evDelta!)}). Click to show original`
-                  : `Preview how this image would look after exposure normalization to anchor (${formatEVDelta(-evDelta!)})`}
+                  ? `Showing adjusted preview (${formatEVDelta(previewStops)}). Hold Space for original`
+                  : `Preview exposure adjustment (${formatEVDelta(clampStops(normalizedEvDelta + manualStops, exposureMaxStops))})`}
               >
-                {previewNormalized ? '◑ Normalized' : '◐ Preview norm'}
+                {previewNormalized ? (holdOriginal ? 'Original' : 'Adjusted') : 'Preview EV'}
               </button>
+            )}
+            {typeof file.reviewScore === 'number' && (
+              <span
+                className={`text-[9px] font-mono px-1.5 py-0.5 rounded ${
+                  file.reviewScore >= 70
+                    ? 'bg-yellow-500/30 text-yellow-300'
+                    : file.blurRisk === 'high'
+                      ? 'bg-red-500/30 text-red-300'
+                      : 'bg-black/30 dark:bg-black/50 text-text-muted'
+                }`}
+                title={file.reviewReasons?.join(', ') || 'Smart review score'}
+              >
+                Score {file.reviewScore}
+              </span>
+            )}
+            {file.visualGroupId && (
+              <span className="text-[9px] font-mono text-blue-300 bg-blue-500/30 px-1.5 py-0.5 rounded" title={file.visualGroupId}>
+                Similar {file.visualGroupSize ?? 0}
+              </span>
             )}
           </div>
           {cameraName && (

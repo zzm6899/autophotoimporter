@@ -2,20 +2,96 @@ import { useMemo, useEffect, useCallback, useRef, useState } from 'react';
 // Main grid / single / split view orchestrator.
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import { useFileScanner } from '../hooks/useFileScanner';
+import { useImport } from '../hooks/useImport';
 import { ThumbnailCard } from './ThumbnailCard';
 import { SingleView } from './SingleView';
+import { CompareView } from './CompareView';
 import { EmptyState } from './EmptyState';
 import { SettingsPage } from './SettingsPage';
+import { ShortcutsOverlay } from './ShortcutsOverlay';
+
+async function scoreSharpness(src: string): Promise<number> {
+  const img = new Image();
+  img.decoding = 'async';
+  const loaded = new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error('image load failed'));
+  });
+  img.src = src;
+  await loaded;
+  const canvas = document.createElement('canvas');
+  const size = 96;
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return 0;
+  ctx.drawImage(img, 0, 0, size, size);
+  const data = ctx.getImageData(0, 0, size, size).data;
+  let sum = 0;
+  let sumSq = 0;
+  let count = 0;
+  const gray = (idx: number) => data[idx] * 0.299 + data[idx + 1] * 0.587 + data[idx + 2] * 0.114;
+  for (let y = 1; y < size - 1; y++) {
+    for (let x = 1; x < size - 1; x++) {
+      const i = (y * size + x) * 4;
+      const lap = Math.abs(
+        gray(i - size * 4) + gray(i + size * 4) + gray(i - 4) + gray(i + 4) - 4 * gray(i),
+      );
+      sum += lap;
+      sumSq += lap * lap;
+      count++;
+    }
+  }
+  const mean = sum / Math.max(1, count);
+  return Math.round(Math.max(0, sumSq / Math.max(1, count) - mean * mean));
+}
+
+async function visualHash(src: string): Promise<string> {
+  const img = new Image();
+  img.decoding = 'async';
+  const loaded = new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error('image load failed'));
+  });
+  img.src = src;
+  await loaded;
+  const canvas = document.createElement('canvas');
+  const size = 8;
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return '0000000000000000';
+  ctx.drawImage(img, 0, 0, size, size);
+  const data = ctx.getImageData(0, 0, size, size).data;
+  const luma: number[] = [];
+  for (let i = 0; i < data.length; i += 4) {
+    luma.push(data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114);
+  }
+  const sorted = luma.slice().sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)] ?? 0;
+  let bits = '';
+  for (const v of luma) bits += v >= median ? '1' : '0';
+  let hex = '';
+  for (let i = 0; i < bits.length; i += 4) {
+    hex += parseInt(bits.slice(i, i + 4), 2).toString(16);
+  }
+  return hex.padStart(16, '0');
+}
 
 export function ThumbnailGrid() {
-  const { files, phase, selectedSource, scanError, focusedIndex, viewMode, showLeftPanel, showRightPanel, filter, cullMode, collapsedBursts, exposureAnchorPath, saveFormat, burstGrouping, normalizeExposure } = useAppState();
-  const { startScan } = useFileScanner();
+  const { files, phase, selectedSource, scanError, focusedIndex, viewMode, showLeftPanel, showRightPanel, filter, cullMode, collapsedBursts, exposureAnchorPath, saveFormat, burstGrouping, normalizeExposure, queuedPaths, selectionSets, scanPaused } = useAppState();
+  const { startScan, pauseScan, resumeScan } = useFileScanner();
+  const { startImport } = useImport();
   const dispatch = useAppDispatch();
   const gridRef = useRef<HTMLDivElement>(null);
   const splitGridRef = useRef<HTMLDivElement>(null);
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
+  const [searchText, setSearchText] = useState('');
+  const [showShortcuts, setShowShortcuts] = useState(false);
   const lastClickedRef = useRef<number>(-1);
+  const sharpnessInFlightRef = useRef(false);
   const collapsedSet = useMemo(() => new Set(collapsedBursts), [collapsedBursts]);
+  const queuedSet = useMemo(() => new Set(queuedPaths), [queuedPaths]);
 
   // Sort order (top → bottom):
   //   1. Protected / in-camera-locked / read-only files (fast-import priority)
@@ -24,13 +100,43 @@ export function ThumbnailGrid() {
   //   4. Stable by dateTaken (oldest first) so bursts stay grouped
   const sortedFiles = useMemo(() => {
     if (files.length === 0) return [];
+    const query = searchText.trim().toLowerCase();
     const filtered = files.filter((f) => {
+      if (query) {
+        const haystack = [
+          f.name, f.path, f.extension, f.cameraMake, f.cameraModel, f.lensModel,
+          f.dateTaken?.slice(0, 10),
+        ].filter(Boolean).join(' ').toLowerCase();
+        if (!haystack.includes(query)) return false;
+      }
+      if (filter.startsWith('camera:')) return (f.cameraModel || 'Unknown camera') === decodeURIComponent(filter.slice(7));
+      if (filter.startsWith('lens:')) return (f.lensModel || 'Unknown lens') === decodeURIComponent(filter.slice(5));
+      if (filter.startsWith('date:')) return (f.dateTaken ? f.dateTaken.slice(0, 10) : 'Undated') === decodeURIComponent(filter.slice(5));
+      if (filter.startsWith('ext:')) return f.extension.toLowerCase() === decodeURIComponent(filter.slice(4));
       switch (filter) {
         case 'protected': return f.isProtected;
         case 'picked': return f.pick === 'selected';
         case 'rejected': return f.pick === 'rejected';
         case 'unrated': return !f.rating || f.rating === 0;
         case 'duplicates': return f.duplicate;
+        case 'queue': return queuedSet.has(f.path);
+        case 'unmarked': return !f.pick;
+        case 'best': return (f.reviewScore ?? 0) >= 70;
+        case 'blur-risk': return f.blurRisk === 'high' || f.blurRisk === 'medium';
+        case 'near-duplicates': return !!f.visualGroupId;
+        case 'review-needed': return !f.reviewScore || f.blurRisk === 'high' || !!f.visualGroupId || !f.pick;
+        case 'needs-exposure': return typeof f.exposureValue === 'number' && !!exposureAnchorPath && !f.normalizeToAnchor;
+        case 'normalized': return !!f.normalizeToAnchor;
+        case 'adjusted': return typeof f.exposureAdjustmentStops === 'number' && Math.abs(f.exposureAdjustmentStops) >= 0.01;
+        case 'photos': return f.type === 'photo';
+        case 'videos': return f.type === 'video';
+        case 'raw': return !['.jpg', '.jpeg', '.png', '.heic', '.heif', '.webp', '.avif'].includes(f.extension.toLowerCase()) && f.type === 'photo';
+        case 'rating-1':
+        case 'rating-2':
+        case 'rating-3':
+        case 'rating-4':
+        case 'rating-5':
+          return (f.rating ?? 0) >= Number(filter.slice(-1));
         case 'all':
         default: return true;
       }
@@ -62,7 +168,26 @@ export function ThumbnailGrid() {
       seenCollapsedLeader.add(f.burstId);
       return true;
     });
-  }, [files, filter, collapsedSet]);
+  }, [files, filter, collapsedSet, exposureAnchorPath, searchText, queuedSet]);
+
+  const metadataFilters = useMemo(() => {
+    const cameras = new Set<string>();
+    const lenses = new Set<string>();
+    const dates = new Set<string>();
+    const exts = new Set<string>();
+    for (const f of files) {
+      cameras.add(f.cameraModel || 'Unknown camera');
+      if (f.type === 'photo') lenses.add(f.lensModel || 'Unknown lens');
+      dates.add(f.dateTaken ? f.dateTaken.slice(0, 10) : 'Undated');
+      exts.add(f.extension.toLowerCase());
+    }
+    return {
+      cameras: [...cameras].sort(),
+      lenses: [...lenses].sort(),
+      dates: [...dates].sort().reverse(),
+      exts: [...exts].sort(),
+    };
+  }, [files]);
 
   // Clear selection when source changes or view mode changes to single
   useEffect(() => {
@@ -78,6 +203,31 @@ export function ThumbnailGrid() {
       .map((i) => sortedFiles[i].path);
     dispatch({ type: 'SET_SELECTED_PATHS', paths });
   }, [selectedIndices, sortedFiles, dispatch]);
+
+  useEffect(() => {
+    if (sharpnessInFlightRef.current) return;
+    const candidates = files
+      .filter((f) => f.type === 'photo' && f.thumbnail && (typeof f.sharpnessScore !== 'number' || !f.visualHash))
+      .slice(0, 32);
+    if (candidates.length === 0) return;
+    sharpnessInFlightRef.current = true;
+    void Promise.all(candidates.map(async (f) => {
+      const thumbnail = f.thumbnail as string;
+      const [sharpnessScore, hash] = await Promise.all([
+        typeof f.sharpnessScore === 'number' ? Promise.resolve(f.sharpnessScore) : scoreSharpness(thumbnail),
+        f.visualHash ? Promise.resolve(f.visualHash) : visualHash(thumbnail),
+      ]);
+      return [f.path, { sharpnessScore, visualHash: hash }] as const;
+    }))
+      .then((entries) => {
+        dispatch({ type: 'SET_REVIEW_SCORES', scores: Object.fromEntries(entries) });
+        dispatch({ type: 'GROUP_VISUAL_DUPLICATES', threshold: 8 });
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        sharpnessInFlightRef.current = false;
+      });
+  }, [files, dispatch]);
 
   const getColumnsCount = useCallback(() => {
     const grid = gridRef.current;
@@ -150,9 +300,14 @@ export function ThumbnailGrid() {
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        dispatch({ type: 'UNDO_FILE_EDIT' });
+        return;
+      }
       if (sortedFiles.length === 0) return;
 
-      const cols = viewMode === 'single' || viewMode === 'split' ? 1 : getColumnsCount();
+      const cols = viewMode === 'single' || viewMode === 'split' || viewMode === 'compare' ? 1 : getColumnsCount();
 
       // Cmd/Ctrl+A: select all
       if ((e.metaKey || e.ctrlKey) && e.key === 'a' && viewMode !== 'single') {
@@ -195,11 +350,27 @@ export function ThumbnailGrid() {
         case 'p':
         case 'P':
           e.preventDefault();
+          if (e.shiftKey && focusedIndex >= 0 && lastClickedRef.current >= 0) {
+            const start = Math.min(focusedIndex, lastClickedRef.current);
+            const end = Math.max(focusedIndex, lastClickedRef.current);
+            const paths = sortedFiles.slice(start, end + 1).map((f) => f.path);
+            dispatch({ type: 'SET_PICK_BATCH', filePaths: paths, pick: 'selected' });
+            setSelectedIndices(new Set(paths.map((_, offset) => start + offset)));
+            break;
+          }
           pickFile('selected', true);
           break;
         case 'x':
         case 'X':
           e.preventDefault();
+          if (e.shiftKey && focusedIndex >= 0 && lastClickedRef.current >= 0) {
+            const start = Math.min(focusedIndex, lastClickedRef.current);
+            const end = Math.max(focusedIndex, lastClickedRef.current);
+            const paths = sortedFiles.slice(start, end + 1).map((f) => f.path);
+            dispatch({ type: 'SET_PICK_BATCH', filePaths: paths, pick: 'rejected' });
+            setSelectedIndices(new Set(paths.map((_, offset) => start + offset)));
+            break;
+          }
           pickFile('rejected', true);
           break;
         case 'u':
@@ -265,8 +436,6 @@ export function ThumbnailGrid() {
         }
         case 'a':
         case 'A': {
-          // 'A' toggles normalize-to-anchor on the focused file or the
-          // whole batch selection. Cmd/Ctrl+A is select-all (handled above).
           if (e.metaKey || e.ctrlKey) break;
           e.preventDefault();
           const targets = selectedIndices.size > 0
@@ -277,13 +446,30 @@ export function ThumbnailGrid() {
               ? [sortedFiles[focusedIndex].path]
               : [];
           if (targets.length === 0) break;
-          // If any target is already flagged, clear them all. Otherwise flag
-          // them all. Matches the toolbar button behavior.
-          const targetSet = new Set(targets);
-          const anyFlagged = files.some((f) => targetSet.has(f.path) && f.normalizeToAnchor);
-          dispatch({ type: 'SET_NORMALIZE_TO_ANCHOR', filePaths: targets, value: !anyFlagged });
+          if (focusedIndex >= 0 && focusedIndex < sortedFiles.length) {
+            dispatch({ type: 'NORMALIZE_SELECTION_TO_FOCUSED', filePaths: targets, anchorPath: sortedFiles[focusedIndex].path });
+          }
           break;
         }
+        case '[':
+        case ']':
+          e.preventDefault();
+          {
+            const targets = selectedIndices.size > 0
+              ? Array.from(selectedIndices).filter((i) => i >= 0 && i < sortedFiles.length).map((i) => sortedFiles[i].path)
+              : focusedIndex >= 0 && focusedIndex < sortedFiles.length ? [sortedFiles[focusedIndex].path] : [];
+            dispatch({ type: 'NUDGE_EXPOSURE_ADJUSTMENT', filePaths: targets, delta: e.key === '[' ? -0.33 : 0.33 });
+          }
+          break;
+        case '\\':
+          e.preventDefault();
+          {
+            const targets = selectedIndices.size > 0
+              ? Array.from(selectedIndices).filter((i) => i >= 0 && i < sortedFiles.length).map((i) => sortedFiles[i].path)
+              : focusedIndex >= 0 && focusedIndex < sortedFiles.length ? [sortedFiles[focusedIndex].path] : [];
+            dispatch({ type: 'SET_EXPOSURE_ADJUSTMENT', filePaths: targets, stops: 0 });
+          }
+          break;
         case 'Escape':
           if (selectedIndices.size > 0) {
             e.preventDefault();
@@ -291,10 +477,14 @@ export function ThumbnailGrid() {
           } else if (viewMode === 'settings') {
             e.preventDefault();
             dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' });
-          } else if (viewMode === 'single' || viewMode === 'split') {
+          } else if (viewMode === 'single' || viewMode === 'split' || viewMode === 'compare') {
             e.preventDefault();
             dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' });
           }
+          break;
+        case '?':
+          e.preventDefault();
+          setShowShortcuts(true);
           break;
       }
     };
@@ -344,8 +534,16 @@ export function ThumbnailGrid() {
   const normalizeTargetPaths = hasBatchSelection
     ? Array.from(selectedIndices).filter((i) => i >= 0 && i < sortedFiles.length).map((i) => sortedFiles[i].path)
     : focusedFile ? [focusedFile.path] : [];
+  const compareFiles = (hasBatchSelection
+    ? Array.from(selectedIndices).filter((i) => i >= 0 && i < sortedFiles.length).map((i) => sortedFiles[i])
+    : focusedFile ? [focusedFile] : []
+  ).slice(0, 4);
   const allTargetsNormalized = normalizeTargetPaths.length > 0 &&
     normalizeTargetPaths.every((p) => files.find((f) => f.path === p)?.normalizeToAnchor);
+  const duplicateCount = files.filter((f) => f.duplicate).length;
+  const avgManualStops = normalizeTargetPaths.length > 0
+    ? normalizeTargetPaths.reduce((sum, p) => sum + (files.find((f) => f.path === p)?.exposureAdjustmentStops ?? 0), 0) / normalizeTargetPaths.length
+    : 0;
 
   // Burst collapse/expand state (useMemo must be before early returns to
   // satisfy the Rules of Hooks).
@@ -357,8 +555,12 @@ export function ThumbnailGrid() {
 
   const handleNormalizeToggle = useCallback(() => {
     if (normalizeTargetPaths.length === 0) return;
-    dispatch({ type: 'SET_NORMALIZE_TO_ANCHOR', filePaths: normalizeTargetPaths, value: !allTargetsNormalized });
-  }, [dispatch, normalizeTargetPaths, allTargetsNormalized]);
+    if (focusedFile && hasBatchSelection) {
+      dispatch({ type: 'NORMALIZE_SELECTION_TO_FOCUSED', filePaths: normalizeTargetPaths, anchorPath: focusedFile.path });
+    } else {
+      dispatch({ type: 'SET_NORMALIZE_TO_ANCHOR', filePaths: normalizeTargetPaths, value: !allTargetsNormalized });
+    }
+  }, [dispatch, normalizeTargetPaths, allTargetsNormalized, focusedFile, hasBatchSelection]);
 
   // "Match" picks the median-exposure shot in the selection as the anchor and
   // flags the rest for normalization. Median (not mean) because the goal is
@@ -368,6 +570,41 @@ export function ThumbnailGrid() {
     if (normalizeTargetPaths.length < 2) return;
     dispatch({ type: 'NORMALIZE_SELECTION_TO_MEDIAN', filePaths: normalizeTargetPaths });
   }, [dispatch, normalizeTargetPaths]);
+
+  const queuePaths = useCallback((paths: string[]) => {
+    dispatch({ type: 'QUEUE_ADD_PATHS', paths });
+  }, [dispatch]);
+
+  const saveSelectionSet = useCallback(() => {
+    const paths = normalizeTargetPaths;
+    if (paths.length === 0) return;
+    const name = window.prompt('Selection set name');
+    if (!name?.trim()) return;
+    const next = [
+      ...selectionSets.filter((s) => s.name !== name.trim()),
+      { name: name.trim(), paths, createdAt: new Date().toISOString() },
+    ];
+    dispatch({ type: 'SET_SELECTION_SETS', sets: next });
+    void window.electronAPI.setSettings({ selectionSets: next });
+  }, [dispatch, normalizeTargetPaths, selectionSets]);
+
+  const applySelectionSet = useCallback((name: string) => {
+    const set = selectionSets.find((s) => s.name === name);
+    if (!set) return;
+    const pathSet = new Set(set.paths);
+    const next = new Set<number>();
+    sortedFiles.forEach((f, i) => {
+      if (pathSet.has(f.path)) next.add(i);
+    });
+    setSelectedIndices(next);
+    dispatch({ type: 'SELECTION_SET_APPLY', name });
+  }, [dispatch, selectionSets, sortedFiles]);
+
+  const deleteSelectionSet = useCallback((name: string) => {
+    const next = selectionSets.filter((s) => s.name !== name);
+    dispatch({ type: 'SET_SELECTION_SETS', sets: next });
+    void window.electronAPI.setSettings({ selectionSets: next });
+  }, [dispatch, selectionSets]);
 
   // Batch EV stats — spread across the current selection, used to decide
   // whether normalization would actually help. Under ~1/3 stop is already
@@ -399,8 +636,14 @@ export function ThumbnailGrid() {
   if (phase === 'scanning' && files.length === 0) {
     return (
       <div className="h-full flex flex-col items-center justify-center gap-3">
-        <div className="w-8 h-8 border-2 border-text-muted border-t-text rounded-full animate-spin" />
-        <p className="text-sm text-text-secondary">Scanning files...</p>
+        <div className={`w-8 h-8 border-2 border-text-muted border-t-text rounded-full ${scanPaused ? '' : 'animate-spin'}`} />
+        <p className="text-sm text-text-secondary">{scanPaused ? 'Scan paused' : 'Scanning files...'}</p>
+        <button
+          onClick={() => scanPaused ? resumeScan() : pauseScan()}
+          className="px-3 py-1 text-xs bg-surface-raised hover:bg-border rounded text-text-secondary transition-colors"
+        >
+          {scanPaused ? 'Resume Scan' : 'Pause Scan'}
+        </button>
       </div>
     );
   }
@@ -519,6 +762,35 @@ export function ThumbnailGrid() {
           </button>
         </>
       )}
+      {normalizeTargetPaths.length > 0 && saveFormat !== 'original' && (
+        <>
+          <div className="w-px h-4 bg-border" />
+          <button
+            onClick={() => dispatch({ type: 'NUDGE_EXPOSURE_ADJUSTMENT', filePaths: normalizeTargetPaths, delta: -0.33 })}
+            className="px-2 py-1.5 text-[11px] text-text-secondary hover:text-sky-300 hover:bg-sky-500/10 transition-colors"
+            title="Darken selection by 0.33 EV ([)"
+          >
+            -
+          </button>
+          <span className="px-2 py-1.5 text-[10px] font-mono text-sky-300" title="Average manual exposure offset">
+            {avgManualStops >= 0 ? '+' : ''}{avgManualStops.toFixed(2)}
+          </span>
+          <button
+            onClick={() => dispatch({ type: 'NUDGE_EXPOSURE_ADJUSTMENT', filePaths: normalizeTargetPaths, delta: 0.33 })}
+            className="px-2 py-1.5 text-[11px] text-text-secondary hover:text-sky-300 hover:bg-sky-500/10 transition-colors"
+            title="Brighten selection by 0.33 EV (])"
+          >
+            +
+          </button>
+          <button
+            onClick={() => dispatch({ type: 'SET_EXPOSURE_ADJUSTMENT', filePaths: normalizeTargetPaths, stops: 0 })}
+            className="px-2 py-1.5 text-[11px] text-text-muted hover:text-text hover:bg-surface-raised transition-colors"
+            title="Reset manual exposure offset (\\)"
+          >
+            0
+          </button>
+        </>
+      )}
       {hasBatchSelection && saveFormat !== 'original' && batchEVStats && (
         <>
           <div className="w-px h-4 bg-border" />
@@ -575,8 +847,110 @@ export function ThumbnailGrid() {
     </div>
   ) : null;
 
+  const nextActionToolbar = files.length > 0 ? (
+    <div className="shrink-0 px-2 py-1 flex items-center gap-1 border-b border-border bg-surface/70 overflow-x-auto">
+      <button
+        onClick={() => {
+          dispatch({ type: 'SET_FILTER', filter: 'unmarked' });
+          dispatch({ type: 'SET_VIEW_MODE', mode: 'single' });
+          if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0);
+        }}
+        className="px-2 py-0.5 text-[10px] rounded bg-surface-raised text-text-secondary hover:text-text transition-colors shrink-0"
+        title="Review unmarked files"
+      >
+        Review Unmarked
+      </button>
+      {queuedPaths.length > 0 ? (
+        <button
+          onClick={startImport}
+          className="px-2 py-0.5 text-[10px] rounded bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 transition-colors shrink-0"
+          title="Import queued files"
+        >
+          Import Queue {queuedPaths.length}
+        </button>
+      ) : (
+        <button
+          onClick={() => queuePaths(sortedFiles.map((f) => f.path))}
+          className="px-2 py-0.5 text-[10px] rounded bg-surface-raised text-text-secondary hover:text-emerald-300 transition-colors shrink-0"
+          title="Add current visible files to queue"
+        >
+          Queue Visible
+        </button>
+      )}
+      {duplicateCount > 0 && (
+        <button
+          onClick={() => {
+            dispatch({ type: 'SET_FILTER', filter: 'duplicates' });
+            dispatch({ type: 'SET_VIEW_MODE', mode: 'compare' });
+          }}
+          className="px-2 py-0.5 text-[10px] rounded bg-surface-raised text-text-secondary hover:text-blue-300 transition-colors shrink-0"
+          title="Compare duplicate files"
+        >
+          Compare Dupes
+        </button>
+      )}
+      <button
+        onClick={() => dispatch({ type: 'SET_FILTER', filter: 'best' })}
+        className="px-2 py-0.5 text-[10px] rounded bg-surface-raised text-text-secondary hover:text-yellow-300 transition-colors shrink-0"
+        title="Show high-scoring keeper candidates"
+      >
+        Find Best
+      </button>
+      <button
+        onClick={() => dispatch({ type: 'SET_FILTER', filter: 'blur-risk' })}
+        className="px-2 py-0.5 text-[10px] rounded bg-surface-raised text-text-secondary hover:text-red-300 transition-colors shrink-0"
+        title="Show soft or risky images"
+      >
+        Blur Check
+      </button>
+      <button
+        onClick={() => {
+          dispatch({ type: 'SET_FILTER', filter: 'near-duplicates' });
+          dispatch({ type: 'SET_VIEW_MODE', mode: 'compare' });
+        }}
+        className="px-2 py-0.5 text-[10px] rounded bg-surface-raised text-text-secondary hover:text-blue-300 transition-colors shrink-0"
+        title="Review visually similar groups"
+      >
+        Review Similar
+      </button>
+      <button
+        onClick={() => dispatch({ type: 'QUEUE_BEST' })}
+        className="px-2 py-0.5 text-[10px] rounded bg-surface-raised text-text-secondary hover:text-emerald-300 transition-colors shrink-0"
+        title="Add high-scoring files to import queue"
+      >
+        Queue Best
+      </button>
+      {burstGrouping && burstIds.size > 0 && (
+        <button
+          onClick={() => dispatch({ type: 'PICK_BEST_IN_GROUPS' })}
+          className="px-2 py-0.5 text-[10px] rounded bg-surface-raised text-text-secondary hover:text-yellow-300 transition-colors shrink-0"
+          title="Pick best frame in bursts and visual groups"
+        >
+          Pick Best
+        </button>
+      )}
+      <button
+        onClick={() => window.electronAPI.exportContactSheet(files.filter((f) => f.pick !== 'rejected'))}
+        className="px-2 py-0.5 text-[10px] rounded bg-surface-raised text-text-secondary hover:text-text transition-colors shrink-0"
+        title="Export contact sheet PDF"
+      >
+        Contact Sheet
+      </button>
+      {queuedPaths.length > 0 && (
+        <button
+          onClick={() => dispatch({ type: 'QUEUE_CLEAR' })}
+          className="px-2 py-0.5 text-[10px] rounded text-text-muted hover:text-red-300 transition-colors shrink-0"
+          title="Clear queue"
+        >
+          Clear Queue
+        </button>
+      )}
+    </div>
+  ) : null;
+
   return (
     <div className="h-full flex flex-col">
+      {showShortcuts && <ShortcutsOverlay onClose={() => setShowShortcuts(false)} />}
       {/* Unified header */}
       <div className="shrink-0 px-2 py-1.5 flex items-center border-b border-border">
         {/* Left panel toggle */}
@@ -641,6 +1015,29 @@ export function ThumbnailGrid() {
                 >
                   Unflag
                 </button>
+                <button
+                  onClick={() => queuePaths(normalizeTargetPaths)}
+                  className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-emerald-400 hover:bg-emerald-500/10 rounded transition-colors"
+                  title="Add selected files to import queue"
+                >
+                  Queue
+                </button>
+                {filter === 'queue' && (
+                  <button
+                    onClick={() => dispatch({ type: 'QUEUE_REMOVE_PATHS', paths: normalizeTargetPaths })}
+                    className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
+                    title="Remove selected files from import queue"
+                  >
+                    Unqueue
+                  </button>
+                )}
+                <button
+                  onClick={saveSelectionSet}
+                  className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-blue-400 hover:bg-blue-500/10 rounded transition-colors"
+                  title="Save selected files as a named selection set"
+                >
+                  Save Set
+                </button>
                 <div className="w-px h-3 bg-border mx-1" />
                 <button
                   onClick={() => setSelectedIndices(new Set())}
@@ -648,6 +1045,19 @@ export function ThumbnailGrid() {
                   title="Deselect all (Esc)"
                 >
                   Deselect
+                </button>
+                <button
+                  onClick={() => {
+                    const next = new Set<number>();
+                    for (let i = 0; i < sortedFiles.length; i++) {
+                      if (!selectedIndices.has(i)) next.add(i);
+                    }
+                    setSelectedIndices(next);
+                  }}
+                  className="px-2 py-0.5 text-[11px] text-text-muted hover:text-text hover:bg-surface-raised rounded transition-colors"
+                  title="Invert visible selection"
+                >
+                  Invert
                 </button>
               </>
             ) : (
@@ -669,6 +1079,38 @@ export function ThumbnailGrid() {
                 >
                   Clear All
                 </button>
+                <button
+                  onClick={() => {
+                    const all = new Set<number>();
+                    for (let i = 0; i < sortedFiles.length; i++) all.add(i);
+                    setSelectedIndices(all);
+                  }}
+                  className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-blue-400 hover:bg-blue-500/10 rounded transition-colors"
+                  title="Select all currently visible files"
+                >
+                  Select Visible
+                </button>
+                <button
+                  onClick={() => queuePaths(sortedFiles.map((f) => f.path))}
+                  className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-emerald-400 hover:bg-emerald-500/10 rounded transition-colors"
+                  title="Add all visible files to import queue"
+                >
+                  Queue Visible
+                </button>
+                <button
+                  onClick={() => queuePaths(files.filter((f) => f.pick === 'selected').map((f) => f.path))}
+                  className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-yellow-400 hover:bg-yellow-400/10 rounded transition-colors"
+                  title="Add picked files to import queue"
+                >
+                  Queue Picks
+                </button>
+                <button
+                  onClick={() => queuePaths(files.filter((f) => f.isProtected).map((f) => f.path))}
+                  className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-emerald-400 hover:bg-emerald-500/10 rounded transition-colors"
+                  title="Add protected files to import queue"
+                >
+                  Queue Protected
+                </button>
               </>
             )}
           </div>
@@ -679,7 +1121,46 @@ export function ThumbnailGrid() {
         {/* Filter chips + cull + export */}
         {(sortedFiles.length > 0 || filter !== 'all') && (
           <div className="flex items-center gap-px shrink-0 mr-2">
-            {(['all', 'protected', 'picked', 'rejected', 'unrated', 'duplicates'] as const).map((f) => (
+            <input
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+              placeholder="Search"
+              className="w-24 px-1.5 py-0.5 text-[10px] bg-surface border border-border rounded text-text placeholder-text-muted focus:outline-none focus:border-text"
+              title="Search filename, path, camera, lens, date, or extension"
+            />
+            {(filter !== 'all' || searchText.trim()) && (
+              <button
+                onClick={() => {
+                  setSearchText('');
+                  dispatch({ type: 'SET_FILTER', filter: 'all' });
+                }}
+                className="px-1.5 py-0.5 text-[10px] text-text-muted hover:text-text rounded"
+                title="Clear search and filters"
+              >
+                Clear
+              </button>
+            )}
+            {selectionSets.length > 0 && (
+              <select
+                value=""
+                onChange={(e) => {
+                  if (!e.target.value) return;
+                  if (e.target.value.startsWith('delete:')) {
+                    deleteSelectionSet(e.target.value.slice(7));
+                  } else {
+                    applySelectionSet(e.target.value);
+                  }
+                  e.currentTarget.value = '';
+                }}
+                className="max-w-[94px] px-1 py-0.5 text-[10px] bg-surface border border-border rounded text-text-muted hover:text-text focus:outline-none focus:border-text cursor-pointer"
+                title="Apply or delete a saved selection set"
+              >
+                <option value="">Sets</option>
+                {selectionSets.map((s) => <option key={s.name} value={s.name}>{s.name}</option>)}
+                {selectionSets.map((s) => <option key={`delete-${s.name}`} value={`delete:${s.name}`}>Delete {s.name}</option>)}
+              </select>
+            )}
+            {(['all', 'protected', 'picked', 'rejected', 'unrated', 'duplicates', 'queue'] as const).map((f) => (
               <button
                 key={f}
                 onClick={() => dispatch({ type: 'SET_FILTER', filter: f })}
@@ -689,9 +1170,77 @@ export function ThumbnailGrid() {
                     : 'text-text-muted hover:text-text'
                 }`}
               >
-                {f === 'all' ? 'All' : f[0].toUpperCase() + f.slice(1)}
+                {f === 'all' ? 'All' : f === 'queue' ? `Queue${queuedPaths.length ? ` ${queuedPaths.length}` : ''}` : f[0].toUpperCase() + f.slice(1)}
               </button>
             ))}
+            <select
+              value={['unmarked', 'best', 'blur-risk', 'near-duplicates', 'review-needed', 'needs-exposure', 'normalized', 'adjusted', 'photos', 'videos', 'raw'].includes(filter) ? filter : ''}
+              onChange={(e) => dispatch({ type: 'SET_FILTER', filter: (e.target.value || 'all') as typeof filter })}
+              className="px-1 py-0.5 text-[10px] bg-surface border border-border rounded text-text-muted hover:text-text focus:outline-none focus:border-text cursor-pointer"
+              title="More filters"
+            >
+              <option value="">More</option>
+              <option value="unmarked">Unmarked</option>
+              <option value="best">Best</option>
+              <option value="blur-risk">Blur risk</option>
+              <option value="near-duplicates">Similar</option>
+              <option value="review-needed">Review needed</option>
+              <option value="needs-exposure">Needs exposure</option>
+              <option value="normalized">Normalized</option>
+              <option value="adjusted">Manual EV</option>
+              <option value="photos">Photos</option>
+              <option value="videos">Videos</option>
+              <option value="raw">RAW</option>
+            </select>
+            <select
+              value={filter.startsWith('rating-') ? filter : ''}
+              onChange={(e) => dispatch({ type: 'SET_FILTER', filter: (e.target.value || 'all') as typeof filter })}
+              className="px-1 py-0.5 text-[10px] bg-surface border border-border rounded text-text-muted hover:text-text focus:outline-none focus:border-text cursor-pointer"
+              title="Filter by minimum star rating"
+            >
+              <option value="">Stars</option>
+              <option value="rating-5">5 stars</option>
+              <option value="rating-4">4+ stars</option>
+              <option value="rating-3">3+ stars</option>
+              <option value="rating-2">2+ stars</option>
+              <option value="rating-1">1+ star</option>
+            </select>
+            <select
+              value={filter.startsWith('camera:') ? filter : ''}
+              onChange={(e) => dispatch({ type: 'SET_FILTER', filter: (e.target.value || 'all') as typeof filter })}
+              className="max-w-[92px] px-1 py-0.5 text-[10px] bg-surface border border-border rounded text-text-muted hover:text-text focus:outline-none focus:border-text cursor-pointer"
+              title="Filter by camera"
+            >
+              <option value="">Camera</option>
+              {metadataFilters.cameras.map((v) => <option key={v} value={`camera:${encodeURIComponent(v)}`}>{v}</option>)}
+            </select>
+            <select
+              value={filter.startsWith('lens:') ? filter : ''}
+              onChange={(e) => dispatch({ type: 'SET_FILTER', filter: (e.target.value || 'all') as typeof filter })}
+              className="max-w-[92px] px-1 py-0.5 text-[10px] bg-surface border border-border rounded text-text-muted hover:text-text focus:outline-none focus:border-text cursor-pointer"
+              title="Filter by lens"
+            >
+              <option value="">Lens</option>
+              {metadataFilters.lenses.map((v) => <option key={v} value={`lens:${encodeURIComponent(v)}`}>{v}</option>)}
+            </select>
+            <select
+              value={filter.startsWith('date:') ? filter : ''}
+              onChange={(e) => dispatch({ type: 'SET_FILTER', filter: (e.target.value || 'all') as typeof filter })}
+              className="max-w-[88px] px-1 py-0.5 text-[10px] bg-surface border border-border rounded text-text-muted hover:text-text focus:outline-none focus:border-text cursor-pointer"
+              title="Filter by date"
+            >
+              <option value="">Date</option>
+              {metadataFilters.dates.map((v) => <option key={v} value={`date:${encodeURIComponent(v)}`}>{v}</option>)}
+            </select>
+            <select
+              value={filter.startsWith('ext:') ? filter : ''}
+              onChange={(e) => dispatch({ type: 'SET_FILTER', filter: (e.target.value || 'all') as typeof filter })}
+              className="max-w-[68px] px-1 py-0.5 text-[10px] bg-surface border border-border rounded text-text-muted hover:text-text focus:outline-none focus:border-text cursor-pointer"
+              title="Filter by file type"
+            >
+              <option value="">Ext</option>
+              {metadataFilters.exts.map((v) => <option key={v} value={`ext:${encodeURIComponent(v)}`}>{v}</option>)}
+            </select>
             <div className="w-px h-3 bg-border mx-1" />
             <button
               onClick={() => dispatch({ type: 'TOGGLE_CULL_MODE' })}
@@ -705,11 +1254,58 @@ export function ThumbnailGrid() {
               Cull
             </button>
             <button
+              onClick={() => {
+                dispatch({ type: 'SET_FILTER', filter: 'unmarked' });
+                dispatch({ type: 'SET_VIEW_MODE', mode: 'single' });
+                if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0);
+              }}
+              className="px-1.5 py-0.5 text-[10px] text-text-muted hover:text-text rounded transition-colors"
+              title="Review unmarked files"
+            >
+              Review
+            </button>
+            {duplicateCount > 0 && (
+              <>
+                <button
+                  onClick={() => {
+                    dispatch({ type: 'SET_FILTER', filter: 'duplicates' });
+                    dispatch({ type: 'SET_VIEW_MODE', mode: 'compare' });
+                    if (focusedIndex < 0) setFocused(0);
+                  }}
+                  className="px-1.5 py-0.5 text-[10px] text-text-muted hover:text-blue-400 rounded"
+                  title="Show duplicate files in compare view"
+                >
+                  Compare dupes
+                </button>
+                <button
+                  onClick={() => dispatch({ type: 'REJECT_DUPLICATES' })}
+                  className="px-1.5 py-0.5 text-[10px] text-text-muted hover:text-red-400 rounded"
+                  title="Mark duplicate files as rejected; Ctrl+Z to undo"
+                >
+                  Reject dupes
+                </button>
+              </>
+            )}
+            <button
               onClick={() => window.electronAPI.exportManifest('csv')}
               className="px-1.5 py-0.5 text-[10px] text-text-muted hover:text-text rounded"
               title="Export CSV manifest of the current scan"
             >
               CSV
+            </button>
+            <button
+              onClick={() => window.electronAPI.exportManifest('json')}
+              className="px-1.5 py-0.5 text-[10px] text-text-muted hover:text-text rounded"
+              title="Export JSON manifest of the current scan"
+            >
+              JSON
+            </button>
+            <button
+              onClick={() => setShowShortcuts(true)}
+              className="px-1.5 py-0.5 text-[10px] text-text-muted hover:text-text rounded"
+              title="Show keyboard shortcuts (?)"
+            >
+              ?
             </button>
             {burstGrouping && burstIds.size > 0 && (
               <>
@@ -720,6 +1316,20 @@ export function ThumbnailGrid() {
                   title={allBurstsCollapsed ? 'Expand all bursts' : 'Collapse all bursts'}
                 >
                   {allBurstsCollapsed ? 'Expand bursts' : 'Collapse bursts'}
+                </button>
+                <button
+                  onClick={() => dispatch({ type: 'PICK_BURST_KEEPERS' })}
+                  className="px-1.5 py-0.5 text-[10px] text-text-muted hover:text-yellow-400 rounded transition-colors"
+                  title="Pick best frame in each burst and reject the rest"
+                >
+                  Burst keepers
+                </button>
+                <button
+                  onClick={() => dispatch({ type: 'PICK_BEST_IN_GROUPS' })}
+                  className="px-1.5 py-0.5 text-[10px] text-text-muted hover:text-yellow-400 rounded transition-colors"
+                  title="Pick best shot in each burst and visual-similar group"
+                >
+                  Pick best
                 </button>
               </>
             )}
@@ -762,6 +1372,18 @@ export function ThumbnailGrid() {
               <path fillRule="evenodd" d="M1 4.75C1 3.784 1.784 3 2.75 3h14.5c.966 0 1.75.784 1.75 1.75v10.515a1.75 1.75 0 01-1.75 1.75H2.75A1.75 1.75 0 011 15.265V4.75zm1.5 0a.25.25 0 01.25-.25h14.5a.25.25 0 01.25.25v10.515a.25.25 0 01-.25.25H2.75a.25.25 0 01-.25-.25V4.75z" clipRule="evenodd" />
             </svg>
           </button>
+          <button
+            onClick={() => {
+              dispatch({ type: 'SET_VIEW_MODE', mode: 'compare' });
+              if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0);
+            }}
+            className={`p-0.5 rounded transition-colors ${viewMode === 'compare' ? 'text-text bg-surface-raised' : 'text-text-muted hover:text-text'}`}
+            title="Compare selected images"
+          >
+            <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M2 4.5A2.5 2.5 0 014.5 2h4A2.5 2.5 0 0111 4.5v11A2.5 2.5 0 018.5 18h-4A2.5 2.5 0 012 15.5v-11zM12 4.5A2.5 2.5 0 0114.5 2h1A2.5 2.5 0 0118 4.5v11a2.5 2.5 0 01-2.5 2.5h-1a2.5 2.5 0 01-2.5-2.5v-11z" />
+            </svg>
+          </button>
         </div>
 
         <div className="w-px h-3.5 bg-border mx-2 shrink-0" />
@@ -791,6 +1413,7 @@ export function ThumbnailGrid() {
           </svg>
         </button>
       </div>
+      {nextActionToolbar}
 
       {/* Content */}
       <div className="flex-1 min-h-0">
@@ -799,6 +1422,11 @@ export function ThumbnailGrid() {
             inline
             onClose={() => dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' })}
           />
+        ) : viewMode === 'compare' ? (
+          <div className="h-full relative">
+            <CompareView files={compareFiles.length >= 2 ? compareFiles : sortedFiles.slice(Math.max(0, focusedIndex), Math.max(0, focusedIndex) + 2)} />
+            {floatingToolbar}
+          </div>
         ) : viewMode === 'single' && focusedFile ? (
           <div className="h-full relative">
             <SingleView
@@ -821,6 +1449,7 @@ export function ThumbnailGrid() {
                     file={file}
                     focused={i === focusedIndex}
                     selected={selectedIndices.has(i)}
+                    queued={queuedSet.has(file.path)}
                     compact
                     frameNumber={i + 1}
                     burstCollapsed={!!file.burstId && collapsedSet.has(file.burstId)}
@@ -858,7 +1487,8 @@ export function ThumbnailGrid() {
                     key={file.path}
                     file={file}
                     focused={i === focusedIndex}
-                    selected={selectedIndices.has(i)}
+                  selected={selectedIndices.has(i)}
+                  queued={queuedSet.has(file.path)}
                     burstCollapsed={!!file.burstId && collapsedSet.has(file.burstId)}
                     onBurstToggle={(id) => dispatch({ type: 'TOGGLE_BURST_COLLAPSE', burstId: id })}
                     onClick={(e) => handleCardClick(i, e)}

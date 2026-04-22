@@ -40,13 +40,19 @@ function makeState(overrides: Record<string, unknown> = {}) {
     filter: 'all' as const,
     cullMode: false,
     selectedPaths: [] as string[],
+    queuedPaths: [] as string[],
+    selectionSets: [],
+    scanPaused: false,
+    fileHistory: [] as MediaFile[][],
     // Workflow options
     separateProtected: false,
     protectedFolderName: '_Protected',
     backupDestRoot: '',
     autoEject: false,
     playSoundOnComplete: false,
+    completeSoundPath: '',
     openFolderOnComplete: false,
+    verifyChecksums: false,
     autoImport: false,
     autoImportDestRoot: '',
     // Burst grouping
@@ -209,6 +215,115 @@ describe('ImportContext reducer', () => {
       expect(next.files[0].pick).toBe('selected');
       expect(next.files[1].pick).toBeUndefined();
       expect(next.files[2].pick).toBe('selected');
+    });
+  });
+
+  describe('import queue', () => {
+    it('adds only known paths to the queue without duplicates', () => {
+      const files = [makeFile({ path: '/a.jpg' }), makeFile({ path: '/b.jpg' })];
+      const state = makeState({ files, queuedPaths: ['/a.jpg'] });
+      const next = reducer(state, { type: 'QUEUE_ADD_PATHS', paths: ['/a.jpg', '/b.jpg', '/missing.jpg'] });
+      expect(next.queuedPaths).toEqual(['/a.jpg', '/b.jpg']);
+    });
+
+    it('removes paths from the queue', () => {
+      const state = makeState({ queuedPaths: ['/a.jpg', '/b.jpg'] });
+      const next = reducer(state, { type: 'QUEUE_REMOVE_PATHS', paths: ['/a.jpg'] });
+      expect(next.queuedPaths).toEqual(['/b.jpg']);
+    });
+
+    it('clears queue and exits queue filter', () => {
+      const state = makeState({ queuedPaths: ['/a.jpg'], filter: 'queue' });
+      const next = reducer(state, { type: 'QUEUE_CLEAR' });
+      expect(next.queuedPaths).toEqual([]);
+      expect(next.filter).toBe('all');
+    });
+  });
+
+  describe('selection sets', () => {
+    it('saves a named selection set with valid paths only', () => {
+      const files = [makeFile({ path: '/a.jpg' }), makeFile({ path: '/b.jpg' })];
+      const state = makeState({ files });
+      const next = reducer(state, {
+        type: 'SELECTION_SET_SAVE',
+        name: 'Client',
+        paths: ['/a.jpg', '/missing.jpg'],
+        createdAt: '2026-04-22T00:00:00.000Z',
+      });
+      expect(next.selectionSets).toEqual([{ name: 'Client', paths: ['/a.jpg'], createdAt: '2026-04-22T00:00:00.000Z' }]);
+    });
+
+    it('applies a selection set by writing selectedPaths for valid files', () => {
+      const files = [makeFile({ path: '/a.jpg' }), makeFile({ path: '/b.jpg' })];
+      const state = makeState({
+        files,
+        selectionSets: [{ name: 'Client', paths: ['/a.jpg', '/missing.jpg'], createdAt: '2026-04-22T00:00:00.000Z' }],
+      });
+      const next = reducer(state, { type: 'SELECTION_SET_APPLY', name: 'Client' });
+      expect(next.selectedPaths).toEqual(['/a.jpg']);
+    });
+
+    it('deletes a selection set', () => {
+      const state = makeState({
+        selectionSets: [{ name: 'Client', paths: ['/a.jpg'], createdAt: '2026-04-22T00:00:00.000Z' }],
+      });
+      const next = reducer(state, { type: 'SELECTION_SET_DELETE', name: 'Client' });
+      expect(next.selectionSets).toEqual([]);
+    });
+  });
+
+  describe('scan pause state', () => {
+    it('sets and clears scanPaused', () => {
+      const paused = reducer(makeState({ phase: 'scanning' }), { type: 'SCAN_PAUSE' });
+      expect(paused.scanPaused).toBe(true);
+      const resumed = reducer(paused, { type: 'SCAN_RESUME' });
+      expect(resumed.scanPaused).toBe(false);
+    });
+  });
+
+  describe('smart review actions', () => {
+    it('applies review scores and derives blur risk', () => {
+      const state = makeState({ files: [makeFile({ path: '/soft.jpg' })] });
+      const next = reducer(state, {
+        type: 'SET_REVIEW_SCORES',
+        scores: { '/soft.jpg': { sharpnessScore: 10, visualHash: '0000000000000000' } },
+      });
+      expect(next.files[0].visualHash).toBe('0000000000000000');
+      expect(next.files[0].blurRisk).toBe('high');
+      expect(typeof next.files[0].reviewScore).toBe('number');
+    });
+
+    it('groups visual duplicates by hash distance', () => {
+      const files = [
+        makeFile({ path: '/a.jpg', visualHash: '0000000000000000' }),
+        makeFile({ path: '/b.jpg', visualHash: '0000000000000001' }),
+        makeFile({ path: '/c.jpg', visualHash: 'ffffffffffffffff' }),
+      ];
+      const next = reducer(makeState({ files }), { type: 'GROUP_VISUAL_DUPLICATES', threshold: 2 });
+      expect(next.files[0].visualGroupId).toBeTruthy();
+      expect(next.files[1].visualGroupId).toBe(next.files[0].visualGroupId);
+      expect(next.files[2].visualGroupId).toBeUndefined();
+    });
+
+    it('picks best in visual groups and records undo history', () => {
+      const files = [
+        makeFile({ path: '/a.jpg', visualGroupId: 'g1', visualGroupSize: 2, reviewScore: 20, sharpnessScore: 20 }),
+        makeFile({ path: '/b.jpg', visualGroupId: 'g1', visualGroupSize: 2, rating: 5, reviewScore: 80, sharpnessScore: 80 }),
+      ];
+      const next = reducer(makeState({ files }), { type: 'PICK_BEST_IN_GROUPS' });
+      expect(next.files.find((f) => f.path === '/b.jpg')?.pick).toBe('selected');
+      expect(next.files.find((f) => f.path === '/a.jpg')?.pick).toBe('rejected');
+      expect(next.fileHistory).toHaveLength(1);
+    });
+
+    it('queues high-scoring files only', () => {
+      const files = [
+        makeFile({ path: '/best.jpg', reviewScore: 80 }),
+        makeFile({ path: '/weak.jpg', reviewScore: 40 }),
+        makeFile({ path: '/reject.jpg', reviewScore: 95, pick: 'rejected' }),
+      ];
+      const next = reducer(makeState({ files }), { type: 'QUEUE_BEST' });
+      expect(next.queuedPaths).toEqual(['/best.jpg']);
     });
   });
 

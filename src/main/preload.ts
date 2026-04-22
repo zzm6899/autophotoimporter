@@ -60,6 +60,10 @@ const api = {
     ipcRenderer.invoke(IPC.SCAN_PREVIEW, filePath),
   cancelScan: (): Promise<void> =>
     ipcRenderer.invoke(IPC.SCAN_CANCEL),
+  pauseScan: (): Promise<void> =>
+    ipcRenderer.invoke(IPC.SCAN_PAUSE),
+  resumeScan: (): Promise<void> =>
+    ipcRenderer.invoke(IPC.SCAN_RESUME),
 
   // Import
   startImport: (config: ImportConfig): Promise<ImportResult> =>
@@ -75,6 +79,8 @@ const api = {
   // Dialogs
   selectFolder: (title: string): Promise<string | null> =>
     ipcRenderer.invoke(IPC.DIALOG_SELECT_FOLDER, title),
+  selectFile: (title: string, filters?: Electron.FileFilter[]): Promise<string | null> =>
+    ipcRenderer.invoke(IPC.DIALOG_SELECT_FILE, title, filters),
   openPath: (path: string): Promise<void> =>
     ipcRenderer.invoke(IPC.DIALOG_OPEN_PATH, path),
 
@@ -109,6 +115,8 @@ const api = {
   // Export manifest
   exportManifest: (format: 'csv' | 'json'): Promise<string | null> =>
     ipcRenderer.invoke(IPC.EXPORT_MANIFEST, format),
+  exportContactSheet: (files: MediaFile[]): Promise<string | null> =>
+    ipcRenderer.invoke(IPC.EXPORT_CONTACT_SHEET, files),
 
   // Eject volume (removable only, best-effort)
   ejectVolume: (volumePath: string): Promise<{ ok: boolean; error?: string }> =>

@@ -4,9 +4,10 @@ import { useAppState, useAppDispatch } from '../context/ImportContext';
 export function useImport() {
   const {
     selectedSource, destination, skipDuplicates, saveFormat, jpegQuality, phase,
-    files, selectedPaths,
+    files, selectedPaths, queuedPaths,
     separateProtected, protectedFolderName, backupDestRoot,
-    autoEject, playSoundOnComplete, openFolderOnComplete,
+    autoEject, playSoundOnComplete, completeSoundPath, openFolderOnComplete,
+    verifyChecksums,
     normalizeExposure, exposureAnchorPath, exposureMaxStops,
   } = useAppState();
   const dispatch = useAppDispatch();
@@ -31,7 +32,9 @@ export function useImport() {
     //   2. Pick/reject flags — if the user has picked any file, import the picks.
     //   3. Everything that isn't rejected and (when enabled) isn't a duplicate.
     let pathsToImport: string[] | undefined;
-    if (selectedPaths.length > 0) {
+    if (queuedPaths.length > 0) {
+      pathsToImport = queuedPaths;
+    } else if (selectedPaths.length > 0) {
       pathsToImport = selectedPaths;
     } else {
       const picked = files.filter((f) => f.pick === 'selected').map((f) => f.path);
@@ -56,6 +59,11 @@ export function useImport() {
     const normalizeAnchorPaths = typeof exposureAnchorEV === 'number' && saveFormat !== 'original'
       ? files.filter((f) => f.normalizeToAnchor).map((f) => f.path)
       : [];
+    const exposureAdjustments = saveFormat !== 'original'
+      ? Object.fromEntries(files
+          .filter((f) => typeof f.exposureAdjustmentStops === 'number' && Math.abs(f.exposureAdjustmentStops) >= 0.01)
+          .map((f) => [f.path, f.exposureAdjustmentStops as number]))
+      : {};
 
     dispatch({ type: 'IMPORT_START' });
     try {
@@ -70,10 +78,12 @@ export function useImport() {
         protectedFolderName,
         backupDestRoot: backupDestRoot || undefined,
         autoEject,
+        verifyChecksums,
         normalizeExposure: normalizeExposure && saveFormat !== 'original' && typeof exposureAnchorEV === 'number',
         exposureAnchorEV,
         exposureMaxStops,
         normalizeAnchorPaths: normalizeAnchorPaths.length > 0 ? normalizeAnchorPaths : undefined,
+        exposureAdjustments: Object.keys(exposureAdjustments).length > 0 ? exposureAdjustments : undefined,
       });
       dispatch({ type: 'IMPORT_COMPLETE', result });
 
@@ -81,8 +91,10 @@ export function useImport() {
       if (result.errors.length === 0 || result.imported > 0) {
         if (playSoundOnComplete) {
           try {
-            // Short beep via data URI — avoids shipping an audio asset
-            const a = new Audio('data:audio/wav;base64,UklGRjIAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQ4AAACAhIuQlJmbm5qYlJCMiA==');
+            const soundSrc = completeSoundPath
+              ? `file:///${completeSoundPath.replace(/\\/g, '/').replace(/^\/+/, '')}`
+              : 'data:audio/wav;base64,UklGRjIAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQ4AAACAhIuQlJmbm5qYlJCMiA==';
+            const a = new Audio(encodeURI(soundSrc));
             void a.play().catch(() => undefined);
           } catch { /* ignore */ }
         }
@@ -105,9 +117,9 @@ export function useImport() {
     }
   }, [
     selectedSource, destination, skipDuplicates, saveFormat, jpegQuality, phase, dispatch,
-    files, selectedPaths,
+    files, selectedPaths, queuedPaths,
     separateProtected, protectedFolderName, backupDestRoot,
-    autoEject, playSoundOnComplete, openFolderOnComplete,
+    autoEject, playSoundOnComplete, completeSoundPath, openFolderOnComplete, verifyChecksums,
     normalizeExposure, exposureAnchorPath, exposureMaxStops,
   ]);
 

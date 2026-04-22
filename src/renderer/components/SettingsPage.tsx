@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import type { SaveFormat } from '../../shared/types';
 import { FOLDER_PRESETS } from '../../shared/types';
@@ -21,15 +22,21 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     backupDestRoot,
     autoEject,
     playSoundOnComplete,
+    completeSoundPath,
     openFolderOnComplete,
+    verifyChecksums,
+    selectedSource,
+    destination,
     autoImport,
     autoImportDestRoot,
     burstGrouping,
     burstWindowSec,
     normalizeExposure,
     exposureMaxStops,
+    selectionSets,
   } = useAppState();
   const dispatch = useAppDispatch();
+  const [postImportStatus, setPostImportStatus] = useState<string | null>(null);
 
   const set = <K extends string>(key: K, value: unknown) => {
     void window.electronAPI.setSettings({ [key]: value } as Record<string, unknown>);
@@ -67,7 +74,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
 
   const handleWorkflowBool = (
     key: 'separateProtected' | 'autoEject' | 'playSoundOnComplete' | 'openFolderOnComplete'
-      | 'autoImport' | 'burstGrouping' | 'normalizeExposure',
+      | 'autoImport' | 'burstGrouping' | 'normalizeExposure' | 'verifyChecksums',
     value: boolean,
   ) => {
     dispatch({ type: 'SET_WORKFLOW_OPTION', key, value });
@@ -75,7 +82,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   };
 
   const handleWorkflowString = (
-    key: 'protectedFolderName' | 'backupDestRoot' | 'autoImportDestRoot',
+    key: 'protectedFolderName' | 'backupDestRoot' | 'autoImportDestRoot' | 'completeSoundPath',
     value: string,
   ) => {
     dispatch({ type: 'SET_WORKFLOW_STRING', key, value });
@@ -100,6 +107,54 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const handleChooseAutoImportDest = async () => {
     const folder = await window.electronAPI.selectFolder('Select Auto-Import Destination');
     if (folder) handleWorkflowString('autoImportDestRoot', folder);
+  };
+
+  const handleChooseCompleteSound = async () => {
+    const file = await window.electronAPI.selectFile('Select Completion Sound', [
+      { name: 'Audio', extensions: ['wav', 'mp3', 'm4a', 'aac', 'ogg', 'flac'] },
+      { name: 'All Files', extensions: ['*'] },
+    ]);
+    if (file) {
+      handleWorkflowBool('playSoundOnComplete', true);
+      handleWorkflowString('completeSoundPath', file);
+    }
+  };
+
+  const playCompleteSound = () => {
+    try {
+      const soundSrc = completeSoundPath
+        ? `file:///${completeSoundPath.replace(/\\/g, '/').replace(/^\/+/, '')}`
+        : 'data:audio/wav;base64,UklGRjIAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQ4AAACAhIuQlJmbm5qYlJCMiA==';
+      void new Audio(encodeURI(soundSrc)).play().catch(() => undefined);
+    } catch { /* ignore */ }
+  };
+
+  const handleEjectCurrentSource = async () => {
+    if (!selectedSource) return;
+    setPostImportStatus('Ejecting source...');
+    const result = await window.electronAPI.ejectVolume(selectedSource);
+    setPostImportStatus(result.ok ? 'Source ejected.' : `Eject failed: ${result.error || 'volume may be busy'}`);
+  };
+
+  const handleOpenCurrentDestination = async () => {
+    if (!destination) return;
+    try {
+      await window.electronAPI.openPath(destination);
+      setPostImportStatus('Destination opened.');
+    } catch (err) {
+      setPostImportStatus(err instanceof Error ? err.message : 'Could not open destination.');
+    }
+  };
+
+  const handleApplySelectionSet = (name: string) => {
+    dispatch({ type: 'SELECTION_SET_APPLY', name });
+    setPostImportStatus(`Applied selection set: ${name}`);
+  };
+
+  const handleDeleteSelectionSet = (name: string) => {
+    const next = selectionSets.filter((s) => s.name !== name);
+    dispatch({ type: 'SET_SELECTION_SETS', sets: next });
+    set('selectionSets', next);
   };
 
   // Shared inner content (header + scrollable body)
@@ -256,6 +311,33 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
             )}
           </section>
 
+          {/* Selection sets */}
+          {selectionSets.length > 0 && (
+            <section>
+              <h3 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-2">Selection Sets</h3>
+              <div className="space-y-1">
+                {selectionSets.map((setItem) => (
+                  <div key={setItem.name} className="flex items-center gap-2 text-xs">
+                    <button
+                      onClick={() => handleApplySelectionSet(setItem.name)}
+                      className="min-w-0 flex-1 px-2 py-1 bg-surface-raised hover:bg-border rounded text-text-secondary text-left truncate"
+                      title={`${setItem.paths.length} file(s)`}
+                    >
+                      {setItem.name}
+                    </button>
+                    <span className="text-[10px] text-text-muted font-mono">{setItem.paths.length}</span>
+                    <button
+                      onClick={() => handleDeleteSelectionSet(setItem.name)}
+                      className="text-[10px] text-text-muted hover:text-red-300"
+                    >
+                      delete
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
           {/* Backup */}
           <section>
             <h3 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-2">Backup Copy</h3>
@@ -292,6 +374,15 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                 />
                 <span className="text-xs text-text">Eject source when done</span>
               </label>
+              <div className="ml-5">
+                <button
+                  onClick={handleEjectCurrentSource}
+                  disabled={!selectedSource}
+                  className="px-2 py-1 text-[10px] bg-surface-raised hover:bg-border rounded text-text-secondary transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Eject current source
+                </button>
+              </div>
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="checkbox"
@@ -300,6 +391,29 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                 />
                 <span className="text-xs text-text">Play sound on complete</span>
               </label>
+              <div className="ml-5 flex items-center gap-1.5">
+                <button
+                  onClick={handleChooseCompleteSound}
+                  className="min-w-0 flex-1 px-2 py-1 text-[10px] bg-surface-raised hover:bg-border rounded text-text-secondary transition-colors text-left truncate"
+                  title={completeSoundPath || 'Choose a custom completion sound'}
+                >
+                  {completeSoundPath ? completeSoundPath.split(/[/\\]/).pop() : 'Choose sound...'}
+                </button>
+                <button
+                  onClick={playCompleteSound}
+                  className="px-2 py-1 text-[10px] bg-surface-raised hover:bg-border rounded text-text-secondary transition-colors"
+                >
+                  Test
+                </button>
+                {completeSoundPath && (
+                  <button
+                    onClick={() => handleWorkflowString('completeSoundPath', '')}
+                    className="text-[10px] text-text-muted hover:text-text"
+                  >
+                    clear
+                  </button>
+                )}
+              </div>
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="checkbox"
@@ -308,6 +422,26 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                 />
                 <span className="text-xs text-text">Open destination folder on complete</span>
               </label>
+              <div className="ml-5">
+                <button
+                  onClick={handleOpenCurrentDestination}
+                  disabled={!destination}
+                  className="px-2 py-1 text-[10px] bg-surface-raised hover:bg-border rounded text-text-secondary transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Open current destination
+                </button>
+              </div>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={verifyChecksums}
+                  onChange={(e) => handleWorkflowBool('verifyChecksums', e.target.checked)}
+                />
+                <span className="text-xs text-text">Full checksum verification</span>
+              </label>
+              {postImportStatus && (
+                <p className="ml-5 text-[10px] text-text-muted">{postImportStatus}</p>
+              )}
             </div>
           </section>
 

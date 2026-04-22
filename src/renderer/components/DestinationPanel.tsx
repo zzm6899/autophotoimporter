@@ -1,7 +1,7 @@
 import { useMemo, useEffect, useState } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import { useImport } from '../hooks/useImport';
-import type { SaveFormat } from '../../shared/types';
+import type { SaveFormat, JobPreset } from '../../shared/types';
 import { FOLDER_PRESETS, resolvePattern } from '../../shared/types';
 import { formatSize } from '../utils/formatters';
 
@@ -22,9 +22,10 @@ function applyFormat(destPath: string, format: SaveFormat): string {
 export function DestinationPanel() {
   const {
     destination, skipDuplicates, saveFormat, jpegQuality, folderPreset, customPattern,
-    files, phase, selectedSource, selectedPaths,
+    files, phase, selectedSource, selectedPaths, queuedPaths,
     separateProtected, protectedFolderName, backupDestRoot,
-    autoEject, playSoundOnComplete, openFolderOnComplete,
+    autoEject, playSoundOnComplete, completeSoundPath, openFolderOnComplete,
+    verifyChecksums,
     autoImport, autoImportDestRoot,
     burstGrouping, burstWindowSec,
     normalizeExposure, exposureAnchorPath, exposureMaxStops,
@@ -33,6 +34,11 @@ export function DestinationPanel() {
   const { startImport } = useImport();
   const [freeBytes, setFreeBytes] = useState<number | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [jobPresets, setJobPresets] = useState<JobPreset[]>([]);
+
+  useEffect(() => {
+    void window.electronAPI.getSettings().then((s) => setJobPresets(s.jobPresets ?? []));
+  }, []);
 
   const handleChooseDestination = async () => {
     const folder = await window.electronAPI.selectFolder('Select Destination Folder');
@@ -63,6 +69,22 @@ export function DestinationPanel() {
     }
   };
 
+  const handleChooseCompleteSound = async () => {
+    const file = await window.electronAPI.selectFile('Select Completion Sound', [
+      { name: 'Audio', extensions: ['wav', 'mp3', 'm4a', 'aac', 'ogg', 'flac'] },
+      { name: 'All Files', extensions: ['*'] },
+    ]);
+    if (!file) return;
+    dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'playSoundOnComplete', value: true });
+    dispatch({ type: 'SET_WORKFLOW_STRING', key: 'completeSoundPath', value: file });
+    window.electronAPI.setSettings({ playSoundOnComplete: true, completeSoundPath: file });
+  };
+
+  const handleClearCompleteSound = () => {
+    dispatch({ type: 'SET_WORKFLOW_STRING', key: 'completeSoundPath', value: '' });
+    window.electronAPI.setSettings({ completeSoundPath: '' });
+  };
+
   const handleToggleDuplicates = () => {
     const value = !skipDuplicates;
     dispatch({ type: 'SET_SKIP_DUPLICATES', value });
@@ -91,7 +113,7 @@ export function DestinationPanel() {
 
   const handleWorkflowBool = (
     key: 'separateProtected' | 'autoEject' | 'playSoundOnComplete' | 'openFolderOnComplete'
-      | 'autoImport' | 'burstGrouping' | 'normalizeExposure',
+      | 'autoImport' | 'burstGrouping' | 'normalizeExposure' | 'verifyChecksums',
     value: boolean,
   ) => {
     dispatch({ type: 'SET_WORKFLOW_OPTION', key, value });
@@ -108,6 +130,50 @@ export function DestinationPanel() {
     window.electronAPI.setSettings({ exposureMaxStops: stops });
   };
 
+  const currentPreset = (name: string): JobPreset => ({
+    name,
+    destRoot: destination || '',
+    backupDestRoot,
+    saveFormat,
+    jpegQuality,
+    folderPreset,
+    customPattern,
+    skipDuplicates,
+    separateProtected,
+    protectedFolderName,
+  });
+
+  const savePreset = () => {
+    const name = window.prompt('Preset name');
+    if (!name) return;
+    const next = [...jobPresets.filter((p) => p.name !== name), currentPreset(name)];
+    setJobPresets(next);
+    window.electronAPI.setSettings({ jobPresets: next });
+  };
+
+  const applyPreset = (name: string) => {
+    const preset = jobPresets.find((p) => p.name === name);
+    if (!preset) return;
+    if (preset.destRoot) dispatch({ type: 'SET_DESTINATION', path: preset.destRoot });
+    dispatch({ type: 'SET_WORKFLOW_STRING', key: 'backupDestRoot', value: preset.backupDestRoot });
+    dispatch({ type: 'SET_SAVE_FORMAT', format: preset.saveFormat });
+    dispatch({ type: 'SET_JPEG_QUALITY', quality: preset.jpegQuality });
+    dispatch({ type: 'SET_FOLDER_PRESET', preset: preset.folderPreset });
+    dispatch({ type: 'SET_CUSTOM_PATTERN', pattern: preset.customPattern });
+    dispatch({ type: 'SET_SKIP_DUPLICATES', value: preset.skipDuplicates });
+    dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'separateProtected', value: preset.separateProtected });
+    dispatch({ type: 'SET_WORKFLOW_STRING', key: 'protectedFolderName', value: preset.protectedFolderName });
+    window.electronAPI.setSettings({ ...preset, lastDestination: preset.destRoot });
+  };
+
+  const deletePreset = () => {
+    const name = window.prompt('Delete preset name');
+    if (!name) return;
+    const next = jobPresets.filter((p) => p.name !== name);
+    setJobPresets(next);
+    window.electronAPI.setSettings({ jobPresets: next });
+  };
+
   const anchorFile = exposureAnchorPath ? files.find((f) => f.path === exposureAnchorPath) : null;
   const burstCount = useMemo(() => {
     const ids = new Set<string>();
@@ -122,14 +188,22 @@ export function DestinationPanel() {
 
   const duplicateCount = files.filter((f) => f.duplicate).length;
   const pickedCount = files.filter((f) => f.pick === 'selected').length;
+  const rejectedCount = files.filter((f) => f.pick === 'rejected').length;
+  const protectedCount = files.filter((f) => f.isProtected).length;
+  const adjustedCount = files.filter((f) => f.normalizeToAnchor || f.exposureAdjustmentStops).length;
   const hasPicks = pickedCount > 0;
   const hasClickSelection = selectedPaths.length > 0;
+  const hasQueue = queuedPaths.length > 0;
 
   // Selection priority mirrors `useImport.ts`:
   //   1. Click-selection in the grid (selectedPaths)
   //   2. Pick flags (if any)
   //   3. Everything that isn't rejected and (optionally) isn't a duplicate
   const importFiles = useMemo(() => {
+    if (hasQueue) {
+      const paths = new Set(queuedPaths);
+      return files.filter((f) => paths.has(f.path));
+    }
     if (hasClickSelection) {
       const paths = new Set(selectedPaths);
       return files.filter((f) => paths.has(f.path));
@@ -140,10 +214,12 @@ export function DestinationPanel() {
     return skipDuplicates
       ? files.filter((f) => !f.duplicate && f.pick !== 'rejected')
       : files.filter((f) => f.pick !== 'rejected');
-  }, [files, hasClickSelection, hasPicks, skipDuplicates, selectedPaths]);
+  }, [files, hasClickSelection, hasPicks, hasQueue, queuedPaths, skipDuplicates, selectedPaths]);
 
   const canImport = selectedSource && destination && importFiles.length > 0 && (phase === 'ready' || phase === 'scanning');
   const totalSize = importFiles.reduce((sum, f) => sum + f.size, 0);
+  const exposureEditCount = importFiles.filter((f) => f.normalizeToAnchor || f.exposureAdjustmentStops).length;
+  const backupSameAsPrimary = !!backupDestRoot && !!destination && backupDestRoot === destination;
 
   // Free-space check on the destination. Re-runs when the destination or
   // the set of files-to-import changes so the warning reflects reality.
@@ -211,6 +287,45 @@ export function DestinationPanel() {
           )}
         </button>
       </div>
+
+      <div className="px-2.5 mb-2.5">
+        <div className="flex items-center gap-1">
+          <select
+            value=""
+            onChange={(e) => applyPreset(e.target.value)}
+            className="min-w-0 flex-1 px-1.5 py-1 text-[11px] bg-surface-raised border border-border rounded text-text-secondary"
+            title="Apply job preset"
+          >
+            <option value="">Job preset...</option>
+            {jobPresets.map((p) => <option key={p.name} value={p.name}>{p.name}</option>)}
+          </select>
+          <button
+            onClick={savePreset}
+            className="px-1.5 py-1 text-[11px] bg-surface-raised hover:bg-border rounded text-text-secondary"
+            title="Save current output settings as a preset"
+          >
+            Save
+          </button>
+          {jobPresets.length > 0 && (
+            <button
+              onClick={deletePreset}
+              className="px-1.5 py-1 text-[11px] bg-surface-raised hover:bg-border rounded text-text-muted"
+              title="Delete a saved preset by name"
+            >
+              Del
+            </button>
+          )}
+        </div>
+      </div>
+
+      {files.length > 0 && (
+        <div className="px-2.5 mb-2.5 grid grid-cols-2 gap-1 text-[10px] text-text-muted">
+          <div className="bg-surface-raised rounded px-1.5 py-1">Picked <span className="text-yellow-400">{pickedCount}</span></div>
+          <div className="bg-surface-raised rounded px-1.5 py-1">Rejected <span className="text-red-400">{rejectedCount}</span></div>
+          <div className="bg-surface-raised rounded px-1.5 py-1">Protected <span className="text-emerald-400">{protectedCount}</span></div>
+          <div className="bg-surface-raised rounded px-1.5 py-1">Queued <span className="text-emerald-400">{queuedPaths.length}</span></div>
+        </div>
+      )}
 
       {/* Settings */}
       <div className="px-2.5 mb-2.5">
@@ -381,6 +496,27 @@ export function DestinationPanel() {
               />
               <span className="text-xs text-text">Play sound on complete</span>
             </label>
+            {playSoundOnComplete && (
+              <div className="ml-5 flex items-center gap-1">
+                <button
+                  onClick={handleChooseCompleteSound}
+                  className="min-w-0 flex-1 px-1.5 py-1 text-[10px] bg-surface-raised hover:bg-border rounded text-text-secondary transition-colors text-left"
+                  title={completeSoundPath || 'Choose a custom completion sound'}
+                >
+                  <span className="truncate block">
+                    {completeSoundPath ? completeSoundPath.split(/[/\\]/).pop() : 'Choose custom sound...'}
+                  </span>
+                </button>
+                {completeSoundPath && (
+                  <button
+                    onClick={handleClearCompleteSound}
+                    className="text-[10px] text-text-muted hover:text-text"
+                  >
+                    clear
+                  </button>
+                )}
+              </div>
+            )}
             <label className="flex items-center gap-1.5 cursor-pointer">
               <input
                 type="checkbox"
@@ -388,6 +524,14 @@ export function DestinationPanel() {
                 onChange={(e) => handleWorkflowBool('openFolderOnComplete', e.target.checked)}
               />
               <span className="text-xs text-text">Open folder on complete</span>
+            </label>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={verifyChecksums}
+                onChange={(e) => handleWorkflowBool('verifyChecksums', e.target.checked)}
+              />
+              <span className="text-xs text-text">Full checksum verify</span>
             </label>
 
             {/* Auto-import */}
@@ -541,10 +685,24 @@ export function DestinationPanel() {
       {/* Import summary + button */}
       <div className="mt-auto px-2.5 py-2 border-t border-border">
         {files.length > 0 && (
+          <div className="mb-2 space-y-1">
+            {exposureEditCount > 0 && saveFormat === 'original' && (
+              <div className="text-[10px] text-yellow-500">Exposure edits need JPEG/TIFF/HEIC output.</div>
+            )}
+            {backupSameAsPrimary && (
+              <div className="text-[10px] text-red-400">Backup destination matches primary.</div>
+            )}
+            {backupDestRoot && !backupSameAsPrimary && (
+              <div className="text-[10px] text-emerald-500">Backup copy enabled.</div>
+            )}
+          </div>
+        )}
+        {files.length > 0 && (
           <div className="text-[11px] text-text-secondary mb-2">
             {importFiles.length} file{importFiles.length !== 1 ? 's' : ''} &middot; {formatSize(totalSize)}
-            {hasClickSelection && <span className="text-blue-400/80"> &middot; {selectedPaths.length} selected</span>}
-            {!hasClickSelection && hasPicks && <span className="text-yellow-400/70"> &middot; {pickedCount} picked</span>}
+            {hasQueue && <span className="text-emerald-400/80"> &middot; {queuedPaths.length} queued</span>}
+            {!hasQueue && hasClickSelection && <span className="text-blue-400/80"> &middot; {selectedPaths.length} selected</span>}
+            {!hasQueue && !hasClickSelection && hasPicks && <span className="text-yellow-400/70"> &middot; {pickedCount} picked</span>}
             {skipDuplicates && duplicateCount > 0 && (
               <span className="text-yellow-500/70"> &middot; {duplicateCount} already imported</span>
             )}
@@ -576,9 +734,18 @@ export function DestinationPanel() {
         >
           {!destination && files.length > 0
             ? 'Choose Destination First'
-            : `Import ${importFiles.length > 0 ? `${importFiles.length} File${importFiles.length !== 1 ? 's' : ''}` : ''}`
+            : `${hasQueue ? 'Import Queue' : 'Import'} ${importFiles.length > 0 ? `${importFiles.length} File${importFiles.length !== 1 ? 's' : ''}` : ''}`
           }
         </button>
+        {hasQueue && (
+          <button
+            onClick={() => dispatch({ type: 'QUEUE_CLEAR' })}
+            className="w-full mt-1 py-1 rounded text-[10px] bg-surface-raised hover:bg-border text-text-secondary transition-colors"
+            title="Clear import queue"
+          >
+            Clear Queue
+          </button>
+        )}
       </div>
     </div>
   );

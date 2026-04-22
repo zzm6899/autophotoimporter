@@ -1,10 +1,12 @@
 import { useEffect } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import { formatDuration, formatSize } from '../utils/formatters';
+import { useImport } from '../hooks/useImport';
 
 export function ImportSummary() {
-  const { phase, importResult, destination } = useAppState();
+  const { phase, importResult, destination, files } = useAppState();
   const dispatch = useAppDispatch();
+  const { startImport } = useImport();
 
   useEffect(() => {
     if (phase !== 'complete' || !importResult) return;
@@ -25,6 +27,15 @@ export function ImportSummary() {
     dispatch({ type: 'DISMISS_SUMMARY' });
   };
 
+  const handleContactSheet = () => {
+    const sheetFiles = files.filter((f) => f.pick !== 'rejected');
+    void window.electronAPI.exportContactSheet(sheetFiles);
+  };
+
+  const handleRetry = () => {
+    void startImport();
+  };
+
   return (
     <div className="fixed inset-0 z-50 bg-surface-overlay flex items-center justify-center">
       <div className="bg-surface-alt rounded-lg border border-border p-8 max-w-md w-full mx-4 shadow-2xl">
@@ -39,6 +50,18 @@ export function ImportSummary() {
             <div className="flex justify-between text-sm">
               <span className="text-text-secondary">Skipped (duplicates)</span>
               <span className="text-yellow-400 font-mono">{importResult.skipped}</span>
+            </div>
+          )}
+          {typeof importResult.verified === 'number' && (
+            <div className="flex justify-between text-sm">
+              <span className="text-text-secondary">Verified</span>
+              <span className="text-emerald-400 font-mono">{importResult.verified}</span>
+            </div>
+          )}
+          {typeof importResult.checksumVerified === 'number' && importResult.checksumVerified > 0 && (
+            <div className="flex justify-between text-sm">
+              <span className="text-text-secondary">Checksum verified</span>
+              <span className="text-emerald-400 font-mono">{importResult.checksumVerified}</span>
             </div>
           )}
           {importResult.errors.length > 0 && (
@@ -70,16 +93,30 @@ export function ImportSummary() {
         )}
 
         {/* Actions */}
-        <div className="flex gap-3">
+        <div className="flex gap-3 flex-wrap">
           <button
             onClick={handleOpenDestination}
-            className="flex-1 py-2 rounded text-sm bg-accent hover:bg-accent-hover text-white font-medium transition-colors"
+            className="flex-1 min-w-[9rem] py-2 rounded text-sm bg-accent hover:bg-accent-hover text-white font-medium transition-colors"
           >
             Open Destination
           </button>
           <button
+            onClick={handleContactSheet}
+            className="flex-1 min-w-[9rem] py-2 rounded text-sm bg-surface-raised hover:bg-accent/10 text-text transition-colors"
+          >
+            Contact Sheet
+          </button>
+          {importResult.errors.length > 0 && (
+            <button
+              onClick={handleRetry}
+              className="flex-1 min-w-[9rem] py-2 rounded text-sm bg-surface-raised hover:bg-red-500/10 text-red-300 transition-colors"
+            >
+              Retry Import
+            </button>
+          )}
+          <button
             onClick={handleDismiss}
-            className="flex-1 py-2 rounded text-sm bg-surface-raised hover:bg-accent/10 text-text transition-colors"
+            className="flex-1 min-w-[9rem] py-2 rounded text-sm bg-surface-raised hover:bg-accent/10 text-text transition-colors"
           >
             Done
           </button>

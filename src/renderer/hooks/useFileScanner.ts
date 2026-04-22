@@ -28,5 +28,15 @@ export function useFileScanner() {
     await window.electronAPI.cancelScan();
   }, []);
 
-  return { startScan, cancelScan };
+  const pauseScan = useCallback(async () => {
+    await window.electronAPI.pauseScan();
+    dispatch({ type: 'SCAN_PAUSE' });
+  }, [dispatch]);
+
+  const resumeScan = useCallback(async () => {
+    await window.electronAPI.resumeScan();
+    dispatch({ type: 'SCAN_RESUME' });
+  }, [dispatch]);
+
+  return { startScan, cancelScan, pauseScan, resumeScan };
 }

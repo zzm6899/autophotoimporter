@@ -44,8 +44,14 @@ export function useSettings() {
       if (typeof settings.playSoundOnComplete === 'boolean') {
         dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'playSoundOnComplete', value: settings.playSoundOnComplete });
       }
+      if (typeof settings.completeSoundPath === 'string') {
+        dispatch({ type: 'SET_WORKFLOW_STRING', key: 'completeSoundPath', value: settings.completeSoundPath });
+      }
       if (typeof settings.openFolderOnComplete === 'boolean') {
         dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'openFolderOnComplete', value: settings.openFolderOnComplete });
+      }
+      if (typeof settings.verifyChecksums === 'boolean') {
+        dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'verifyChecksums', value: settings.verifyChecksums });
       }
       if (typeof settings.autoImport === 'boolean') {
         dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'autoImport', value: settings.autoImport });
@@ -64,6 +70,9 @@ export function useSettings() {
       }
       if (typeof settings.exposureMaxStops === 'number') {
         dispatch({ type: 'SET_EXPOSURE_MAX_STOPS', stops: settings.exposureMaxStops });
+      }
+      if (Array.isArray(settings.selectionSets)) {
+        dispatch({ type: 'SET_SELECTION_SETS', sets: settings.selectionSets });
       }
     });
   }, [dispatch]);

@@ -6,7 +6,8 @@ export async function isDuplicate(
   destRelativePath: string,
   sourceSize: number,
 ): Promise<boolean> {
-  const fullPath = path.join(destRoot, destRelativePath);
+  const pathApi = destRoot.includes('\\') || /^[A-Za-z]:[\\/]/.test(destRoot) ? path : path.posix;
+  const fullPath = pathApi.join(destRoot, destRelativePath);
   try {
     const destStat = await stat(fullPath);
     return destStat.size === sourceSize;

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { IPC } from '../shared/types';
 import type { ImportConfig, ImportResult, AppSettings, MediaFile, FtpConfig, Volume } from '../shared/types';
 import { listVolumes, startWatching, stopWatching } from './services/volume-watcher';
-import { scanFiles, cancelScan } from './services/file-scanner';
+import { scanFiles, cancelScan, pauseScan, resumeScan } from './services/file-scanner';
 import { importFiles, cancelImport } from './services/import-engine';
 import { isDuplicate } from './services/duplicate-detector';
 import { generatePreview } from './services/exif-parser';
@@ -35,7 +35,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   backupDestRoot: '',
   autoEject: false,
   playSoundOnComplete: false,
+  completeSoundPath: '',
   openFolderOnComplete: false,
+  verifyChecksums: false,
   autoImport: false,
   autoImportDestRoot: '',
   autoImportPromptSeen: false,
@@ -43,6 +45,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   burstWindowSec: 2,
   normalizeExposure: false,
   exposureMaxStops: 2,
+  jobPresets: [],
+  selectionSets: [],
 };
 
 async function loadSettings(): Promise<AppSettings> {
@@ -80,7 +84,8 @@ async function ejectVolume(volumePath: string): Promise<{ ok: boolean; error?: s
     }
     if (process.platform === 'win32') {
       // PowerShell via Shell.Application verb — works on most removable drives.
-      const drive = volumePath.replace(/\\+$/, '').replace(/:$/, ':');
+      const parsed = path.parse(path.resolve(volumePath));
+      const drive = parsed.root || volumePath;
       const script = `
         $sa = New-Object -comObject Shell.Application
         $drv = $sa.Namespace(17).ParseName('${drive.replace(/'/g, "''")}')
@@ -106,6 +111,47 @@ async function getFreeSpace(dirPath: string): Promise<number | null> {
   } catch {
     return null;
   }
+}
+
+function escapeHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function contactSheetHtml(files: MediaFile[]): string {
+  const cards = files.slice(0, 500).map((f) => {
+    const stars = f.rating ? '★'.repeat(Math.min(5, f.rating)) : '';
+    const badge = f.isProtected ? 'Protected' : (f.pick === 'selected' ? 'Picked' : '');
+    return `
+      <article>
+        ${f.thumbnail ? `<img src="${escapeHtml(f.thumbnail)}" />` : '<div class="empty">No preview</div>'}
+        <strong>${escapeHtml(f.name)}</strong>
+        <span>${escapeHtml([stars, badge, f.dateTaken?.slice(0, 10)].filter(Boolean).join(' · '))}</span>
+      </article>
+    `;
+  }).join('');
+  return `<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <style>
+          body { margin: 24px; font: 10px system-ui, sans-serif; color: #111; }
+          h1 { font-size: 18px; margin: 0 0 14px; }
+          main { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+          article { break-inside: avoid; border: 1px solid #ddd; padding: 7px; }
+          img, .empty { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; background: #eee; display: flex; align-items: center; justify-content: center; }
+          strong { display: block; margin-top: 5px; overflow-wrap: anywhere; }
+          span { color: #555; }
+        </style>
+      </head>
+      <body>
+        <h1>Import contact sheet · ${files.length} files</h1>
+        <main>${cards}</main>
+      </body>
+    </html>`;
 }
 
 export function registerIpcHandlers(): void {
@@ -134,8 +180,12 @@ export function registerIpcHandlers(): void {
 
   // Seed the "known volumes" set so the first listing on app launch doesn't
   // fire a flood of "new device" events for already-mounted drives.
-  void listVolumes().then((vols) => {
-    knownVolumePaths = new Set(vols.map((v) => v.path));
+  void Promise.resolve(listVolumes()).then((vols) => {
+    if (Array.isArray(vols)) {
+      knownVolumePaths = new Set(vols.map((v) => v.path));
+    }
+  }).catch(() => {
+    knownVolumePaths = new Set();
   });
 
   app.on('before-quit', () => {
@@ -197,6 +247,14 @@ export function registerIpcHandlers(): void {
     cancelScan();
   });
 
+  ipcMain.handle(IPC.SCAN_PAUSE, async () => {
+    pauseScan();
+  });
+
+  ipcMain.handle(IPC.SCAN_RESUME, async () => {
+    resumeScan();
+  });
+
   // Import
   ipcMain.handle(IPC.IMPORT_START, async (_event, config: ImportConfig) => {
     try {
@@ -205,7 +263,13 @@ export function registerIpcHandlers(): void {
         sendToRenderer(IPC.IMPORT_PROGRESS, progress);
       });
       if (config.autoEject && result.imported > 0 && config.sourcePath) {
-        void ejectVolume(config.sourcePath);
+        const eject = await ejectVolume(config.sourcePath);
+        if (!eject.ok) {
+          result.errors.push({
+            file: 'source-eject',
+            error: eject.error || 'Could not eject source volume',
+          });
+        }
       }
       return result;
     } catch (err: unknown) {
@@ -213,6 +277,7 @@ export function registerIpcHandlers(): void {
       return {
         imported: 0,
         skipped: 0,
+        verified: 0,
         errors: [{ file: 'system', error: message }],
         totalBytes: 0,
         durationMs: 0,
@@ -229,6 +294,16 @@ export function registerIpcHandlers(): void {
     const result = await dialog.showOpenDialog({
       title,
       properties: ['openDirectory', 'createDirectory'],
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0];
+  });
+
+  ipcMain.handle(IPC.DIALOG_SELECT_FILE, async (_event, title: string, filters?: Electron.FileFilter[]) => {
+    const result = await dialog.showOpenDialog({
+      title,
+      properties: ['openFile'],
+      filters,
     });
     if (result.canceled || result.filePaths.length === 0) return null;
     return result.filePaths[0];
@@ -311,7 +386,8 @@ export function registerIpcHandlers(): void {
         'name', 'path', 'size', 'type', 'extension', 'dateTaken',
         'destPath', 'pick', 'rating', 'isProtected', 'duplicate',
         'cameraMake', 'cameraModel', 'lensModel', 'iso', 'aperture',
-        'shutterSpeed', 'focalLength',
+        'shutterSpeed', 'focalLength', 'exposureValue', 'normalizeToAnchor',
+        'exposureAdjustmentStops',
       ];
       const esc = (v: unknown) => {
         if (v == null) return '';
@@ -325,6 +401,30 @@ export function registerIpcHandlers(): void {
       await writeFile(result.filePath, lines.join('\n'));
     }
     return result.filePath;
+  });
+
+  ipcMain.handle(IPC.EXPORT_CONTACT_SHEET, async (_event, files: MediaFile[]) => {
+    const result = await dialog.showSaveDialog({
+      title: 'Export contact sheet',
+      defaultPath: 'import-contact-sheet.pdf',
+      filters: [{ name: 'PDF', extensions: ['pdf'] }],
+    });
+    if (result.canceled || !result.filePath) return null;
+
+    const win = new BrowserWindow({ show: false, webPreferences: { sandbox: true } });
+    try {
+      const html = contactSheetHtml(Array.isArray(files) && files.length > 0 ? files : scannedFiles);
+      await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+      const pdf = await win.webContents.printToPDF({
+        printBackground: true,
+        pageSize: 'A4',
+        margins: { marginType: 'default' },
+      });
+      await writeFile(result.filePath, pdf);
+      return result.filePath;
+    } finally {
+      win.destroy();
+    }
   });
 
   setTimeout(async () => {
@@ -400,6 +500,7 @@ async function maybeAutoImport(volume: Volume): Promise<void> {
       protectedFolderName: settings.protectedFolderName,
       backupDestRoot: settings.backupDestRoot || undefined,
       autoEject: settings.autoEject,
+      verifyChecksums: settings.verifyChecksums,
     };
 
     const filesToImport = filterFilesForImport(scannedFiles, importConfig);

@@ -1,4 +1,5 @@
 import path from 'path';
+import fs from 'fs';
 import type { ForgeConfig } from '@electron-forge/shared-types';
 import { MakerDMG } from '@electron-forge/maker-dmg';
 import { MakerZIP } from '@electron-forge/maker-zip';
@@ -6,6 +7,8 @@ import { MakerSquirrel } from '@electron-forge/maker-squirrel';
 import { VitePlugin } from '@electron-forge/plugin-vite';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
+
+const windowsIconPath = path.resolve(__dirname, 'assets/brand/icon.ico');
 
 const config: ForgeConfig = {
   packagerConfig: {
@@ -36,7 +39,7 @@ const config: ForgeConfig = {
       name: 'photo-importer',
       setupExe: 'PhotoImporter-Setup.exe',
       iconUrl: 'https://raw.githubusercontent.com/juanmnl/importer/main/assets/brand/icon.ico',
-      setupIcon: path.resolve(__dirname, 'assets/brand/icon.ico'),
+      ...(fs.existsSync(windowsIconPath) ? { setupIcon: windowsIconPath } : {}),
       noMsi: true,
     }),
     new MakerZIP({}, ['win32']),

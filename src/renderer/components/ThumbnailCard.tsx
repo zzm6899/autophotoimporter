@@ -5,6 +5,7 @@ interface ThumbnailCardProps {
   file: MediaFile;
   focused?: boolean;
   selected?: boolean;
+  queued?: boolean;
   compact?: boolean;
   frameNumber?: number;
   /**
@@ -45,6 +46,7 @@ export function ThumbnailCard({
   file,
   focused = false,
   selected = false,
+  queued = false,
   compact = false,
   frameNumber,
   burstCollapsed = false,
@@ -111,7 +113,7 @@ export function ThumbnailCard({
           )}
 
           {/* Left-side stacked badges: Protected and/or Normalize-to-anchor */}
-          {(file.isProtected || file.normalizeToAnchor) && (
+          {(file.isProtected || file.normalizeToAnchor || file.exposureAdjustmentStops) && (
             <div className="absolute top-1.5 left-1.5 flex flex-col gap-0.5 z-20">
               {file.isProtected && (
                 <div
@@ -131,6 +133,40 @@ export function ThumbnailCard({
                 >
                   EXP↔
                 </div>
+              )}
+              {file.exposureAdjustmentStops && (
+                <div
+                  className="bg-sky-500/90 text-[9px] text-white px-1 py-0.5 rounded font-medium"
+                  title="Manual exposure offset"
+                >
+                  {file.exposureAdjustmentStops > 0 ? '+' : ''}{file.exposureAdjustmentStops.toFixed(1)}EV
+                </div>
+              )}
+            </div>
+          )}
+
+          {queued && (
+            <div className="absolute top-7 left-1.5 bg-emerald-600/90 text-[9px] text-white px-1 py-0.5 rounded font-medium z-20">
+              QUEUED
+            </div>
+          )}
+
+          {(file.reviewScore || file.blurRisk === 'high' || file.visualGroupId) && (
+            <div className="absolute left-1.5 bottom-1.5 flex gap-0.5 z-20">
+              {(file.reviewScore ?? 0) >= 70 && (
+                <span className="bg-yellow-500/90 text-[9px] text-black px-1 py-0.5 rounded font-medium" title={file.reviewReasons?.join(', ') || 'High review score'}>
+                  BEST
+                </span>
+              )}
+              {(file.blurRisk === 'high' || file.blurRisk === 'medium') && (
+                <span className={`${file.blurRisk === 'high' ? 'bg-red-600/90' : 'bg-orange-500/90'} text-[9px] text-white px-1 py-0.5 rounded font-medium`} title={`${file.blurRisk} blur risk`}>
+                  BLUR
+                </span>
+              )}
+              {file.visualGroupId && (
+                <span className="bg-blue-600/90 text-[9px] text-white px-1 py-0.5 rounded font-medium" title={`Similar group: ${file.visualGroupSize ?? 0} files`}>
+                  SIM
+                </span>
               )}
             </div>
           )}
@@ -185,6 +221,15 @@ export function ThumbnailCard({
               </svg>
               {burstCollapsed ? `×${file.burstSize}` : `${file.burstIndex}/${file.burstSize}`}
             </button>
+          )}
+
+          {file.burstId && typeof file.sharpnessScore === 'number' && !file.reviewScore && (
+            <div
+              className="absolute bottom-1.5 left-1.5 bg-black/60 text-[9px] text-white/80 px-1 py-0.5 rounded font-mono z-20"
+              title="Sharpness score used for burst keeper selection"
+            >
+              S {file.sharpnessScore}
+            </div>
           )}
 
           {/* Stacked-shadow affordance for collapsed bursts */}

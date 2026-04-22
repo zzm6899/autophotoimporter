@@ -1,12 +1,13 @@
 import { createContext, useContext, useReducer, type Dispatch, type ReactNode } from 'react';
-import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, SourceKind, FtpConfig } from '../../shared/types';
+import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, SourceKind, FtpConfig, RatingFilter, SelectionSet } from '../../shared/types';
 import { FOLDER_PRESETS } from '../../shared/types';
 import { groupBursts } from '../../shared/burst';
+import { bestInGroup, groupByVisualHash, scoreReview } from '../../shared/review';
 
 export type AppPhase = 'idle' | 'scanning' | 'ready' | 'importing' | 'complete';
-export type ViewMode = 'grid' | 'single' | 'split' | 'settings';
+export type ViewMode = 'grid' | 'single' | 'split' | 'compare' | 'settings';
 
-export type FilterMode = 'all' | 'protected' | 'picked' | 'rejected' | 'unrated' | 'duplicates';
+export type FilterMode = 'all' | 'protected' | 'picked' | 'rejected' | 'unrated' | 'duplicates' | 'unmarked' | 'queue' | 'best' | 'blur-risk' | 'near-duplicates' | 'review-needed' | 'needs-exposure' | 'normalized' | 'adjusted' | 'photos' | 'videos' | 'raw' | RatingFilter | `camera:${string}` | `lens:${string}` | `date:${string}` | `ext:${string}`;
 
 interface State {
   volumes: Volume[];
@@ -41,13 +42,19 @@ interface State {
    * import those 40.
    */
   selectedPaths: string[];
+  queuedPaths: string[];
+  selectionSets: SelectionSet[];
+  scanPaused: boolean;
+  fileHistory: MediaFile[][];
   // Workflow options
   separateProtected: boolean;
   protectedFolderName: string;
   backupDestRoot: string;
   autoEject: boolean;
   playSoundOnComplete: boolean;
+  completeSoundPath: string;
   openFolderOnComplete: boolean;
+  verifyChecksums: boolean;
   autoImport: boolean;
   autoImportDestRoot: string;
   // Burst
@@ -67,6 +74,8 @@ export type Action =
   | { type: 'SCAN_BATCH'; files: MediaFile[] }
   | { type: 'SCAN_COMPLETE' }
   | { type: 'SCAN_ERROR'; message: string }
+  | { type: 'SCAN_PAUSE' }
+  | { type: 'SCAN_RESUME' }
   | { type: 'SET_DESTINATION'; path: string }
   | { type: 'SET_SKIP_DUPLICATES'; value: boolean }
   | { type: 'SET_SAVE_FORMAT'; format: SaveFormat }
@@ -97,12 +106,19 @@ export type Action =
   | { type: 'SET_FILTER'; filter: FilterMode }
   | { type: 'TOGGLE_CULL_MODE' }
   | { type: 'SET_SELECTED_PATHS'; paths: string[] }
+  | { type: 'QUEUE_ADD_PATHS'; paths: string[] }
+  | { type: 'QUEUE_REMOVE_PATHS'; paths: string[] }
+  | { type: 'QUEUE_CLEAR' }
+  | { type: 'SET_SELECTION_SETS'; sets: SelectionSet[] }
+  | { type: 'SELECTION_SET_SAVE'; name: string; paths: string[]; createdAt?: string }
+  | { type: 'SELECTION_SET_DELETE'; name: string }
+  | { type: 'SELECTION_SET_APPLY'; name: string }
   | { type: 'SET_WORKFLOW_OPTION'; key:
       | 'separateProtected' | 'autoEject' | 'playSoundOnComplete'
       | 'openFolderOnComplete' | 'autoImport'
-      | 'burstGrouping' | 'normalizeExposure'; value: boolean }
+      | 'burstGrouping' | 'normalizeExposure' | 'verifyChecksums'; value: boolean }
   | { type: 'SET_WORKFLOW_STRING'; key:
-      | 'protectedFolderName' | 'backupDestRoot' | 'autoImportDestRoot'; value: string }
+      | 'protectedFolderName' | 'backupDestRoot' | 'autoImportDestRoot' | 'completeSoundPath'; value: string }
   | { type: 'SET_BURST_WINDOW'; seconds: number }
   | { type: 'TOGGLE_BURST_COLLAPSE'; burstId: string }
   | { type: 'COLLAPSE_ALL_BURSTS' }
@@ -115,6 +131,17 @@ export type Action =
   | { type: 'CLEAR_EXPOSURE_ANCHOR' }
   | { type: 'SET_EXPOSURE_MAX_STOPS'; stops: number }
   | { type: 'SET_NORMALIZE_TO_ANCHOR'; filePaths: string[]; value: boolean }
+  | { type: 'SET_EXPOSURE_ADJUSTMENT'; filePaths: string[]; stops: number }
+  | { type: 'NUDGE_EXPOSURE_ADJUSTMENT'; filePaths: string[]; delta: number }
+  | { type: 'NORMALIZE_SELECTION_TO_FOCUSED'; filePaths: string[]; anchorPath: string }
+  | { type: 'PICK_BURST_KEEPERS' }
+  | { type: 'SET_SHARPNESS_BATCH'; scores: Record<string, number> }
+  | { type: 'SET_REVIEW_SCORES'; scores: Record<string, Partial<MediaFile>> }
+  | { type: 'GROUP_VISUAL_DUPLICATES'; threshold?: number }
+  | { type: 'PICK_BEST_IN_GROUPS' }
+  | { type: 'QUEUE_BEST' }
+  | { type: 'REJECT_DUPLICATES' }
+  | { type: 'UNDO_FILE_EDIT' }
   /**
    * Pick the median-EV file among the given paths as the exposure anchor,
    * and mark every other path in the set as "normalize-to-anchor". This is
@@ -158,12 +185,18 @@ const initialState: State = {
   filter: 'all',
   cullMode: false,
   selectedPaths: [],
+  queuedPaths: [],
+  selectionSets: [],
+  scanPaused: false,
+  fileHistory: [],
   separateProtected: false,
   protectedFolderName: '_Protected',
   backupDestRoot: '',
   autoEject: false,
   playSoundOnComplete: false,
+  completeSoundPath: '',
   openFolderOnComplete: false,
+  verifyChecksums: false,
   autoImport: false,
   autoImportDestRoot: '',
   burstGrouping: true,
@@ -174,6 +207,14 @@ const initialState: State = {
   exposureMaxStops: 2,
 };
 
+function withFileHistory(state: State, files: MediaFile[]): State {
+  return {
+    ...state,
+    files,
+    fileHistory: [state.files, ...state.fileHistory].slice(0, 20),
+  };
+}
+
 export function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'SET_VOLUMES':
@@ -181,9 +222,9 @@ export function reducer(state: State, action: Action): State {
     case 'SELECT_SOURCE':
       // Clear exposure anchor — its path belongs to the old source and would
       // resolve to `undefined` in `files.find()` once the new scan lands.
-      return { ...state, selectedSource: action.path, files: [], phase: 'idle', exposureAnchorPath: null };
+      return { ...state, selectedSource: action.path, files: [], phase: 'idle', exposureAnchorPath: null, queuedPaths: [], selectedPaths: [] };
     case 'SCAN_START':
-      return { ...state, files: [], phase: 'scanning', scanError: null, focusedIndex: -1, exposureAnchorPath: null };
+      return { ...state, files: [], phase: 'scanning', scanError: null, focusedIndex: -1, exposureAnchorPath: null, scanPaused: false };
     case 'SCAN_BATCH':
       return { ...state, files: [...state.files, ...action.files] };
     case 'SCAN_COMPLETE': {
@@ -203,12 +244,17 @@ export function reducer(state: State, action: Action): State {
         ...state,
         files: grouped,
         phase: state.files.length > 0 ? 'ready' : 'idle',
+        scanPaused: false,
         // Reset collapsed state on every rescan — otherwise old IDs accumulate
         collapsedBursts: [],
       };
     }
     case 'SCAN_ERROR':
-      return { ...state, phase: 'idle', scanError: action.message };
+      return { ...state, phase: 'idle', scanError: action.message, scanPaused: false };
+    case 'SCAN_PAUSE':
+      return { ...state, scanPaused: true };
+    case 'SCAN_RESUME':
+      return { ...state, scanPaused: false };
     case 'SET_DESTINATION':
       return { ...state, destination: action.path };
     case 'SET_SKIP_DUPLICATES':
@@ -249,26 +295,17 @@ export function reducer(state: State, action: Action): State {
         files: state.files.map((f) => ({ ...f, duplicate: false })),
       };
     case 'SET_PICK':
-      return {
-        ...state,
-        files: state.files.map((f) =>
-          f.path === action.filePath ? { ...f, pick: action.pick } : f,
-        ),
-      };
+      return withFileHistory(state, state.files.map((f) =>
+        f.path === action.filePath ? { ...f, pick: action.pick } : f,
+      ));
     case 'SET_PICK_BATCH': {
       const pathSet = new Set(action.filePaths);
-      return {
-        ...state,
-        files: state.files.map((f) =>
-          pathSet.has(f.path) ? { ...f, pick: action.pick } : f,
-        ),
-      };
+      return withFileHistory(state, state.files.map((f) =>
+        pathSet.has(f.path) ? { ...f, pick: action.pick } : f,
+      ));
     }
     case 'CLEAR_PICKS':
-      return {
-        ...state,
-        files: state.files.map((f) => ({ ...f, pick: undefined })),
-      };
+      return withFileHistory(state, state.files.map((f) => ({ ...f, pick: undefined })));
     case 'SET_FOCUSED':
       return { ...state, focusedIndex: action.index };
     case 'SET_VIEW_MODE':
@@ -280,14 +317,11 @@ export function reducer(state: State, action: Action): State {
     case 'TOGGLE_RIGHT_PANEL':
       return { ...state, showRightPanel: !state.showRightPanel };
     case 'RESET_FILES':
-      return { ...state, files: [], phase: 'idle', focusedIndex: -1 };
+      return { ...state, files: [], phase: 'idle', focusedIndex: -1, queuedPaths: [], selectedPaths: [] };
     case 'SET_RATING':
-      return {
-        ...state,
-        files: state.files.map((f) =>
-          f.path === action.filePath ? { ...f, rating: action.rating } : f,
-        ),
-      };
+      return withFileHistory(state, state.files.map((f) =>
+        f.path === action.filePath ? { ...f, rating: action.rating } : f,
+      ));
     case 'SET_SOURCE_KIND':
       return { ...state, sourceKind: action.kind };
     case 'SET_FTP_CONFIG':
@@ -306,6 +340,39 @@ export function reducer(state: State, action: Action): State {
       return { ...state, cullMode: !state.cullMode, viewMode: !state.cullMode ? 'single' : 'grid' };
     case 'SET_SELECTED_PATHS':
       return { ...state, selectedPaths: action.paths };
+    case 'QUEUE_ADD_PATHS': {
+      const valid = new Set(state.files.map((f) => f.path));
+      const next = new Set(state.queuedPaths);
+      for (const p of action.paths) if (valid.has(p)) next.add(p);
+      return { ...state, queuedPaths: [...next] };
+    }
+    case 'QUEUE_REMOVE_PATHS': {
+      const remove = new Set(action.paths);
+      return { ...state, queuedPaths: state.queuedPaths.filter((p) => !remove.has(p)) };
+    }
+    case 'QUEUE_CLEAR':
+      return { ...state, queuedPaths: [], filter: state.filter === 'queue' ? 'all' : state.filter };
+    case 'SET_SELECTION_SETS':
+      return { ...state, selectionSets: action.sets };
+    case 'SELECTION_SET_SAVE': {
+      const paths = [...new Set(action.paths)].filter((p) => state.files.some((f) => f.path === p));
+      if (paths.length === 0) return state;
+      const set: SelectionSet = {
+        name: action.name.trim(),
+        paths,
+        createdAt: action.createdAt ?? new Date().toISOString(),
+      };
+      if (!set.name) return state;
+      return { ...state, selectionSets: [...state.selectionSets.filter((s) => s.name !== set.name), set] };
+    }
+    case 'SELECTION_SET_DELETE':
+      return { ...state, selectionSets: state.selectionSets.filter((s) => s.name !== action.name) };
+    case 'SELECTION_SET_APPLY': {
+      const set = state.selectionSets.find((s) => s.name === action.name);
+      if (!set) return state;
+      const valid = new Set(state.files.map((f) => f.path));
+      return { ...state, selectedPaths: set.paths.filter((p) => valid.has(p)) };
+    }
     case 'SET_WORKFLOW_OPTION': {
       const next = { ...state, [action.key]: action.value } as State;
       // Toggling burst grouping live — re-run the grouper so the grid
@@ -359,23 +426,165 @@ export function reducer(state: State, action: Action): State {
       return { ...state, exposureAnchorPath: action.path };
     case 'CLEAR_EXPOSURE_ANCHOR':
       return {
-        ...state,
-        exposureAnchorPath: null,
-        files: state.files.map((f) =>
+        ...withFileHistory(state, state.files.map((f) =>
           f.normalizeToAnchor ? { ...f, normalizeToAnchor: false } : f,
-        ),
+        )),
+        exposureAnchorPath: null,
       };
     case 'SET_EXPOSURE_MAX_STOPS':
       return { ...state, exposureMaxStops: Math.max(0.33, Math.min(4, action.stops)) };
     case 'SET_NORMALIZE_TO_ANCHOR': {
       const pathSet = new Set(action.filePaths);
+      return withFileHistory(state, state.files.map((f) =>
+        pathSet.has(f.path) ? { ...f, normalizeToAnchor: action.value } : f,
+      ));
+    }
+    case 'SET_EXPOSURE_ADJUSTMENT': {
+      const pathSet = new Set(action.filePaths);
+      const stops = Math.max(-state.exposureMaxStops, Math.min(state.exposureMaxStops, action.stops));
+      return withFileHistory(state, state.files.map((f) =>
+        pathSet.has(f.path) ? { ...f, exposureAdjustmentStops: Math.abs(stops) < 0.01 ? undefined : stops } : f,
+      ));
+    }
+    case 'NUDGE_EXPOSURE_ADJUSTMENT': {
+      const pathSet = new Set(action.filePaths);
+      return withFileHistory(state, state.files.map((f) => {
+        if (!pathSet.has(f.path)) return f;
+        const next = Math.max(-state.exposureMaxStops, Math.min(state.exposureMaxStops, (f.exposureAdjustmentStops ?? 0) + action.delta));
+        return { ...f, exposureAdjustmentStops: Math.abs(next) < 0.01 ? undefined : Math.round(next * 100) / 100 };
+      }));
+    }
+    case 'NORMALIZE_SELECTION_TO_FOCUSED': {
+      const anchor = state.files.find((f) => f.path === action.anchorPath && typeof f.exposureValue === 'number');
+      if (!anchor) return state;
+      const pathSet = new Set(action.filePaths);
+      return {
+        ...withFileHistory(state, state.files.map((f) =>
+          pathSet.has(f.path) ? { ...f, normalizeToAnchor: f.path !== anchor.path } : f,
+        )),
+        exposureAnchorPath: anchor.path,
+      };
+    }
+    case 'PICK_BURST_KEEPERS': {
+      const groups = new Map<string, MediaFile[]>();
+      for (const f of state.files) {
+        if (f.burstId && f.burstSize && f.burstSize > 1) {
+          groups.set(f.burstId, [...(groups.get(f.burstId) ?? []), f]);
+        }
+      }
+      const keepers = new Set<string>();
+      for (const group of groups.values()) {
+        const sorted = group.slice().sort((a, b) =>
+          Number(!!b.isProtected) - Number(!!a.isProtected) ||
+          (b.rating ?? 0) - (a.rating ?? 0) ||
+          (b.sharpnessScore ?? -1) - (a.sharpnessScore ?? -1) ||
+          (a.burstIndex ?? 0) - (b.burstIndex ?? 0),
+        );
+        if (sorted[0]) keepers.add(sorted[0].path);
+      }
+      return withFileHistory(state, state.files.map((f) =>
+        f.burstId && groups.has(f.burstId)
+          ? { ...f, pick: keepers.has(f.path) ? 'selected' : 'rejected' }
+          : f,
+      ));
+    }
+    case 'SET_SHARPNESS_BATCH':
       return {
         ...state,
         files: state.files.map((f) =>
-          pathSet.has(f.path) ? { ...f, normalizeToAnchor: action.value } : f,
+          Object.prototype.hasOwnProperty.call(action.scores, f.path)
+            ? (() => {
+                const sharpnessScore = action.scores[f.path];
+                const review = scoreReview({ ...f, sharpnessScore });
+                return {
+                  ...f,
+                  sharpnessScore,
+                  blurRisk: review.blurRisk,
+                  reviewScore: review.score,
+                  reviewReasons: review.reasons,
+                };
+              })()
+            : f,
         ),
       };
+    case 'SET_REVIEW_SCORES':
+      return {
+        ...state,
+        files: state.files.map((f) => {
+          const patch = action.scores[f.path];
+          if (!patch) return f;
+          const merged = { ...f, ...patch };
+          const review = scoreReview(merged);
+          return {
+            ...merged,
+            blurRisk: patch.blurRisk ?? review.blurRisk,
+            reviewScore: patch.reviewScore ?? review.score,
+            reviewReasons: patch.reviewReasons ?? review.reasons,
+          };
+        }),
+      };
+    case 'GROUP_VISUAL_DUPLICATES': {
+      const groups = groupByVisualHash(state.files, action.threshold ?? 8);
+      const groupByPath = new Map<string, { id: string; size: number }>();
+      for (const [id, paths] of Object.entries(groups)) {
+        for (const p of paths) groupByPath.set(p, { id, size: paths.length });
+      }
+      return {
+        ...state,
+        files: state.files.map((f) => {
+          const group = groupByPath.get(f.path);
+          const next = group
+            ? { ...f, visualGroupId: group.id, visualGroupSize: group.size }
+            : { ...f, visualGroupId: undefined, visualGroupSize: undefined };
+          const review = scoreReview(next);
+          return { ...next, reviewScore: review.score, blurRisk: review.blurRisk, reviewReasons: review.reasons };
+        }),
+      };
     }
+    case 'PICK_BEST_IN_GROUPS': {
+      const groups = new Map<string, MediaFile[]>();
+      for (const f of state.files) {
+        if (f.visualGroupId && f.visualGroupSize && f.visualGroupSize > 1) {
+          groups.set(f.visualGroupId, [...(groups.get(f.visualGroupId) ?? []), f]);
+        }
+        if (f.burstId && f.burstSize && f.burstSize > 1) {
+          const id = `burst:${f.burstId}`;
+          groups.set(id, [...(groups.get(id) ?? []), f]);
+        }
+      }
+      const keepers = new Set<string>();
+      for (const group of groups.values()) {
+        const best = bestInGroup(group);
+        if (best) keepers.add(best.path);
+      }
+      return withFileHistory(state, state.files.map((f) => {
+        const inGroup = (f.visualGroupId && groups.has(f.visualGroupId)) || (f.burstId && groups.has(`burst:${f.burstId}`));
+        return inGroup ? { ...f, pick: keepers.has(f.path) ? 'selected' : 'rejected' } : f;
+      }));
+    }
+    case 'QUEUE_BEST': {
+      const candidates = state.files
+        .filter((f) => f.type === 'photo' && f.pick !== 'rejected' && (f.reviewScore ?? 0) >= 70)
+        .sort((a, b) =>
+          Number(!!b.isProtected) - Number(!!a.isProtected) ||
+          (b.rating ?? 0) - (a.rating ?? 0) ||
+          (b.reviewScore ?? 0) - (a.reviewScore ?? 0),
+        );
+      const next = new Set(state.queuedPaths);
+      for (const f of candidates) next.add(f.path);
+      return { ...state, queuedPaths: [...next] };
+    }
+    case 'REJECT_DUPLICATES':
+      return withFileHistory(state, state.files.map((f) =>
+        f.duplicate ? { ...f, pick: 'rejected' } : f,
+      ));
+    case 'UNDO_FILE_EDIT':
+      if (state.fileHistory.length === 0) return state;
+      return {
+        ...state,
+        files: state.fileHistory[0],
+        fileHistory: state.fileHistory.slice(1),
+      };
     case 'NORMALIZE_SELECTION_TO_MEDIAN': {
       // Find files in the selection that actually have an EV — the median is
       // only meaningful over computed values. Ties break toward the lower
@@ -388,16 +597,15 @@ export function reducer(state: State, action: Action): State {
       if (candidates.length === 0) return state;
       const anchor = candidates[Math.floor((candidates.length - 1) / 2)];
       return {
-        ...state,
-        exposureAnchorPath: anchor.path,
-        files: state.files.map((f) => {
+        ...withFileHistory(state, state.files.map((f) => {
           if (!pathSet.has(f.path)) return f;
           if (f.path === anchor.path) {
             // The anchor itself never needs normalizing.
             return { ...f, normalizeToAnchor: false };
           }
           return { ...f, normalizeToAnchor: true };
-        }),
+        })),
+        exposureAnchorPath: anchor.path,
       };
     }
     default:

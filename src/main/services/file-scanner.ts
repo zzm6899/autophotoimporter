@@ -9,6 +9,14 @@ const FAST_THUMB_CONCURRENCY = 30; // exifr embedded thumbs — just file reads,
 const SLOW_THUMB_CONCURRENCY = 6;  // sips — spawns process, decodes RAW
 
 let currentAbortController: AbortController | null = null;
+let paused = false;
+const pauseWaiters: Array<() => void> = [];
+
+async function waitIfPaused(signal: AbortSignal): Promise<void> {
+  while (paused && !signal.aborted) {
+    await new Promise<void>((resolve) => pauseWaiters.push(resolve));
+  }
+}
 
 function getFileType(ext: string): 'photo' | 'video' | null {
   if (PHOTO_EXTENSIONS.has(ext)) return 'photo';
@@ -32,6 +40,7 @@ async function walkDirectory(
 
   for (const entry of entries) {
     if (signal.aborted) return;
+    await waitIfPaused(signal);
 
     const fullPath = path.join(dirPath, entry.name);
 
@@ -68,6 +77,7 @@ export async function scanFiles(
 ): Promise<number> {
   currentAbortController?.abort();
   currentAbortController = new AbortController();
+  paused = false;
   const { signal } = currentAbortController;
 
   // Phase 1: Walk directory and get metadata + dates (fast)
@@ -78,6 +88,7 @@ export async function scanFiles(
   // Enrich with dates only (no thumbnails yet)
   for (let i = 0; i < allFiles.length; i += BATCH_SIZE) {
     if (signal.aborted) return 0;
+    await waitIfPaused(signal);
     const batch = allFiles.slice(i, i + BATCH_SIZE);
     const enriched = await Promise.all(
       batch.map(async (file) => {
@@ -107,6 +118,7 @@ function generateThumbnailsInBackground(
 
     for (let i = 0; i < fastFiles.length; i += FAST_THUMB_CONCURRENCY) {
       if (signal.aborted) break;
+      await waitIfPaused(signal);
       const batch = fastFiles.slice(i, i + FAST_THUMB_CONCURRENCY);
       await Promise.all(
         batch.map(async (file) => {
@@ -125,6 +137,7 @@ function generateThumbnailsInBackground(
     const sipsFiles = [...photos.filter((f) => !EXIFR_SUPPORTED.has(f.extension)), ...slowFiles];
     for (let i = 0; i < sipsFiles.length; i += SLOW_THUMB_CONCURRENCY) {
       if (signal.aborted) break;
+      await waitIfPaused(signal);
       const batch = sipsFiles.slice(i, i + SLOW_THUMB_CONCURRENCY);
       await Promise.all(
         batch.map(async (file) => {
@@ -146,4 +159,15 @@ function generateThumbnailsInBackground(
 export function cancelScan(): void {
   currentAbortController?.abort();
   currentAbortController = null;
+  paused = false;
+  while (pauseWaiters.length) pauseWaiters.shift()?.();
+}
+
+export function pauseScan(): void {
+  if (currentAbortController && !currentAbortController.signal.aborted) paused = true;
+}
+
+export function resumeScan(): void {
+  paused = false;
+  while (pauseWaiters.length) pauseWaiters.shift()?.();
 }

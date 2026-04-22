@@ -136,11 +136,19 @@ describe('importFiles', () => {
     const config = makeConfig({ saveFormat: 'jpeg', jpegQuality: 85 });
     await importFiles([makeFile()], config, onProgress);
 
-    expect(mockExecFile).toHaveBeenCalledWith(
-      'sips',
-      expect.arrayContaining(['-s', 'format', 'jpeg', '-s', 'formatOptions', '85']),
-      expect.objectContaining({ timeout: 60000 }),
-    );
+    if (process.platform === 'win32') {
+      expect(mockExecFile).toHaveBeenCalledWith(
+        'powershell.exe',
+        expect.arrayContaining(['-Command', expect.stringContaining('image/jpeg')]),
+        expect.objectContaining({ timeout: 60000 }),
+      );
+    } else {
+      expect(mockExecFile).toHaveBeenCalledWith(
+        'sips',
+        expect.arrayContaining(['-s', 'format', 'jpeg', '-s', 'formatOptions', '85']),
+        expect.objectContaining({ timeout: 60000 }),
+      );
+    }
     expect(mockCopyFile).not.toHaveBeenCalled();
   });
 
@@ -148,29 +156,45 @@ describe('importFiles', () => {
     const config = makeConfig({ saveFormat: 'tiff' });
     await importFiles([makeFile()], config, onProgress);
 
-    expect(mockExecFile).toHaveBeenCalledWith(
-      'sips',
-      expect.arrayContaining(['-s', 'format', 'tiff']),
-      expect.any(Object),
-    );
+    if (process.platform === 'win32') {
+      expect(mockExecFile).toHaveBeenCalledWith(
+        'powershell.exe',
+        expect.arrayContaining(['-Command', expect.stringContaining('image/tiff')]),
+        expect.any(Object),
+      );
+    } else {
+      expect(mockExecFile).toHaveBeenCalledWith(
+        'sips',
+        expect.arrayContaining(['-s', 'format', 'tiff']),
+        expect.any(Object),
+      );
+    }
   });
 
   it('converts HEIC via sips', async () => {
     const config = makeConfig({ saveFormat: 'heic' });
     await importFiles([makeFile()], config, onProgress);
 
-    expect(mockExecFile).toHaveBeenCalledWith(
-      'sips',
-      expect.arrayContaining(['-s', 'format', 'heic']),
-      expect.any(Object),
-    );
+    if (process.platform === 'win32') {
+      expect(mockExecFile).toHaveBeenCalledWith(
+        'powershell.exe',
+        expect.arrayContaining(['-Command', expect.stringContaining('image/jpeg')]),
+        expect.any(Object),
+      );
+    } else {
+      expect(mockExecFile).toHaveBeenCalledWith(
+        'sips',
+        expect.arrayContaining(['-s', 'format', 'heic']),
+        expect.any(Object),
+      );
+    }
   });
 
-  it('does not call stat for converted files (sips validates on its own)', async () => {
+  it('verifies converted files after writing', async () => {
     const config = makeConfig({ saveFormat: 'jpeg' });
     await importFiles([makeFile()], config, onProgress);
 
-    expect(mockStat).not.toHaveBeenCalled();
+    expect(mockStat).toHaveBeenCalledWith(expect.stringContaining('IMG_001.jpg'));
   });
 
   // --- Duplicates ---
@@ -241,12 +265,12 @@ describe('importFiles', () => {
     expect(result.imported).toBe(1);
   });
 
-  it('trusts copyFile success without post-copy stat verification', async () => {
+  it('verifies copyFile success after writing', async () => {
     // copyFile succeeds — no stat call needed, file counts as imported
     const result = await importFiles([makeFile()], makeConfig(), onProgress);
 
     expect(result.imported).toBe(1);
-    expect(mockStat).not.toHaveBeenCalled();
+    expect(mockStat).toHaveBeenCalledWith(expect.stringContaining('IMG_001.jpg'));
   });
 
   it('file with no destPath records error', async () => {

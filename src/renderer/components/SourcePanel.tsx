@@ -8,9 +8,9 @@ const isMac = typeof window !== 'undefined' && window.electronAPI?.platform === 
 const MOD = isMac ? '\u2318' : 'Ctrl';
 
 export function SourcePanel() {
-  const { volumes, selectedSource, files, phase, sourceKind } = useAppState();
+  const { volumes, selectedSource, files, phase, sourceKind, scanPaused } = useAppState();
   const dispatch = useAppDispatch();
-  const { startScan } = useFileScanner();
+  const { startScan, pauseScan, resumeScan } = useFileScanner();
 
   const handleSelectVolume = (volumePath: string) => {
     dispatch({ type: 'SELECT_SOURCE', path: volumePath });
@@ -114,6 +114,14 @@ export function SourcePanel() {
                 Rescan
               </button>
             )}
+            {phase === 'scanning' && (
+              <button
+                onClick={() => scanPaused ? resumeScan() : pauseScan()}
+                className="text-[10px] text-text-secondary hover:text-text transition-colors"
+              >
+                {scanPaused ? 'Resume' : 'Pause'}
+              </button>
+            )}
             {/* Eject is best-effort. Only show for removable volumes that
                 are actually in the detected list (Choose Folder... sources
                 can't be ejected) */}
@@ -195,8 +203,14 @@ export function SourcePanel() {
       {/* Scanning indicator */}
       {phase === 'scanning' && (
         <div className="px-2.5 py-2 flex items-center gap-1.5">
-          <div className="w-3 h-3 border-[1.5px] border-text-muted border-t-text rounded-full animate-spin" />
-          <span className="text-[10px] text-text-muted">Scanning...</span>
+          <div className={`w-3 h-3 border-[1.5px] border-text-muted border-t-text rounded-full ${scanPaused ? '' : 'animate-spin'}`} />
+          <span className="text-[10px] text-text-muted">{scanPaused ? 'Scan paused' : 'Scanning...'}</span>
+          <button
+            onClick={() => scanPaused ? resumeScan() : pauseScan()}
+            className="ml-auto text-[10px] text-text-secondary hover:text-text"
+          >
+            {scanPaused ? 'Resume' : 'Pause'}
+          </button>
         </div>
       )}
 

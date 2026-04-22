@@ -60,6 +60,20 @@ export interface MediaFile {
    * "Normalize to anchor" button in the grid toolbar or detail view.
    */
   normalizeToAnchor?: boolean;
+  /** Manual exposure offset in stops, applied on import when transcoding. */
+  exposureAdjustmentStops?: number;
+  /** Renderer-computed focus metric used to pick burst keepers. Higher = sharper. */
+  sharpnessScore?: number;
+  /** Heuristic blur risk derived from thumbnail/previews. */
+  blurRisk?: 'low' | 'medium' | 'high';
+  /** 64-bit perceptual hash encoded as 16 hex chars. */
+  visualHash?: string;
+  /** Group id for visually similar shots. */
+  visualGroupId?: string;
+  visualGroupSize?: number;
+  /** 0-100 local smart-review score. Higher = stronger keeper candidate. */
+  reviewScore?: number;
+  reviewReasons?: string[];
 }
 
 export type SourceKind = 'volume' | 'ftp';
@@ -74,6 +88,13 @@ export interface FtpConfig {
 }
 
 export type SaveFormat = 'original' | 'jpeg' | 'tiff' | 'heic';
+export type RatingFilter = 'rating-1' | 'rating-2' | 'rating-3' | 'rating-4' | 'rating-5';
+
+export interface SelectionSet {
+  name: string;
+  paths: string[];
+  createdAt: string;
+}
 
 // Folder naming presets for organizing imported files
 // Tokens: {YYYY}, {MM}, {DD}, {filename}, {ext}
@@ -140,6 +161,10 @@ export interface ImportConfig {
    * Requires `exposureAnchorEV` and a transcoding `saveFormat` to take effect.
    */
   normalizeAnchorPaths?: string[];
+  /** Manual exposure offsets in stops, keyed by source path. */
+  exposureAdjustments?: Record<string, number>;
+  /** When true and copying originals, compare SHA-256 source/destination bytes after copy. */
+  verifyChecksums?: boolean;
 }
 
 export interface ImportProgress {
@@ -155,6 +180,8 @@ export interface ImportProgress {
 export interface ImportResult {
   imported: number;
   skipped: number;
+  verified?: number;
+  checksumVerified?: number;
   errors: ImportError[];
   totalBytes: number;
   durationMs: number;
@@ -179,7 +206,9 @@ export interface AppSettings {
   backupDestRoot: string;        // empty string = disabled
   autoEject: boolean;
   playSoundOnComplete: boolean;
+  completeSoundPath: string;
   openFolderOnComplete: boolean;
+  verifyChecksums: boolean;
   // Auto-import on device insert
   autoImport: boolean;
   autoImportDestRoot: string;
@@ -192,6 +221,21 @@ export interface AppSettings {
   // Exposure normalization
   normalizeExposure: boolean;
   exposureMaxStops: number;
+  jobPresets: JobPreset[];
+  selectionSets: SelectionSet[];
+}
+
+export interface JobPreset {
+  name: string;
+  destRoot: string;
+  backupDestRoot: string;
+  saveFormat: SaveFormat;
+  jpegQuality: number;
+  folderPreset: string;
+  customPattern: string;
+  skipDuplicates: boolean;
+  separateProtected: boolean;
+  protectedFolderName: string;
 }
 
 export interface UpdateInfo {
@@ -274,6 +318,8 @@ export const IPC = {
   SCAN_CHECK_DUPLICATES: 'scan:check-duplicates',
   SCAN_DUPLICATE: 'scan:duplicate',
   SCAN_CANCEL: 'scan:cancel',
+  SCAN_PAUSE: 'scan:pause',
+  SCAN_RESUME: 'scan:resume',
   SCAN_PREVIEW: 'scan:preview',
 
   // Import
@@ -284,6 +330,7 @@ export const IPC = {
 
   // Dialogs
   DIALOG_SELECT_FOLDER: 'dialog:select-folder',
+  DIALOG_SELECT_FILE: 'dialog:select-file',
   DIALOG_OPEN_PATH: 'dialog:open-path',
 
   // Settings
@@ -302,6 +349,7 @@ export const IPC = {
 
   // Workflow — manifest export
   EXPORT_MANIFEST: 'export:manifest',
+  EXPORT_CONTACT_SHEET: 'export:contact-sheet',
 
   // Auto-import + device events
   DEVICE_INSERTED: 'device:inserted',
