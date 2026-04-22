@@ -358,6 +358,39 @@ async function embeddedFallback(filePath: string, extension: string): Promise<st
   }
 }
 
+/**
+ * Lightweight embedded-thumbnail extractor used only for grid thumbnails.
+ * Tries exifr.thumbnail() first (fast, no full file read) and only falls
+ * back to the slower byte-scan when that returns nothing useful.
+ */
+async function embeddedFallbackForThumbnail(filePath: string, extension: string): Promise<string | undefined> {
+  if (!EXIFR_SUPPORTED.has(extension)) return undefined;
+
+  // Fast path: exifr parses the IFD1 thumbnail without reading the whole file.
+  try {
+    const thumbData = await exifr.thumbnail(filePath);
+    if (thumbData && thumbData.byteLength > 0) {
+      const buffer = Buffer.isBuffer(thumbData) ? thumbData : Buffer.from(thumbData);
+      return `data:image/jpeg;base64,${buffer.toString('base64')}`;
+    }
+  } catch {
+    // fall through to byte-scan
+  }
+
+  // Slow path: scan raw bytes for the largest embedded JPEG (covers RAW files
+  // whose IFD1 thumbnail is missing or too small).
+  try {
+    const big = await extractLargestEmbeddedJpeg(filePath);
+    if (big && big.length > 32 * 1024) {
+      return `data:image/jpeg;base64,${big.toString('base64')}`;
+    }
+  } catch {
+    // fall through
+  }
+
+  return undefined;
+}
+
 async function cacheKeyFor(filePath: string): Promise<string> {
   try {
     const s = await stat(filePath);
@@ -432,11 +465,12 @@ export async function generateThumbnail(filePath: string, _fileName: string): Pr
       // not cached
     }
 
-    // For RAW files on any platform, try to extract the embedded full-size JPEG
+    // For RAW files on any platform, try to extract the embedded JPEG
     // preview first — this avoids spawning sips / ImageMagick / PowerShell for
     // files that already contain a usable preview in their header.
+    // Uses the fast exifr.thumbnail() path before falling back to the full scan.
     if (RAW_EXTENSIONS.has(ext)) {
-      const fallback = await embeddedFallback(filePath, ext);
+      const fallback = await embeddedFallbackForThumbnail(filePath, ext);
       if (fallback) return fallback;
     }
 
@@ -445,7 +479,7 @@ export async function generateThumbnail(filePath: string, _fileName: string): Pr
       const thumbBuffer = await readFile(outPath);
       return `data:image/jpeg;base64,${thumbBuffer.toString('base64')}`;
     } catch {
-      return embeddedFallback(filePath, ext);
+      return embeddedFallbackForThumbnail(filePath, ext);
     }
   } catch {
     return undefined;

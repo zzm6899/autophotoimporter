@@ -4,7 +4,7 @@ import { FOLDER_PRESETS } from '../../shared/types';
 import { groupBursts } from '../../shared/burst';
 
 export type AppPhase = 'idle' | 'scanning' | 'ready' | 'importing' | 'complete';
-export type ViewMode = 'grid' | 'single' | 'split';
+export type ViewMode = 'grid' | 'single' | 'split' | 'settings';
 
 export type FilterMode = 'all' | 'protected' | 'picked' | 'rejected' | 'unrated' | 'duplicates';
 
@@ -108,6 +108,11 @@ export type Action =
   | { type: 'COLLAPSE_ALL_BURSTS' }
   | { type: 'CLEAR_COLLAPSED_BURSTS' }
   | { type: 'SET_EXPOSURE_ANCHOR'; path: string | null }
+  /**
+   * Clear the exposure anchor AND reset all per-file normalizeToAnchor flags
+   * so no file silently imports with normalization against a missing anchor.
+   */
+  | { type: 'CLEAR_EXPOSURE_ANCHOR' }
   | { type: 'SET_EXPOSURE_MAX_STOPS'; stops: number }
   | { type: 'SET_NORMALIZE_TO_ANCHOR'; filePaths: string[]; value: boolean }
   /**
@@ -352,6 +357,14 @@ export function reducer(state: State, action: Action): State {
       return { ...state, collapsedBursts: [] };
     case 'SET_EXPOSURE_ANCHOR':
       return { ...state, exposureAnchorPath: action.path };
+    case 'CLEAR_EXPOSURE_ANCHOR':
+      return {
+        ...state,
+        exposureAnchorPath: null,
+        files: state.files.map((f) =>
+          f.normalizeToAnchor ? { ...f, normalizeToAnchor: false } : f,
+        ),
+      };
     case 'SET_EXPOSURE_MAX_STOPS':
       return { ...state, exposureMaxStops: Math.max(0.33, Math.min(4, action.stops)) };
     case 'SET_NORMALIZE_TO_ANCHOR': {

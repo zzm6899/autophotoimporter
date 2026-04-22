@@ -4,9 +4,11 @@ import { FOLDER_PRESETS } from '../../shared/types';
 
 interface SettingsPageProps {
   onClose: () => void;
+  /** When true, renders as a full-page view instead of a modal overlay */
+  inline?: boolean;
 }
 
-export function SettingsPage({ onClose }: SettingsPageProps) {
+export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const {
     theme,
     skipDuplicates,
@@ -100,28 +102,31 @@ export function SettingsPage({ onClose }: SettingsPageProps) {
     if (folder) handleWorkflowString('autoImportDestRoot', folder);
   };
 
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div className="bg-surface border border-border rounded-xl shadow-2xl w-[520px] max-h-[80vh] flex flex-col overflow-hidden">
-        {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
-          <h2 className="text-sm font-semibold text-text">Settings</h2>
-          <button
-            onClick={onClose}
-            className="p-1 rounded text-text-muted hover:text-text hover:bg-surface-raised transition-colors"
-            title="Close (Esc)"
-          >
+  // Shared inner content (header + scrollable body)
+  const inner = (
+    <div className={`bg-surface border border-border ${inline ? 'flex flex-col h-full' : 'rounded-xl shadow-2xl w-[520px] max-h-[80vh] flex flex-col overflow-hidden'}`}>
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
+        <h2 className="text-sm font-semibold text-text">Settings</h2>
+        <button
+          onClick={onClose}
+          className="p-1 rounded text-text-muted hover:text-text hover:bg-surface-raised transition-colors"
+          title={inline ? 'Back to grid (Esc)' : 'Close (Esc)'}
+        >
+          {inline ? (
+            <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M17 10a.75.75 0 01-.75.75H5.612l4.158 3.96a.75.75 0 11-1.04 1.08l-5.5-5.25a.75.75 0 010-1.08l5.5-5.25a.75.75 0 111.04 1.08L5.612 9.25H16.25A.75.75 0 0117 10z" clipRule="evenodd" />
+            </svg>
+          ) : (
             <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
               <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
             </svg>
-          </button>
-        </div>
+          )}
+        </button>
+      </div>
 
-        {/* Scrollable body */}
-        <div className="overflow-y-auto flex-1 px-4 py-3 space-y-5">
+      {/* Scrollable body */}
+      <div className={`overflow-y-auto flex-1 space-y-5 ${inline ? 'px-6 py-4' : 'px-4 py-3'}`}>
 
           {/* Appearance */}
           <section>
@@ -404,6 +409,18 @@ export function SettingsPage({ onClose }: SettingsPageProps) {
 
         </div>
       </div>
+  );
+
+  if (inline) {
+    return <div className="h-full flex flex-col overflow-hidden">{inner}</div>;
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      {inner}
     </div>
   );
 }
