@@ -1,55 +1,43 @@
-import { useRef, useEffect, useState } from 'react';
+import { memo, useRef, useEffect, useState } from 'react';
 import type { MediaFile } from '../../shared/types';
 import { formatFileSize, formatExposure } from '../utils/formatters';
 
-// Only set img src when the card is near the viewport.
-// Thumbnails are base64 data URIs — loading="lazy" doesn't work for them,
-// so IntersectionObserver is the reliable way to avoid decoding 1000+ bitmaps
-// that are offscreen. rootMargin 300px pre-loads one row before it's visible.
+// Defer setting img src until the card is near the viewport.
+// data: URIs are not eligible for HTML loading="lazy", so IntersectionObserver
+// is the only reliable way to skip decoding 1000+ offscreen bitmaps.
+// Once visible, isVisible stays true even if src changes — we update immediately.
 function useLazySrc(src: string | undefined) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [activeSrc, setActiveSrc] = useState<string | undefined>(undefined);
+  const [isVisible, setIsVisible] = useState(false);
 
   useEffect(() => {
-    if (!src) { setActiveSrc(undefined); return; }
     const el = containerRef.current;
     if (!el) return;
     const obs = new IntersectionObserver(
-      ([entry]) => { if (entry.isIntersecting) { setActiveSrc(src); obs.disconnect(); } },
+      ([entry]) => { if (entry.isIntersecting) { setIsVisible(true); obs.disconnect(); } },
       { rootMargin: '300px' },
     );
     obs.observe(el);
     return () => obs.disconnect();
-  // Only re-run when src identity changes (new thumbnail arrived).
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [src]);
+  }, []); // run once — isVisible is a latch, never reset
 
-  // If src changes after already visible (e.g. thumbnail replaced), update immediately.
-  useEffect(() => {
-    if (activeSrc && src && activeSrc !== src) setActiveSrc(src);
-  }, [src, activeSrc]);
-
-  return { containerRef, activeSrc };
+  return { containerRef, activeSrc: isVisible ? src : undefined };
 }
 
 interface ThumbnailCardProps {
+  index: number;
   file: MediaFile;
   focused?: boolean;
   selected?: boolean;
   queued?: boolean;
   compact?: boolean;
   frameNumber?: number;
-  /**
-   * True when this card represents the leader of a collapsed burst. The card
-   * renders a "+N" stack affordance instead of the normal burst index badge.
-   */
   burstCollapsed?: boolean;
-  onClick?: (e: React.MouseEvent) => void;
-  onDoubleClick?: () => void;
-  onBurstToggle?: (burstId: string) => void;
+  onClickCard: (index: number, e: React.MouseEvent) => void;
+  onDoubleClickCard: (index: number) => void;
+  onBurstToggle: (burstId: string) => void;
 }
 
-// Subtle corner brackets (thin pick marks)
 function CornerBrackets() {
   return (
     <div className="absolute inset-0 pointer-events-none z-10">
@@ -61,7 +49,6 @@ function CornerBrackets() {
   );
 }
 
-// Thin full-frame reject cross
 function RejectX() {
   return (
     <div className="absolute inset-0 pointer-events-none z-10">
@@ -73,7 +60,8 @@ function RejectX() {
   );
 }
 
-export function ThumbnailCard({
+export const ThumbnailCard = memo(function ThumbnailCard({
+  index,
   file,
   focused = false,
   selected = false,
@@ -81,8 +69,8 @@ export function ThumbnailCard({
   compact = false,
   frameNumber,
   burstCollapsed = false,
-  onClick,
-  onDoubleClick,
+  onClickCard,
+  onDoubleClickCard,
   onBurstToggle,
 }: ThumbnailCardProps) {
   const isVideo = file.type === 'video';
@@ -95,14 +83,14 @@ export function ThumbnailCard({
       className={`group relative cursor-pointer transition-all ${
         isRejected ? 'opacity-50' : ''
       } ${file.duplicate && !file.pick ? 'opacity-40' : ''}`}
-      onClick={onClick}
-      onDoubleClick={onDoubleClick}
+      onClick={(e) => onClickCard(index, e)}
+      onDoubleClick={() => onDoubleClickCard(index)}
     >
       {/* Frame */}
       <div className={`relative bg-surface overflow-hidden ${
         selected ? 'ring-2 ring-blue-500' : focused ? 'outline-2 outline-offset-2 outline-blue-500' : ''
       }`}>
-        {/* Image — ref triggers IntersectionObserver so src is only set when near viewport */}
+        {/* ref here triggers IntersectionObserver — src only set when near viewport */}
         <div ref={containerRef} className="aspect-[4/3] relative flex items-center justify-center">
           {activeSrc ? (
             <img
@@ -125,27 +113,21 @@ export function ThumbnailCard({
             </div>
           )}
 
-          {/* Pick: yellow corner brackets */}
           {isPicked && <CornerBrackets />}
-
-          {/* Reject: red X */}
           {isRejected && <RejectX />}
 
-          {/* Video badge */}
           {isVideo && (
             <div className="absolute top-1.5 right-1.5 bg-black/70 text-[9px] text-white/80 px-1 py-0.5 rounded font-medium z-20">
               VID
             </div>
           )}
 
-          {/* Imported badge */}
           {file.duplicate && !file.pick && (
             <div className="absolute top-1.5 left-1.5 bg-yellow-600/80 text-[9px] text-white px-1 py-0.5 rounded font-medium z-20">
               IMPORTED
             </div>
           )}
 
-          {/* Left-side stacked badges: Protected and/or Normalize-to-anchor */}
           {(file.isProtected || file.normalizeToAnchor || file.exposureAdjustmentStops) && (
             <div className="absolute top-1.5 left-1.5 flex flex-col gap-0.5 z-20">
               {file.isProtected && (
@@ -204,7 +186,6 @@ export function ThumbnailCard({
             </div>
           )}
 
-          {/* Star rating (top-right, under VID badge space) */}
           {file.rating && file.rating > 0 && (
             <div className="absolute bottom-1.5 right-1.5 flex gap-px bg-black/60 rounded px-1 py-0.5 z-20">
               {Array.from({ length: Math.min(file.rating, 5) }).map((_, i) => (
@@ -215,23 +196,18 @@ export function ThumbnailCard({
             </div>
           )}
 
-          {/* Frame number (compact/filmstrip mode) */}
           {compact && frameNumber !== undefined && (
             <div className="absolute bottom-1 left-1 text-[9px] text-neutral-500 dark:text-neutral-400 font-mono z-20">
               {String(frameNumber).padStart(3, '0')}
             </div>
           )}
 
-          {/* Burst badge: shows position within the burst, or the total
-              count when the burst is collapsed. Clicking toggles collapse. */}
           {file.burstId && file.burstSize && file.burstSize > 1 && (
             <button
               type="button"
               onClick={(e) => {
-                if (onBurstToggle) {
-                  e.stopPropagation();
-                  onBurstToggle(file.burstId!);
-                }
+                e.stopPropagation();
+                onBurstToggle(file.burstId!);
               }}
               className={`absolute top-1.5 right-1.5 text-[9px] text-white px-1 py-0.5 rounded font-medium z-20 flex items-center gap-0.5 ${
                 burstCollapsed
@@ -265,7 +241,6 @@ export function ThumbnailCard({
             </div>
           )}
 
-          {/* Stacked-shadow affordance for collapsed bursts */}
           {burstCollapsed && (
             <>
               <div className="absolute -top-0.5 -right-0.5 -bottom-0.5 -left-0.5 border border-border/60 rounded-sm -z-10 translate-x-0.5 translate-y-0.5" />
@@ -275,7 +250,6 @@ export function ThumbnailCard({
         </div>
       </div>
 
-      {/* File info — hidden in compact/filmstrip mode */}
       {!compact && (
         <div className="mt-1 flex items-center justify-between px-0.5">
           <span className="text-[10px] text-text-secondary font-mono truncate">{file.name}</span>
@@ -286,4 +260,4 @@ export function ThumbnailCard({
       )}
     </div>
   );
-}
+});
