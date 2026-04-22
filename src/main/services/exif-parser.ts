@@ -6,7 +6,6 @@ import { promisify } from 'node:util';
 import { app } from 'electron';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { pathToFileURL } from 'node:url';
 import type { MediaFile } from '../../shared/types';
 import { resolvePattern } from '../../shared/types';
 import { computeEV100 } from '../../shared/exposure';
@@ -137,7 +136,7 @@ export async function parseExifDate(
   const isProtected = fsProtected || exifProtected;
 
   const pattern = folderPattern || '{YYYY}-{MM}-{DD}/{filename}';
-  const destPath = resolvePattern(pattern, dateTaken, file.name, file.extension);
+  const destPath = resolvePattern(pattern, dateTaken, file.name, file.extension, rating);
   const exposureValue = computeEV100(aperture, shutterSpeed, iso);
   return {
     dateTaken: dateTaken.toISOString(),
@@ -420,7 +419,8 @@ export async function generatePreview(filePath: string): Promise<string | undefi
 
       try {
         await stat(outPath);
-        return pathToFileURL(outPath).href;
+        const cached = await readFile(outPath);
+        return `data:image/jpeg;base64,${cached.toString('base64')}`;
       } catch {
         // not cached
       }
@@ -432,7 +432,8 @@ export async function generatePreview(filePath: string): Promise<string | undefi
 
       try {
         await platformResize(filePath, outPath, PREVIEW_WIDTH, PREVIEW_QUALITY, 30000);
-        return pathToFileURL(outPath).href;
+        const buf = await readFile(outPath);
+        return `data:image/jpeg;base64,${buf.toString('base64')}`;
       } catch {
         return embeddedFallback(filePath, ext);
       }

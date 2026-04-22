@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { MediaFile } from '../../shared/types';
 import { buildExposure } from '../utils/formatters';
 import { decodeImage, getCachedPreview } from '../utils/previewCache';
@@ -11,6 +11,20 @@ export function CompareView({ files }: CompareViewProps) {
   const visible = files.slice(0, 4);
   const [previews, setPreviews] = useState<Record<string, string | undefined>>({});
   const [zoom, setZoom] = useState(1);
+  const gridRef = useRef<HTMLDivElement>(null);
+
+  const handleWheel = useCallback((e: WheelEvent) => {
+    if (!e.ctrlKey && !e.metaKey) return;
+    e.preventDefault();
+    setZoom((z) => Math.max(1, Math.min(4, z * Math.exp(-e.deltaY * 0.004))));
+  }, []);
+
+  useEffect(() => {
+    const el = gridRef.current;
+    if (!el) return;
+    el.addEventListener('wheel', handleWheel, { passive: false });
+    return () => el.removeEventListener('wheel', handleWheel);
+  }, [handleWheel]);
 
   useEffect(() => {
     let cancelled = false;
@@ -32,12 +46,8 @@ export function CompareView({ files }: CompareViewProps) {
 
   return (
     <div
+      ref={gridRef}
       className={`h-full grid gap-px bg-border ${visible.length <= 2 ? 'grid-cols-2' : 'grid-cols-2 grid-rows-2'}`}
-      onWheel={(e) => {
-        if (!e.ctrlKey && !e.metaKey) return;
-        e.preventDefault();
-        setZoom((z) => Math.max(1, Math.min(4, z * Math.exp(-e.deltaY * 0.004))));
-      }}
       onDoubleClick={() => setZoom((z) => z > 1 ? 1 : 2)}
       title="Compare view. Ctrl/Cmd + wheel zooms all images together; double-click toggles 200%."
     >

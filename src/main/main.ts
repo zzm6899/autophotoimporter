@@ -7,6 +7,11 @@ if (started) {
   app.quit();
 }
 
+// Enable the Shape Detection API (FaceDetector, BarcodeDetector, TextDetector)
+// in the Chromium renderer. Must be set before app ready — webPreferences alone
+// is not sufficient in newer Electron versions.
+app.commandLine.appendSwitch('enable-blink-features', 'ShapeDetection');
+
 let mainWindow: BrowserWindow | null = null;
 
 const createWindow = () => {
@@ -21,6 +26,7 @@ const createWindow = () => {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      enableBlinkFeatures: 'ShapeDetection',
     },
   });
 

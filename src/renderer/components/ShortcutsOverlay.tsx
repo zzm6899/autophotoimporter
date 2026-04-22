@@ -3,7 +3,8 @@ interface ShortcutsOverlayProps {
 }
 
 const shortcuts = [
-  ['Arrows', 'Navigate'],
+  ['Arrows', 'Navigate photos'],
+  ['Shift+◀▶', 'Previous / next burst'],
   ['P / X / U', 'Pick, reject, clear'],
   ['0-5', 'Set star rating'],
   ['Ctrl+A', 'Select visible'],

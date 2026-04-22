@@ -13,12 +13,149 @@ import { BestOfSelectionPanel, rankBestOfSelection } from './BestOfSelectionPane
 import { getPreviewCacheStats, setBackgroundPreviewPaused, warmPreview } from '../utils/previewCache';
 import { clampStops } from '../../shared/exposure';
 
-declare global {
-  interface Window {
-    FaceDetector?: new (options?: { fastMode?: boolean; maxDetectedFaces?: number }) => {
-      detect: (source: CanvasImageSource) => Promise<Array<{ boundingBox: DOMRectReadOnly }>>;
-    };
+// ── Laplacian sharpness-based subject detector ────────────────────────────
+// Uses focus sharpness (Laplacian variance) instead of colour/skin tone so it
+// works for helmeted fighters, animals, objects — anything that is in-focus.
+// Gaussian center-weighting suppresses sharp background elements (windows,
+// text banners) that are near the frame edges.
+
+interface SubjectBox { x: number; y: number; w: number; h: number; score: number }
+
+/**
+ * Detect subject regions by finding the sharpest (in-focus) areas of the image.
+ * Algorithm:
+ *  1. Divide image into CELLxCELL blocks; compute Laplacian variance per block.
+ *  2. Weight each block by a Gaussian centred on the image (σ = 0.38) so that
+ *     edge/corner blocks (background windows, signs) are suppressed.
+ *  3. Threshold the weighted sharpness map; BFS flood-fill into connected blobs.
+ *  4. Filter blobs smaller than minFraction of the image area.
+ *  5. Sort by total weighted sharpness; NMS; return top 3 boxes.
+ */
+function detectSubjectBoxes(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  minFraction = 0.008,
+): SubjectBox[] {
+  const CELL = 16; // pixel block size — coarse enough to be fast, fine enough to localise
+  const cols = Math.ceil(width  / CELL);
+  const rows = Math.ceil(height / CELL);
+  const minCellArea = (width * height * minFraction) / (CELL * CELL);
+  const SIGMA = 0.38; // Gaussian half-width in normalised coords (0-1)
+  const twoSigSq = 2 * SIGMA * SIGMA;
+
+  // ── Step 1: per-cell Laplacian variance ─────────────────────────────────
+  const lapMap = new Float32Array(cols * rows);
+  for (let cy = 0; cy < rows; cy++) {
+    for (let cx = 0; cx < cols; cx++) {
+      const x0 = cx * CELL, y0 = cy * CELL;
+      const x1 = Math.min(x0 + CELL, width  - 1);
+      const y1 = Math.min(y0 + CELL, height - 1);
+      let sum = 0, sumSq = 0, n = 0;
+      for (let py = Math.max(1, y0); py < y1; py++) {
+        for (let px = Math.max(1, x0); px < x1; px++) {
+          const i = (py * width + px) * 4;
+          const g = (v: number) => data[v] * 0.299 + data[v + 1] * 0.587 + data[v + 2] * 0.114;
+          const lap = Math.abs(
+            g(i - width * 4) + g(i + width * 4) + g(i - 4) + g(i + 4) - 4 * g(i),
+          );
+          sum += lap; sumSq += lap * lap; n++;
+        }
+      }
+      const mean = n > 0 ? sum / n : 0;
+      lapMap[cy * cols + cx] = n > 0 ? (sumSq / n - mean * mean) : 0;
+    }
   }
+
+  // ── Step 2: Gaussian center-weight ──────────────────────────────────────
+  const weightedMap = new Float32Array(cols * rows);
+  let globalMax = 0;
+  for (let cy = 0; cy < rows; cy++) {
+    for (let cx = 0; cx < cols; cx++) {
+      const nx = (cx + 0.5) / cols - 0.5; // normalised, centred at 0
+      const ny = (cy + 0.5) / rows - 0.5;
+      const gauss = Math.exp(-(nx * nx + ny * ny) / twoSigSq);
+      const w = lapMap[cy * cols + cx] * gauss;
+      weightedMap[cy * cols + cx] = w;
+      if (w > globalMax) globalMax = w;
+    }
+  }
+
+  if (globalMax === 0) return [];
+
+  // Threshold: cells must be at least 18 % of the peak weighted sharpness
+  const THRESH = globalMax * 0.18;
+
+  // ── Step 3: BFS flood-fill into connected blobs ──────────────────────────
+  const visited = new Uint8Array(cols * rows);
+  const boxes: SubjectBox[] = [];
+
+  for (let startY = 0; startY < rows; startY++) {
+    for (let startX = 0; startX < cols; startX++) {
+      const idx = startY * cols + startX;
+      if (visited[idx] || weightedMap[idx] < THRESH) continue;
+
+      const queue: number[] = [idx];
+      visited[idx] = 1;
+      let minX = startX, maxX = startX, minY = startY, maxY = startY;
+      let cellCount = 0, totalSharp = 0;
+
+      while (queue.length > 0) {
+        const cur = queue.pop()!;
+        const cy = Math.floor(cur / cols);
+        const cx = cur % cols;
+        cellCount++;
+        totalSharp += weightedMap[cur];
+        if (cx < minX) minX = cx;
+        if (cx > maxX) maxX = cx;
+        if (cy < minY) minY = cy;
+        if (cy > maxY) maxY = cy;
+
+        for (const n of [cur - 1, cur + 1, cur - cols, cur + cols]) {
+          if (n < 0 || n >= cols * rows) continue;
+          const nx2 = n % cols;
+          const cx2 = cur % cols;
+          if (Math.abs(nx2 - cx2) > 1) continue; // prevent row-wrap
+          if (visited[n] || weightedMap[n] < THRESH) continue;
+          visited[n] = 1;
+          queue.push(n);
+        }
+      }
+
+      // ── Step 4: filter small blobs ───────────────────────────────────────
+      if (cellCount < minCellArea) continue;
+
+      const bx = minX * CELL, by = minY * CELL;
+      const bw = (maxX - minX + 1) * CELL, bh = (maxY - minY + 1) * CELL;
+
+      // Loose aspect ratio guard (very wide/tall strips are probably artefacts)
+      const aspect = bw / bh;
+      if (aspect < 0.15 || aspect > 6.0) continue;
+
+      boxes.push({ x: bx, y: by, w: bw, h: bh, score: totalSharp * cellCount });
+    }
+  }
+
+  // ── Step 5: sort, NMS, return top 3 ─────────────────────────────────────
+  boxes.sort((a, b) => b.score - a.score);
+
+  const kept: SubjectBox[] = [];
+  for (const box of boxes.slice(0, 8)) {
+    let dominated = false;
+    for (const k of kept) {
+      const ix = Math.max(box.x, k.x);
+      const iy = Math.max(box.y, k.y);
+      const iw = Math.min(box.x + box.w, k.x + k.w) - ix;
+      const ih = Math.min(box.y + box.h, k.y + k.h) - iy;
+      if (iw <= 0 || ih <= 0) continue;
+      const inter = iw * ih;
+      const uni = box.w * box.h + k.w * k.h - inter;
+      if (inter / uni > 0.45) { dominated = true; break; }
+    }
+    if (!dominated) kept.push(box);
+    if (kept.length >= 3) break;
+  }
+  return kept;
 }
 
 async function scoreSharpness(src: string): Promise<number> {
@@ -93,40 +230,56 @@ async function analyzeSubject(src: string): Promise<{
   });
   img.src = src;
   await loaded;
+  // Use the full thumbnail resolution (up to 480px wide) for better face detection accuracy.
   const canvas = document.createElement('canvas');
-  const width = 160;
-  const height = 120;
+  const width = Math.min(img.naturalWidth, 480);
+  const height = Math.round(width * img.naturalHeight / img.naturalWidth);
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) return { subjectSharpnessScore: 0, faceCount: 0, faceBoxes: [], subjectReasons: [] };
   ctx.drawImage(img, 0, 0, width, height);
   const data = ctx.getImageData(0, 0, width, height).data;
-  const center = regionSharpness(data, width, height, { x: width * 0.24, y: height * 0.18, w: width * 0.52, h: height * 0.6 });
-  if (!window.FaceDetector) {
+
+  // Broad center-region sharpness as baseline (works even with helmets/masks)
+  const center = regionSharpness(data, width, height, {
+    x: width * 0.2, y: height * 0.1, w: width * 0.6, h: height * 0.8,
+  });
+
+  // Detect main subjects — use a looser minFraction so partially-visible
+  // or helmeted subjects are found, while very distant background people
+  // (who occupy <0.8% of the frame) are filtered.
+  const subjects = detectSubjectBoxes(data, width, height, 0.008);
+
+  if (subjects.length === 0) {
     return { subjectSharpnessScore: center, faceCount: 0, faceBoxes: [], subjectReasons: ['center subject'] };
   }
-  try {
-    const faces = await new window.FaceDetector({ fastMode: true, maxDetectedFaces: 8 }).detect(canvas);
-    if (faces.length === 0) return { subjectSharpnessScore: center, faceCount: 0, faceBoxes: [], subjectReasons: ['center subject'] };
-    const faceScores = faces.map((face) => {
-      const box = face.boundingBox;
-      return regionSharpness(data, width, height, { x: box.x, y: box.y, w: box.width, h: box.height });
-    });
-    return {
-      subjectSharpnessScore: Math.max(center, ...faceScores),
-      faceCount: faces.length,
-      faceBoxes: faces.map((face) => ({
-        x: face.boundingBox.x / width,
-        y: face.boundingBox.y / height,
-        width: face.boundingBox.width / width,
-        height: face.boundingBox.height / height,
-      })),
-      subjectReasons: ['face focus'],
-    };
-  } catch {
-    return { subjectSharpnessScore: center, faceCount: 0, faceBoxes: [], subjectReasons: ['center subject'] };
-  }
+
+  // Score each detected subject by sharpness inside its bounding box.
+  const scored = subjects.map((box) => {
+    const sharp = regionSharpness(data, width, height, { x: box.x, y: box.y, w: box.w, h: box.h });
+    return { ...box, sharpness: sharp };
+  });
+
+  // Best subject sharpness wins (vs overall center score)
+  const bestSharp = Math.max(center, ...scored.map((s) => s.sharpness));
+
+  return {
+    subjectSharpnessScore: bestSharp,
+    faceCount: scored.length,
+    faceBoxes: scored.map((s) => ({
+      x: s.x / width,
+      y: s.y / height,
+      width: s.w / width,
+      height: s.h / height,
+      // eyeScore: 2 = green (sharp / in-focus subject), 1 = yellow (softer),
+      // 0 = dim. Use relative sharpness rank: highest-scoring blob gets green.
+      eyeScore: s.sharpness >= scored[0].sharpness * 0.7 ? 2 : 1,
+    })),
+    subjectReasons: [
+      scored.length > 1 ? `${scored.length} subjects` : 'subject focus',
+    ],
+  };
 }
 
 async function visualHash(src: string): Promise<string> {
@@ -176,6 +329,7 @@ export function ThumbnailGrid() {
   const [reviewPaused, setReviewPaused] = useState(false);
   const [backgroundLoadingPaused, setBackgroundLoadingPaused] = useState(false);
   const [exposureClipboard, setExposureClipboard] = useState<number | null>(null);
+  const [groupByFolder, setGroupByFolder] = useState(false);
   const [cacheStats, setCacheStats] = useState(getPreviewCacheStats());
   const lastClickedRef = useRef<number>(-1);
   const sharpnessInFlightRef = useRef(false);
@@ -296,11 +450,18 @@ export function ThumbnailGrid() {
   useEffect(() => {
     if (sharpnessInFlightRef.current) return;
     if (reviewPaused) return;
-    if (viewMode === 'single' || viewMode === 'split') return;
+    // Allow analysis in all view modes — use a smaller batch in single/split
+    // so face detection doesn't compete with the detail preview load.
+    const batchSize = (viewMode === 'single' || viewMode === 'split') ? 1 : 4;
     // Keep batch small so scoring doesn't freeze the UI on slow machines.
     const candidates = files
-      .filter((f) => f.type === 'photo' && f.thumbnail && (typeof f.sharpnessScore !== 'number' || !f.visualHash || typeof f.subjectSharpnessScore !== 'number'))
-      .slice(0, 4);
+      .filter((f) => f.type === 'photo' && f.thumbnail && (
+        typeof f.sharpnessScore !== 'number' ||
+        !f.visualHash ||
+        typeof f.subjectSharpnessScore !== 'number' ||
+        f.faceBoxes === undefined  // re-run face detection if it hasn't been stored yet
+      ))
+      .slice(0, batchSize);
     if (candidates.length === 0) return;
     sharpnessInFlightRef.current = true;
     const run = () => void Promise.all(candidates.map(async (f) => {
@@ -308,8 +469,12 @@ export function ThumbnailGrid() {
       const [sharpnessScore, hash, subject] = await Promise.all([
         typeof f.sharpnessScore === 'number' ? Promise.resolve(f.sharpnessScore) : scoreSharpness(thumbnail),
         f.visualHash ? Promise.resolve(f.visualHash) : visualHash(thumbnail),
-        typeof f.subjectSharpnessScore === 'number'
-          ? Promise.resolve({ subjectSharpnessScore: f.subjectSharpnessScore, faceCount: f.faceCount ?? 0, faceBoxes: f.faceBoxes ?? [], subjectReasons: f.subjectReasons ?? [] })
+        // Re-run analyzeSubject if faceBoxes is undefined (never analyzed, or
+        // analyzed before FaceDetector was enabled and data was cleared).
+        // Even if subjectSharpnessScore is already set we still re-analyze so
+        // that face boxes get populated now that FaceDetector is available.
+        (typeof f.subjectSharpnessScore === 'number' && f.faceBoxes !== undefined)
+          ? Promise.resolve({ subjectSharpnessScore: f.subjectSharpnessScore, faceCount: f.faceCount ?? 0, faceBoxes: f.faceBoxes, subjectReasons: f.subjectReasons ?? [] })
           : analyzeSubject(thumbnail),
       ]);
       return [f.path, { sharpnessScore, visualHash: hash, ...subject }] as const;
@@ -334,7 +499,7 @@ export function ThumbnailGrid() {
       }
       sharpnessInFlightRef.current = false;
     };
-  }, [files, dispatch, viewMode, reviewPaused]);
+  }, [files, dispatch, reviewPaused, viewMode]);
 
   useEffect(() => {
     setBackgroundPreviewPaused(backgroundLoadingPaused);
@@ -522,13 +687,21 @@ export function ThumbnailGrid() {
       switch (e.key) {
         case 'ArrowRight':
           e.preventDefault();
-          setSelectedIndices(new Set());
-          setFocused(Math.min(focusedIndex + 1, sortedFiles.length - 1));
+          if (e.shiftKey) {
+            openAdjacentBurst(1);
+          } else {
+            setSelectedIndices(new Set());
+            setFocused(Math.min(focusedIndex + 1, sortedFiles.length - 1));
+          }
           break;
         case 'ArrowLeft':
           e.preventDefault();
-          setSelectedIndices(new Set());
-          setFocused(Math.max(focusedIndex - 1, 0));
+          if (e.shiftKey) {
+            openAdjacentBurst(-1);
+          } else {
+            setSelectedIndices(new Set());
+            setFocused(Math.max(focusedIndex - 1, 0));
+          }
           break;
         case 'ArrowDown':
           e.preventDefault();
@@ -763,6 +936,47 @@ export function ThumbnailGrid() {
   }, [bestScope, files, selectedFiles]);
   const bestOfSelection = bestPanelFiles.length > 0 ? rankBestOfSelection(bestPanelFiles)[0] : null;
   const forceVisibleThumbnails = filter !== 'all' || sortedFiles.length <= 160;
+
+  // Map path → index in sortedFiles so the folder-group render doesn't
+  // have to call indexOf() for every card.
+  const pathToSortedIndex = useMemo(() => {
+    const m = new Map<string, number>();
+    sortedFiles.forEach((f, i) => m.set(f.path, i));
+    return m;
+  }, [sortedFiles]);
+
+  // Folder groups — only computed when the folder-view toggle is on.
+  // Within each folder files are already pulled from sortedFiles (which sorts
+  // by rating desc, date asc) so the order is correct; we just re-sort
+  // to make sure star ranking is primary within the group.
+  const folderGroups = useMemo(() => {
+    if (!groupByFolder || !selectedSource) return null;
+    const groups = new Map<string, typeof sortedFiles>();
+    for (const file of sortedFiles) {
+      let rel = file.path;
+      if (rel.startsWith(selectedSource)) rel = rel.slice(selectedSource.length);
+      // strip leading separator (works for both / and \)
+      if (rel.startsWith('/') || rel.startsWith('\\')) rel = rel.slice(1);
+      const lastSep = Math.max(rel.lastIndexOf('/'), rel.lastIndexOf('\\'));
+      const folder = lastSep < 0 ? '(root)' : rel.slice(0, lastSep).replace(/\\/g, '/');
+      if (!groups.has(folder)) groups.set(folder, []);
+      groups.get(folder)!.push(file);
+    }
+    // Sort files within each group: highest rating first, then by date
+    for (const arr of groups.values()) {
+      arr.sort((a, b) => {
+        const ra = a.rating ?? 0;
+        const rb = b.rating ?? 0;
+        if (ra !== rb) return rb - ra;
+        const ta = a.dateTaken ? Date.parse(a.dateTaken) : 0;
+        const tb = b.dateTaken ? Date.parse(b.dateTaken) : 0;
+        return ta - tb;
+      });
+    }
+    // Sort folder names alphabetically
+    return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
+  }, [groupByFolder, selectedSource, sortedFiles]);
+
   const reviewStats = useMemo(() => {
     const photoFiles = files.filter((f) => f.type === 'photo');
     const analyzed = photoFiles.filter((f) =>
@@ -1195,6 +1409,20 @@ export function ThumbnailGrid() {
         {reviewPaused ? 'Resume Review' : 'Pause Review'} {reviewStats.analyzed}/{reviewStats.total}
       </button>
       <button
+        onClick={() => {
+          dispatch({ type: 'CLEAR_FACE_DATA' });
+          setReviewPaused(false);
+        }}
+        className={`px-2 py-1 text-[10px] rounded-md transition-colors shrink-0 ${
+          reviewStats.faces > 0
+            ? 'bg-violet-500/10 text-violet-300 hover:bg-violet-500/20'
+            : 'bg-surface-raised text-text-muted hover:text-violet-300'
+        }`}
+        title={`Re-run BlazeFace detection on all ${reviewStats.total} photos. Faces found so far: ${reviewStats.faces}.`}
+      >
+        Faces {reviewStats.faces}
+      </button>
+      <button
         onClick={() => setBackgroundLoadingPaused((v) => !v)}
         className={`px-2 py-1 text-[10px] rounded-md transition-colors shrink-0 ${
           backgroundLoadingPaused ? 'bg-yellow-500/15 text-yellow-300' : 'bg-surface-raised text-text-muted hover:text-text'
@@ -1286,6 +1514,7 @@ export function ThumbnailGrid() {
             setShowBestOfSelection(false);
             setBestScope(null);
           }}
+          onPickFile={(file, pick) => dispatch({ type: 'SET_PICK', filePath: file.path, pick })}
           onPickBest={(file) => {
             dispatch({ type: 'SET_PICK', filePath: file.path, pick: 'selected' });
             setFocused(sortedFiles.findIndex((f) => f.path === file.path));
@@ -1482,6 +1711,19 @@ export function ThumbnailGrid() {
           <button onClick={() => { dispatch({ type: 'SET_VIEW_MODE', mode: 'compare' }); if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0); }} className={`p-0.5 rounded transition-colors ${viewMode === 'compare' ? 'text-text bg-surface-raised' : 'text-text-muted hover:text-text'}`} title="Compare view (select 2–4 photos)">
             <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path d="M2 4.5A2.5 2.5 0 014.5 2h4A2.5 2.5 0 0111 4.5v11A2.5 2.5 0 018.5 18h-4A2.5 2.5 0 012 15.5v-11zM12 4.5A2.5 2.5 0 0114.5 2h1A2.5 2.5 0 0118 4.5v11a2.5 2.5 0 01-2.5 2.5h-1a2.5 2.5 0 01-2.5-2.5v-11z" /></svg>
           </button>
+          <button
+            onClick={() => {
+              setGroupByFolder((v) => !v);
+              // Switch back to grid view if we're not already there
+              if (viewMode !== 'grid') dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' });
+            }}
+            className={`p-0.5 rounded transition-colors ${groupByFolder ? 'text-text bg-surface-raised' : 'text-text-muted hover:text-text'}`}
+            title="Folder view — group files by directory, ranked by ★ rating"
+          >
+            <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M2 6a2 2 0 012-2h4l2 2h4a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" clipRule="evenodd" />
+            </svg>
+          </button>
         </div>
 
         <div className="w-px h-3 bg-border mx-1 shrink-0" />
@@ -1577,27 +1819,89 @@ export function ThumbnailGrid() {
         ) : (
           <div className="h-full relative">
             <div className="h-full overflow-y-auto px-4 pt-3 pb-16">
-              <div
-                ref={gridRef}
-                className="thumbnail-grid grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-3"
-              >
-                {sortedFiles.map((file, i) => (
-                  <ThumbnailCard
-                    key={file.path}
-                    index={i}
-                    file={file}
-                    focused={i === focusedIndex}
-                    selected={selectedIndices.has(i)}
-                    queued={queuedSet.has(file.path)}
-                    forceLoad={forceVisibleThumbnails}
-                    exposurePreviewStops={getThumbnailExposureStops(file)}
-                    burstCollapsed={!!file.burstId && collapsedSet.has(file.burstId)}
-                    onBurstToggle={handleBurstToggle}
-                    onClickCard={handleCardClick}
-                    onDoubleClickCard={handleGridDoubleClick}
-                  />
-                ))}
-              </div>
+              {folderGroups ? (
+                /* ── Folder view: one section per sub-directory, ranked by ★ ── */
+                <div className="flex flex-col gap-8">
+                  {folderGroups.map(([folder, folderFiles]) => {
+                    const ratedFiles = folderFiles.filter((f) => (f.rating ?? 0) > 0);
+                    const avgRating = ratedFiles.length > 0
+                      ? ratedFiles.reduce((s, f) => s + (f.rating ?? 0), 0) / ratedFiles.length
+                      : 0;
+                    const maxRating = ratedFiles.length > 0
+                      ? Math.max(...ratedFiles.map((f) => f.rating ?? 0))
+                      : 0;
+                    return (
+                      <div key={folder}>
+                        {/* Folder header */}
+                        <div className="flex items-center gap-2 mb-2 pb-1 border-b border-border sticky top-0 bg-surface z-10 pt-1">
+                          <svg className="w-3.5 h-3.5 text-text-muted shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                            <path fillRule="evenodd" d="M2 6a2 2 0 012-2h4l2 2h4a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" clipRule="evenodd" />
+                          </svg>
+                          <span className="text-xs font-medium text-text-secondary font-mono truncate" title={folder}>
+                            {folder || '(root)'}
+                          </span>
+                          <span className="text-[10px] text-text-muted shrink-0">
+                            {folderFiles.length} file{folderFiles.length !== 1 ? 's' : ''}
+                          </span>
+                          {ratedFiles.length > 0 && (
+                            <span
+                              className="text-[10px] text-yellow-400 shrink-0"
+                              title={`${ratedFiles.length} rated · avg ${avgRating.toFixed(1)}★ · best ${maxRating}★`}
+                            >
+                              {'★'.repeat(maxRating)}{'☆'.repeat(5 - maxRating)} best · avg {avgRating.toFixed(1)}★
+                            </span>
+                          )}
+                        </div>
+                        {/* Thumbnail grid for this folder */}
+                        <div className="thumbnail-grid grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-3">
+                          {folderFiles.map((file) => {
+                            const i = pathToSortedIndex.get(file.path) ?? -1;
+                            return (
+                              <ThumbnailCard
+                                key={file.path}
+                                index={i}
+                                file={file}
+                                focused={i === focusedIndex}
+                                selected={selectedIndices.has(i)}
+                                queued={queuedSet.has(file.path)}
+                                forceLoad={forceVisibleThumbnails}
+                                exposurePreviewStops={getThumbnailExposureStops(file)}
+                                burstCollapsed={!!file.burstId && collapsedSet.has(file.burstId)}
+                                onBurstToggle={handleBurstToggle}
+                                onClickCard={handleCardClick}
+                                onDoubleClickCard={handleGridDoubleClick}
+                              />
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                /* ── Normal flat grid ── */
+                <div
+                  ref={gridRef}
+                  className="thumbnail-grid grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-3"
+                >
+                  {sortedFiles.map((file, i) => (
+                    <ThumbnailCard
+                      key={file.path}
+                      index={i}
+                      file={file}
+                      focused={i === focusedIndex}
+                      selected={selectedIndices.has(i)}
+                      queued={queuedSet.has(file.path)}
+                      forceLoad={forceVisibleThumbnails}
+                      exposurePreviewStops={getThumbnailExposureStops(file)}
+                      burstCollapsed={!!file.burstId && collapsedSet.has(file.burstId)}
+                      onBurstToggle={handleBurstToggle}
+                      onClickCard={handleCardClick}
+                      onDoubleClickCard={handleGridDoubleClick}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
             {floatingToolbar}
           </div>
