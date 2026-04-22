@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import type { SaveFormat } from '../../shared/types';
 import { FOLDER_PRESETS } from '../../shared/types';
+import { playCompletionSound } from '../utils/completionSound';
 
 interface SettingsPageProps {
   onClose: () => void;
@@ -134,12 +135,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   };
 
   const playCompleteSound = () => {
-    try {
-      const soundSrc = completeSoundPath
-        ? `file:///${completeSoundPath.replace(/\\/g, '/').replace(/^\/+/, '')}`
-        : 'data:audio/wav;base64,UklGRjIAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQ4AAACAhIuQlJmbm5qYlJCMiA==';
-      void new Audio(encodeURI(soundSrc)).play().catch(() => undefined);
-    } catch { /* ignore */ }
+    playCompletionSound(completeSoundPath);
   };
 
   const handleEjectCurrentSource = async () => {

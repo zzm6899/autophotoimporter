@@ -16,9 +16,9 @@ export function ImportProgress() {
     return () => window.removeEventListener('keydown', handleKey);
   }, [phase, importProgress, cancelImport]);
 
-  if (phase !== 'importing' || !importProgress) return null;
+  if (phase !== 'importing') return null;
 
-  const percent = importProgress.totalFiles > 0
+  const percent = importProgress && importProgress.totalFiles > 0
     ? Math.round((importProgress.currentIndex / importProgress.totalFiles) * 100)
     : 0;
 
@@ -40,32 +40,41 @@ export function ImportProgress() {
           <div className="flex justify-between text-sm">
             <span className="text-text-secondary">Progress</span>
             <span className="text-text font-mono">
-              {importProgress.currentIndex} / {importProgress.totalFiles}
+              {importProgress ? `${importProgress.currentIndex} / ${importProgress.totalFiles}` : 'Preparing...'}
             </span>
           </div>
-          <div className="flex justify-between text-sm">
-            <span className="text-text-secondary">Transferred</span>
-            <span className="text-text font-mono">
-              {formatSize(importProgress.bytesTransferred)} / {formatSize(importProgress.totalBytes)}
-            </span>
-          </div>
-          {importProgress.skipped > 0 && (
+          {importProgress ? (
+            <>
+              <div className="flex justify-between text-sm">
+                <span className="text-text-secondary">Transferred</span>
+                <span className="text-text font-mono">
+                  {formatSize(importProgress.bytesTransferred)} / {formatSize(importProgress.totalBytes)}
+                </span>
+              </div>
+              {importProgress.skipped > 0 && (
+                <div className="flex justify-between text-sm">
+                  <span className="text-text-secondary">Skipped</span>
+                  <span className="text-yellow-400 font-mono">{importProgress.skipped}</span>
+                </div>
+              )}
+              {importProgress.errors > 0 && (
+                <div className="flex justify-between text-sm">
+                  <span className="text-text-secondary">Errors</span>
+                  <span className="text-red-400 font-mono">{importProgress.errors}</span>
+                </div>
+              )}
+            </>
+          ) : (
             <div className="flex justify-between text-sm">
-              <span className="text-text-secondary">Skipped</span>
-              <span className="text-yellow-400 font-mono">{importProgress.skipped}</span>
-            </div>
-          )}
-          {importProgress.errors > 0 && (
-            <div className="flex justify-between text-sm">
-              <span className="text-text-secondary">Errors</span>
-              <span className="text-red-400 font-mono">{importProgress.errors}</span>
+              <span className="text-text-secondary">Status</span>
+              <span className="text-text font-mono">Scanning card</span>
             </div>
           )}
         </div>
 
         {/* Current file */}
-        <div className="text-xs text-text-secondary truncate mb-6" title={importProgress.currentFile}>
-          {importProgress.currentFile}
+        <div className="text-xs text-text-secondary truncate mb-6" title={importProgress?.currentFile}>
+          {importProgress?.currentFile ?? 'Looking for photos and videos to import...'}
         </div>
 
         {/* Cancel button */}
