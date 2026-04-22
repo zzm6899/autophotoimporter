@@ -138,6 +138,11 @@ const api = {
     ipcRenderer.on(IPC.AUTO_IMPORT_STARTED, handler);
     return () => ipcRenderer.removeListener(IPC.AUTO_IMPORT_STARTED, handler);
   },
+  onAutoImportComplete: (cb: (result: ImportResult) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, result: ImportResult) => cb(result);
+    ipcRenderer.on(IPC.AUTO_IMPORT_COMPLETE, handler);
+    return () => ipcRenderer.removeListener(IPC.AUTO_IMPORT_COMPLETE, handler);
+  },
 
   // Platform info (renderer uses this to show Ctrl vs ⌘ in shortcuts)
   platform: process.platform,

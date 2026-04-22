@@ -1482,7 +1482,7 @@ export function ThumbnailGrid() {
       )}
       <button
         onClick={() => window.electronAPI.exportContactSheet(files.filter((f) => f.pick !== 'rejected'))}
-        className="hidden px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-text transition-colors shrink-0"
+        className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-text transition-colors shrink-0"
         title="Export a PDF contact sheet of every non-rejected photo. Useful for client selects or a quick review handoff."
       >
         Contact Sheet

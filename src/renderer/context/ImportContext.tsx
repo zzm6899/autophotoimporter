@@ -261,7 +261,9 @@ export function reducer(state: State, action: Action): State {
       return {
         ...state,
         files: grouped,
-        phase: state.files.length > 0 ? 'ready' : 'idle',
+        phase: state.phase === 'importing'
+          ? 'importing'
+          : (state.files.length > 0 ? 'ready' : 'idle'),
         scanPaused: false,
         // Reset collapsed state on every rescan — otherwise old IDs accumulate
         collapsedBursts: [],

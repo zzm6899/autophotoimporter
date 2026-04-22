@@ -1,5 +1,8 @@
 import { useEffect, useCallback } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
+import { playCompletionSound } from '../utils/completionSound';
+
+let latestImportRunId = 0;
 
 export function useImport() {
   const {
@@ -65,6 +68,7 @@ export function useImport() {
           .map((f) => [f.path, f.exposureAdjustmentStops as number]))
       : {};
 
+    const runId = ++latestImportRunId;
     dispatch({ type: 'IMPORT_START' });
     try {
       const result = await window.electronAPI.startImport({
@@ -87,24 +91,20 @@ export function useImport() {
         normalizeAnchorPaths: normalizeAnchorPaths.length > 0 ? normalizeAnchorPaths : undefined,
         exposureAdjustments: Object.keys(exposureAdjustments).length > 0 ? exposureAdjustments : undefined,
       });
+      if (runId !== latestImportRunId) return;
       dispatch({ type: 'IMPORT_COMPLETE', result });
 
       // Optional post-import actions, renderer-side
       if (result.errors.length === 0 || result.imported > 0) {
         if (playSoundOnComplete) {
-          try {
-            const soundSrc = completeSoundPath
-              ? `file:///${completeSoundPath.replace(/\\/g, '/').replace(/^\/+/, '')}`
-              : 'data:audio/wav;base64,UklGRjIAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQ4AAACAhIuQlJmbm5qYlJCMiA==';
-            const a = new Audio(encodeURI(soundSrc));
-            void a.play().catch(() => undefined);
-          } catch { /* ignore */ }
+          playCompletionSound(completeSoundPath);
         }
         if (openFolderOnComplete && destination) {
           void window.electronAPI.openPath(destination).catch(() => undefined);
         }
       }
     } catch (err: unknown) {
+      if (runId !== latestImportRunId) return;
       const message = err instanceof Error ? err.message : 'Import failed unexpectedly';
       dispatch({
         type: 'IMPORT_COMPLETE',

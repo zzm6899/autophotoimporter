@@ -163,6 +163,23 @@ function contactSheetHtml(files: MediaFile[]): string {
     </html>`;
 }
 
+async function contactSheetFiles(files: MediaFile[]): Promise<MediaFile[]> {
+  const sheetFiles = files.slice(0, 500);
+  const hydrated: MediaFile[] = [];
+  for (const file of sheetFiles) {
+    if (file.thumbnail || file.type !== 'photo') {
+      hydrated.push(file);
+      continue;
+    }
+    try {
+      hydrated.push({ ...file, thumbnail: await generatePreview(file.path) });
+    } catch {
+      hydrated.push(file);
+    }
+  }
+  return hydrated;
+}
+
 export function registerIpcHandlers(): void {
   // Volumes
   ipcMain.handle(IPC.VOLUMES_LIST, async () => {
@@ -422,8 +439,17 @@ export function registerIpcHandlers(): void {
 
     const win = new BrowserWindow({ show: false, webPreferences: { sandbox: true } });
     try {
-      const html = contactSheetHtml(Array.isArray(files) && files.length > 0 ? files : scannedFiles);
+      const selectedFiles = Array.isArray(files) && files.length > 0 ? files : scannedFiles;
+      const html = contactSheetHtml(await contactSheetFiles(selectedFiles));
       await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+      await win.webContents.executeJavaScript(`
+        Promise.all(Array.from(document.images).map((img) => {
+          if (img.complete) return true;
+          return new Promise((resolve) => {
+            img.onload = img.onerror = resolve;
+          });
+        }))
+      `);
       const pdf = await win.webContents.printToPDF({
         printBackground: true,
         pageSize: 'A4',
@@ -513,6 +539,15 @@ async function maybeAutoImport(volume: Volume): Promise<void> {
     };
 
     const filesToImport = filterFilesForImport(scannedFiles, importConfig);
+    sendToRenderer(IPC.IMPORT_PROGRESS, {
+      currentFile: filesToImport.length > 0 ? 'Preparing import...' : 'No files to import',
+      currentIndex: 0,
+      totalFiles: filesToImport.length,
+      bytesTransferred: 0,
+      totalBytes: filesToImport.reduce((sum, f) => sum + f.size, 0),
+      skipped: 0,
+      errors: 0,
+    });
     const result = await importFiles(filesToImport, importConfig, (progress) => {
       sendToRenderer(IPC.IMPORT_PROGRESS, progress);
     });
@@ -520,7 +555,17 @@ async function maybeAutoImport(volume: Volume): Promise<void> {
     if (settings.autoEject && result.imported > 0) {
       void ejectVolume(volume.path);
     }
+    sendToRenderer(IPC.AUTO_IMPORT_COMPLETE, result);
   } catch (err) {
     console.error('[auto-import] failed:', err);
+    const message = err instanceof Error ? err.message : 'Auto-import failed';
+    sendToRenderer(IPC.AUTO_IMPORT_COMPLETE, {
+      imported: 0,
+      skipped: 0,
+      verified: 0,
+      errors: [{ file: 'auto-import', error: message }],
+      totalBytes: 0,
+      durationMs: 0,
+    } satisfies ImportResult);
   }
 }

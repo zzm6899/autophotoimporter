@@ -29,7 +29,7 @@ function applyFormat(destPath: string, format: SaveFormat): string {
 export function DestinationPanel() {
   const {
     destination, skipDuplicates, saveFormat, jpegQuality, folderPreset, customPattern,
-    files, phase, selectedSource, selectedPaths, queuedPaths,
+    files, phase, importProgress, selectedSource, selectedPaths, queuedPaths,
     separateProtected, protectedFolderName, backupDestRoot, ftpDestEnabled, ftpDestConfig,
     autoEject, playSoundOnComplete, completeSoundPath, openFolderOnComplete,
     verifyChecksums,
@@ -338,6 +338,30 @@ export function DestinationPanel() {
           <div className="bg-surface-raised rounded px-1.5 py-1">Rejected <span className="text-red-400">{rejectedCount}</span></div>
           <div className="bg-surface-raised rounded px-1.5 py-1">Protected <span className="text-emerald-400">{protectedCount}</span></div>
           <div className="bg-surface-raised rounded px-1.5 py-1">Queued <span className="text-emerald-400">{queuedPaths.length}</span></div>
+        </div>
+      )}
+
+      {phase === 'importing' && (
+        <div className="mx-2.5 mb-2.5 rounded border border-accent/30 bg-accent/10 px-2 py-1.5">
+          <div className="flex items-center justify-between gap-2 text-[10px] text-text-secondary">
+            <span>Importing</span>
+            <span className="font-mono text-text">
+              {importProgress ? `${importProgress.currentIndex}/${importProgress.totalFiles}` : 'Preparing'}
+            </span>
+          </div>
+          <div className="mt-1 h-1 rounded bg-surface-raised overflow-hidden">
+            <div
+              className="h-full bg-accent transition-[width] duration-300"
+              style={{
+                width: importProgress && importProgress.totalFiles > 0
+                  ? `${Math.round((importProgress.currentIndex / importProgress.totalFiles) * 100)}%`
+                  : '0%',
+              }}
+            />
+          </div>
+          <div className="mt-1 text-[10px] text-text-muted truncate" title={importProgress?.currentFile}>
+            {importProgress?.currentFile ?? 'Scanning card...'}
+          </div>
         </div>
       )}
 
