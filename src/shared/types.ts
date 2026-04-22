@@ -133,6 +133,9 @@ export interface ImportConfig {
    * two drives in one pass.
    */
   backupDestRoot?: string;
+  /** Optional FTP/FTPS mirror destination. Uploaded after the primary copy succeeds. */
+  ftpDestEnabled?: boolean;
+  ftpDestConfig?: FtpConfig;
   /** After a successful import, attempt to eject the source volume. */
   autoEject?: boolean;
   /**
@@ -204,6 +207,8 @@ export interface AppSettings {
   separateProtected: boolean;
   protectedFolderName: string;
   backupDestRoot: string;        // empty string = disabled
+  ftpDestEnabled: boolean;
+  ftpDestConfig: FtpConfig;
   autoEject: boolean;
   playSoundOnComplete: boolean;
   completeSoundPath: string;

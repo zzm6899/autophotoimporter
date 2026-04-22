@@ -50,6 +50,8 @@ interface State {
   separateProtected: boolean;
   protectedFolderName: string;
   backupDestRoot: string;
+  ftpDestEnabled: boolean;
+  ftpDestConfig: FtpConfig;
   autoEject: boolean;
   playSoundOnComplete: boolean;
   completeSoundPath: string;
@@ -116,9 +118,10 @@ export type Action =
   | { type: 'SET_WORKFLOW_OPTION'; key:
       | 'separateProtected' | 'autoEject' | 'playSoundOnComplete'
       | 'openFolderOnComplete' | 'autoImport'
-      | 'burstGrouping' | 'normalizeExposure' | 'verifyChecksums'; value: boolean }
+      | 'burstGrouping' | 'normalizeExposure' | 'verifyChecksums' | 'ftpDestEnabled'; value: boolean }
   | { type: 'SET_WORKFLOW_STRING'; key:
       | 'protectedFolderName' | 'backupDestRoot' | 'autoImportDestRoot' | 'completeSoundPath'; value: string }
+  | { type: 'SET_FTP_DEST_CONFIG'; config: Partial<FtpConfig> }
   | { type: 'SET_BURST_WINDOW'; seconds: number }
   | { type: 'TOGGLE_BURST_COLLAPSE'; burstId: string }
   | { type: 'COLLAPSE_ALL_BURSTS' }
@@ -192,6 +195,15 @@ const initialState: State = {
   separateProtected: false,
   protectedFolderName: '_Protected',
   backupDestRoot: '',
+  ftpDestEnabled: false,
+  ftpDestConfig: {
+    host: '',
+    port: 21,
+    user: '',
+    password: '',
+    secure: false,
+    remotePath: '/PhotoImporter',
+  },
   autoEject: false,
   playSoundOnComplete: false,
   completeSoundPath: '',
@@ -326,6 +338,8 @@ export function reducer(state: State, action: Action): State {
       return { ...state, sourceKind: action.kind };
     case 'SET_FTP_CONFIG':
       return { ...state, ftpConfig: { ...state.ftpConfig, ...action.config } };
+    case 'SET_FTP_DEST_CONFIG':
+      return { ...state, ftpDestConfig: { ...state.ftpDestConfig, ...action.config } };
     case 'SET_FTP_STATUS':
       return {
         ...state,

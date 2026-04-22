@@ -183,6 +183,33 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
       {/* Scrollable body */}
       <div className={`overflow-y-auto flex-1 space-y-5 ${inline ? 'px-6 py-4' : 'px-4 py-3'}`}>
 
+          {/* Fast workflow */}
+          <section>
+            <h3 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-2">Fast Workflow</h3>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={() => window.dispatchEvent(new Event('photo-importer:tutorial'))}
+                className="px-3 py-2 rounded bg-surface-raised hover:bg-border text-left"
+              >
+                <div className="text-xs text-text">Quick tutorial</div>
+                <div className="text-[10px] text-text-muted mt-0.5">Source, cull, queue, import</div>
+              </button>
+              <button
+                onClick={onClose}
+                className="px-3 py-2 rounded bg-surface-raised hover:bg-border text-left"
+              >
+                <div className="text-xs text-text">Back to culling</div>
+                <div className="text-[10px] text-text-muted mt-0.5">P pick, X reject, Shift+B best</div>
+              </button>
+            </div>
+            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-1 text-[10px] text-text-muted">
+              <div className="bg-surface-alt border border-border rounded px-2 py-1">Arrow keys move</div>
+              <div className="bg-surface-alt border border-border rounded px-2 py-1">0-5 rate</div>
+              <div className="bg-surface-alt border border-border rounded px-2 py-1">Space original</div>
+              <div className="bg-surface-alt border border-border rounded px-2 py-1">[ ] exposure</div>
+            </div>
+          </section>
+
           {/* Appearance */}
           <section>
             <h3 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-2">Appearance</h3>

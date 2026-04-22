@@ -114,10 +114,31 @@ select option {
   color: var(--color-text);
 }
 
+button {
+  touch-action: manipulation;
+}
+
+button:not(:disabled) {
+  will-change: transform;
+}
+
+button:not(:disabled):active {
+  transform: translateY(1px) scale(0.99);
+}
+
 /* Skip rendering offscreen grid cards on slow machines */
 .thumbnail-grid > * {
   content-visibility: auto;
   contain-intrinsic-size: 0 180px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 .animate-in {

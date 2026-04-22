@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState } from 'react';
+import { memo, useRef, useEffect, useState } from 'react';
 import type { MediaFile } from '../../shared/types';
 import { formatFileSize, formatExposure } from '../utils/formatters';
 
@@ -6,12 +6,13 @@ import { formatFileSize, formatExposure } from '../utils/formatters';
 // Thumbnails are base64 data URIs — loading="lazy" doesn't work for them,
 // so IntersectionObserver is the reliable way to avoid decoding 1000+ bitmaps
 // that are offscreen. rootMargin 300px pre-loads one row before it's visible.
-function useLazySrc(src: string | undefined) {
+function useLazySrc(src: string | undefined, forceActive: boolean) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [activeSrc, setActiveSrc] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     if (!src) { setActiveSrc(undefined); return; }
+    if (forceActive) { setActiveSrc(src); return; }
     const el = containerRef.current;
     if (!el) return;
     const obs = new IntersectionObserver(
@@ -22,7 +23,7 @@ function useLazySrc(src: string | undefined) {
     return () => obs.disconnect();
   // Only re-run when src identity changes (new thumbnail arrived).
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [src]);
+  }, [src, forceActive]);
 
   // If src changes after already visible (e.g. thumbnail replaced), update immediately.
   useEffect(() => {
@@ -73,7 +74,7 @@ function RejectX() {
   );
 }
 
-export function ThumbnailCard({
+function ThumbnailCardInner({
   file,
   focused = false,
   selected = false,
@@ -88,7 +89,7 @@ export function ThumbnailCard({
   const isVideo = file.type === 'video';
   const isPicked = file.pick === 'selected';
   const isRejected = file.pick === 'rejected';
-  const { containerRef, activeSrc } = useLazySrc(file.thumbnail);
+  const { containerRef, activeSrc } = useLazySrc(file.thumbnail, focused || selected);
 
   return (
     <div
@@ -110,6 +111,7 @@ export function ThumbnailCard({
               alt={file.name}
               className="w-full h-full object-cover"
               decoding="async"
+              loading={focused ? 'eager' : 'lazy'}
             />
           ) : (
             <div className="w-full h-full bg-surface-raised animate-pulse flex items-center justify-center">
@@ -287,3 +289,31 @@ export function ThumbnailCard({
     </div>
   );
 }
+
+export const ThumbnailCard = memo(ThumbnailCardInner, (prev, next) => {
+  const a = prev.file;
+  const b = next.file;
+  return (
+    a.path === b.path &&
+    a.thumbnail === b.thumbnail &&
+    a.pick === b.pick &&
+    a.duplicate === b.duplicate &&
+    a.isProtected === b.isProtected &&
+    a.rating === b.rating &&
+    a.normalizeToAnchor === b.normalizeToAnchor &&
+    a.exposureAdjustmentStops === b.exposureAdjustmentStops &&
+    a.burstId === b.burstId &&
+    a.burstIndex === b.burstIndex &&
+    a.burstSize === b.burstSize &&
+    a.reviewScore === b.reviewScore &&
+    a.blurRisk === b.blurRisk &&
+    a.visualGroupId === b.visualGroupId &&
+    a.visualGroupSize === b.visualGroupSize &&
+    prev.focused === next.focused &&
+    prev.selected === next.selected &&
+    prev.queued === next.queued &&
+    prev.compact === next.compact &&
+    prev.frameNumber === next.frameNumber &&
+    prev.burstCollapsed === next.burstCollapsed
+  );
+});

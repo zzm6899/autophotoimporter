@@ -9,7 +9,8 @@ import { CompareView } from './CompareView';
 import { EmptyState } from './EmptyState';
 import { SettingsPage } from './SettingsPage';
 import { ShortcutsOverlay } from './ShortcutsOverlay';
-import { getCachedPreview } from '../utils/previewCache';
+import { BestOfSelectionPanel, rankBestOfSelection } from './BestOfSelectionPanel';
+import { warmPreview } from '../utils/previewCache';
 
 async function scoreSharpness(src: string): Promise<number> {
   const img = new Image();
@@ -89,6 +90,7 @@ export function ThumbnailGrid() {
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
   const [searchText, setSearchText] = useState('');
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showBestOfSelection, setShowBestOfSelection] = useState(false);
   const lastClickedRef = useRef<number>(-1);
   const sharpnessInFlightRef = useRef(false);
   const collapsedSet = useMemo(() => new Set(collapsedBursts), [collapsedBursts]);
@@ -207,13 +209,14 @@ export function ThumbnailGrid() {
 
   useEffect(() => {
     if (sharpnessInFlightRef.current) return;
+    if (viewMode === 'single' || viewMode === 'split') return;
     // Keep batch small so scoring doesn't freeze the UI on slow machines.
     const candidates = files
       .filter((f) => f.type === 'photo' && f.thumbnail && (typeof f.sharpnessScore !== 'number' || !f.visualHash))
-      .slice(0, 8);
+      .slice(0, 4);
     if (candidates.length === 0) return;
     sharpnessInFlightRef.current = true;
-    void Promise.all(candidates.map(async (f) => {
+    const run = () => void Promise.all(candidates.map(async (f) => {
       const thumbnail = f.thumbnail as string;
       const [sharpnessScore, hash] = await Promise.all([
         typeof f.sharpnessScore === 'number' ? Promise.resolve(f.sharpnessScore) : scoreSharpness(thumbnail),
@@ -229,7 +232,19 @@ export function ThumbnailGrid() {
       .finally(() => {
         sharpnessInFlightRef.current = false;
       });
-  }, [files, dispatch]);
+    const hasIdle = typeof window.requestIdleCallback === 'function';
+    const idle: number = hasIdle
+      ? window.requestIdleCallback(run, { timeout: 1200 })
+      : window.setTimeout(run, 250);
+    return () => {
+      if (hasIdle) {
+        window.cancelIdleCallback(idle);
+      } else {
+        clearTimeout(idle as number);
+      }
+      sharpnessInFlightRef.current = false;
+    };
+  }, [files, dispatch, viewMode]);
 
   const getColumnsCount = useCallback(() => {
     const grid = gridRef.current;
@@ -298,6 +313,15 @@ export function ThumbnailGrid() {
       lastClickedRef.current = index;
     }
   }, [selectedIndices, setFocused]);
+
+  const openBestOfSelection = useCallback(() => {
+    if (selectedIndices.size < 2 && sortedFiles.length > 0) {
+      const start = Math.max(0, focusedIndex);
+      const windowFiles = sortedFiles.slice(start, Math.min(sortedFiles.length, start + 8));
+      setSelectedIndices(new Set(windowFiles.map((_, offset) => start + offset)));
+    }
+    setShowBestOfSelection(true);
+  }, [focusedIndex, selectedIndices.size, sortedFiles]);
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
@@ -411,6 +435,11 @@ export function ThumbnailGrid() {
           break;
         case 'b':
         case 'B': {
+          if (e.shiftKey) {
+            e.preventDefault();
+            openBestOfSelection();
+            break;
+          }
           // Select every shot in the focused file's burst. Great for batch
           // picking or rejecting a whole burst with Shift+P / Shift+X.
           if (e.metaKey || e.ctrlKey) break;
@@ -492,16 +521,16 @@ export function ThumbnailGrid() {
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [focusedIndex, sortedFiles, viewMode, getColumnsCount, setFocused, pickFile, dispatch, selectedIndices, cullMode, files]);
+  }, [focusedIndex, sortedFiles, viewMode, getColumnsCount, setFocused, pickFile, dispatch, selectedIndices, cullMode, files, openBestOfSelection]);
 
   useEffect(() => {
     if (focusedIndex < 0) return;
     if (viewMode === 'grid' && gridRef.current) {
       const card = gridRef.current.children[focusedIndex] as HTMLElement | undefined;
-      card?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      card?.scrollIntoView({ block: 'nearest', behavior: 'instant' });
     } else if (viewMode === 'split' && splitGridRef.current) {
       const card = splitGridRef.current.children[focusedIndex] as HTMLElement | undefined;
-      card?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      card?.scrollIntoView({ block: 'nearest', behavior: 'instant' });
     }
   }, [focusedIndex, viewMode]);
 
@@ -511,18 +540,17 @@ export function ThumbnailGrid() {
   useEffect(() => {
     if (viewMode !== 'single' && viewMode !== 'split') return;
     if (focusedIndex < 0 || sortedFiles.length === 0) return;
-    // ±3 lookahead so both forward and backward navigation feel instant.
     const neighbors = [
-      focusedIndex - 3, focusedIndex - 2, focusedIndex - 1,
-      focusedIndex + 1, focusedIndex + 2, focusedIndex + 3,
+      focusedIndex + 1, focusedIndex + 2, focusedIndex + 3, focusedIndex + 4,
+      focusedIndex - 1, focusedIndex - 2,
     ];
     const id = setTimeout(() => {
       for (const i of neighbors) {
         if (i >= 0 && i < sortedFiles.length) {
-          void getCachedPreview(sortedFiles[i].path);
+          warmPreview(sortedFiles[i].path, i === focusedIndex + 1 ? 'normal' : 'low');
         }
       }
-    }, 0);
+    }, 40);
     return () => clearTimeout(id);
   }, [focusedIndex, viewMode, sortedFiles]);
 
@@ -540,6 +568,14 @@ export function ThumbnailGrid() {
     ? Array.from(selectedIndices).filter((i) => i >= 0 && i < sortedFiles.length).map((i) => sortedFiles[i])
     : focusedFile ? [focusedFile] : []
   ).slice(0, 4);
+  const selectedFiles = useMemo(() => (
+    hasBatchSelection
+      ? Array.from(selectedIndices)
+          .filter((i) => i >= 0 && i < sortedFiles.length)
+          .map((i) => sortedFiles[i])
+      : focusedFile ? [focusedFile] : []
+  ), [focusedFile, hasBatchSelection, selectedIndices, sortedFiles]);
+  const bestOfSelection = selectedFiles.length > 0 ? rankBestOfSelection(selectedFiles)[0] : null;
   const allTargetsNormalized = normalizeTargetPaths.length > 0 &&
     normalizeTargetPaths.every((p) => files.find((f) => f.path === p)?.normalizeToAnchor);
   const duplicateCount = files.filter((f) => f.duplicate).length;
@@ -576,6 +612,7 @@ export function ThumbnailGrid() {
   const queuePaths = useCallback((paths: string[]) => {
     dispatch({ type: 'QUEUE_ADD_PATHS', paths });
   }, [dispatch]);
+
 
   const saveSelectionSet = useCallback(() => {
     const paths = normalizeTargetPaths;
@@ -903,6 +940,13 @@ export function ThumbnailGrid() {
         Find Best
       </button>
       <button
+        onClick={openBestOfSelection}
+        className="px-2 py-1 text-[10px] rounded-md bg-yellow-500/10 text-yellow-300 hover:bg-yellow-500/20 transition-colors shrink-0"
+        title="Rank the current selection and show the sharpest/top candidates (Shift+B)"
+      >
+        Best of Selection
+      </button>
+      <button
         onClick={() => dispatch({ type: 'SET_FILTER', filter: 'blur-risk' })}
         className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-red-300 transition-colors shrink-0"
         title="Show potentially soft or blurry photos"
@@ -950,8 +994,27 @@ export function ThumbnailGrid() {
   ) : null;
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full flex flex-col relative">
       {showShortcuts && <ShortcutsOverlay onClose={() => setShowShortcuts(false)} />}
+      {showBestOfSelection && selectedFiles.length > 0 && (
+        <BestOfSelectionPanel
+          files={selectedFiles}
+          onClose={() => setShowBestOfSelection(false)}
+          onPickBest={(file) => {
+            dispatch({ type: 'SET_PICK', filePath: file.path, pick: 'selected' });
+            setFocused(sortedFiles.findIndex((f) => f.path === file.path));
+          }}
+          onQueueBest={(file) => dispatch({ type: 'QUEUE_ADD_PATHS', paths: [file.path] })}
+          onRejectRest={(best) => {
+            dispatch({
+              type: 'SET_PICK_BATCH',
+              filePaths: selectedFiles.filter((f) => f.path !== best.path).map((f) => f.path),
+              pick: 'rejected',
+            });
+            dispatch({ type: 'SET_PICK', filePath: best.path, pick: 'selected' });
+          }}
+        />
+      )}
       {/* Unified header */}
       <div className="shrink-0 px-2 py-1 flex items-center gap-1 border-b border-border">
         {/* Left panel toggle */}
@@ -999,6 +1062,7 @@ export function ThumbnailGrid() {
                 <button onClick={() => pickFile('rejected', false)} title="Reject selected (X)" className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-red-400 hover:bg-red-500/10 rounded transition-colors">Reject</button>
                 <button onClick={() => pickFile(undefined, false)} title="Clear flags (U)" className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-text hover:bg-surface-raised rounded transition-colors">Unflag</button>
                 <button onClick={() => queuePaths(normalizeTargetPaths)} title="Add selected to import queue" className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-emerald-400 hover:bg-emerald-500/10 rounded transition-colors">Queue</button>
+                <button onClick={openBestOfSelection} title="Show the best/sharpest selected candidates (Shift+B)" className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-yellow-300 hover:bg-yellow-500/10 rounded transition-colors">Best</button>
                 <div className="w-px h-3 bg-border mx-1" />
                 <button onClick={() => setSelectedIndices(new Set())} title="Deselect all (Esc)" className="px-2 py-0.5 text-[11px] text-text-muted hover:text-text hover:bg-surface-raised rounded transition-colors">Deselect</button>
               </>

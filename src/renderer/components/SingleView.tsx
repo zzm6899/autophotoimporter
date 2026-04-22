@@ -73,7 +73,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
 
     const timer = window.setTimeout(() => {
       setLoading(true);
-      void getCachedPreview(file.path).then(async (result) => {
+      void getCachedPreview(file.path, 'high').then(async (result) => {
         if (cancelled) return;
         if (result) {
           try {
@@ -245,7 +245,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
         </div>
       )}
 
-      {!isZoomed && imageSrc && <Histogram src={imageSrc} />}
+      {!isZoomed && imageSrc && <Histogram src={file.thumbnail || imageSrc} />}
 
       {!isZoomed && (file.isProtected || (file.rating && file.rating > 0)) && (
         <div className="absolute top-3 left-3 flex items-center gap-1.5 z-20">

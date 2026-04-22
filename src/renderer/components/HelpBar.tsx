@@ -113,6 +113,7 @@ export function HelpBar() {
             {/* Key hints */}
             <span className="shrink-0 hidden sm:inline">P pick</span>
             <span className="shrink-0 hidden sm:inline">X reject</span>
+            <span className="shrink-0 hidden md:inline">Shift+B best</span>
             <span className="shrink-0 hidden md:inline">0-5 stars</span>
             <span className="shrink-0 hidden md:inline">{MOD}+Z undo</span>
           </>
@@ -150,6 +151,13 @@ export function HelpBar() {
               </button>
             </>
           )}
+          <button
+            className="px-2 py-0.5 rounded bg-surface-raised hover:bg-border text-text-secondary transition-colors"
+            title="Open the quick-start tutorial"
+            onClick={() => window.dispatchEvent(new Event('photo-importer:tutorial'))}
+          >
+            Tutorial
+          </button>
           <button
             className="px-2 py-0.5 rounded bg-surface-raised hover:bg-border text-text-secondary transition-colors"
             title="Press ? to see all keyboard shortcuts"

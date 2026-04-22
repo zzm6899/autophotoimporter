@@ -8,6 +8,7 @@ const shortcuts = [
   ['0-5', 'Set star rating'],
   ['Ctrl+A', 'Select visible'],
   ['B / G', 'Select or collapse burst'],
+  ['Shift+B', 'Best of selected batch'],
   ['A', 'Normalize selection to focused anchor'],
   ['[ / ] / \\', 'Manual exposure down, up, reset'],
   ['Space', 'Hold original in detail preview'],

@@ -12,6 +12,7 @@ import { ImportSummary } from './components/ImportSummary';
 import { UpdateBanner } from './components/UpdateBanner';
 import { AutoImportPrompt } from './components/AutoImportPrompt';
 import { HelpBar } from './components/HelpBar';
+import { TutorialOverlay } from './components/TutorialOverlay';
 
 function AppInner() {
   useVolumes();
@@ -44,6 +45,7 @@ function AppInner() {
       <UpdateBanner />
       <AutoImportPrompt />
       <HelpBar />
+      <TutorialOverlay />
     </>
   );
 }
