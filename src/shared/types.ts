@@ -68,8 +68,8 @@ export interface MediaFile {
   subjectSharpnessScore?: number;
   /** Number of faces found by local browser face detection, when available. */
   faceCount?: number;
-  /** Normalized face boxes from local browser face detection. */
-  faceBoxes?: Array<{ x: number; y: number; width: number; height: number }>;
+  /** Normalized face boxes from local browser face detection. eyeScore=2 means both eyes detected (open). */
+  faceBoxes?: Array<{ x: number; y: number; width: number; height: number; eyeScore?: number }>;
   /** Local review notes for subject/face focus. */
   subjectReasons?: string[];
   /** Heuristic blur risk derived from thumbnail/previews. */
@@ -105,13 +105,16 @@ export interface SelectionSet {
 }
 
 // Folder naming presets for organizing imported files
-// Tokens: {YYYY}, {MM}, {DD}, {filename}, {ext}
+// Tokens: {YYYY}, {MM}, {DD}, {filename}, {name}, {ext}, {rating}
 export const FOLDER_PRESETS: Record<string, { label: string; pattern: string }> = {
-  'date-flat':   { label: 'YYYY-MM-DD',           pattern: '{YYYY}-{MM}-{DD}/{filename}' },
-  'date-nested': { label: 'YYYY / MM / DD',       pattern: '{YYYY}/{MM}/{DD}/{filename}' },
-  'year-month':  { label: 'YYYY / MM',            pattern: '{YYYY}/{MM}/{filename}' },
-  'year':        { label: 'YYYY',                  pattern: '{YYYY}/{filename}' },
-  'flat':        { label: 'No folders',            pattern: '{filename}' },
+  'date-flat':      { label: 'YYYY-MM-DD',               pattern: '{YYYY}-{MM}-{DD}/{filename}' },
+  'date-nested':    { label: 'YYYY / MM / DD',           pattern: '{YYYY}/{MM}/{DD}/{filename}' },
+  'year-month':     { label: 'YYYY / MM',                pattern: '{YYYY}/{MM}/{filename}' },
+  'year':           { label: 'YYYY',                      pattern: '{YYYY}/{filename}' },
+  'star':           { label: '★ Rating (1-star … 5-star)', pattern: '{rating}/{filename}' },
+  'date-star':      { label: 'YYYY-MM-DD / ★ Rating',    pattern: '{YYYY}-{MM}-{DD}/{rating}/{filename}' },
+  'star-date':      { label: '★ Rating / YYYY-MM-DD',    pattern: '{rating}/{YYYY}-{MM}-{DD}/{filename}' },
+  'flat':           { label: 'No folders',                pattern: '{filename}' },
 };
 
 export interface ImportConfig {
@@ -304,18 +307,23 @@ export const ALL_MEDIA_EXTENSIONS = new Set([
   ...VIDEO_EXTENSIONS,
 ]);
 
-export function resolvePattern(pattern: string, date: Date, fileName: string, ext: string): string {
+export function resolvePattern(pattern: string, date: Date, fileName: string, ext: string, rating?: number): string {
   const y = date.getFullYear().toString();
   const m = (date.getMonth() + 1).toString().padStart(2, '0');
   const d = date.getDate().toString().padStart(2, '0');
   const baseName = fileName.replace(new RegExp(`\\${ext}$`, 'i'), '');
+  // {rating} → "5-stars", "1-star", "unrated" — safe as a folder name on all OSes
+  const ratingStr = (rating ?? 0) > 0
+    ? `${rating}-star${rating !== 1 ? 's' : ''}`
+    : 'unrated';
   return pattern
     .replace(/\{YYYY\}/g, y)
     .replace(/\{MM\}/g, m)
     .replace(/\{DD\}/g, d)
     .replace(/\{filename\}/g, fileName)
     .replace(/\{name\}/g, baseName)
-    .replace(/\{ext\}/g, ext.replace('.', ''));
+    .replace(/\{ext\}/g, ext.replace('.', ''))
+    .replace(/\{rating\}/g, ratingStr);
 }
 
 export const IPC = {

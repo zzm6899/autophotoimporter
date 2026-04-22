@@ -112,16 +112,23 @@ export function SingleView({ file, index, total }: SingleViewProps) {
   const imageSrc = preview || file.thumbnail;
   const showingThumbnailOnly = !!file.thumbnail && !preview && loading;
 
-  const handleWheel = useCallback((e: React.WheelEvent) => {
+  const handleWheel = useCallback((e: WheelEvent) => {
     e.preventDefault();
     setZoom((z) => {
-      // Exponential zoom: constant scroll feels uniform at any zoom level
       const factor = Math.exp(-e.deltaY * ZOOM_STEP);
       const next = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z * factor));
       if (next < 1.02) { setPan({ x: 0, y: 0 }); return 1; }
       return next;
     });
   }, []);
+
+  // Must be non-passive to call preventDefault and block browser scroll.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    el.addEventListener('wheel', handleWheel, { passive: false });
+    return () => el.removeEventListener('wheel', handleWheel);
+  }, [handleWheel]);
 
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
     if (zoom <= 1) return;
@@ -211,7 +218,6 @@ export function SingleView({ file, index, total }: SingleViewProps) {
     <div
       ref={containerRef}
       className="h-full flex items-center justify-center bg-neutral-100 dark:bg-black relative overflow-hidden"
-      onWheel={handleWheel}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
@@ -269,6 +275,27 @@ export function SingleView({ file, index, total }: SingleViewProps) {
             </svg>
           </div>
         )}
+        {!isZoomed && imageSrc && (file.faceBoxes?.length ?? 0) > 0 && (
+          <div className="absolute inset-0 pointer-events-none z-[15]">
+            {file.faceBoxes!.map((box, i) => (
+              <div
+                key={i}
+                className={`absolute rounded-sm shadow-[0_0_0_1px_rgba(0,0,0,0.4)] ${
+                  (box.eyeScore ?? 0) >= 2
+                    ? 'border-2 border-emerald-400/90'
+                    : 'border border-yellow-400/70'
+                }`}
+                style={{
+                  left: `${box.x * 100}%`,
+                  top: `${box.y * 100}%`,
+                  width: `${box.width * 100}%`,
+                  height: `${box.height * 100}%`,
+                }}
+                title={(box.eyeScore ?? 0) >= 2 ? 'Eyes open' : (box.eyeScore ?? 0) === 1 ? 'One eye visible' : 'Face detected'}
+              />
+            ))}
+          </div>
+        )}
         {clippingRisk && imageSrc && (
           <div className="absolute inset-0 pointer-events-none z-20">
             <div className={`absolute inset-x-0 top-0 h-8 ${previewStops > 0 ? 'bg-red-500/25' : 'bg-blue-500/25'}`} />
@@ -294,7 +321,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
             </span>
           )}
           {file.rating && file.rating > 0 && (
-            <span className="flex items-center gap-0.5 bg-black/45 dark:bg-black/65 px-1.5 py-0.5 rounded" title={`${file.rating} star rating`}>
+            <span className="flex items-center gap-0.5 bg-black/55 px-1.5 py-0.5 rounded" title={`${file.rating} star rating`}>
               {Array.from({ length: 5 }).map((_, i) => (
                 <svg
                   key={i}
@@ -315,13 +342,13 @@ export function SingleView({ file, index, total }: SingleViewProps) {
         <div className="absolute bottom-3 left-3 right-3 flex items-end justify-between gap-2 z-[5]">
           <div className="flex items-center gap-1.5 flex-wrap">
             {exposure && (
-              <span className="text-[9px] font-mono text-text-muted bg-black/30 dark:bg-black/50 px-1.5 py-0.5 rounded">
+              <span className="text-[9px] font-mono text-white bg-black/70 backdrop-blur-sm px-1.5 py-0.5 rounded">
                 {exposure}
               </span>
             )}
             {typeof file.exposureValue === 'number' && (
               <span
-                className="text-[9px] font-mono text-text-muted bg-black/30 dark:bg-black/50 px-1.5 py-0.5 rounded"
+                className="text-[9px] font-mono text-white bg-black/70 backdrop-blur-sm px-1.5 py-0.5 rounded"
                 title="EV100 — exposure value at ISO 100"
               >
                 EV {file.exposureValue.toFixed(2)}
@@ -378,7 +405,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
                     dispatch({ type: 'SET_EXPOSURE_ANCHOR', path: file.path });
                   }
                 }}
-                className="text-[9px] font-mono text-text-muted hover:text-text bg-black/30 hover:bg-black/50 dark:bg-black/50 px-1.5 py-0.5 rounded"
+                className="text-[9px] font-mono text-white/80 hover:text-white bg-black/70 backdrop-blur-sm hover:bg-black/80 px-1.5 py-0.5 rounded"
                 title={isAnchor
                   ? 'Clear the exposure anchor and reset all normalization flags'
                   : normalizeExposure
@@ -401,7 +428,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
                 className={`text-[9px] font-mono px-1.5 py-0.5 rounded ${
                   file.normalizeToAnchor
                     ? 'bg-orange-500/30 text-orange-300 hover:bg-orange-500/40'
-                    : 'text-text-muted bg-black/30 hover:bg-black/50 dark:bg-black/50 hover:text-orange-300'
+                    : 'text-white/80 bg-black/70 backdrop-blur-sm hover:bg-black/80 hover:text-orange-300'
                 }`}
                 title={file.normalizeToAnchor
                   ? 'Remove: exposure will NOT be normalized to anchor on import'
@@ -419,7 +446,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
                 className={`text-[9px] font-mono px-1.5 py-0.5 rounded ${
                   previewNormalized
                     ? 'bg-sky-500/30 text-sky-300 hover:bg-sky-500/40'
-                    : 'text-text-muted bg-black/30 hover:bg-black/50 dark:bg-black/50 hover:text-sky-300'
+                    : 'text-white/80 bg-black/70 backdrop-blur-sm hover:bg-black/80 hover:text-sky-300'
                 }`}
                 title={previewNormalized
                   ? `Showing adjusted preview (${formatEVDelta(previewStops)}). Hold Space for original`
@@ -435,7 +462,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
                     ? 'bg-yellow-500/30 text-yellow-300'
                     : file.blurRisk === 'high'
                       ? 'bg-red-500/30 text-red-300'
-                      : 'bg-black/30 dark:bg-black/50 text-text-muted'
+                      : 'bg-black/55 text-white/90'
                 }`}
                 title={file.reviewReasons?.join(', ') || 'Smart review score'}
               >
@@ -459,7 +486,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
             )}
           </div>
           {cameraName && (
-            <span className="text-[9px] font-mono text-text-muted bg-black/30 dark:bg-black/50 px-1.5 py-0.5 rounded pointer-events-none">
+            <span className="text-[9px] font-mono text-white bg-black/70 backdrop-blur-sm px-1.5 py-0.5 rounded pointer-events-none">
               {cameraName}
             </span>
           )}

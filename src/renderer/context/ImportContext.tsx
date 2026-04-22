@@ -151,7 +151,12 @@ export type Action =
    * and mark every other path in the set as "normalize-to-anchor". This is
    * the one-shot "make this batch consistent" workflow for bulk selection.
    */
-  | { type: 'NORMALIZE_SELECTION_TO_MEDIAN'; filePaths: string[] };
+  | { type: 'NORMALIZE_SELECTION_TO_MEDIAN'; filePaths: string[] }
+  /**
+   * Wipe faceBoxes + subjectSharpnessScore from every photo so the background
+   * reviewer re-runs analyzeSubject with the now-available FaceDetector.
+   */
+  | { type: 'CLEAR_FACE_DATA' };
 
 const systemDark = typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches;
 
@@ -537,6 +542,15 @@ export function reducer(state: State, action: Action): State {
             reviewReasons: patch.reviewReasons ?? review.reasons,
           };
         }),
+      };
+    case 'CLEAR_FACE_DATA':
+      // Wipe faceBoxes + subjectSharpnessScore so the background reviewer
+      // re-runs analyzeSubject for every photo using the current FaceDetector.
+      return {
+        ...state,
+        files: state.files.map((f) =>
+          f.type !== 'photo' ? f : { ...f, faceBoxes: undefined, subjectSharpnessScore: undefined },
+        ),
       };
     case 'GROUP_VISUAL_DUPLICATES': {
       const groups = groupByVisualHash(state.files, action.threshold ?? 8);
