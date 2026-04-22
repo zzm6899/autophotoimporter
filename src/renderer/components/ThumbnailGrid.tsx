@@ -302,6 +302,32 @@ export function ThumbnailGrid() {
     }
   }, [focusedIndex, viewMode, sortedFiles]);
 
+  // Expose-normalize button state (computed before early returns so the
+  // handleNormalizeToggle useCallback is always called unconditionally).
+  const focusedFile = focusedIndex >= 0 && focusedIndex < sortedFiles.length ? sortedFiles[focusedIndex] : null;
+  const hasBatchSelection = selectedIndices.size > 0;
+  const anchorFile = exposureAnchorPath ? files.find((f) => f.path === exposureAnchorPath) : null;
+  const anchorHasEV = typeof anchorFile?.exposureValue === 'number';
+  const canNormalize = anchorHasEV && saveFormat !== 'original';
+  const normalizeTargetPaths = hasBatchSelection
+    ? Array.from(selectedIndices).filter((i) => i >= 0 && i < sortedFiles.length).map((i) => sortedFiles[i].path)
+    : focusedFile ? [focusedFile.path] : [];
+  const allTargetsNormalized = normalizeTargetPaths.length > 0 &&
+    normalizeTargetPaths.every((p) => files.find((f) => f.path === p)?.normalizeToAnchor);
+
+  // Burst collapse/expand state (useMemo must be before early returns to
+  // satisfy the Rules of Hooks).
+  const burstIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const f of files) if (f.burstId && f.burstSize && f.burstSize > 1) ids.add(f.burstId);
+    return ids;
+  }, [files]);
+
+  const handleNormalizeToggle = useCallback(() => {
+    if (normalizeTargetPaths.length === 0) return;
+    dispatch({ type: 'SET_NORMALIZE_TO_ANCHOR', filePaths: normalizeTargetPaths, value: !allTargetsNormalized });
+  }, [dispatch, normalizeTargetPaths, allTargetsNormalized]);
+
   if (!selectedSource) {
     return <EmptyState />;
   }
@@ -338,32 +364,8 @@ export function ThumbnailGrid() {
 
   const thumbCount = files.filter((f) => f.thumbnail).length;
   const thumbsLoading = phase === 'scanning' && files.length > 0 && thumbCount < files.length;
-  const focusedFile = focusedIndex >= 0 && focusedIndex < sortedFiles.length ? sortedFiles[focusedIndex] : null;
   const isSingle = (viewMode === 'single' || viewMode === 'split') && focusedFile;
-  const hasBatchSelection = selectedIndices.size > 0;
-
-  // Burst collapse/expand state
-  const burstIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const f of files) if (f.burstId && f.burstSize && f.burstSize > 1) ids.add(f.burstId);
-    return ids;
-  }, [files]);
   const allBurstsCollapsed = burstIds.size > 0 && burstIds.size === collapsedBursts.length;
-
-  // Expose-normalize button state
-  const anchorFile = exposureAnchorPath ? files.find((f) => f.path === exposureAnchorPath) : null;
-  const anchorHasEV = typeof anchorFile?.exposureValue === 'number';
-  const canNormalize = anchorHasEV && saveFormat !== 'original';
-  const normalizeTargetPaths = hasBatchSelection
-    ? Array.from(selectedIndices).filter((i) => i >= 0 && i < sortedFiles.length).map((i) => sortedFiles[i].path)
-    : focusedFile ? [focusedFile.path] : [];
-  const allTargetsNormalized = normalizeTargetPaths.length > 0 &&
-    normalizeTargetPaths.every((p) => files.find((f) => f.path === p)?.normalizeToAnchor);
-
-  const handleNormalizeToggle = useCallback(() => {
-    if (normalizeTargetPaths.length === 0) return;
-    dispatch({ type: 'SET_NORMALIZE_TO_ANCHOR', filePaths: normalizeTargetPaths, value: !allTargetsNormalized });
-  }, [dispatch, normalizeTargetPaths, allTargetsNormalized]);
 
   const floatingToolbar = (focusedFile || hasBatchSelection) ? (
     <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-px bg-surface-alt/95 backdrop-blur-sm border border-border rounded-lg shadow-lg overflow-hidden z-20">
