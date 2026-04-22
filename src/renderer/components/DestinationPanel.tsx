@@ -11,6 +11,13 @@ const FORMAT_EXT: Record<string, string> = {
   heic: '.heic',
 };
 
+const converterLabel =
+  window.electronAPI.platform === 'darwin'
+    ? 'sips'
+    : window.electronAPI.platform === 'win32'
+      ? 'Windows imaging'
+      : 'ImageMagick';
+
 function applyFormat(destPath: string, format: SaveFormat): string {
   if (format === 'original') return destPath;
   const ext = FORMAT_EXT[format];
@@ -438,7 +445,7 @@ export function DestinationPanel() {
         )}
         {saveFormat !== 'original' && (
           <p className="text-[10px] text-text-muted mt-1">
-            Files will be converted ({process.platform === 'darwin' ? 'sips' : process.platform === 'win32' ? 'Windows imaging' : 'ImageMagick'})
+            Files will be converted ({converterLabel})
           </p>
         )}
       </div>

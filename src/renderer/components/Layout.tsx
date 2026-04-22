@@ -45,7 +45,7 @@ export function Layout({ left, center, right }: LayoutProps) {
         </button>
       </div>
 
-      <div className="flex flex-1 min-h-0">
+      <div className="flex flex-1 min-h-0 pb-7">
         {/* Left panel - Source */}
         {showLeftPanel && (
           <div className="w-48 shrink-0 border-r border-border bg-surface-alt overflow-y-auto">

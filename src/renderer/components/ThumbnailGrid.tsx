@@ -9,6 +9,7 @@ import { CompareView } from './CompareView';
 import { EmptyState } from './EmptyState';
 import { SettingsPage } from './SettingsPage';
 import { ShortcutsOverlay } from './ShortcutsOverlay';
+import { getCachedPreview } from '../utils/previewCache';
 
 async function scoreSharpness(src: string): Promise<number> {
   const img = new Image();
@@ -517,7 +518,7 @@ export function ThumbnailGrid() {
     const id = setTimeout(() => {
       for (const i of neighbors) {
         if (i >= 0 && i < sortedFiles.length) {
-          void window.electronAPI.getPreview(sortedFiles[i].path);
+          void getCachedPreview(sortedFiles[i].path);
         }
       }
     }, 0);

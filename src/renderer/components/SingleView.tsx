@@ -4,6 +4,7 @@ import { buildExposure } from '../utils/formatters';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import { formatEVDelta, stopsToMultiplier, clampStops } from '../../shared/exposure';
 import { Histogram } from './Histogram';
+import { decodeImage, getCachedPreview } from '../utils/previewCache';
 
 interface SingleViewProps {
   file: MediaFile;
@@ -68,19 +69,47 @@ export function SingleView({ file, index, total }: SingleViewProps) {
   useEffect(() => {
     let cancelled = false;
     setPreview(undefined);
-    setLoading(true);
+    setLoading(!file.thumbnail);
 
-    window.electronAPI.getPreview(file.path).then((result) => {
-      if (!cancelled) {
-        setPreview(result);
-        setLoading(false);
-      }
-    }).catch(() => {
-      if (!cancelled) setLoading(false);
-    });
+    const timer = window.setTimeout(() => {
+      setLoading(true);
+      void getCachedPreview(file.path).then(async (result) => {
+        if (cancelled) return;
+        if (result) {
+          try {
+            await decodeImage(result);
+          } catch {
+            // If decode fails, still hand the browser the source so the user
+            // gets whatever it can render instead of a permanent spinner.
+          }
+        }
+        if (!cancelled) {
+          setPreview(result);
+          setLoading(false);
+        }
+      }).catch(() => {
+        if (!cancelled) setLoading(false);
+      });
+    }, file.thumbnail ? 80 : 0);
 
-    return () => { cancelled = true; };
-  }, [file.path]);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [file.path, file.thumbnail]);
+
+  useEffect(() => {
+    if (!file.thumbnail) return;
+    void decodeImage(file.thumbnail).catch(() => undefined);
+  }, [file.thumbnail]);
+
+  /*
+    Keep the thumbnail visible while the full preview is being generated and
+    decoded. On slower laptops this makes detail navigation feel immediate,
+    even when the platform preview converter takes a beat.
+  */
+  const imageSrc = preview || file.thumbnail;
+  const showingThumbnailOnly = !!file.thumbnail && !preview && loading;
 
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
@@ -121,7 +150,6 @@ export function SingleView({ file, index, total }: SingleViewProps) {
     }
   }, [zoom]);
 
-  const imageSrc = preview || file.thumbnail;
   const isZoomed = zoom > 1;
   const exposure = buildExposure(file);
   const cameraName = file.cameraModel || null;
@@ -167,7 +195,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
           <img
             src={imageSrc}
             alt={file.name}
-            className="max-h-[calc(100vh-6rem)] max-w-full object-contain"
+            className={`max-h-[calc(100vh-6rem)] max-w-full object-contain ${showingThumbnailOnly ? 'blur-[0.5px]' : ''}`}
             draggable={false}
             style={brightnessMultiplier !== 1 ? { filter: `brightness(${brightnessMultiplier.toFixed(3)})` } : undefined}
           />
@@ -211,8 +239,9 @@ export function SingleView({ file, index, total }: SingleViewProps) {
       </div>
 
       {loading && file.thumbnail && (
-        <div className="absolute top-3 right-3 flex items-center gap-1.5">
+        <div className="absolute top-3 right-3 flex items-center gap-1.5 bg-black/45 text-white/80 px-2 py-1 rounded z-30">
           <div className="w-3 h-3 border-[1.5px] border-text-muted border-t-text rounded-full animate-spin" />
+          <span className="text-[10px]">Loading full preview</span>
         </div>
       )}
 

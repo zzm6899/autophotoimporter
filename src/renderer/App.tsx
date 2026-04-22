@@ -11,6 +11,7 @@ import { ImportProgress } from './components/ImportProgress';
 import { ImportSummary } from './components/ImportSummary';
 import { UpdateBanner } from './components/UpdateBanner';
 import { AutoImportPrompt } from './components/AutoImportPrompt';
+import { HelpBar } from './components/HelpBar';
 
 function AppInner() {
   useVolumes();
@@ -42,6 +43,7 @@ function AppInner() {
       <ImportSummary />
       <UpdateBanner />
       <AutoImportPrompt />
+      <HelpBar />
     </>
   );
 }
