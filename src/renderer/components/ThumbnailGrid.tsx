@@ -269,35 +269,43 @@ export function ThumbnailGrid() {
     }
   }, [focusedIndex, sortedFiles, dispatch, setFocused, selectedIndices]);
 
+  // Keep a ref so handleCardClick/handleGridDoubleClick/handleBurstToggle stay
+  // stable across renders — required for React.memo on ThumbnailCard to bail out.
+  const selectedIndicesRef = useRef(selectedIndices);
+  useEffect(() => { selectedIndicesRef.current = selectedIndices; });
+
   const handleCardClick = useCallback((index: number, e: React.MouseEvent) => {
+    const sel = selectedIndicesRef.current;
     const metaKey = e.metaKey || e.ctrlKey;
 
     if (e.shiftKey && lastClickedRef.current >= 0) {
-      // Shift+Click: range select
       const start = Math.min(lastClickedRef.current, index);
       const end = Math.max(lastClickedRef.current, index);
-      const next = new Set(metaKey ? selectedIndices : new Set<number>());
+      const next = new Set(metaKey ? sel : new Set<number>());
       for (let i = start; i <= end; i++) next.add(i);
       setSelectedIndices(next);
       setFocused(index);
     } else if (metaKey) {
-      // Cmd/Ctrl+Click: toggle individual
-      const next = new Set(selectedIndices);
-      if (next.has(index)) {
-        next.delete(index);
-      } else {
-        next.add(index);
-      }
+      const next = new Set(sel);
+      if (next.has(index)) { next.delete(index); } else { next.add(index); }
       setSelectedIndices(next);
       setFocused(index);
       lastClickedRef.current = index;
     } else {
-      // Plain click: clear selection, focus
       setSelectedIndices(new Set());
       setFocused(index);
       lastClickedRef.current = index;
     }
-  }, [selectedIndices, setFocused]);
+  }, [setFocused]); // stable — reads selectedIndices via ref
+
+  const handleGridDoubleClick = useCallback((index: number) => {
+    setFocused(index);
+    dispatch({ type: 'SET_VIEW_MODE', mode: 'single' });
+  }, [setFocused, dispatch]);
+
+  const handleBurstToggle = useCallback((burstId: string) => {
+    dispatch({ type: 'TOGGLE_BURST_COLLAPSE', burstId });
+  }, [dispatch]);
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
@@ -1447,6 +1455,7 @@ export function ThumbnailGrid() {
                 {sortedFiles.map((file, i) => (
                   <ThumbnailCard
                     key={file.path}
+                    index={i}
                     file={file}
                     focused={i === focusedIndex}
                     selected={selectedIndices.has(i)}
@@ -1454,9 +1463,9 @@ export function ThumbnailGrid() {
                     compact
                     frameNumber={i + 1}
                     burstCollapsed={!!file.burstId && collapsedSet.has(file.burstId)}
-                    onBurstToggle={(id) => dispatch({ type: 'TOGGLE_BURST_COLLAPSE', burstId: id })}
-                    onClick={(e) => handleCardClick(i, e)}
-                    onDoubleClick={() => setFocused(i)}
+                    onBurstToggle={handleBurstToggle}
+                    onClickCard={handleCardClick}
+                    onDoubleClickCard={setFocused}
                   />
                 ))}
               </div>
@@ -1486,17 +1495,15 @@ export function ThumbnailGrid() {
                 {sortedFiles.map((file, i) => (
                   <ThumbnailCard
                     key={file.path}
+                    index={i}
                     file={file}
                     focused={i === focusedIndex}
-                  selected={selectedIndices.has(i)}
-                  queued={queuedSet.has(file.path)}
+                    selected={selectedIndices.has(i)}
+                    queued={queuedSet.has(file.path)}
                     burstCollapsed={!!file.burstId && collapsedSet.has(file.burstId)}
-                    onBurstToggle={(id) => dispatch({ type: 'TOGGLE_BURST_COLLAPSE', burstId: id })}
-                    onClick={(e) => handleCardClick(i, e)}
-                    onDoubleClick={() => {
-                      setFocused(i);
-                      dispatch({ type: 'SET_VIEW_MODE', mode: 'single' });
-                    }}
+                    onBurstToggle={handleBurstToggle}
+                    onClickCard={handleCardClick}
+                    onDoubleClickCard={handleGridDoubleClick}
                   />
                 ))}
               </div>
