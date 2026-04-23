@@ -47,8 +47,12 @@ export function buildExposure(file: MediaFile): string | null {
 /** Compact exposure string without focal length, no ISO prefix (for ThumbnailCard) */
 export function formatExposure(file: MediaFile): string | null {
   const parts: string[] = [];
-  if (file.aperture != null) parts.push(file.aperture % 1 === 0 ? `f/${file.aperture}` : `f/${file.aperture.toFixed(1)}`);
-  if (file.shutterSpeed != null) parts.push(file.shutterSpeed < 1 ? `1/${Math.round(1 / file.shutterSpeed)}` : `${file.shutterSpeed}s`);
+  if (file.aperture != null) parts.push(fmtAperture(file.aperture));
+  if (file.shutterSpeed != null) {
+    // Omit trailing 's' for fast speeds to keep it compact (e.g. "1/250" not "1/250s")
+    const s = fmtShutter(file.shutterSpeed);
+    parts.push(file.shutterSpeed < 1 ? s.replace(/s$/, '') : s);
+  }
   if (file.iso != null) parts.push(String(file.iso));
   return parts.length > 0 ? parts.join(' ') : null;
 }

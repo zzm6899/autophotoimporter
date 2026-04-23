@@ -7,11 +7,13 @@ export function playCompletionSound(soundPath: string): void {
       activeCompleteSound.currentTime = 0;
     }
 
+    // File paths need URI encoding; data: URIs must not be re-encoded
+    // (encodeURI would corrupt base64 '+' → '%2B', breaking the audio).
     const soundSrc = soundPath
-      ? `file:///${soundPath.replace(/\\/g, '/').replace(/^\/+/, '')}`
+      ? encodeURI(`file:///${soundPath.replace(/\\/g, '/').replace(/^\/+/, '')}`)
       : 'data:audio/wav;base64,UklGRjIAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQ4AAACAhIuQlJmbm5qYlJCMiA==';
 
-    const audio = new Audio(encodeURI(soundSrc));
+    const audio = new Audio(soundSrc);
     activeCompleteSound = audio;
     audio.addEventListener('ended', () => {
       if (activeCompleteSound === audio) activeCompleteSound = null;

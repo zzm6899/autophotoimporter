@@ -279,9 +279,14 @@ export function startWatching(onChange: (volumes: Volume[]) => void): void {
 }
 
 export function stopWatching(): void {
+  // Linux populates fsWatchers[] (and aliases fsWatcher → fsWatchers[0]).
+  // macOS/Windows set only fsWatcher. Close each set exactly once.
+  const inArray = new Set(fsWatchers);
   for (const w of fsWatchers) w.close();
   fsWatchers = [];
-  fsWatcher?.close();
+  if (fsWatcher && !inArray.has(fsWatcher)) {
+    fsWatcher.close();
+  }
   fsWatcher = null;
   if (debounceTimer) clearTimeout(debounceTimer);
   debounceTimer = null;

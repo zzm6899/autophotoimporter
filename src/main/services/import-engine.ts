@@ -5,7 +5,7 @@ import path from 'node:path';
 import { constants, createReadStream } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { Client } from 'basic-ftp';
-import type { MediaFile, ImportConfig, ImportProgress, ImportResult, ImportError, SaveFormat, FtpConfig } from '../../shared/types';
+import type { MediaFile, ImportConfig, ImportProgress, ImportResult, ImportError, SaveFormat } from '../../shared/types';
 import { isDuplicate } from './duplicate-detector';
 import { stopsToSafeMultiplier, clampStops } from '../../shared/exposure';
 
@@ -24,7 +24,7 @@ function remoteJoin(...parts: string[]): string {
   return joined.startsWith('/') ? joined : `/${joined}`;
 }
 
-async function connectFtp(config: FtpConfig): Promise<Client> {
+async function connectFtp(config: NonNullable<ImportConfig['ftpDestConfig']>): Promise<Client> {
   const client = new Client(30000);
   await client.access({
     host: config.host,
@@ -365,13 +365,9 @@ export async function importFiles(
       if (backupFullPath) {
         try {
           await ensureDir(path.dirname(backupFullPath));
-          if (saveFormat === 'original') {
-            await copyFile(destFullPath, backupFullPath, constants.COPYFILE_EXCL);
-          } else {
-            // For converted files, copy the already-converted output rather
-            // than re-running the platform converter.
-            await copyFile(destFullPath, backupFullPath, constants.COPYFILE_EXCL);
-          }
+          // Always copy from the (possibly converted) primary destination so
+          // the backup is identical to what was written there.
+          await copyFile(destFullPath, backupFullPath, constants.COPYFILE_EXCL);
         } catch (mirrorErr: unknown) {
           const e = mirrorErr as NodeJS.ErrnoException;
           if (e.code !== 'EEXIST') {

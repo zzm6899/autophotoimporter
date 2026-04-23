@@ -56,7 +56,7 @@ export function AutoImportPrompt() {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-      <div className="bg-surface border border-border rounded-lg shadow-2xl p-5 max-w-sm w-full mx-4">
+      <div className="relative bg-surface border border-border rounded-lg shadow-2xl p-5 max-w-sm w-full mx-4">
         <h2 className="text-sm font-semibold text-text mb-1">Auto-import when you plug in a card?</h2>
         <p className="text-xs text-text-secondary leading-relaxed mb-3">
           We can kick off the import the moment a camera card is inserted, using your saved folder

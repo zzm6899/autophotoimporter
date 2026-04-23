@@ -32,12 +32,23 @@ export function groupBursts(files: MediaFile[], opts: BurstOptions): MediaFile[]
   const windowMs = windowSec * 1000;
 
   // Only photos with a timestamp are candidates.
+  // Cache timestamps to avoid redundant Date.parse calls during sort + loop.
+  const tsCache = new Map<string, number>();
+  const getTs = (dateTaken: string): number => {
+    let t = tsCache.get(dateTaken);
+    if (t === undefined) {
+      t = Date.parse(dateTaken);
+      tsCache.set(dateTaken, t);
+    }
+    return t;
+  };
+
   const candidates = files
     .map((f, idx) => ({ file: f, idx }))
     .filter(({ file }) => file.type === 'photo' && file.dateTaken)
     .sort((a, b) => {
-      const ta = Date.parse(a.file.dateTaken as string);
-      const tb = Date.parse(b.file.dateTaken as string);
+      const ta = getTs(a.file.dateTaken as string);
+      const tb = getTs(b.file.dateTaken as string);
       if (ta !== tb) return ta - tb;
       // Tiebreak by path so the order is deterministic.
       return a.file.path.localeCompare(b.file.path);
@@ -54,7 +65,7 @@ export function groupBursts(files: MediaFile[], opts: BurstOptions): MediaFile[]
     if (cluster.length >= minSize) {
       const first = cluster[0].file;
       // Stable ID: YYYYMMDDHHMMSS + short hash-ish of the first path.
-      const t = Date.parse(first.dateTaken as string);
+      const t = getTs(first.dateTaken as string);
       const burstId = `burst_${t}_${hash32(first.path)}`;
       const size = cluster.length;
       cluster.forEach((entry, i) => {
@@ -74,8 +85,8 @@ export function groupBursts(files: MediaFile[], opts: BurstOptions): MediaFile[]
       continue;
     }
     const prev = cluster[cluster.length - 1].file;
-    const prevT = Date.parse(prev.dateTaken as string);
-    const curT = Date.parse(c.file.dateTaken as string);
+    const prevT = getTs(prev.dateTaken as string);
+    const curT = getTs(c.file.dateTaken as string);
     const sameCam = cameraKey(prev) === cameraKey(c.file);
     const inWindow = curT - prevT <= windowMs;
     if (sameCam && inWindow) {

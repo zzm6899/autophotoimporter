@@ -28,7 +28,9 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
 
     clearTimeout(timer);
 
-    if (!response.ok) return null;
+    if (!response.ok) {
+      return null;
+    }
 
     const data = await response.json();
     const tagName: string = data.tag_name ?? '';

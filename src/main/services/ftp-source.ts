@@ -28,6 +28,19 @@ export function getFtpStagingDir(config: FtpConfig): string {
   return path.join(app.getPath('userData'), 'ftp-cache', safe);
 }
 
+/** Open and authenticate a new FTP client. Caller is responsible for closing it. */
+async function openClient(config: FtpConfig, timeoutMs: number): Promise<Client> {
+  const client = new Client(timeoutMs);
+  await client.access({
+    host: config.host,
+    port: config.port,
+    user: config.user,
+    password: config.password,
+    secure: config.secure,
+  });
+  return client;
+}
+
 /**
  * Test the credentials & path without transferring anything. Returns the
  * count of media files found under `remotePath` and free bytes estimate.
@@ -38,15 +51,9 @@ export async function probeFtp(config: FtpConfig): Promise<{
   fileCount?: number;
   totalBytes?: number;
 }> {
-  const client = new Client(30_000);
+  let client: Client | undefined;
   try {
-    await client.access({
-      host: config.host,
-      port: config.port,
-      user: config.user,
-      password: config.password,
-      secure: config.secure,
-    });
+    client = await openClient(config, 30_000);
     const entries = await listMediaRecursive(client, config.remotePath);
     return {
       ok: true,
@@ -57,7 +64,7 @@ export async function probeFtp(config: FtpConfig): Promise<{
     const message = err instanceof Error ? err.message : 'FTP connection failed';
     return { ok: false, error: message };
   } finally {
-    client.close();
+    client?.close();
   }
 }
 
@@ -119,16 +126,8 @@ export async function mirrorFtp(
   const stagingDir = getFtpStagingDir(config);
   await mkdir(stagingDir, { recursive: true });
 
-  const client = new Client(60_000);
+  const client = await openClient(config, 60_000);
   try {
-    await client.access({
-      host: config.host,
-      port: config.port,
-      user: config.user,
-      password: config.password,
-      secure: config.secure,
-    });
-
     const entries = await listMediaRecursive(client, config.remotePath);
     let done = 0;
 
@@ -146,16 +145,18 @@ export async function mirrorFtp(
           continue;
         }
       } catch {
-        // not present yet
+        // not present yet — fall through to download
       }
 
       try {
         await client.downloadTo(localPath, e.remotePath);
+        done++;
+        onProgress(done, entries.length, e.name);
       } catch (err) {
+        // Count failed downloads so the progress bar doesn't stall.
         console.warn(`[ftp] download failed for ${e.remotePath}:`, err);
+        onProgress(done, entries.length, e.name);
       }
-      done++;
-      onProgress(done, entries.length, e.name);
     }
 
     return stagingDir;
@@ -169,15 +170,8 @@ export async function mirrorFtp(
  * Useful if the UI wants to offer "preview on-demand" instead of full mirror.
  */
 export async function listFtpMedia(config: FtpConfig): Promise<MediaFile[]> {
-  const client = new Client(30_000);
+  const client = await openClient(config, 30_000);
   try {
-    await client.access({
-      host: config.host,
-      port: config.port,
-      user: config.user,
-      password: config.password,
-      secure: config.secure,
-    });
     const entries = await listMediaRecursive(client, config.remotePath);
     const stagingDir = getFtpStagingDir(config);
     return entries.map<MediaFile>((e) => ({

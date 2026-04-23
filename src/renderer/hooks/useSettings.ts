@@ -80,6 +80,8 @@ export function useSettings() {
       if (Array.isArray(settings.selectionSets)) {
         dispatch({ type: 'SET_SELECTION_SETS', sets: settings.selectionSets });
       }
+    }).catch((err) => {
+      console.error('[useSettings] getSettings failed:', err);
     });
   }, [dispatch]);
 }
