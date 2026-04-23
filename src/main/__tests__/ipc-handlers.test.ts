@@ -21,6 +21,7 @@ vi.mock('node:fs/promises', () => ({
   readFile: vi.fn().mockRejectedValue(new Error('ENOENT')),
   writeFile: vi.fn().mockResolvedValue(undefined),
   mkdir: vi.fn().mockResolvedValue(undefined),
+  statfs: vi.fn(),
 }));
 
 vi.mock('../services/volume-watcher', () => ({
@@ -56,6 +57,13 @@ vi.mock('../services/update-checker', () => ({
   checkForUpdate: vi.fn().mockResolvedValue(null),
 }));
 
+vi.mock('../services/license', () => ({
+  validateLicenseKey: vi.fn((key: string) =>
+    key === 'valid-key'
+      ? { valid: true, key, message: 'License active.', entitlement: { product: 'photo-importer', name: 'Test', issuedAt: '2026-04-24', tier: 'Full access' } }
+      : { valid: false, key, message: 'Signature check failed.' }),
+}));
+
 import { registerIpcHandlers } from '../ipc-handlers';
 import { importFiles } from '../services/import-engine';
 import { scanFiles } from '../services/file-scanner';
@@ -81,6 +89,7 @@ describe('IPC Handlers', () => {
 
   describe('IMPORT_START', () => {
     it('catches exceptions and returns ImportResult with error (Bug 1 fix)', async () => {
+      mockReadFile.mockResolvedValue(JSON.stringify({ licenseKey: 'valid-key' }) as any);
       mockImportFiles.mockRejectedValue(new Error('Unexpected crash'));
       const handler = getHandler('import:start');
       const config: ImportConfig = {
@@ -99,6 +108,7 @@ describe('IPC Handlers', () => {
     });
 
     it('filters files without destPath', async () => {
+      mockReadFile.mockResolvedValue(JSON.stringify({ licenseKey: 'valid-key' }) as any);
       const successResult: ImportResult = { imported: 0, skipped: 0, errors: [], totalBytes: 0, durationMs: 0 };
       mockImportFiles.mockResolvedValue(successResult);
       const handler = getHandler('import:start');
@@ -114,6 +124,7 @@ describe('IPC Handlers', () => {
     });
 
     it('sends progress events to renderer', async () => {
+      mockReadFile.mockResolvedValue(JSON.stringify({ licenseKey: 'valid-key' }) as any);
       const mockWin = { webContents: { send: vi.fn() } };
       mockGetAllWindows.mockReturnValue([mockWin] as any);
 
@@ -182,6 +193,12 @@ describe('IPC Handlers', () => {
       // JSON.parse will throw, caught by loadSettings
       const settings = await handler({}) as any;
       expect(settings.skipDuplicates).toBe(true);
+    });
+
+    it('rejects an invalid license key', async () => {
+      const generate = getHandler('license:activate');
+      const result = await generate({}, 'not-a-real-key') as any;
+      expect(result.valid).toBe(false);
     });
   });
 });

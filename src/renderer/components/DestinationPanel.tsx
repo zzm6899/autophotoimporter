@@ -36,6 +36,7 @@ export function DestinationPanel() {
     autoImport, autoImportDestRoot,
     burstGrouping, burstWindowSec,
     normalizeExposure, exposureAnchorPath, exposureMaxStops,
+    licenseStatus,
   } = useAppState();
   const dispatch = useAppDispatch();
   const { startImport } = useImport();
@@ -230,7 +231,8 @@ export function DestinationPanel() {
   }, [files, hasClickSelection, hasPicks, hasQueue, queuedPaths, skipDuplicates, selectedPaths]);
 
   const ftpReady = !ftpDestEnabled || (!!ftpDestConfig.host && !!ftpDestConfig.remotePath);
-  const canImport = selectedSource && destination && ftpReady && importFiles.length > 0 && (phase === 'ready' || phase === 'scanning');
+  const licenseValid = !!licenseStatus?.valid;
+  const canImport = licenseValid && selectedSource && destination && ftpReady && importFiles.length > 0 && (phase === 'ready' || phase === 'scanning');
   const totalSize = importFiles.reduce((sum, f) => sum + f.size, 0);
   const exposureEditCount = importFiles.filter((f) => f.normalizeToAnchor || f.exposureAdjustmentStops).length;
   const backupSameAsPrimary = !!backupDestRoot && !!destination && backupDestRoot === destination;
@@ -806,6 +808,9 @@ export function DestinationPanel() {
             {ftpDestEnabled && ftpReady && (
               <div className="text-[10px] text-emerald-500">FTP upload enabled.</div>
             )}
+            {!licenseValid && (
+              <div className="text-[10px] text-red-400">Importing is locked until a valid Full access license is activated.</div>
+            )}
           </div>
         )}
         {files.length > 0 && (
@@ -837,6 +842,7 @@ export function DestinationPanel() {
           title={
             !selectedSource ? 'Select a source volume first'
               : !destination ? 'Choose a destination folder first'
+              : !licenseValid ? 'Activate a valid license first'
               : !ftpReady ? 'Finish FTP output settings first'
               : importFiles.length === 0 ? 'No files to import'
               : insufficientSpace ? 'Not enough free space on the destination'

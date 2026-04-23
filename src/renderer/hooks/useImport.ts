@@ -12,11 +12,25 @@ export function useImport() {
     autoEject, playSoundOnComplete, completeSoundPath, openFolderOnComplete,
     verifyChecksums,
     normalizeExposure, exposureAnchorPath, exposureMaxStops,
+    licenseStatus,
   } = useAppState();
   const dispatch = useAppDispatch();
 
   const startImport = useCallback(async () => {
     if (!selectedSource || !destination) return;
+    if (!licenseStatus?.valid) {
+      dispatch({
+        type: 'IMPORT_COMPLETE',
+        result: {
+          imported: 0,
+          skipped: 0,
+          errors: [{ file: 'license', error: licenseStatus?.message || 'A valid license is required to import.' }],
+          totalBytes: 0,
+          durationMs: 0,
+        },
+      });
+      return;
+    }
 
     if (phase === 'scanning') {
       await window.electronAPI.cancelScan();
@@ -116,7 +130,7 @@ export function useImport() {
     separateProtected, protectedFolderName, backupDestRoot,
     ftpDestEnabled, ftpDestConfig,
     autoEject, playSoundOnComplete, completeSoundPath, openFolderOnComplete, verifyChecksums,
-    normalizeExposure, exposureAnchorPath, exposureMaxStops,
+    normalizeExposure, exposureAnchorPath, exposureMaxStops, licenseStatus,
   ]);
 
   const cancelImport = useCallback(async () => {

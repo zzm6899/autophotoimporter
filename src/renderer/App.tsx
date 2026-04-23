@@ -15,6 +15,7 @@ import { UpdateBanner } from './components/UpdateBanner';
 import { AutoImportPrompt } from './components/AutoImportPrompt';
 import { HelpBar } from './components/HelpBar';
 import { TutorialOverlay } from './components/TutorialOverlay';
+import { LicenseOverlay } from './components/LicenseOverlay';
 import { playCompletionSound } from './utils/completionSound';
 
 function AppInner() {
@@ -112,6 +113,7 @@ function AppInner() {
       <AutoImportPrompt />
       <HelpBar />
       <TutorialOverlay />
+      <LicenseOverlay />
     </>
   );
 }

@@ -12,6 +12,7 @@ import { isDuplicate } from './services/duplicate-detector';
 import { generatePreview } from './services/exif-parser';
 import { checkForUpdate } from './services/update-checker';
 import { probeFtp, mirrorFtp } from './services/ftp-source';
+import { validateLicenseKey } from './services/license';
 
 const execFileAsync = promisify(execFile);
 
@@ -59,13 +60,19 @@ const DEFAULT_SETTINGS: AppSettings = {
   exposureMaxStops: 2,
   jobPresets: [],
   selectionSets: [],
+  licenseKey: '',
+  licenseStatus: { valid: false, message: 'No license activated.' },
 };
 
 async function loadSettings(): Promise<AppSettings> {
   try {
     const data = await readFile(getSettingsPath(), 'utf-8');
     const parsed = JSON.parse(data) as Partial<AppSettings>;
-    return { ...DEFAULT_SETTINGS, ...parsed };
+    const merged = { ...DEFAULT_SETTINGS, ...parsed };
+    const licenseStatus = merged.licenseKey
+      ? validateLicenseKey(merged.licenseKey)
+      : { valid: false, message: 'No license activated.' };
+    return { ...merged, licenseStatus };
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
@@ -73,10 +80,17 @@ async function loadSettings(): Promise<AppSettings> {
 
 async function saveSettings(settings: Partial<AppSettings>): Promise<void> {
   const current = await loadSettings();
-  const merged = { ...current, ...settings };
+  const { licenseStatus: _currentStatus, ...safeCurrent } = current;
+  const { licenseStatus: _incomingStatus, ...safeIncoming } = settings;
+  const merged = { ...safeCurrent, ...safeIncoming };
   const dir = path.dirname(getSettingsPath());
   await mkdir(dir, { recursive: true });
   await writeFile(getSettingsPath(), JSON.stringify(merged, null, 2));
+}
+
+async function getLicenseStatus() {
+  const settings = await loadSettings();
+  return settings.licenseStatus ?? { valid: false, message: 'No license activated.' };
 }
 
 function sendToRenderer(channel: string, ...args: unknown[]): void {
@@ -287,6 +301,17 @@ export function registerIpcHandlers(): void {
   // Import
   ipcMain.handle(IPC.IMPORT_START, async (_event, config: ImportConfig) => {
     try {
+      const licenseStatus = await getLicenseStatus();
+      if (!licenseStatus.valid) {
+        return {
+          imported: 0,
+          skipped: 0,
+          verified: 0,
+          errors: [{ file: 'license', error: licenseStatus.message || 'A valid license is required to import.' }],
+          totalBytes: 0,
+          durationMs: 0,
+        } satisfies ImportResult;
+      }
       const filesToImport = filterFilesForImport(scannedFiles, config);
       const result = await importFiles(filesToImport, config, (progress) => {
         sendToRenderer(IPC.IMPORT_PROGRESS, progress);
@@ -349,6 +374,21 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC.SETTINGS_SET, async (_event, settings: Partial<AppSettings>) => {
     await saveSettings(settings);
+  });
+
+  ipcMain.handle(IPC.LICENSE_ACTIVATE, async (_event, key: string) => {
+    const status = validateLicenseKey(key);
+    if (status.valid && status.key) {
+      await saveSettings({ licenseKey: status.key });
+      const settings = await loadSettings();
+      return settings.licenseStatus ?? status;
+    }
+    return status;
+  });
+
+  ipcMain.handle(IPC.LICENSE_CLEAR, async () => {
+    await saveSettings({ licenseKey: '' });
+    return { valid: false, message: 'License removed.' };
   });
 
   // Updates
@@ -526,6 +566,7 @@ async function runAutoImport(volume: Volume): Promise<void> {
   const settings = await loadSettings();
   if (!settings.autoImport) return;
   if (!settings.autoImportDestRoot) return;
+  if (!settings.licenseStatus?.valid) return;
 
   sendToRenderer(IPC.AUTO_IMPORT_STARTED, {
     volumePath: volume.path,

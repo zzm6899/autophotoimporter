@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC } from '../shared/types';
-import type { ImportConfig, AppSettings, MediaFile, Volume, ImportProgress, ImportResult, UpdateInfo, FtpConfig, ImportError } from '../shared/types';
+import type { ImportConfig, AppSettings, MediaFile, Volume, ImportProgress, ImportResult, UpdateInfo, FtpConfig, ImportError, LicenseValidation } from '../shared/types';
 
 export interface FtpProbeResult {
   ok: boolean;
@@ -89,6 +89,10 @@ const api = {
     ipcRenderer.invoke(IPC.SETTINGS_GET),
   setSettings: (settings: Partial<AppSettings>): Promise<void> =>
     ipcRenderer.invoke(IPC.SETTINGS_SET, settings),
+  activateLicense: (key: string): Promise<LicenseValidation> =>
+    ipcRenderer.invoke(IPC.LICENSE_ACTIVATE, key),
+  clearLicense: (): Promise<LicenseValidation> =>
+    ipcRenderer.invoke(IPC.LICENSE_CLEAR),
 
   // Updates
   onUpdateAvailable: (cb: (info: UpdateInfo) => void) => {

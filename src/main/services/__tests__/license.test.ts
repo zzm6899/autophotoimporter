@@ -1,0 +1,66 @@
+import { beforeAll, describe, it, expect, vi } from 'vitest';
+import { generateKeyPairSync, sign } from 'node:crypto';
+
+let validateLicenseKey: typeof import('../license').validateLicenseKey;
+const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+const publicPem = publicKey.export({ type: 'spki', format: 'pem' }).toString();
+
+function makeLicense(payload: Record<string, string | undefined>) {
+  const body = Buffer.from(JSON.stringify(payload), 'utf8');
+  const signature = sign(null, body, privateKey);
+  return `PI1-${body.toString('base64url')}.${signature.toString('base64url')}`;
+}
+
+beforeAll(async () => {
+  vi.resetModules();
+  vi.doMock('../../../shared/license-public-key', () => ({
+    LICENSE_PUBLIC_KEY_PEM: publicPem,
+  }));
+  ({ validateLicenseKey } = await import('../license'));
+});
+
+describe('validateLicenseKey', () => {
+  it('accepts a valid signed license', () => {
+    const key = makeLicense({
+      n: 'Test Customer',
+      e: 'test@example.com',
+      i: '24-04-2026',
+      x: '31-12-2027',
+      t: 'Full access',
+    });
+
+    const result = validateLicenseKey(key);
+    expect(result.valid).toBe(true);
+    expect(result.entitlement?.name).toBe('Test Customer');
+    expect(result.entitlement?.tier).toBe('Full access');
+  });
+
+  it('rejects expired licenses', () => {
+    const key = makeLicense({
+      n: 'Expired Customer',
+      i: '01-01-2024',
+      x: '31-01-2024',
+    });
+
+    const result = validateLicenseKey(key);
+    expect(result.valid).toBe(false);
+    expect(result.message).toContain('expired');
+  });
+
+  it('rejects tampered payloads', () => {
+    const key = makeLicense({
+      n: 'Tamper Test',
+      i: '24-04-2026',
+    });
+    const [, bodyAndSig] = key.split('PI1-');
+    const [, sig] = bodyAndSig.split('.');
+    const tamperedBody = Buffer.from(JSON.stringify({
+      n: 'Someone Else',
+      i: '24-04-2026',
+    }), 'utf8').toString('base64url');
+
+    const result = validateLicenseKey(`PI1-${tamperedBody}.${sig}`);
+    expect(result.valid).toBe(false);
+    expect(result.message).toContain('Signature');
+  });
+});

@@ -10,6 +10,9 @@
     "package": "electron-forge package",
     "make": "electron-forge make",
     "publish": "electron-forge publish",
+    "license:keypair": "node scripts/setup-license-keys.mjs",
+    "license:generate": "node scripts/generate-license.mjs",
+    "license:console": "node scripts/license-console.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"

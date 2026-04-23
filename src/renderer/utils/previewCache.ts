@@ -1,13 +1,27 @@
 const previewCache = new Map<string, string | undefined>();
 const previewInflight = new Map<string, Promise<string | undefined>>();
 const decodedCache = new Set<string>();
-const MAX_PREVIEWS = 16;
-const MAX_DECODED = 24;
+const MAX_PREVIEWS = 24;
+const MAX_DECODED = 36;
 const MAX_ACTIVE_REQUESTS = 2;
 const MAX_QUEUED_REQUESTS = 24;
 let activeRequests = 0;
 let backgroundPaused = false;
-const queuedRequests: Array<() => void> = [];
+const queuedRequests: Array<{ priority: 'high' | 'normal' | 'low'; run: () => void }> = [];
+
+function takeNextQueuedRequest(): (() => void) | undefined {
+  for (let i = 0; i < queuedRequests.length; i++) {
+    const next = queuedRequests[i];
+    if (backgroundPaused && next.priority === 'low') {
+      queuedRequests.splice(i, 1);
+      i--;
+      continue;
+    }
+    queuedRequests.splice(i, 1);
+    return next.run;
+  }
+  return undefined;
+}
 
 function rememberPreview(filePath: string, preview: string | undefined): void {
   if (previewCache.has(filePath)) previewCache.delete(filePath);
@@ -20,6 +34,9 @@ function rememberPreview(filePath: string, preview: string | undefined): void {
 }
 
 function schedule<T>(task: () => Promise<T>, priority: 'high' | 'normal' | 'low'): Promise<T> {
+  if (priority === 'low' && backgroundPaused) {
+    return Promise.resolve(undefined as T);
+  }
   if (priority === 'low' && activeRequests >= MAX_ACTIVE_REQUESTS && queuedRequests.length >= MAX_QUEUED_REQUESTS) {
     return Promise.resolve(undefined as T);
   }
@@ -30,15 +47,15 @@ function schedule<T>(task: () => Promise<T>, priority: 'high' | 'normal' | 'low'
         .then(resolve, reject)
         .finally(() => {
           activeRequests--;
-          queuedRequests.shift()?.();
+          takeNextQueuedRequest()?.();
         });
     };
     if (activeRequests < MAX_ACTIVE_REQUESTS) {
       run();
     } else if (priority === 'high') {
-      queuedRequests.unshift(run);
+      queuedRequests.unshift({ priority, run });
     } else {
-      queuedRequests.push(run);
+      queuedRequests.push({ priority, run });
     }
   });
 }
@@ -98,6 +115,11 @@ export function warmPreview(filePath: string, priority: 'normal' | 'low' = 'low'
 
 export function setBackgroundPreviewPaused(paused: boolean): void {
   backgroundPaused = paused;
+  if (paused) {
+    for (let i = queuedRequests.length - 1; i >= 0; i--) {
+      if (queuedRequests[i].priority === 'low') queuedRequests.splice(i, 1);
+    }
+  }
 }
 
 export function isBackgroundPreviewPaused(): boolean {

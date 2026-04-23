@@ -3,11 +3,12 @@ import { useEffect, useState } from 'react';
 const STORAGE_KEY = 'photo-importer:tutorial-dismissed';
 
 const steps = [
-  { title: '1. Pick a source', body: 'Choose a card, folder, or FTP source on the left. Scanning starts from there.' },
-  { title: '2. Cull fast', body: 'Use arrows to move, P to pick, X to reject, and 0-5 for star ratings.' },
-  { title: '3. Find the best', body: 'Select a burst or batch and press Shift+B to compare the sharpest/top candidates.' },
-  { title: '4. Fix exposure', body: 'Set an anchor, use Match for a selected batch, or nudge exposure with [ and ].' },
-  { title: '5. Import once', body: 'Queue keepers, then import to local, backup, and optional FTP output.' },
+  { title: '1. Start with any source', body: 'Choose a card, folder, or FTP source on the left. The scan streams in, so you can begin reviewing as soon as thumbnails appear.' },
+  { title: '2. Move into detail view early', body: 'Double-click a thumbnail or press Enter, then use arrows to step through the shoot quickly.' },
+  { title: '3. Make decisions with one hand', body: 'Use P to keep, X to reject, U to clear, 0-5 to rate, and Q to add the current photo or selection to the import queue.' },
+  { title: '4. Let bursts do the heavy lifting', body: 'Press B to grab a burst, Shift+B to rank the best candidates, and G to collapse a burst once you are done with it.' },
+  { title: '5. Match exposure only when needed', body: 'Set a strong frame as the anchor, then use A to normalize the selection to it or [ and ] for manual EV nudges.' },
+  { title: '6. Import from the queue', body: 'The queue is your final shortlist. Once it looks right, import to your main destination plus any backup or FTP target you enabled.' },
 ];
 
 export function TutorialOverlay() {
@@ -32,7 +33,7 @@ export function TutorialOverlay() {
         <div className="px-4 py-3 border-b border-border flex items-center justify-between">
           <div>
             <h2 className="text-sm font-semibold text-text">Quick Start</h2>
-            <p className="text-[11px] text-text-muted mt-0.5">A faster flow for importing and culling.</p>
+            <p className="text-[11px] text-text-muted mt-0.5">A simple pass: scan, review, queue, import.</p>
           </div>
           <button
             onClick={close}

@@ -10,7 +10,7 @@ function getContextTip(phase: string, fileCount: number, picked: number, queued:
   if (fileCount === 0) return 'Select a source on the left to scan for photos.';
   if (queued > 0) return `${queued} file${queued !== 1 ? 's' : ''} queued — click Import in the right panel when ready.`;
   if (picked > 0) return `${picked} picked — add them to the queue or import now.`;
-  if (fileCount > 0 && picked === 0) return 'Press P to pick a photo, X to reject. Double-click for full view.';
+  if (fileCount > 0 && picked === 0) return 'Press Enter for detail view, P to pick, X to reject, and Q to queue keepers.';
   return '';
 }
 
@@ -131,6 +131,7 @@ export function HelpBar() {
             {/* Key hints */}
             <span className="shrink-0 hidden sm:inline">P pick</span>
             <span className="shrink-0 hidden sm:inline">X reject</span>
+            <span className="shrink-0 hidden md:inline">Q queue</span>
             <span className="shrink-0 hidden md:inline">Shift+B best</span>
             <span className="shrink-0 hidden md:inline">0-5 stars</span>
             <span className="shrink-0 hidden md:inline">{MOD}+Z undo</span>
@@ -185,8 +186,8 @@ export function HelpBar() {
           )}
           <button
             className="px-2 py-0.5 rounded bg-surface-raised hover:bg-border text-text-secondary transition-colors"
-            title="Open settings"
-            onClick={() => dispatch({ type: 'SET_VIEW_MODE', mode: 'settings' })}
+            title={viewMode === 'settings' ? 'Back to grid' : 'Open settings'}
+            onClick={() => dispatch({ type: 'SET_VIEW_MODE', mode: viewMode === 'settings' ? 'grid' : 'settings' })}
           >
             Settings
           </button>

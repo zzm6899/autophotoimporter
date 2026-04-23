@@ -1,5 +1,5 @@
 import { createContext, useContext, useReducer, type Dispatch, type ReactNode } from 'react';
-import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, SourceKind, FtpConfig, RatingFilter, SelectionSet } from '../../shared/types';
+import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, SourceKind, FtpConfig, RatingFilter, SelectionSet, LicenseValidation } from '../../shared/types';
 import { FOLDER_PRESETS } from '../../shared/types';
 import { groupBursts } from '../../shared/burst';
 import { bestInGroup, faceQuality, groupByFaceSignature, groupByVisualHash, keeperScore, scoreReview } from '../../shared/review';
@@ -68,6 +68,7 @@ interface State {
   normalizeExposure: boolean;
   exposureAnchorPath: string | null;
   exposureMaxStops: number;
+  licenseStatus: LicenseValidation | null;
 }
 
 export type Action =
@@ -160,7 +161,8 @@ export type Action =
    */
   | { type: 'CLEAR_FACE_DATA' }
   | { type: 'SET_VOLUME_IMPORT_QUEUE'; paths: string[] }
-  | { type: 'ADVANCE_VOLUME_IMPORT_QUEUE' };
+  | { type: 'ADVANCE_VOLUME_IMPORT_QUEUE' }
+  | { type: 'SET_LICENSE_STATUS'; status: LicenseValidation | null };
 
 const systemDark = typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches;
 
@@ -228,6 +230,7 @@ const initialState: State = {
   normalizeExposure: false,
   exposureAnchorPath: null,
   exposureMaxStops: 2,
+  licenseStatus: null,
 };
 
 function withFileHistory(state: State, files: MediaFile[]): State {
@@ -781,6 +784,8 @@ export function reducer(state: State, action: Action): State {
         filter: 'all',
       };
     }
+    case 'SET_LICENSE_STATUS':
+      return { ...state, licenseStatus: action.status };
     default:
       return state;
   }

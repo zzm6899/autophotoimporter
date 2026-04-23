@@ -93,3 +93,6 @@ out/
 
 # Claude Code
 CLAUDE.md
+
+# Local license signing keys
+scripts/license-keys/private.pem

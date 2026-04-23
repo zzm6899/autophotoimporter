@@ -100,6 +100,38 @@ scripts\setup-windows.cmd install  :: install deps only
 
 The GitHub Actions workflow builds both platforms on every push to `main` and publishes them to a rolling `v1.1.0-alpha` prerelease.
 
+## License keys
+
+The app now supports signed offline license keys.
+
+Windows shortcut: run `scripts\license-tools.cmd` for an interactive console menu.
+
+You can also use the Node console directly:
+
+```bash
+npm run license:console -- status
+npm run license:console -- keypair
+npm run license:console -- create --name "Customer Name" --expiry 31-12-2027 --tier "Full access"
+npm run license:console -- build
+```
+
+1. Run `npm run license:keypair` once on your machine. This creates:
+   `scripts/license-keys/private.pem`
+   `scripts/license-keys/public.pem`
+   and updates `src/shared/license-public-key.ts`
+2. Keep `scripts/license-keys/private.pem` secret.
+3. Generate a customer key with:
+
+```bash
+npm run license:generate -- --name "Customer Name" --email "customer@example.com" --expiry 31-12-2027 --tier "Full access"
+```
+
+Paste the generated key into the app's **Settings → License** section to activate it.
+
+Important: existing EXEs will continue to accept newly generated customer licenses as long as you keep using the same `private.pem`. If you replace the keypair, you must ship a new app build with the new public key.
+
+Without a valid license, the app stays in browse/review mode and importing is blocked.
+
 ## Architecture notes
 
 - **Electron + Vite + React 19** (HTML renderer, so the same UI ships to every OS)

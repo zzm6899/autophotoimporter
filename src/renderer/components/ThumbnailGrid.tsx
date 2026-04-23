@@ -658,7 +658,7 @@ async function visualHash(src: string): Promise<string> {
 }
 
 export function ThumbnailGrid() {
-  const { files, phase, selectedSource, scanError, focusedIndex, viewMode, showLeftPanel, showRightPanel, filter, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, saveFormat, burstGrouping, normalizeExposure, queuedPaths, selectionSets, scanPaused } = useAppState();
+  const { files, phase, selectedSource, scanError, focusedIndex, viewMode, showLeftPanel, showRightPanel, filter, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused } = useAppState();
   const { startScan, pauseScan, resumeScan } = useFileScanner();
   const { startImport } = useImport();
   const dispatch = useAppDispatch();
@@ -684,6 +684,14 @@ export function ThumbnailGrid() {
   const reviewBatchCounterRef = useRef(0);
   const collapsedSet = useMemo(() => new Set(collapsedBursts), [collapsedBursts]);
   const queuedSet = useMemo(() => new Set(queuedPaths), [queuedPaths]);
+
+  const setsEqual = useCallback((a: Set<number>, b: Set<number>) => {
+    if (a.size !== b.size) return false;
+    for (const value of a) {
+      if (!b.has(value)) return false;
+    }
+    return true;
+  }, []);
 
   // Sort order (top → bottom):
   //   1. Protected / in-camera-locked / read-only files (fast-import priority)
@@ -787,6 +795,23 @@ export function ThumbnailGrid() {
   useEffect(() => {
     setSelectedIndices(new Set());
   }, [selectedSource, viewMode]);
+
+  // Preserve click-selection by file path when search/filter/sort changes so a
+  // selection never jumps to unrelated thumbnails after the grid is re-ordered.
+  useEffect(() => {
+    if (selectedPaths.length === 0) {
+      if (selectedIndices.size > 0) setSelectedIndices(new Set());
+      return;
+    }
+    const pathSet = new Set(selectedPaths);
+    const next = new Set<number>();
+    sortedFiles.forEach((file, index) => {
+      if (pathSet.has(file.path)) next.add(index);
+    });
+    if (!setsEqual(selectedIndices, next)) {
+      setSelectedIndices(next);
+    }
+  }, [selectedIndices, selectedPaths, setsEqual, sortedFiles]);
 
   // Mirror the grid's click-selection into the store so other components
   // (DestinationPanel's "Import X Files" button, useImport) can respect
@@ -922,6 +947,10 @@ export function ThumbnailGrid() {
       setFocused(focusedIndex + 1);
     }
   }, [focusedIndex, sortedFiles, dispatch, setFocused, selectedIndices]);
+
+  const queuePaths = useCallback((paths: string[]) => {
+    dispatch({ type: 'QUEUE_ADD_PATHS', paths });
+  }, [dispatch]);
 
   // Keep a ref so handleCardClick/handleGridDoubleClick/handleBurstToggle stay
   // Sync during render so event handlers never observe a stale Set.
@@ -1075,7 +1104,27 @@ export function ThumbnailGrid() {
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      const target = e.target;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        (target instanceof HTMLElement && (target.isContentEditable || target.closest('[contenteditable="true"]')))
+      ) return;
+      if (showShortcuts) {
+        if (e.key === 'Escape' || e.key === '?') {
+          e.preventDefault();
+          setShowShortcuts(false);
+        }
+        return;
+      }
+      if (showBestOfSelection) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setShowBestOfSelection(false);
+        }
+        return;
+      }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
         e.preventDefault();
         dispatch({ type: 'UNDO_FILE_EDIT' });
@@ -1191,6 +1240,26 @@ export function ThumbnailGrid() {
             dispatch({ type: 'TOGGLE_CULL_MODE' });
           }
           break;
+        case 'q':
+        case 'Q': {
+          if (e.metaKey || e.ctrlKey) break;
+          e.preventDefault();
+          const targets = selectedIndices.size > 0
+            ? Array.from(selectedIndices)
+                .filter((i) => i >= 0 && i < sortedFiles.length)
+                .map((i) => sortedFiles[i].path)
+            : focusedIndex >= 0 && focusedIndex < sortedFiles.length
+              ? [sortedFiles[focusedIndex].path]
+              : [];
+          if (targets.length > 0) queuePaths(targets);
+          break;
+        }
+        case 'Enter':
+          if (focusedIndex >= 0 && focusedIndex < sortedFiles.length && viewMode === 'grid') {
+            e.preventDefault();
+            dispatch({ type: 'SET_VIEW_MODE', mode: 'single' });
+          }
+          break;
         case 'b':
         case 'B': {
           if (e.shiftKey) {
@@ -1279,7 +1348,7 @@ export function ThumbnailGrid() {
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [focusedIndex, sortedFiles, viewMode, getColumnsCount, setFocused, pickFile, dispatch, selectedIndices, cullMode, files, openBestOfSelection]);
+  }, [focusedIndex, sortedFiles, viewMode, getColumnsCount, setFocused, pickFile, dispatch, selectedIndices, cullMode, files, openBestOfSelection, queuePaths, showBestOfSelection, showShortcuts]);
 
   useEffect(() => {
     const open = () => setShowShortcuts(true);
@@ -1361,7 +1430,14 @@ export function ThumbnailGrid() {
     return bestScope.paths.map((p) => byPath.get(p)).filter((f): f is NonNullable<typeof f> => !!f);
   }, [bestScope, files, selectedFiles]);
   const bestOfSelection = bestPanelFiles.length > 0 ? rankBestOfSelection(bestPanelFiles)[0] : null;
-  const forceVisibleThumbnails = filter !== 'all' || sortedFiles.length <= 160;
+  const forceVisibleThumbnails = useCallback((index: number, filePath: string) => {
+    if (selectedIndices.has(index) || queuedSet.has(filePath) || index === focusedIndex) return true;
+    if (sortedFiles.length <= 72) return true;
+    if (viewMode === 'split') return focusedIndex < 0 ? index < 56 : Math.abs(index - focusedIndex) <= 28;
+    if (viewMode === 'single' || viewMode === 'compare') return focusedIndex < 0 ? index < 24 : Math.abs(index - focusedIndex) <= 12;
+    if (filter !== 'all' || searchText.trim()) return index < 96;
+    return index < 40 || (focusedIndex >= 0 && Math.abs(index - focusedIndex) <= 24);
+  }, [filter, focusedIndex, queuedSet, searchText, selectedIndices, sortedFiles.length, viewMode]);
 
   // Map path → index in sortedFiles so the folder-group render doesn't
   // have to call indexOf() for every card.
@@ -1497,11 +1573,6 @@ export function ThumbnailGrid() {
     window.addEventListener('mouseup', onUp);
   }, []);
 
-  const queuePaths = useCallback((paths: string[]) => {
-    dispatch({ type: 'QUEUE_ADD_PATHS', paths });
-  }, [dispatch]);
-
-
   const saveSelectionSet = useCallback(() => {
     const paths = normalizeTargetPaths;
     if (paths.length === 0) return;
@@ -1555,6 +1626,18 @@ export function ThumbnailGrid() {
     }
     return { count: evs.length, min, max, range: max - min };
   }, [files, normalizeTargetPaths]);
+
+  if (viewMode === 'settings') {
+    return (
+      <div className="h-full flex flex-col relative">
+        {showShortcuts && <ShortcutsOverlay onClose={() => setShowShortcuts(false)} />}
+        <SettingsPage
+          inline
+          onClose={() => dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' })}
+        />
+      </div>
+    );
+  }
 
   if (!selectedSource) {
     return <EmptyState />;
@@ -2216,8 +2299,8 @@ export function ThumbnailGrid() {
 
         {/* Settings */}
         <button
-          onClick={() => dispatch({ type: 'SET_VIEW_MODE', mode: viewMode === 'settings' ? 'grid' : 'settings' })}
-          className={`p-0.5 rounded transition-colors shrink-0 ${viewMode === 'settings' ? 'text-text bg-surface-raised' : 'text-text-muted hover:text-text'}`}
+          onClick={() => dispatch({ type: 'SET_VIEW_MODE', mode: 'settings' })}
+          className="p-0.5 rounded transition-colors shrink-0 text-text-muted hover:text-text"
           title="Settings"
         >
           <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M7.84 1.804A1 1 0 018.82 1h2.36a1 1 0 01.98.804l.331 1.652a6.993 6.993 0 011.929 1.115l1.598-.54a1 1 0 011.186.447l1.18 2.044a1 1 0 01-.205 1.251l-1.267 1.113a7.047 7.047 0 010 2.228l1.267 1.113a1 1 0 01.206 1.25l-1.18 2.045a1 1 0 01-1.187.447l-1.598-.54a6.993 6.993 0 01-1.929 1.115l-.33 1.652a1 1 0 01-.98.804H8.82a1 1 0 01-.98-.804l-.331-1.652a6.993 6.993 0 01-1.929-1.115l-1.598.54a1 1 0 01-1.186-.447l-1.18-2.044a1 1 0 01.205-1.251l1.267-1.114a7.05 7.05 0 010-2.227L1.821 7.773a1 1 0 01-.206-1.25l1.18-2.045a1 1 0 011.187-.447l1.598.54A6.993 6.993 0 017.51 3.456l.33-1.652zM10 13a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" /></svg>
@@ -2241,12 +2324,7 @@ export function ThumbnailGrid() {
 
       {/* Content */}
       <div className="flex-1 min-h-0">
-        {viewMode === 'settings' ? (
-          <SettingsPage
-            inline
-            onClose={() => dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' })}
-          />
-        ) : viewMode === 'compare' ? (
+        {viewMode === 'compare' ? (
           <div className="h-full relative">
             <CompareView files={compareFiles.length >= 2 ? compareFiles : sortedFiles.slice(Math.max(0, focusedIndex), Math.max(0, focusedIndex) + 2)} />
             {floatingToolbar}
@@ -2275,7 +2353,7 @@ export function ThumbnailGrid() {
                     focused={i === focusedIndex}
                     selected={selectedIndices.has(i)}
                     queued={queuedSet.has(file.path)}
-                    forceLoad={forceVisibleThumbnails}
+                    forceLoad={forceVisibleThumbnails(i, file.path)}
                     exposurePreviewStops={getThumbnailExposureStops(file)}
                     compact
                     frameNumber={i + 1}
@@ -2384,7 +2462,7 @@ export function ThumbnailGrid() {
                                 focused={i === focusedIndex}
                                 selected={selectedIndices.has(i)}
                                 queued={queuedSet.has(file.path)}
-                                forceLoad={forceVisibleThumbnails}
+                                forceLoad={forceVisibleThumbnails(i, file.path)}
                                 exposurePreviewStops={getThumbnailExposureStops(file)}
                                 burstCollapsed={!!file.burstId && collapsedSet.has(file.burstId)}
                                 onBurstToggle={handleBurstToggle}
@@ -2413,7 +2491,7 @@ export function ThumbnailGrid() {
                       focused={i === focusedIndex}
                       selected={selectedIndices.has(i)}
                       queued={queuedSet.has(file.path)}
-                      forceLoad={forceVisibleThumbnails}
+                      forceLoad={forceVisibleThumbnails(i, file.path)}
                       exposurePreviewStops={getThumbnailExposureStops(file)}
                       burstCollapsed={!!file.burstId && collapsedSet.has(file.burstId)}
                       onBurstToggle={handleBurstToggle}

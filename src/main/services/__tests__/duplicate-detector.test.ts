@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import path from 'node:path';
 
 vi.mock('node:fs/promises', () => ({
   stat: vi.fn(),
@@ -33,6 +34,6 @@ describe('isDuplicate', () => {
   it('constructs correct path from destRoot and destRelativePath', async () => {
     mockStat.mockResolvedValue({ size: 100 } as any);
     await isDuplicate('/dest/root', 'sub/dir/photo.jpg', 100);
-    expect(mockStat).toHaveBeenCalledWith('/dest/root/sub/dir/photo.jpg');
+    expect(mockStat).toHaveBeenCalledWith(path.join('/dest/root', 'sub/dir/photo.jpg'));
   });
 });

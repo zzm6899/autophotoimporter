@@ -73,6 +73,7 @@ function makeState(overrides: Record<string, unknown> = {}) {
     normalizeExposure: false,
     exposureAnchorPath: null as string | null,
     exposureMaxStops: 2,
+    licenseStatus: null,
     ...overrides,
   };
 }
@@ -412,6 +413,11 @@ describe('ImportContext reducer', () => {
     it('SET_CUSTOM_PATTERN', () => {
       const next = reducer(makeState(), { type: 'SET_CUSTOM_PATTERN', pattern: '{YYYY}/{name}.{ext}' });
       expect(next.customPattern).toBe('{YYYY}/{name}.{ext}');
+    });
+
+    it('SET_LICENSE_STATUS', () => {
+      const next = reducer(makeState(), { type: 'SET_LICENSE_STATUS', status: { valid: true, message: 'ok' } });
+      expect(next.licenseStatus).toEqual({ valid: true, message: 'ok' });
     });
   });
 

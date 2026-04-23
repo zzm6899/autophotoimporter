@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import type { SaveFormat } from '../../shared/types';
 import { FOLDER_PRESETS } from '../../shared/types';
@@ -37,9 +37,27 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     normalizeExposure,
     exposureMaxStops,
     selectionSets,
+    licenseStatus,
   } = useAppState();
   const dispatch = useAppDispatch();
   const [postImportStatus, setPostImportStatus] = useState<string | null>(null);
+  const [licenseInput, setLicenseInput] = useState('');
+  const [licenseBusy, setLicenseBusy] = useState(false);
+  const [licenseFeedback, setLicenseFeedback] = useState<string | null>(null);
+
+  const formatDisplayDate = (value?: string) => {
+    if (!value) return 'Never';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      const [year, month, day] = value.split('-');
+      return `${day}-${month}-${year}`;
+    }
+    return value;
+  };
+
+  useEffect(() => {
+    setLicenseInput(licenseStatus?.key ?? '');
+    if (licenseStatus?.valid) setLicenseFeedback(null);
+  }, [licenseStatus?.key]);
 
   const set = <K extends string>(key: K, value: unknown) => {
     void window.electronAPI.setSettings({ [key]: value } as Record<string, unknown>);
@@ -166,6 +184,34 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     set('selectionSets', next);
   };
 
+  const handleActivateLicense = async () => {
+    setLicenseBusy(true);
+    try {
+      const status = await window.electronAPI.activateLicense(licenseInput);
+      if (status.valid) {
+        dispatch({ type: 'SET_LICENSE_STATUS', status });
+        setLicenseFeedback(null);
+        if (status.key) setLicenseInput(status.key);
+      } else {
+        setLicenseFeedback(status.message);
+      }
+    } finally {
+      setLicenseBusy(false);
+    }
+  };
+
+  const handleClearLicense = async () => {
+    setLicenseBusy(true);
+    try {
+      const status = await window.electronAPI.clearLicense();
+      dispatch({ type: 'SET_LICENSE_STATUS', status });
+      setLicenseInput('');
+      setLicenseFeedback(null);
+    } finally {
+      setLicenseBusy(false);
+    }
+  };
+
   // Shared inner content (header + scrollable body)
   const inner = (
     <div className={`bg-surface border border-border ${inline ? 'flex flex-col h-full' : 'rounded-xl shadow-2xl w-[520px] max-h-[80vh] flex flex-col overflow-hidden'}`}>
@@ -256,6 +302,65 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                 <span className="text-xs text-text">Skip duplicates</span>
                 <span className="text-[10px] text-text-muted">(match by name + size)</span>
               </label>
+            </div>
+          </section>
+
+          {/* License */}
+          <section>
+            <h3 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-2">License</h3>
+            <div className="space-y-2">
+              <p className="text-[10px] text-text-muted">
+                Full access is required for importing. Without a license, the app stays in browse/review mode.
+              </p>
+              <textarea
+                value={licenseInput}
+                onChange={(e) => setLicenseInput(e.target.value)}
+                rows={3}
+                placeholder="Paste license key"
+                className="w-full resize-y px-2 py-1.5 text-xs font-mono bg-surface-raised border border-border rounded text-text placeholder-text-muted focus:border-text focus:outline-none"
+              />
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleActivateLicense}
+                  disabled={licenseBusy || !licenseInput.trim()}
+                  className="px-3 py-1 text-xs rounded bg-accent text-white hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {licenseBusy ? 'Checking...' : 'Activate'}
+                </button>
+                <button
+                  onClick={handleClearLicense}
+                  disabled={licenseBusy || !licenseStatus?.key}
+                  className="px-3 py-1 text-xs rounded bg-surface-raised text-text-secondary hover:bg-border disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Clear
+                </button>
+                {licenseStatus?.valid ? (
+                  <span className="text-[10px] text-emerald-300">Active</span>
+                ) : (
+                  <span className="text-[10px] text-text-muted">Not activated</span>
+                )}
+              </div>
+              {(licenseFeedback || licenseStatus?.message) && (
+                <p className={`text-[10px] ${!licenseFeedback && licenseStatus?.valid ? 'text-emerald-300' : 'text-text-muted'}`}>
+                  {licenseFeedback || licenseStatus?.message}
+                </p>
+              )}
+              {licenseStatus?.entitlement && (
+                <div className="grid grid-cols-2 gap-1 text-[10px] text-text-muted">
+                  <div className="bg-surface-alt border border-border rounded px-2 py-1">
+                    Owner: <span className="text-text-secondary">{licenseStatus.entitlement.name}</span>
+                  </div>
+                  <div className="bg-surface-alt border border-border rounded px-2 py-1">
+                    Tier: <span className="text-text-secondary">{licenseStatus.entitlement.tier || 'Full access'}</span>
+                  </div>
+                  <div className="bg-surface-alt border border-border rounded px-2 py-1">
+                    Issued: <span className="text-text-secondary">{formatDisplayDate(licenseStatus.entitlement.issuedAt)}</span>
+                  </div>
+                  <div className="bg-surface-alt border border-border rounded px-2 py-1">
+                    Expires: <span className="text-text-secondary">{formatDisplayDate(licenseStatus.entitlement.expiresAt)}</span>
+                  </div>
+                </div>
+              )}
             </div>
           </section>
 

@@ -1,0 +1,4 @@
+export const LICENSE_PUBLIC_KEY_PEM = `-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAiGaTU1AaMMiVaEkP/BXdhlfxq2oWN0mq9YBXEFc4xh4=
+-----END PUBLIC KEY-----
+`;

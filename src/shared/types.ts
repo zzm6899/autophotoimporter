@@ -111,6 +111,23 @@ export interface SelectionSet {
   createdAt: string;
 }
 
+export interface LicenseEntitlement {
+  product: string;
+  name: string;
+  email?: string;
+  issuedAt: string;
+  expiresAt?: string;
+  tier?: string;
+  notes?: string;
+}
+
+export interface LicenseValidation {
+  valid: boolean;
+  key?: string;
+  message: string;
+  entitlement?: LicenseEntitlement;
+}
+
 // Folder naming presets for organizing imported files
 // Tokens: {YYYY}, {MM}, {DD}, {filename}, {name}, {ext}, {rating}
 export const FOLDER_PRESETS: Record<string, { label: string; pattern: string }> = {
@@ -246,6 +263,8 @@ export interface AppSettings {
   exposureMaxStops: number;
   jobPresets: JobPreset[];
   selectionSets: SelectionSet[];
+  licenseKey?: string;
+  licenseStatus?: LicenseValidation;
 }
 
 export interface JobPreset {
@@ -364,6 +383,8 @@ export const IPC = {
   // Settings
   SETTINGS_GET: 'settings:get',
   SETTINGS_SET: 'settings:set',
+  LICENSE_ACTIVATE: 'license:activate',
+  LICENSE_CLEAR: 'license:clear',
 
   // Updates
   UPDATE_AVAILABLE: 'update:available',
