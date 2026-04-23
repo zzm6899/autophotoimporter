@@ -300,9 +300,11 @@ export async function importFiles(
     let normalizeStops = 0;
     if (shouldNormalize && typeof file.exposureValue === 'number') {
       const anchor = config.exposureAnchorEV as number;
-      // Higher EV means less exposure captured. If this file's EV is above
-      // the anchor, brighten it; if below, darken it.
-      normalizeStops = file.exposureValue - anchor;
+      // Higher EV100 means more exposure captured (brighter image).
+      // To bring this file's brightness up to the anchor, apply
+      // (anchor - fileEV): positive when the file is darker than the anchor
+      // (needs brightening), negative when brighter (needs darkening).
+      normalizeStops = anchor - file.exposureValue;
     }
     const correctionStops = clampStops(normalizeStops + manualStops, maxStops);
     return stopsToSafeMultiplier(correctionStops);

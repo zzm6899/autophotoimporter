@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /c/Users/24681/Documents/Claude/importer/src/main/services/__tests__ -name \"*.test.ts\" -exec wc -l {} \\\\;)"
+    ]
+  }
+}

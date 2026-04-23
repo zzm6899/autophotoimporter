@@ -44,5 +44,5 @@ export function useScanListeners() {
     // even when they've already been imported into _Protected/.
     dispatch({ type: 'CLEAR_DUPLICATES' });
     window.electronAPI.checkDuplicates(destination);
-  }, [destination, phase, separateProtected, protectedFolderName, dispatch]);
+  }, [destination, files.length, phase, separateProtected, protectedFolderName, dispatch]);
 }

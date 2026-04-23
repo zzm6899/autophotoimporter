@@ -604,7 +604,7 @@ async function analyzeSubject(src: string): Promise<{
   const bestSharp = Math.max(center, ...scored.map((s) => s.sharpness), ...detectedFaces.map((f) => f.sharpness));
   const bestEye = detectedFaces.reduce((best, f) => Math.max(best, f.eyeScore ?? 0), 0);
   const primaryFace = detectedFaces.slice().sort((a, b) =>
-    b.eyeScore! - a.eyeScore! ||
+    (b.eyeScore ?? 0) - (a.eyeScore ?? 0) ||
     b.sharpness - a.sharpness ||
     b.area - a.area,
   )[0];
@@ -676,6 +676,9 @@ export function ThumbnailGrid() {
   const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
   const [showAdvancedTools, setShowAdvancedTools] = useState(false);
   const [cacheStats, setCacheStats] = useState(getPreviewCacheStats());
+  const [toolbarPos, setToolbarPos] = useState<{ x: number; y: number } | null>(null);
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const toolbarDragState = useRef<{ startMouseX: number; startMouseY: number; startLeft: number; startTop: number } | null>(null);
   const lastClickedRef = useRef<number>(-1);
   const sharpnessInFlightRef = useRef(false);
   const reviewBatchCounterRef = useRef(0);
@@ -783,7 +786,7 @@ export function ThumbnailGrid() {
   // Clear selection when source changes or view mode changes to single
   useEffect(() => {
     setSelectedIndices(new Set());
-  }, [selectedSource, viewMode === 'single']);
+  }, [selectedSource, viewMode]);
 
   // Mirror the grid's click-selection into the store so other components
   // (DestinationPanel's "Import X Files" button, useImport) can respect
@@ -1464,6 +1467,36 @@ export function ThumbnailGrid() {
     dispatch({ type: 'SET_EXPOSURE_ADJUSTMENT', filePaths: normalizeTargetPaths, stops: exposureClipboard });
   }, [dispatch, exposureClipboard, normalizeTargetPaths]);
 
+  const handleToolbarDragStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const el = toolbarRef.current;
+    const parent = el?.parentElement;
+    if (!el || !parent) return;
+    const elRect = el.getBoundingClientRect();
+    const parentRect = parent.getBoundingClientRect();
+    toolbarDragState.current = {
+      startMouseX: e.clientX,
+      startMouseY: e.clientY,
+      startLeft: elRect.left - parentRect.left,
+      startTop: elRect.top - parentRect.top,
+    };
+    const onMove = (ev: MouseEvent) => {
+      const s = toolbarDragState.current;
+      if (!s) return;
+      setToolbarPos({
+        x: s.startLeft + (ev.clientX - s.startMouseX),
+        y: s.startTop + (ev.clientY - s.startMouseY),
+      });
+    };
+    const onUp = () => {
+      toolbarDragState.current = null;
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }, []);
+
   const queuePaths = useCallback((paths: string[]) => {
     dispatch({ type: 'QUEUE_ADD_PATHS', paths });
   }, [dispatch]);
@@ -1569,7 +1602,26 @@ export function ThumbnailGrid() {
   const allBurstsCollapsed = burstIds.size > 0 && burstIds.size === collapsedBursts.length;
 
   const floatingToolbar = (focusedFile || hasBatchSelection) ? (
-    <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-px bg-surface-alt/95 backdrop-blur-sm border border-border rounded-lg shadow-lg overflow-hidden z-20">
+    <div
+      ref={toolbarRef}
+      className="flex items-center gap-px bg-surface-alt/95 backdrop-blur-sm border border-border rounded-lg shadow-lg z-20"
+      style={toolbarPos
+        ? { position: 'absolute', left: toolbarPos.x, top: toolbarPos.y }
+        : { position: 'absolute', bottom: '0.75rem', left: '50%', transform: 'translateX(-50%)' }
+      }
+    >
+      <div
+        className="px-1.5 py-1.5 text-text-faint hover:text-text-secondary cursor-grab active:cursor-grabbing select-none"
+        onMouseDown={handleToolbarDragStart}
+        title="Drag to move toolbar"
+      >
+        <svg className="w-2.5 h-3" viewBox="0 0 8 12" fill="currentColor">
+          <circle cx="2" cy="2" r="1.1"/><circle cx="6" cy="2" r="1.1"/>
+          <circle cx="2" cy="6" r="1.1"/><circle cx="6" cy="6" r="1.1"/>
+          <circle cx="2" cy="10" r="1.1"/><circle cx="6" cy="10" r="1.1"/>
+        </svg>
+      </div>
+      <div className="w-px h-4 bg-border" />
       {!hasBatchSelection && (
         <>
           <button

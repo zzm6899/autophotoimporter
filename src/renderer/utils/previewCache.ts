@@ -54,7 +54,9 @@ export function getCachedPreview(
   if (existing) return existing;
   const promise = schedule(() => window.electronAPI.getPreview(filePath), priority)
     .then((preview) => {
-      rememberPreview(filePath, preview);
+      if (preview !== undefined) {
+        rememberPreview(filePath, preview);
+      }
       return preview;
     })
     .finally(() => {

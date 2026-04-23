@@ -83,7 +83,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
   useEffect(() => {
     setZoom(1);
     setPan({ x: 0, y: 0 });
-    setPreviewNormalized(false);
+    setPreviewNormalized(!!file.normalizeToAnchor);
     setHoldOriginal(false);
     setManualQuarterTurns(0);
     setImageNatural(null);
@@ -230,7 +230,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
     evDelta !== undefined && !isAnchor && Math.abs(evDelta) >= 0.05 && imageSrc;
   const normalizedEvDelta =
     canPreviewNorm && typeof evDelta === 'number' && typeof file.exposureValue === 'number' && anchor
-      ? clampStops(evDelta, exposureMaxStops)
+      ? clampStops(-evDelta, exposureMaxStops)
       : 0;
   const manualStops = file.exposureAdjustmentStops ?? 0;
   const previewStops = previewNormalized && !holdOriginal

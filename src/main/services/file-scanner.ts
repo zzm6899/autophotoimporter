@@ -5,8 +5,8 @@ import type { MediaFile } from '../../shared/types';
 import { parseExifDate, generateThumbnail, extractEmbeddedThumbnail, EXIFR_SUPPORTED } from './exif-parser';
 
 const BATCH_SIZE = 50;
-const EFFECTIVE_FAST_THUMB_CONCURRENCY = 10;
-const EFFECTIVE_SLOW_THUMB_CONCURRENCY = 2;
+const EFFECTIVE_FAST_THUMB_CONCURRENCY = 20;
+const EFFECTIVE_SLOW_THUMB_CONCURRENCY = 8;
 const FAST_THUMB_CONCURRENCY = 30; // exifr embedded thumbs — just file reads, no CPU
 const SLOW_THUMB_CONCURRENCY = 6;  // sips — spawns process, decodes RAW
 

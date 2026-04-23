@@ -357,7 +357,7 @@ export function reducer(state: State, action: Action): State {
       return {
         ...state,
         ftpStatus: action.status,
-        ftpMessage: action.message ?? state.ftpMessage,
+        ftpMessage: action.message !== undefined ? action.message : state.ftpMessage,
       };
     case 'SET_FTP_PROGRESS':
       return { ...state, ftpProgress: action.progress };

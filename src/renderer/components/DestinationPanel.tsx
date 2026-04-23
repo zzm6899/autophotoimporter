@@ -727,7 +727,7 @@ export function DestinationPanel() {
                         {anchorFile.name}
                       </span>
                       <button
-                        onClick={() => dispatch({ type: 'SET_EXPOSURE_ANCHOR', path: null })}
+                        onClick={() => dispatch({ type: 'CLEAR_EXPOSURE_ANCHOR' })}
                         className="text-[10px] text-text-muted hover:text-text shrink-0"
                       >
                         clear

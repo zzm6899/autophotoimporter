@@ -15,6 +15,7 @@ const WIN_POLL_MS = 2500;
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let fsWatcher: ReturnType<typeof watch> | null = null;
+let fsWatchers: ReturnType<typeof watch>[] = [];
 let winPollTimer: ReturnType<typeof setInterval> | null = null;
 let lastWinSignature = '';
 let changeCallback: ((volumes: Volume[]) => void) | null = null;
@@ -258,7 +259,7 @@ export function startWatching(onChange: (volumes: Volume[]) => void): void {
   }
 
   // Linux — watch each mount root that exists
-  const watched: ReturnType<typeof watch>[] = [];
+  fsWatchers = [];
   for (const base of LINUX_MEDIA_DIRS) {
     if (!existsSync(base)) continue;
     try {
@@ -269,15 +270,17 @@ export function startWatching(onChange: (volumes: Volume[]) => void): void {
           changeCallback?.(vols);
         }, DEBOUNCE_MS);
       });
-      watched.push(w);
+      fsWatchers.push(w);
     } catch {
       // ignore — some mount roots aren't watchable
     }
   }
-  fsWatcher = watched[0] ?? null;
+  fsWatcher = fsWatchers[0] ?? null;
 }
 
 export function stopWatching(): void {
+  for (const w of fsWatchers) w.close();
+  fsWatchers = [];
   fsWatcher?.close();
   fsWatcher = null;
   if (debounceTimer) clearTimeout(debounceTimer);

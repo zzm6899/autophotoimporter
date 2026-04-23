@@ -537,7 +537,7 @@ async function runAutoImport(volume: Volume): Promise<void> {
     const pattern = settings.folderPreset === 'custom'
       ? settings.customPattern
       : undefined; // main-process default is '{YYYY}-{MM}-{DD}/{filename}'
-    await scanFiles(
+    const total = await scanFiles(
       volume.path,
       (batch) => {
         scannedFiles.push(...batch);
@@ -550,7 +550,7 @@ async function runAutoImport(volume: Volume): Promise<void> {
       },
       pattern,
     );
-    sendToRenderer(IPC.SCAN_COMPLETE, scannedFiles.length);
+    sendToRenderer(IPC.SCAN_COMPLETE, total);
 
     const importConfig: ImportConfig = {
       sourcePath: volume.path,
