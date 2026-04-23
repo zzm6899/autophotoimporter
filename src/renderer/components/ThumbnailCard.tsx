@@ -206,6 +206,11 @@ function ThumbnailCardInner({
                   SIM
                 </span>
               )}
+              {file.faceGroupId && (
+                <span className="bg-violet-600/90 text-[9px] text-white px-1 py-0.5 rounded font-medium" title={`Similar face group: ${file.faceGroupSize ?? 0} files`}>
+                  FACE x{file.faceGroupSize ?? 0}
+                </span>
+              )}
             </div>
           )}
 
@@ -293,6 +298,9 @@ export const ThumbnailCard = memo(ThumbnailCardInner, (prev, next) => {
     a.reviewScore === b.reviewScore &&
     a.subjectSharpnessScore === b.subjectSharpnessScore &&
     a.faceCount === b.faceCount &&
+    a.faceSignature === b.faceSignature &&
+    a.faceGroupId === b.faceGroupId &&
+    a.faceGroupSize === b.faceGroupSize &&
     a.blurRisk === b.blurRisk &&
     a.visualGroupId === b.visualGroupId &&
     a.visualGroupSize === b.visualGroupSize &&

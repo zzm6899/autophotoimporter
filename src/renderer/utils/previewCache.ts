@@ -1,9 +1,10 @@
 const previewCache = new Map<string, string | undefined>();
 const previewInflight = new Map<string, Promise<string | undefined>>();
 const decodedCache = new Set<string>();
-const MAX_PREVIEWS = 96;
-const MAX_DECODED = 160;
+const MAX_PREVIEWS = 40;
+const MAX_DECODED = 60;
 const MAX_ACTIVE_REQUESTS = 2;
+const MAX_QUEUED_REQUESTS = 80;
 let activeRequests = 0;
 let backgroundPaused = false;
 const queuedRequests: Array<() => void> = [];
@@ -19,6 +20,9 @@ function rememberPreview(filePath: string, preview: string | undefined): void {
 }
 
 function schedule<T>(task: () => Promise<T>, priority: 'high' | 'normal' | 'low'): Promise<T> {
+  if (priority === 'low' && activeRequests >= MAX_ACTIVE_REQUESTS && queuedRequests.length >= MAX_QUEUED_REQUESTS) {
+    return Promise.resolve(undefined as T);
+  }
   return new Promise((resolve, reject) => {
     const run = () => {
       activeRequests++;
@@ -83,6 +87,7 @@ export async function decodeImage(src: string): Promise<void> {
 
 export function warmPreview(filePath: string, priority: 'normal' | 'low' = 'low'): void {
   if (backgroundPaused) return;
+  if (previewCache.has(filePath) || previewInflight.has(filePath)) return;
   void getCachedPreview(filePath, priority)
     .then((src) => src ? decodeImage(src) : undefined)
     .catch(() => undefined);

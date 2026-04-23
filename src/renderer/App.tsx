@@ -43,6 +43,13 @@ function AppInner() {
   startScanRef.current = startScan;
   const prevPhaseRef = useRef<AppPhase>('idle');
 
+  useEffect(() => {
+    const unsub = window.electronAPI.onImportProgress((progress) => {
+      dispatch({ type: 'IMPORT_PROGRESS', progress });
+    });
+    return () => { unsub(); };
+  }, [dispatch]);
+
   // Multi-SD sequential import orchestration
   useEffect(() => {
     const prev = prevPhaseRef.current;

@@ -26,6 +26,8 @@ export function HelpBar() {
   const rejected = files.filter((f) => f.pick === 'rejected').length;
   const analyzed = files.filter((f) => typeof f.reviewScore === 'number' || typeof f.subjectSharpnessScore === 'number').length;
   const blurRisk = files.filter((f) => f.blurRisk === 'high' || f.blurRisk === 'medium').length;
+  const faceFiles = files.filter((f) => (f.faceCount ?? 0) > 0).length;
+  const faceGroups = new Set(files.map((f) => f.faceGroupId).filter(Boolean)).size;
   const focusedLabel = focusedIndex >= 0 && focusedIndex < files.length
     ? `${focusedIndex + 1} / ${files.length}`
     : `${files.length} photo${files.length !== 1 ? 's' : ''}`;
@@ -113,6 +115,8 @@ export function HelpBar() {
             title="Smart review progress: files analyzed for blur risk, subject/facial focus, and keeper score."
           >
             smart {analyzed}/{files.length}
+            {faceFiles > 0 ? ` · faces ${faceFiles}` : ''}
+            {faceGroups > 0 ? ` · groups ${faceGroups}` : ''}
             {blurRisk > 0 ? ` · blur ${blurRisk}` : ''}
           </span>
         )}
@@ -140,6 +144,13 @@ export function HelpBar() {
           {files.length > 0 && !isImporting && (
             <>
               <button
+                onClick={() => dispatch({ type: 'SET_FILTER', filter: 'faces' })}
+                className="px-2 py-0.5 rounded bg-surface-raised hover:bg-border text-text-secondary transition-colors"
+                title="Show photos with detected faces."
+              >
+                Faces
+              </button>
+              <button
                 onClick={() => dispatch({ type: 'SET_FILTER', filter: 'review-needed' })}
                 className="px-2 py-0.5 rounded bg-surface-raised hover:bg-border text-text-secondary transition-colors"
                 title="Show files that still need a decision: unpicked, blur-risk, similar, or not fully scored."
@@ -164,6 +175,13 @@ export function HelpBar() {
           )}
           <button
             className="px-2 py-0.5 rounded bg-surface-raised hover:bg-border text-text-secondary transition-colors"
+            title="Open settings"
+            onClick={() => dispatch({ type: 'SET_VIEW_MODE', mode: 'settings' })}
+          >
+            Settings
+          </button>
+          <button
+            className="px-2 py-0.5 rounded bg-surface-raised hover:bg-border text-text-secondary transition-colors"
             title="Open the quick-start tutorial"
             onClick={() => window.dispatchEvent(new Event('photo-importer:tutorial'))}
           >
@@ -172,9 +190,7 @@ export function HelpBar() {
           <button
             className="px-2 py-0.5 rounded bg-surface-raised hover:bg-border text-text-secondary transition-colors"
             title="Press ? to see all keyboard shortcuts"
-            onClick={() => {
-              window.dispatchEvent(new KeyboardEvent('keydown', { key: '?', bubbles: true }));
-            }}
+            onClick={() => window.dispatchEvent(new Event('photo-importer:shortcuts'))}
           >
             ? Help
           </button>

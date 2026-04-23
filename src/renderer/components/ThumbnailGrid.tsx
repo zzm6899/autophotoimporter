@@ -216,10 +216,45 @@ function regionSharpness(data: Uint8ClampedArray, width: number, height: number,
   return Math.round(Math.max(0, sumSq / Math.max(1, count) - mean * mean));
 }
 
+function faceCropSignature(
+  ctx: CanvasRenderingContext2D,
+  sourceWidth: number,
+  sourceHeight: number,
+  face: { x: number; y: number; w: number; h: number },
+): string {
+  const size = 8;
+  const cropCanvas = document.createElement('canvas');
+  cropCanvas.width = size;
+  cropCanvas.height = size;
+  const cropCtx = cropCanvas.getContext('2d', { willReadFrequently: true });
+  if (!cropCtx) return '0000000000000000';
+  const padX = face.w * 0.18;
+  const padY = face.h * 0.12;
+  const sx = Math.max(0, face.x - padX);
+  const sy = Math.max(0, face.y - padY);
+  const sw = Math.min(sourceWidth - sx, face.w + padX * 2);
+  const sh = Math.min(sourceHeight - sy, face.h + padY * 2);
+  cropCtx.drawImage(ctx.canvas, sx, sy, sw, sh, 0, 0, size, size);
+  const data = cropCtx.getImageData(0, 0, size, size).data;
+  const luma: number[] = [];
+  for (let i = 0; i < data.length; i += 4) {
+    luma.push(data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114);
+  }
+  const avg = luma.reduce((sum, v) => sum + v, 0) / Math.max(1, luma.length);
+  let bits = '';
+  for (const v of luma) bits += v >= avg ? '1' : '0';
+  let hex = '';
+  for (let i = 0; i < bits.length; i += 4) {
+    hex += parseInt(bits.slice(i, i + 4), 2).toString(16);
+  }
+  return hex.padStart(16, '0');
+}
+
 async function analyzeSubject(src: string): Promise<{
   subjectSharpnessScore: number;
   faceCount: number;
-  faceBoxes: Array<{ x: number; y: number; width: number; height: number }>;
+  faceBoxes: Array<{ x: number; y: number; width: number; height: number; eyeScore?: number }>;
+  faceSignature?: string;
   subjectReasons: string[];
 }> {
   const img = new Image();
@@ -241,6 +276,53 @@ async function analyzeSubject(src: string): Promise<{
   ctx.drawImage(img, 0, 0, width, height);
   const data = ctx.getImageData(0, 0, width, height).data;
 
+  const detectedFaces: Array<{ x: number; y: number; width: number; height: number; eyeScore?: number; sharpness: number; signature: string; area: number }> = [];
+  const FaceDetectorCtor = (globalThis as unknown as {
+    FaceDetector?: new (options?: { fastMode?: boolean; maxDetectedFaces?: number }) => {
+      detect: (source: CanvasImageSource) => Promise<Array<{ boundingBox: DOMRectReadOnly | { x: number; y: number; width: number; height: number } }>>;
+    };
+  }).FaceDetector;
+  if (FaceDetectorCtor) {
+    try {
+      const detector = new FaceDetectorCtor({ fastMode: true, maxDetectedFaces: 12 });
+      const faces = await detector.detect(canvas);
+      for (const face of faces) {
+        const box = face.boundingBox;
+        const x = Math.max(0, Math.min(width - 2, box.x));
+        const y = Math.max(0, Math.min(height - 2, box.y));
+        const w = Math.max(2, Math.min(width - x, box.width));
+        const h = Math.max(2, Math.min(height - y, box.height));
+        const expanded = {
+          x: Math.max(0, x - w * 0.18),
+          y: Math.max(0, y - h * 0.12),
+          w: Math.min(width - x, w * 1.36),
+          h: Math.min(height - y, h * 1.28),
+        };
+        const sharpness = regionSharpness(data, width, height, expanded);
+        const upperSharpness = regionSharpness(data, width, height, {
+          x: expanded.x + expanded.w * 0.12,
+          y: expanded.y + expanded.h * 0.18,
+          w: expanded.w * 0.76,
+          h: expanded.h * 0.28,
+        });
+        const eyeScore = upperSharpness >= 70 ? 2 : upperSharpness >= 32 ? 1 : 0;
+        const signature = faceCropSignature(ctx, width, height, { x, y, w, h });
+        detectedFaces.push({
+          x: x / width,
+          y: y / height,
+          width: w / width,
+          height: h / height,
+          eyeScore,
+          sharpness,
+          signature,
+          area: w * h,
+        });
+      }
+    } catch {
+      // Browser face detection is best-effort; fall back to subject focus below.
+    }
+  }
+
   // Broad center-region sharpness as baseline (works even with helmets/masks)
   const center = regionSharpness(data, width, height, {
     x: width * 0.2, y: height * 0.1, w: width * 0.6, h: height * 0.8,
@@ -251,33 +333,32 @@ async function analyzeSubject(src: string): Promise<{
   // (who occupy <0.8% of the frame) are filtered.
   const subjects = detectSubjectBoxes(data, width, height, 0.008);
 
-  if (subjects.length === 0) {
-    return { subjectSharpnessScore: center, faceCount: 0, faceBoxes: [], subjectReasons: ['center subject'] };
-  }
-
   // Score each detected subject by sharpness inside its bounding box.
   const scored = subjects.map((box) => {
     const sharp = regionSharpness(data, width, height, { x: box.x, y: box.y, w: box.w, h: box.h });
     return { ...box, sharpness: sharp };
   });
 
-  // Best subject sharpness wins (vs overall center score)
-  const bestSharp = Math.max(center, ...scored.map((s) => s.sharpness));
+  // Best subject sharpness wins (vs overall center/face score)
+  const bestSharp = Math.max(center, ...scored.map((s) => s.sharpness), ...detectedFaces.map((f) => f.sharpness));
+  const bestEye = detectedFaces.reduce((best, f) => Math.max(best, f.eyeScore ?? 0), 0);
+  const primaryFace = detectedFaces.slice().sort((a, b) =>
+    b.eyeScore! - a.eyeScore! ||
+    b.sharpness - a.sharpness ||
+    b.area - a.area,
+  )[0];
 
   return {
     subjectSharpnessScore: bestSharp,
-    faceCount: scored.length,
-    faceBoxes: scored.map((s) => ({
-      x: s.x / width,
-      y: s.y / height,
-      width: s.w / width,
-      height: s.h / height,
-      // eyeScore: 2 = green (sharp / in-focus subject), 1 = yellow (softer),
-      // 0 = dim. Use relative sharpness rank: highest-scoring blob gets green.
-      eyeScore: s.sharpness >= scored[0].sharpness * 0.7 ? 2 : 1,
-    })),
+    faceCount: detectedFaces.length,
+    faceBoxes: detectedFaces.map(({ sharpness: _sharpness, signature: _signature, area: _area, ...box }) => box),
+    faceSignature: primaryFace?.signature,
     subjectReasons: [
-      scored.length > 1 ? `${scored.length} subjects` : 'subject focus',
+      detectedFaces.length > 0
+        ? `${detectedFaces.length} face${detectedFaces.length === 1 ? '' : 's'}${bestEye >= 2 ? ', eyes sharp' : ''}`
+        : scored.length > 0
+          ? (scored.length > 1 ? `${scored.length} subject zones` : 'subject focus')
+          : 'center subject',
     ],
   };
 }
@@ -330,6 +411,8 @@ export function ThumbnailGrid() {
   const [backgroundLoadingPaused, setBackgroundLoadingPaused] = useState(false);
   const [exposureClipboard, setExposureClipboard] = useState<number | null>(null);
   const [groupByFolder, setGroupByFolder] = useState(false);
+  const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
+  const [showAdvancedTools, setShowAdvancedTools] = useState(false);
   const [cacheStats, setCacheStats] = useState(getPreviewCacheStats());
   const lastClickedRef = useRef<number>(-1);
   const sharpnessInFlightRef = useRef(false);
@@ -365,6 +448,8 @@ export function ThumbnailGrid() {
         case 'queue': return queuedSet.has(f.path);
         case 'unmarked': return !f.pick;
         case 'best': return (f.reviewScore ?? 0) >= 70;
+        case 'faces': return (f.faceCount ?? 0) > 0;
+        case 'face-groups': return !!f.faceGroupId;
         case 'blur-risk': return f.blurRisk === 'high' || f.blurRisk === 'medium';
         case 'near-duplicates': return !!f.visualGroupId;
         case 'review-needed': return !f.reviewScore || f.blurRisk === 'high' || !!f.visualGroupId || !f.pick;
@@ -454,13 +539,26 @@ export function ThumbnailGrid() {
     // so face detection doesn't compete with the detail preview load.
     const batchSize = (viewMode === 'single' || viewMode === 'split') ? 1 : 4;
     // Keep batch small so scoring doesn't freeze the UI on slow machines.
+    const focusedPath = focusedIndex >= 0 && focusedIndex < sortedFiles.length ? sortedFiles[focusedIndex].path : null;
+    const visibleRank = new Map<string, number>();
+    sortedFiles.slice(0, 240).forEach((f, index) => visibleRank.set(f.path, index));
     const candidates = files
       .filter((f) => f.type === 'photo' && f.thumbnail && (
         typeof f.sharpnessScore !== 'number' ||
         !f.visualHash ||
         typeof f.subjectSharpnessScore !== 'number' ||
+        ((f.faceCount ?? 0) > 0 && !f.faceSignature) ||
         f.faceBoxes === undefined  // re-run face detection if it hasn't been stored yet
       ))
+      .sort((a, b) => {
+        const af = focusedPath && a.path === focusedPath ? -1000 : 0;
+        const bf = focusedPath && b.path === focusedPath ? -1000 : 0;
+        const aMissingFace = a.faceBoxes === undefined ? -200 : 0;
+        const bMissingFace = b.faceBoxes === undefined ? -200 : 0;
+        const aVisible = visibleRank.get(a.path) ?? 9999;
+        const bVisible = visibleRank.get(b.path) ?? 9999;
+        return (af + aMissingFace + aVisible) - (bf + bMissingFace + bVisible);
+      })
       .slice(0, batchSize);
     if (candidates.length === 0) return;
     sharpnessInFlightRef.current = true;
@@ -474,13 +572,20 @@ export function ThumbnailGrid() {
         // Even if subjectSharpnessScore is already set we still re-analyze so
         // that face boxes get populated now that FaceDetector is available.
         (typeof f.subjectSharpnessScore === 'number' && f.faceBoxes !== undefined)
-          ? Promise.resolve({ subjectSharpnessScore: f.subjectSharpnessScore, faceCount: f.faceCount ?? 0, faceBoxes: f.faceBoxes, subjectReasons: f.subjectReasons ?? [] })
+          ? Promise.resolve({
+              subjectSharpnessScore: f.subjectSharpnessScore,
+              faceCount: f.faceCount ?? 0,
+              faceBoxes: f.faceBoxes,
+              faceSignature: f.faceSignature,
+              subjectReasons: f.subjectReasons ?? [],
+            })
           : analyzeSubject(thumbnail),
       ]);
       return [f.path, { sharpnessScore, visualHash: hash, ...subject }] as const;
     }))
       .then((entries) => {
         dispatch({ type: 'SET_REVIEW_SCORES', scores: Object.fromEntries(entries) });
+        dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10 });
         dispatch({ type: 'GROUP_VISUAL_DUPLICATES', threshold: 8 });
       })
       .catch(() => undefined)
@@ -499,7 +604,7 @@ export function ThumbnailGrid() {
       }
       sharpnessInFlightRef.current = false;
     };
-  }, [files, dispatch, reviewPaused, viewMode]);
+  }, [files, dispatch, reviewPaused, viewMode, focusedIndex, sortedFiles]);
 
   useEffect(() => {
     setBackgroundPreviewPaused(backgroundLoadingPaused);
@@ -603,6 +708,21 @@ export function ThumbnailGrid() {
         paths: burstFiles.map((f) => f.path),
         title: 'Best of Burst',
         subtitle: `Burst ${focused.burstIndex ?? 1}/${focused.burstSize ?? burstFiles.length}`,
+      });
+    } else if (focused?.faceGroupId && focused.faceGroupSize && focused.faceGroupSize > 1) {
+      const faceFiles = files
+        .filter((f) => f.faceGroupId === focused.faceGroupId)
+        .sort((a, b) => (a.dateTaken ? Date.parse(a.dateTaken) : 0) - (b.dateTaken ? Date.parse(b.dateTaken) : 0));
+      const facePaths = new Set(faceFiles.map((f) => f.path));
+      const visibleIndices = new Set<number>();
+      sortedFiles.forEach((f, i) => {
+        if (facePaths.has(f.path)) visibleIndices.add(i);
+      });
+      setSelectedIndices(visibleIndices);
+      setBestScope({
+        paths: faceFiles.map((f) => f.path),
+        title: 'Best Face Group',
+        subtitle: `${faceFiles.length} similar face shots`,
       });
     } else if (selectedIndices.size >= 2) {
       setBestScope({
@@ -872,6 +992,12 @@ export function ThumbnailGrid() {
   }, [focusedIndex, sortedFiles, viewMode, getColumnsCount, setFocused, pickFile, dispatch, selectedIndices, cullMode, files, openBestOfSelection]);
 
   useEffect(() => {
+    const open = () => setShowShortcuts(true);
+    window.addEventListener('photo-importer:shortcuts', open);
+    return () => window.removeEventListener('photo-importer:shortcuts', open);
+  }, []);
+
+  useEffect(() => {
     if (focusedIndex < 0) return;
     if (viewMode === 'grid' && gridRef.current) {
       const card = gridRef.current.children[focusedIndex] as HTMLElement | undefined;
@@ -976,6 +1102,10 @@ export function ThumbnailGrid() {
     // Sort folder names alphabetically
     return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
   }, [groupByFolder, selectedSource, sortedFiles]);
+
+  useEffect(() => {
+    setCollapsedFolders(new Set());
+  }, [selectedSource, groupByFolder]);
 
   const reviewStats = useMemo(() => {
     const photoFiles = files.filter((f) => f.type === 'photo');
@@ -1374,7 +1504,27 @@ export function ThumbnailGrid() {
 
       <div className="w-px h-4 bg-border shrink-0 mx-1" />
 
-      {/* Secondary tools */}
+      <button
+        onClick={() => setShowAdvancedTools((v) => !v)}
+        className={`px-2 py-1 text-[10px] rounded-md transition-colors shrink-0 ${
+          showAdvancedTools ? 'bg-blue-500/15 text-blue-300' : 'bg-surface-raised text-text-muted hover:text-text'
+        }`}
+        title="Show or hide extra culling, face, blur, cache, and duplicate tools."
+      >
+        {showAdvancedTools ? 'Hide tools' : 'More tools'}
+      </button>
+      {queuedPaths.length > 0 && (
+        <button
+          onClick={() => dispatch({ type: 'QUEUE_CLEAR' })}
+          className="px-2 py-1 text-[10px] rounded-md text-text-faint hover:text-red-300 transition-colors shrink-0"
+          title={`Remove all ${queuedPaths.length} queued files. Does not clear pick/reject flags.`}
+        >
+          Clear Queue
+        </button>
+      )}
+
+      {showAdvancedTools && (
+        <>
       <button
         onClick={() => dispatch({ type: 'SET_FILTER', filter: 'best' })}
         className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-yellow-300 transition-colors shrink-0"
@@ -1480,14 +1630,7 @@ export function ThumbnailGrid() {
           Pick Burst Keepers
         </button>
       )}
-      {queuedPaths.length > 0 && (
-        <button
-          onClick={() => dispatch({ type: 'QUEUE_CLEAR' })}
-          className="px-2 py-1 text-[10px] rounded-md text-text-faint hover:text-red-300 transition-colors shrink-0"
-          title={`Remove all ${queuedPaths.length} queued files. Does not clear pick/reject flags.`}
-        >
-          Clear Queue
-        </button>
+        </>
       )}
     </div>
   ) : null;
@@ -1815,7 +1958,25 @@ export function ThumbnailGrid() {
               {folderGroups ? (
                 /* ── Folder view: one section per sub-directory, ranked by ★ ── */
                 <div className="flex flex-col gap-8">
+                  {folderGroups.length > 1 && (
+                    <div className="sticky top-0 z-20 -mb-4 flex items-center gap-2 border-b border-border bg-surface/95 py-2">
+                      <span className="text-[11px] text-text-secondary">{folderGroups.length} folders</span>
+                      <button
+                        onClick={() => setCollapsedFolders(new Set(folderGroups.map(([folder]) => folder)))}
+                        className="rounded bg-surface-raised px-2 py-1 text-[10px] text-text-muted hover:text-text"
+                      >
+                        Collapse all
+                      </button>
+                      <button
+                        onClick={() => setCollapsedFolders(new Set())}
+                        className="rounded bg-surface-raised px-2 py-1 text-[10px] text-text-muted hover:text-text"
+                      >
+                        Expand all
+                      </button>
+                    </div>
+                  )}
                   {folderGroups.map(([folder, folderFiles]) => {
+                    const collapsed = collapsedFolders.has(folder);
                     const ratedFiles = folderFiles.filter((f) => (f.rating ?? 0) > 0);
                     const avgRating = ratedFiles.length > 0
                       ? ratedFiles.reduce((s, f) => s + (f.rating ?? 0), 0) / ratedFiles.length
@@ -1826,7 +1987,22 @@ export function ThumbnailGrid() {
                     return (
                       <div key={folder}>
                         {/* Folder header */}
-                        <div className="flex items-center gap-2 mb-2 pb-1 border-b border-border sticky top-0 bg-surface z-10 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCollapsedFolders((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(folder)) next.delete(folder);
+                              else next.add(folder);
+                              return next;
+                            });
+                          }}
+                          className="flex w-full items-center gap-2 mb-2 pb-1 border-b border-border sticky top-0 bg-surface z-10 pt-1 text-left hover:bg-surface-alt/40"
+                          title={collapsed ? 'Expand folder' : 'Collapse folder'}
+                        >
+                          <svg className={`w-3 h-3 text-text-muted shrink-0 transition-transform ${collapsed ? '-rotate-90' : ''}`} viewBox="0 0 20 20" fill="currentColor">
+                            <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" />
+                          </svg>
                           <svg className="w-3.5 h-3.5 text-text-muted shrink-0" viewBox="0 0 20 20" fill="currentColor">
                             <path fillRule="evenodd" d="M2 6a2 2 0 012-2h4l2 2h4a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" clipRule="evenodd" />
                           </svg>
@@ -1844,8 +2020,9 @@ export function ThumbnailGrid() {
                               {'★'.repeat(maxRating)}{'☆'.repeat(5 - maxRating)} best · avg {avgRating.toFixed(1)}★
                             </span>
                           )}
-                        </div>
+                        </button>
                         {/* Thumbnail grid for this folder */}
+                        {!collapsed && (
                         <div className="thumbnail-grid grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-3">
                           {folderFiles.map((file) => {
                             const i = pathToSortedIndex.get(file.path) ?? -1;
@@ -1867,6 +2044,7 @@ export function ThumbnailGrid() {
                             );
                           })}
                         </div>
+                        )}
                       </div>
                     );
                   })}

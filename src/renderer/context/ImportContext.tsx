@@ -2,12 +2,12 @@ import { createContext, useContext, useReducer, type Dispatch, type ReactNode } 
 import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, SourceKind, FtpConfig, RatingFilter, SelectionSet } from '../../shared/types';
 import { FOLDER_PRESETS } from '../../shared/types';
 import { groupBursts } from '../../shared/burst';
-import { bestInGroup, groupByVisualHash, scoreReview } from '../../shared/review';
+import { bestInGroup, faceQuality, groupByFaceSignature, groupByVisualHash, keeperScore, scoreReview } from '../../shared/review';
 
 export type AppPhase = 'idle' | 'scanning' | 'ready' | 'importing' | 'complete';
 export type ViewMode = 'grid' | 'single' | 'split' | 'compare' | 'settings';
 
-export type FilterMode = 'all' | 'protected' | 'picked' | 'rejected' | 'unrated' | 'duplicates' | 'unmarked' | 'queue' | 'best' | 'blur-risk' | 'near-duplicates' | 'review-needed' | 'needs-exposure' | 'normalized' | 'adjusted' | 'photos' | 'videos' | 'raw' | RatingFilter | `camera:${string}` | `lens:${string}` | `date:${string}` | `ext:${string}`;
+export type FilterMode = 'all' | 'protected' | 'picked' | 'rejected' | 'unrated' | 'duplicates' | 'unmarked' | 'queue' | 'best' | 'faces' | 'face-groups' | 'blur-risk' | 'near-duplicates' | 'review-needed' | 'needs-exposure' | 'normalized' | 'adjusted' | 'photos' | 'videos' | 'raw' | RatingFilter | `camera:${string}` | `lens:${string}` | `date:${string}` | `ext:${string}`;
 
 interface State {
   volumes: Volume[];
@@ -142,6 +142,7 @@ export type Action =
   | { type: 'SET_SHARPNESS_BATCH'; scores: Record<string, number> }
   | { type: 'SET_REVIEW_SCORES'; scores: Record<string, Partial<MediaFile>> }
   | { type: 'GROUP_VISUAL_DUPLICATES'; threshold?: number }
+  | { type: 'GROUP_FACE_SIMILAR'; threshold?: number }
   | { type: 'PICK_BEST_IN_GROUPS' }
   | { type: 'QUEUE_BEST' }
   | { type: 'AUTO_CULL_SAFE' }
@@ -555,7 +556,15 @@ export function reducer(state: State, action: Action): State {
       return {
         ...state,
         files: state.files.map((f) =>
-          f.type !== 'photo' ? f : { ...f, faceBoxes: undefined, subjectSharpnessScore: undefined },
+          f.type !== 'photo' ? f : {
+            ...f,
+            faceBoxes: undefined,
+            faceCount: undefined,
+            faceSignature: undefined,
+            faceGroupId: undefined,
+            faceGroupSize: undefined,
+            subjectSharpnessScore: undefined,
+          },
         ),
       };
     case 'GROUP_VISUAL_DUPLICATES': {
@@ -571,6 +580,24 @@ export function reducer(state: State, action: Action): State {
           const next = group
             ? { ...f, visualGroupId: group.id, visualGroupSize: group.size }
             : { ...f, visualGroupId: undefined, visualGroupSize: undefined };
+          const review = scoreReview(next);
+          return { ...next, reviewScore: review.score, blurRisk: review.blurRisk, reviewReasons: review.reasons };
+        }),
+      };
+    }
+    case 'GROUP_FACE_SIMILAR': {
+      const groups = groupByFaceSignature(state.files, action.threshold ?? 10);
+      const groupByPath = new Map<string, { id: string; size: number }>();
+      for (const [id, paths] of Object.entries(groups)) {
+        for (const p of paths) groupByPath.set(p, { id, size: paths.length });
+      }
+      return {
+        ...state,
+        files: state.files.map((f) => {
+          const group = groupByPath.get(f.path);
+          const next = group
+            ? { ...f, faceGroupId: group.id, faceGroupSize: group.size }
+            : { ...f, faceGroupId: undefined, faceGroupSize: undefined };
           const review = scoreReview(next);
           return { ...next, reviewScore: review.score, blurRisk: review.blurRisk, reviewReasons: review.reasons };
         }),
@@ -599,14 +626,26 @@ export function reducer(state: State, action: Action): State {
     }
     case 'QUEUE_BEST': {
       const candidates = state.files
-        .filter((f) => f.type === 'photo' && f.pick !== 'rejected' && (f.reviewScore ?? 0) >= 70)
+        .filter((f) => f.type === 'photo' && f.pick !== 'rejected' && (keeperScore(f) >= 95 || (f.reviewScore ?? 0) >= 74))
         .sort((a, b) =>
           Number(!!b.isProtected) - Number(!!a.isProtected) ||
           (b.rating ?? 0) - (a.rating ?? 0) ||
+          keeperScore(b) - keeperScore(a) ||
+          faceQuality(b) - faceQuality(a) ||
           (b.reviewScore ?? 0) - (a.reviewScore ?? 0),
         );
       const next = new Set(state.queuedPaths);
       for (const f of candidates) next.add(f.path);
+      const faceGroups = new Map<string, MediaFile[]>();
+      for (const f of state.files) {
+        if (f.faceGroupId && f.faceGroupSize && f.faceGroupSize > 1 && f.pick !== 'rejected') {
+          faceGroups.set(f.faceGroupId, [...(faceGroups.get(f.faceGroupId) ?? []), f]);
+        }
+      }
+      for (const group of faceGroups.values()) {
+        const best = bestInGroup(group);
+        if (best && keeperScore(best) >= 80) next.add(best.path);
+      }
       return { ...state, queuedPaths: [...next] };
     }
     case 'AUTO_CULL_SAFE': {
@@ -630,10 +669,12 @@ export function reducer(state: State, action: Action): State {
           if (file.path === best.path) continue;
           if (file.isProtected || (file.rating ?? 0) > 0 || file.pick === 'selected') continue;
           const muchWorse =
-            file.blurRisk === 'high' ||
+            (file.blurRisk === 'high' && faceQuality(file) < 45) ||
+            (faceQuality(best) - faceQuality(file) >= 45) ||
             ((best.subjectSharpnessScore ?? 0) - (file.subjectSharpnessScore ?? 0) >= 25) ||
             ((best.sharpnessScore ?? 0) - (file.sharpnessScore ?? 0) >= 60) ||
-            ((best.reviewScore ?? 0) - (file.reviewScore ?? 0) >= 18);
+            (keeperScore(best) - keeperScore(file) >= 42) ||
+            ((best.reviewScore ?? 0) - (file.reviewScore ?? 0) >= 22);
           if (muchWorse) reject.add(file.path);
         }
       }

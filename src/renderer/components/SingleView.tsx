@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { MediaFile } from '../../shared/types';
-import { buildExposure } from '../utils/formatters';
+import { buildExposure, formatFileSize } from '../utils/formatters';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import { formatEVDelta, stopsToSafeMultiplier, clampStops, estimateClippingPercent } from '../../shared/exposure';
 import { Histogram } from './Histogram';
@@ -19,6 +19,7 @@ const ZOOM_STEP = 0.008;
 export function SingleView({ file, index, total }: SingleViewProps) {
   const [preview, setPreview] = useState<string | undefined>(undefined);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState(false);
   const isPicked = file.pick === 'selected';
   const isRejected = file.pick === 'rejected';
   const { files, exposureAnchorPath, normalizeExposure, saveFormat, exposureMaxStops } = useAppState();
@@ -71,6 +72,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
     let cancelled = false;
     setPreview(undefined);
     setLoading(!file.thumbnail);
+    setLoadError(false);
 
     const timer = window.setTimeout(() => {
       setLoading(true);
@@ -87,9 +89,13 @@ export function SingleView({ file, index, total }: SingleViewProps) {
         if (!cancelled) {
           setPreview(result);
           setLoading(false);
+          setLoadError(!result && !file.thumbnail);
         }
       }).catch(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          setLoadError(!file.thumbnail);
+        }
       });
     }, file.thumbnail ? 80 : 0);
 
@@ -245,7 +251,24 @@ export function SingleView({ file, index, total }: SingleViewProps) {
             }}
           />
         ) : (
-          <div className="text-text-muted text-sm">No preview</div>
+          <div className="flex min-h-48 min-w-64 flex-col items-center justify-center gap-2 rounded border border-border bg-surface-alt px-6 text-center">
+            <svg className="h-10 w-10 text-text-faint" viewBox="0 0 24 24" fill="currentColor">
+              <path fillRule="evenodd" d="M1.5 6a2.25 2.25 0 012.25-2.25h16.5A2.25 2.25 0 0122.5 6v12a2.25 2.25 0 01-2.25 2.25H3.75A2.25 2.25 0 011.5 18V6zm3.75-.75A.75.75 0 004.5 6v9.44l3.44-3.44a1.5 1.5 0 012.12 0l1.69 1.69.44-.44a1.5 1.5 0 012.12 0l5.19 5.19V6a.75.75 0 00-.75-.75H5.25z" clipRule="evenodd" />
+            </svg>
+            <div className="text-sm text-text-secondary">{loadError ? 'Preview could not be loaded' : 'Preparing preview...'}</div>
+            <div className="max-w-72 truncate text-[11px] text-text-muted" title={file.path}>{file.name}</div>
+          </div>
+        )}
+
+        {loading && imageSrc && (
+          <div className="absolute left-3 top-3 z-20 rounded bg-black/65 px-2 py-1 text-[11px] text-white shadow">
+            Loading full preview...
+          </div>
+        )}
+        {showingThumbnailOnly && (
+          <div className="absolute bottom-3 left-3 z-20 rounded bg-black/65 px-2 py-1 text-[11px] text-white/80 shadow">
+            Quick preview
+          </div>
         )}
 
         {/* Viewfinder corner ticks */}
@@ -308,6 +331,25 @@ export function SingleView({ file, index, total }: SingleViewProps) {
         <div className="absolute top-3 right-3 flex items-center gap-1.5 bg-black/45 text-white/80 px-2 py-1 rounded z-30">
           <div className="w-3 h-3 border-[1.5px] border-text-muted border-t-text rounded-full animate-spin" />
           <span className="text-[10px]">Loading full preview</span>
+        </div>
+      )}
+
+      {!isZoomed && imageSrc && !loading && (
+        <div className="absolute top-3 right-3 z-20 flex max-w-[45vw] flex-wrap justify-end gap-1.5">
+          <span className="rounded bg-black/65 px-2 py-1 text-[10px] font-mono text-white/90">
+            {index + 1}/{total}
+          </span>
+          <span className="rounded bg-black/65 px-2 py-1 text-[10px] font-mono uppercase text-white/90">
+            {file.extension.replace('.', '')}
+          </span>
+          <span className="rounded bg-black/65 px-2 py-1 text-[10px] font-mono text-white/90">
+            {formatFileSize(file.size)}
+          </span>
+          {file.faceGroupId && (
+            <span className="rounded bg-violet-500/35 px-2 py-1 text-[10px] font-mono text-violet-100" title={file.faceGroupId}>
+              face group {file.faceGroupSize ?? 0}
+            </span>
+          )}
         </div>
       )}
 
@@ -474,6 +516,11 @@ export function SingleView({ file, index, total }: SingleViewProps) {
               Similar {file.visualGroupSize ?? 0}
             </span>
           )}
+            {file.faceGroupId && (
+              <span className="text-[9px] font-mono text-violet-300 bg-violet-500/30 px-1.5 py-0.5 rounded" title={file.faceGroupId}>
+                Face group {file.faceGroupSize ?? 0}
+              </span>
+            )}
             {file.faceCount ? (
               <span className="text-[9px] font-mono text-emerald-300 bg-emerald-500/30 px-1.5 py-0.5 rounded" title="Local face detection signal">
                 Face {file.faceCount}

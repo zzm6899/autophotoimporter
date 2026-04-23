@@ -302,6 +302,7 @@ export function DestinationPanel() {
         </button>
       </div>
 
+      {showAdvanced && (
       <div className="px-2.5 mb-2.5">
         <div className="flex items-center gap-1">
           <select
@@ -331,6 +332,7 @@ export function DestinationPanel() {
           )}
         </div>
       </div>
+      )}
 
       {files.length > 0 && (
         <div className="px-2.5 mb-2.5 grid grid-cols-2 gap-1 text-[10px] text-text-muted">
@@ -381,6 +383,7 @@ export function DestinationPanel() {
       </div>
 
       {/* Protected folder split */}
+      {showAdvanced && (
       <div className="px-2.5 mb-2.5">
         <label className="flex items-center gap-1.5 cursor-pointer">
           <input
@@ -405,8 +408,10 @@ export function DestinationPanel() {
           </div>
         )}
       </div>
+      )}
 
       {/* Folder structure */}
+      {showAdvanced && (
       <div className="px-2.5 mb-2.5">
         <h3 className="text-[10px] text-text-secondary mb-1 uppercase tracking-wider">Folder Structure</h3>
         <select
@@ -434,6 +439,7 @@ export function DestinationPanel() {
           </div>
         )}
       </div>
+      )}
 
       {/* Save format */}
       <div className="px-2.5 mb-2.5">
@@ -756,7 +762,7 @@ export function DestinationPanel() {
       </div>
 
       {/* Folder structure preview */}
-      {folders.length > 0 && destination && (
+      {showAdvanced && folders.length > 0 && destination && (
         <div className="px-2.5 mb-2.5 flex-1 min-h-0 overflow-y-auto">
           <h3 className="text-[10px] text-text-secondary mb-1 uppercase tracking-wider">Folder Preview</h3>
           <div className="space-y-1.5">

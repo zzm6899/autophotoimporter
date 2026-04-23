@@ -17,6 +17,9 @@ const execFileAsync = promisify(execFile);
 
 let scannedFiles: MediaFile[] = [];
 let knownVolumePaths = new Set<string>();
+let autoImportQueue: Volume[] = [];
+let autoImportRunning = false;
+let currentAutoImportPath: string | null = null;
 
 function getSettingsPath(): string {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -200,7 +203,7 @@ export function registerIpcHandlers(): void {
       // Only auto-act on actual camera cards (DCIM present).
       if (!vol.hasDcim) continue;
       sendToRenderer(IPC.DEVICE_INSERTED, vol);
-      void maybeAutoImport(vol);
+      queueAutoImport(vol);
     }
   });
 
@@ -492,10 +495,34 @@ function filterFilesForImport(all: MediaFile[], config: ImportConfig): MediaFile
   });
 }
 
-// Auto-import orchestrator. Runs off a fresh device-inserted event when the
-// user has opted in. Does a full scan + import using the saved default
-// config, then notifies the renderer.
-async function maybeAutoImport(volume: Volume): Promise<void> {
+function queueAutoImport(volume: Volume): void {
+  if (currentAutoImportPath === volume.path) return;
+  if (autoImportQueue.some((queued) => queued.path === volume.path)) return;
+  autoImportQueue.push(volume);
+  void processAutoImportQueue();
+}
+
+async function processAutoImportQueue(): Promise<void> {
+  if (autoImportRunning) return;
+  autoImportRunning = true;
+  try {
+    while (autoImportQueue.length > 0) {
+      const volume = autoImportQueue.shift();
+      if (volume) {
+        currentAutoImportPath = volume.path;
+        await runAutoImport(volume);
+        currentAutoImportPath = null;
+      }
+    }
+  } finally {
+    currentAutoImportPath = null;
+    autoImportRunning = false;
+  }
+}
+
+// Auto-import worker. Runs one volume at a time because the scan/import
+// services share process-level state and importFiles aborts a previous run.
+async function runAutoImport(volume: Volume): Promise<void> {
   const settings = await loadSettings();
   if (!settings.autoImport) return;
   if (!settings.autoImportDestRoot) return;

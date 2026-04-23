@@ -4,7 +4,7 @@ import { formatDuration, formatSize } from '../utils/formatters';
 import { useImport } from '../hooks/useImport';
 
 export function ImportSummary() {
-  const { phase, importResult, destination, files } = useAppState();
+  const { phase, importResult, destination } = useAppState();
   const dispatch = useAppDispatch();
   const { startImport } = useImport();
 
@@ -25,11 +25,6 @@ export function ImportSummary() {
 
   const handleDismiss = () => {
     dispatch({ type: 'DISMISS_SUMMARY' });
-  };
-
-  const handleContactSheet = () => {
-    const sheetFiles = files.filter((f) => f.pick !== 'rejected');
-    void window.electronAPI.exportContactSheet(sheetFiles);
   };
 
   const handleRetry = () => {
@@ -99,12 +94,6 @@ export function ImportSummary() {
             className="flex-1 min-w-[9rem] py-2 rounded text-sm bg-accent hover:bg-accent-hover text-white font-medium transition-colors"
           >
             Open Destination
-          </button>
-          <button
-            onClick={handleContactSheet}
-            className="flex-1 min-w-[9rem] py-2 rounded text-sm bg-surface-raised hover:bg-accent/10 text-text transition-colors"
-          >
-            Contact Sheet
           </button>
           {importResult.errors.length > 0 && (
             <button

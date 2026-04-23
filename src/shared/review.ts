@@ -4,6 +4,7 @@ export interface ReviewScoreInput {
   sharpnessScore?: number;
   subjectSharpnessScore?: number;
   faceCount?: number;
+  faceBoxes?: MediaFile['faceBoxes'];
   rating?: number;
   isProtected?: boolean;
   exposureValue?: number;
@@ -14,6 +15,34 @@ export interface ReviewScore {
   score: number;
   blurRisk: 'low' | 'medium' | 'high';
   reasons: string[];
+}
+
+export function faceQuality(file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'subjectSharpnessScore'>): number {
+  const boxes = file.faceBoxes ?? [];
+  const bestEye = boxes.reduce((best, box) => Math.max(best, box.eyeScore ?? 0), 0);
+  const eyeSum = boxes.reduce((sum, box) => sum + (box.eyeScore ?? 0), 0);
+  const faceCount = file.faceCount ?? boxes.length;
+  const faceArea = boxes.reduce((sum, box) => sum + box.width * box.height, 0);
+  const sharp = Math.min(60, (file.subjectSharpnessScore ?? 0) / 3);
+  return Math.round(
+    Math.min(faceCount, 4) * 18 +
+    bestEye * 18 +
+    eyeSum * 7 +
+    Math.min(18, faceArea * 120) +
+    sharp,
+  );
+}
+
+export function keeperScore(file: MediaFile): number {
+  return (
+    (file.isProtected ? 120 : 0) +
+    (file.rating ?? 0) * 30 +
+    faceQuality(file) +
+    Math.min(70, (file.subjectSharpnessScore ?? 0) / 2.4) +
+    Math.min(45, (file.sharpnessScore ?? 0) / 6) +
+    Math.min(55, file.reviewScore ?? 0) -
+    (file.blurRisk === 'high' ? 90 : file.blurRisk === 'medium' ? 30 : 0)
+  );
 }
 
 export function hammingDistanceHex(a: string, b: string): number {
@@ -51,8 +80,11 @@ export function scoreReview(input: ReviewScoreInput): ReviewScore {
     reasons.push(`${rating} star`);
   }
   if ((input.faceCount ?? 0) > 0) {
-    score += 22;
+    score += 16 + Math.min(18, faceQuality(input) / 5);
     reasons.push(`${input.faceCount} face${input.faceCount === 1 ? '' : 's'}`);
+    const eyeScore = (input.faceBoxes ?? []).reduce((best, box) => Math.max(best, box.eyeScore ?? 0), 0);
+    if (eyeScore >= 2) reasons.push('eyes sharp');
+    else if (eyeScore === 1) reasons.push('face present');
   }
   if (subjectSharpness >= 120) {
     score += 22;
@@ -108,14 +140,43 @@ export function groupByVisualHash(files: MediaFile[], threshold = 8): Record<str
   return groups;
 }
 
+export function groupByFaceSignature(files: MediaFile[], threshold = 10): Record<string, string[]> {
+  const faceFiles = files.filter((f) => f.faceSignature && (f.faceCount ?? 0) > 0);
+  const visited = new Set<string>();
+  const groups: Record<string, string[]> = {};
+  let groupIndex = 1;
+
+  for (const file of faceFiles) {
+    if (visited.has(file.path) || !file.faceSignature) continue;
+    const group = [file.path];
+    visited.add(file.path);
+
+    for (const other of faceFiles) {
+      if (visited.has(other.path) || !other.faceSignature) continue;
+      if (hammingDistanceHex(file.faceSignature, other.faceSignature) <= threshold) {
+        visited.add(other.path);
+        group.push(other.path);
+      }
+    }
+
+    if (group.length > 1) {
+      groups[`face-${groupIndex++}`] = group;
+    }
+  }
+
+  return groups;
+}
+
 export function bestInGroup(files: MediaFile[]): MediaFile | null {
   if (files.length === 0) return null;
   return files.slice().sort((a, b) =>
     Number(!!b.isProtected) - Number(!!a.isProtected) ||
     (b.rating ?? 0) - (a.rating ?? 0) ||
+    faceQuality(b) - faceQuality(a) ||
     (b.faceCount ?? 0) - (a.faceCount ?? 0) ||
     (b.subjectSharpnessScore ?? 0) - (a.subjectSharpnessScore ?? 0) ||
     Number(a.blurRisk === 'high') - Number(b.blurRisk === 'high') ||
+    keeperScore(b) - keeperScore(a) ||
     (b.sharpnessScore ?? 0) - (a.sharpnessScore ?? 0) ||
     (b.reviewScore ?? 0) - (a.reviewScore ?? 0) ||
     (a.burstIndex ?? 0) - (b.burstIndex ?? 0),

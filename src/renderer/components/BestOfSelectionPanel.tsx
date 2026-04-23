@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import type { MediaFile } from '../../shared/types';
 import { formatFileSize, formatExposure } from '../utils/formatters';
 import { getCachedPreview } from '../utils/previewCache';
+import { faceQuality, keeperScore } from '../../shared/review';
 
 interface BestOfSelectionPanelProps {
   files: MediaFile[];
@@ -22,6 +23,7 @@ function explain(file: MediaFile): string {
     file.isProtected ? 'protected' : '',
     file.rating ? `${file.rating} star` : '',
     file.faceCount ? `${file.faceCount} face${file.faceCount === 1 ? '' : 's'}` : '',
+    file.faceGroupId ? `face group ${file.faceGroupSize ?? 0}` : '',
     typeof file.subjectSharpnessScore === 'number' ? `subject ${file.subjectSharpnessScore}` : '',
     typeof file.reviewScore === 'number' ? `score ${file.reviewScore}` : '',
     typeof file.sharpnessScore === 'number' ? `sharp ${file.sharpnessScore}` : '',
@@ -33,24 +35,18 @@ function explain(file: MediaFile): string {
 }
 
 function rankScore(file: MediaFile): number {
-  return (
-    (file.isProtected ? 80 : 0) +
-    (file.rating ?? 0) * 18 +
-    (file.faceCount ?? 0) * 35 +
-    Math.min(50, (file.subjectSharpnessScore ?? 0) / 4) +
-    Math.min(30, (file.sharpnessScore ?? 0) / 8) +
-    Math.min(25, (file.reviewScore ?? 0) / 4) +
-    (file.blurRisk === 'high' ? 30 : file.blurRisk === 'medium' ? 10 : 0)
-  );
+  return keeperScore(file);
 }
 
 export function rankBestOfSelection(files: MediaFile[]): MediaFile[] {
   return files.slice().sort((a, b) =>
     Number(!!b.isProtected) - Number(!!a.isProtected) ||
     (b.rating ?? 0) - (a.rating ?? 0) ||
+    faceQuality(b) - faceQuality(a) ||
     (b.faceCount ?? 0) - (a.faceCount ?? 0) ||
     (b.subjectSharpnessScore ?? 0) - (a.subjectSharpnessScore ?? 0) ||
     Number(a.blurRisk === 'high') - Number(b.blurRisk === 'high') ||
+    keeperScore(b) - keeperScore(a) ||
     (b.sharpnessScore ?? 0) - (a.sharpnessScore ?? 0) ||
     (b.reviewScore ?? 0) - (a.reviewScore ?? 0) ||
     a.name.localeCompare(b.name),

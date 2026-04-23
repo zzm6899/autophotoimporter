@@ -6,7 +6,11 @@ import { formatSize } from '../utils/formatters';
 export function ImportProgress() {
   const { phase, importProgress, volumeImportQueue } = useAppState();
   const { cancelImport } = useImport();
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
+
+  useEffect(() => {
+    if (phase === 'importing') setCollapsed(true);
+  }, [phase]);
 
   useEffect(() => {
     if (phase !== 'importing' || !importProgress) return;
@@ -29,7 +33,8 @@ export function ImportProgress() {
 
   if (collapsed) {
     return (
-      <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 bg-surface-alt border border-border rounded-lg px-4 py-2 shadow-xl min-w-[260px] max-w-sm">
+      <div className="fixed bottom-9 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 bg-surface-alt border border-border rounded-lg px-4 py-2 shadow-xl min-w-[280px] max-w-[min(92vw,34rem)]">
+        <span className="text-xs font-medium text-text shrink-0">Importing</span>
         {/* Mini progress bar */}
         <div className="flex-1 h-1.5 bg-surface-raised rounded-full overflow-hidden">
           <div
@@ -64,7 +69,8 @@ export function ImportProgress() {
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-surface-overlay flex items-end justify-center pb-12 sm:items-center sm:pb-0">
+    <div className="fixed bottom-9 right-4 z-50 flex items-end justify-end pointer-events-none">
+      <div className="pointer-events-auto">
       <div className="bg-surface-alt rounded-lg border border-border p-6 max-w-md w-full mx-4 shadow-2xl">
         {/* Header */}
         <div className="flex items-center justify-between mb-5">
@@ -155,6 +161,7 @@ export function ImportProgress() {
             Cancel
           </button>
         </div>
+      </div>
       </div>
     </div>
   );

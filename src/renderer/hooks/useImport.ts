@@ -1,4 +1,4 @@
-import { useEffect, useCallback } from 'react';
+import { useCallback } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import { playCompletionSound } from '../utils/completionSound';
 
@@ -14,13 +14,6 @@ export function useImport() {
     normalizeExposure, exposureAnchorPath, exposureMaxStops,
   } = useAppState();
   const dispatch = useAppDispatch();
-
-  useEffect(() => {
-    const unsub = window.electronAPI.onImportProgress((progress) => {
-      dispatch({ type: 'IMPORT_PROGRESS', progress });
-    });
-    return () => { unsub(); };
-  }, [dispatch]);
 
   const startImport = useCallback(async () => {
     if (!selectedSource || !destination) return;

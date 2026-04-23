@@ -70,6 +70,11 @@ export interface MediaFile {
   faceCount?: number;
   /** Normalized face boxes from local browser face detection. eyeScore=2 means both eyes detected (open). */
   faceBoxes?: Array<{ x: number; y: number; width: number; height: number; eyeScore?: number }>;
+  /** Compact perceptual hash of the primary detected face crop. Used only for local same-face clustering. */
+  faceSignature?: string;
+  /** Local cluster id for similar detected faces. This is not biometric identity; it is a culling aid. */
+  faceGroupId?: string;
+  faceGroupSize?: number;
   /** Local review notes for subject/face focus. */
   subjectReasons?: string[];
   /** Heuristic blur risk derived from thumbnail/previews. */
