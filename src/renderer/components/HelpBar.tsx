@@ -25,6 +25,8 @@ export function HelpBar() {
   const picked = files.filter((f) => f.pick === 'selected').length;
   const rejected = files.filter((f) => f.pick === 'rejected').length;
   const analyzed = files.filter((f) => typeof f.reviewScore === 'number' || typeof f.subjectSharpnessScore === 'number').length;
+  const nativeFaceFiles = files.filter((f) => (f.faceCount ?? 0) > 0 && f.faceDetection === 'native').length;
+  const estimatedFaceFiles = files.filter((f) => (f.faceCount ?? 0) > 0 && f.faceDetection === 'estimated').length;
   const blurRisk = files.filter((f) => f.blurRisk === 'high' || f.blurRisk === 'medium').length;
   const faceFiles = files.filter((f) => (f.faceCount ?? 0) > 0).length;
   const faceGroups = new Set(files.map((f) => f.faceGroupId).filter(Boolean)).size;
@@ -114,7 +116,8 @@ export function HelpBar() {
             className="shrink-0 text-text-faint"
             title="Smart review progress: files analyzed for blur risk, subject/facial focus, and keeper score."
           >
-            smart {analyzed}/{files.length}
+            AI review {analyzed}/{files.length}
+            {estimatedFaceFiles > 0 ? ` (${nativeFaceFiles} native, ${estimatedFaceFiles} est.)` : ''}
             {faceFiles > 0 ? ` · faces ${faceFiles}` : ''}
             {faceGroups > 0 ? ` · groups ${faceGroups}` : ''}
             {blurRisk > 0 ? ` · blur ${blurRisk}` : ''}
@@ -146,10 +149,17 @@ export function HelpBar() {
               <button
                 onClick={() => dispatch({ type: 'SET_FILTER', filter: 'faces' })}
                 className="px-2 py-0.5 rounded bg-surface-raised hover:bg-border text-text-secondary transition-colors"
-                title="Show photos with detected faces."
+	                title="Show photos with native or estimated face detections."
               >
-                Faces
-              </button>
+	                Faces{faceFiles > 0 ? ` ${faceFiles}` : ''}
+	              </button>
+	              <button
+	                onClick={() => dispatch({ type: 'CLEAR_FACE_DATA' })}
+	                className="px-2 py-0.5 rounded bg-surface-raised hover:bg-border text-text-secondary transition-colors"
+	                title="Re-run local face, eye, subject, blur, and keeper analysis."
+	              >
+	                Re-scan AI
+	              </button>
               <button
                 onClick={() => dispatch({ type: 'SET_FILTER', filter: 'review-needed' })}
                 className="px-2 py-0.5 rounded bg-surface-raised hover:bg-border text-text-secondary transition-colors"
@@ -167,9 +177,9 @@ export function HelpBar() {
               <button
                 onClick={() => dispatch({ type: 'QUEUE_BEST' })}
                 className="px-2 py-0.5 rounded bg-surface-raised hover:bg-border text-text-secondary transition-colors"
-                title="Auto-add high-scored keeper candidates to the import queue without changing pick/reject flags."
-              >
-                Queue Best
+	                title="Create a fresh queue of batch-best keepers: one winner per burst/similar group plus strongest ungrouped shots."
+	              >
+	                Queue Batch Best
               </button>
             </>
           )}

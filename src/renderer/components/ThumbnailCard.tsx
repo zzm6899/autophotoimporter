@@ -65,6 +65,19 @@ function RejectX() {
   );
 }
 
+function orientationTransform(orientation?: number) {
+  switch (orientation) {
+    case 2: return 'scaleX(-1)';
+    case 3: return 'rotate(180deg)';
+    case 4: return 'scaleY(-1)';
+    case 5: return 'rotate(90deg) scaleX(-1)';
+    case 6: return 'rotate(90deg)';
+    case 7: return 'rotate(270deg) scaleX(-1)';
+    case 8: return 'rotate(270deg)';
+    default: return undefined;
+  }
+}
+
 function ThumbnailCardInner({
   index,
   file,
@@ -88,6 +101,7 @@ function ThumbnailCardInner({
   const thumbBrightness = Math.abs(totalPreviewStops) >= 0.01
     ? stopsToSafeMultiplier(totalPreviewStops)
     : 1;
+  const orientation = orientationTransform(file.orientation);
   const { containerRef, activeSrc } = useLazySrc(file.thumbnail, forceLoad || focused || selected);
 
   return (
@@ -109,7 +123,12 @@ function ThumbnailCardInner({
               className="w-full h-full object-cover"
               decoding="async"
               loading={focused ? 'eager' : 'lazy'}
-              style={thumbBrightness !== 1 ? { filter: `brightness(${thumbBrightness.toFixed(3)})` } : undefined}
+              style={{
+                imageOrientation: 'none',
+                transform: orientation,
+                transformOrigin: 'center center',
+                filter: thumbBrightness !== 1 ? `brightness(${thumbBrightness.toFixed(3)})` : undefined,
+              }}
             />
           ) : (
             <div className="w-full h-full bg-surface-raised animate-pulse flex items-center justify-center">
@@ -187,8 +206,8 @@ function ThumbnailCardInner({
           {(file.reviewScore || file.blurRisk === 'high' || file.visualGroupId || file.faceCount) && (
             <div className="absolute left-1.5 bottom-1.5 flex gap-0.5 z-20">
               {!!file.faceCount && (
-                <span className="bg-emerald-600/90 text-[9px] text-white px-1 py-0.5 rounded font-medium" title={`${file.faceCount} face(s) detected`}>
-                  FACE
+                <span className="bg-emerald-600/90 text-[9px] text-white px-1 py-0.5 rounded font-medium" title={`${file.faceCount} ${file.faceDetection === 'estimated' ? 'estimated ' : ''}face(s) detected`}>
+                  {file.faceDetection === 'estimated' ? 'FACE?' : 'FACE'}
                 </span>
               )}
               {(file.reviewScore ?? 0) >= 70 && (
@@ -298,6 +317,7 @@ export const ThumbnailCard = memo(ThumbnailCardInner, (prev, next) => {
     a.reviewScore === b.reviewScore &&
     a.subjectSharpnessScore === b.subjectSharpnessScore &&
     a.faceCount === b.faceCount &&
+    a.faceDetection === b.faceDetection &&
     a.faceSignature === b.faceSignature &&
     a.faceGroupId === b.faceGroupId &&
     a.faceGroupSize === b.faceGroupSize &&

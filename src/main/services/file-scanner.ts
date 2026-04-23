@@ -5,6 +5,8 @@ import type { MediaFile } from '../../shared/types';
 import { parseExifDate, generateThumbnail, extractEmbeddedThumbnail, EXIFR_SUPPORTED } from './exif-parser';
 
 const BATCH_SIZE = 50;
+const EFFECTIVE_FAST_THUMB_CONCURRENCY = 10;
+const EFFECTIVE_SLOW_THUMB_CONCURRENCY = 2;
 const FAST_THUMB_CONCURRENCY = 30; // exifr embedded thumbs — just file reads, no CPU
 const SLOW_THUMB_CONCURRENCY = 6;  // sips — spawns process, decodes RAW
 
@@ -116,10 +118,10 @@ function generateThumbnailsInBackground(
     const fastFiles = photos.filter((f) => EXIFR_SUPPORTED.has(f.extension));
     const slowFiles: MediaFile[] = [];
 
-    for (let i = 0; i < fastFiles.length; i += FAST_THUMB_CONCURRENCY) {
+    for (let i = 0; i < fastFiles.length; i += EFFECTIVE_FAST_THUMB_CONCURRENCY) {
       if (signal.aborted) break;
       await waitIfPaused(signal);
-      const batch = fastFiles.slice(i, i + FAST_THUMB_CONCURRENCY);
+      const batch = fastFiles.slice(i, i + EFFECTIVE_FAST_THUMB_CONCURRENCY);
       await Promise.all(
         batch.map(async (file) => {
           if (signal.aborted) return;
@@ -135,10 +137,10 @@ function generateThumbnailsInBackground(
 
     // Phase 2B: Slow thumbnails — sips fallback for unsupported formats + exifr failures
     const sipsFiles = [...photos.filter((f) => !EXIFR_SUPPORTED.has(f.extension)), ...slowFiles];
-    for (let i = 0; i < sipsFiles.length; i += SLOW_THUMB_CONCURRENCY) {
+    for (let i = 0; i < sipsFiles.length; i += EFFECTIVE_SLOW_THUMB_CONCURRENCY) {
       if (signal.aborted) break;
       await waitIfPaused(signal);
-      const batch = sipsFiles.slice(i, i + SLOW_THUMB_CONCURRENCY);
+      const batch = sipsFiles.slice(i, i + EFFECTIVE_SLOW_THUMB_CONCURRENCY);
       await Promise.all(
         batch.map(async (file) => {
           if (signal.aborted) return;

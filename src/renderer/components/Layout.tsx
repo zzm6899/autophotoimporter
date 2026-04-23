@@ -40,6 +40,7 @@ export function Layout({ left, center, right }: LayoutProps) {
   const rejectedCount = files.filter((f) => f.pick === 'rejected').length;
   const protectedCount = files.filter((f) => f.isProtected).length;
   const faceCount = files.filter((f) => (f.faceCount ?? 0) > 0).length;
+  const estimatedFaceCount = files.filter((f) => (f.faceCount ?? 0) > 0 && f.faceDetection === 'estimated').length;
   const faceGroupCount = new Set(files.map((f) => f.faceGroupId).filter(Boolean)).size;
   const blurCount = files.filter((f) => f.blurRisk === 'high' || f.blurRisk === 'medium').length;
   const analyzedCount = files.filter((f) => typeof f.reviewScore === 'number' || typeof f.subjectSharpnessScore === 'number').length;
@@ -145,7 +146,7 @@ export function Layout({ left, center, right }: LayoutProps) {
           {queuedPaths.length > 0 && <span className="rounded bg-emerald-500/15 px-2 py-0.5 text-emerald-300">{queuedPaths.length} queued</span>}
           {rejectedCount > 0 && <span className="rounded bg-red-500/15 px-2 py-0.5 text-red-300">{rejectedCount} rejected</span>}
           {protectedCount > 0 && <span className="rounded bg-emerald-500/10 px-2 py-0.5 text-emerald-300">{protectedCount} protected</span>}
-          {faceCount > 0 && <span className="rounded bg-violet-500/15 px-2 py-0.5 text-violet-300">{faceCount} with faces</span>}
+        {faceCount > 0 && <span className="rounded bg-violet-500/15 px-2 py-0.5 text-violet-300" title={estimatedFaceCount > 0 ? `${estimatedFaceCount} are estimated fallback detections` : 'Native face detections'}>{faceCount} with faces</span>}
           {faceGroupCount > 0 && <span className="rounded bg-violet-500/15 px-2 py-0.5 text-violet-300">{faceGroupCount} face groups</span>}
           {blurCount > 0 && <span className="rounded bg-orange-500/15 px-2 py-0.5 text-orange-300">{blurCount} blur risk</span>}
           <span className="ml-auto rounded bg-surface-raised px-2 py-0.5 text-text-muted">smart {analyzedCount}/{photoCount}</span>

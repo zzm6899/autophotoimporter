@@ -182,6 +182,16 @@ describe('parseExifDate', () => {
     expect(result.orientation).toBe(6);
   });
 
+  it('normalizes text EXIF orientation values', async () => {
+    mockExifrParse.mockResolvedValue({
+      DateTimeOriginal: new Date(2024, 0, 1),
+      Orientation: 'Rotate 90 CW',
+    });
+
+    const result = await parseExifDate(makeFile());
+    expect(result.orientation).toBe(6);
+  });
+
   it('computes destPath from EXIF date', async () => {
     mockExifrParse.mockResolvedValue({ DateTimeOriginal: new Date(2024, 0, 15) });
 

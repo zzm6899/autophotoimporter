@@ -250,10 +250,206 @@ function faceCropSignature(
   return hex.padStart(16, '0');
 }
 
+function looksLikeSkin(r: number, g: number, b: number): boolean {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const y = 0.299 * r + 0.587 * g + 0.114 * b;
+  const cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b;
+  const cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
+  const rgbRule = r > 45 && g > 30 && b > 20 && max - min > 12 && r > b && r >= g * 0.78;
+  const ycbcrRule = y > 38 && cb >= 72 && cb <= 150 && cr >= 125 && cr <= 190;
+  return rgbRule && ycbcrRule;
+}
+
+function detectFaceLikeRegions(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+): Array<{ x: number; y: number; w: number; h: number; confidence: number }> {
+  const CELL = 4;
+  const cols = Math.ceil(width / CELL);
+  const rows = Math.ceil(height / CELL);
+  const mask = new Uint8Array(cols * rows);
+
+  for (let cy = 0; cy < rows; cy++) {
+    for (let cx = 0; cx < cols; cx++) {
+      let skin = 0;
+      let total = 0;
+      const x0 = cx * CELL;
+      const y0 = cy * CELL;
+      const x1 = Math.min(width, x0 + CELL);
+      const y1 = Math.min(height, y0 + CELL);
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0; x < x1; x++) {
+          const i = (y * width + x) * 4;
+          if (looksLikeSkin(data[i], data[i + 1], data[i + 2])) skin++;
+          total++;
+        }
+      }
+      if (skin / Math.max(1, total) >= 0.30) mask[cy * cols + cx] = 1;
+    }
+  }
+
+  const visited = new Uint8Array(mask.length);
+  const regions: Array<{ x: number; y: number; w: number; h: number; confidence: number }> = [];
+  const imageArea = width * height;
+  const isWideFrame = width > height * 1.12;
+
+  for (let start = 0; start < mask.length; start++) {
+    if (!mask[start] || visited[start]) continue;
+    const queue = [start];
+    visited[start] = 1;
+    let minX = start % cols;
+    let maxX = minX;
+    let minY = Math.floor(start / cols);
+    let maxY = minY;
+    let cells = 0;
+
+    while (queue.length) {
+      const cur = queue.pop()!;
+      const x = cur % cols;
+      const y = Math.floor(cur / cols);
+      cells++;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+      const neighbors = [cur - 1, cur + 1, cur - cols, cur + cols];
+      for (const n of neighbors) {
+        if (n < 0 || n >= mask.length || visited[n] || !mask[n]) continue;
+        const nx = n % cols;
+        if (Math.abs(nx - x) > 1) continue;
+        visited[n] = 1;
+        queue.push(n);
+      }
+    }
+
+    const x = minX * CELL;
+    const y = minY * CELL;
+    const w = Math.min(width - x, (maxX - minX + 1) * CELL);
+    const h = Math.min(height - y, (maxY - minY + 1) * CELL);
+    const area = w * h;
+    const areaRatio = area / imageArea;
+    const aspect = w / Math.max(1, h);
+    if (w < 14 || h < 14) continue;
+    if (areaRatio < 0.0012 || areaRatio > (isWideFrame ? 0.055 : 0.085)) continue;
+    if (aspect < 0.45 || aspect > 1.45) continue;
+
+    const fill = cells / Math.max(1, (w * h) / (CELL * CELL));
+    const sharp = regionSharpness(data, width, height, { x, y, w, h });
+    const confidence = fill * 60 + Math.min(45, sharp / 4) + Math.min(20, areaRatio * 600);
+    if (confidence < 40) continue;
+
+    const padX = w * 0.18;
+    const padTop = h * 0.28;
+    const padBottom = h * 0.18;
+    regions.push({
+      x: Math.max(0, x - padX),
+      y: Math.max(0, y - padTop),
+      w: Math.min(width - Math.max(0, x - padX), w + padX * 2),
+      h: Math.min(height - Math.max(0, y - padTop), h + padTop + padBottom),
+      confidence,
+    });
+  }
+
+  regions.sort((a, b) => b.confidence - a.confidence);
+  const kept: typeof regions = [];
+  for (const box of regions) {
+    let overlaps = false;
+    for (const existing of kept) {
+      const ix = Math.max(box.x, existing.x);
+      const iy = Math.max(box.y, existing.y);
+      const iw = Math.min(box.x + box.w, existing.x + existing.w) - ix;
+      const ih = Math.min(box.y + box.h, existing.y + existing.h) - iy;
+      if (iw <= 0 || ih <= 0) continue;
+      const inter = iw * ih;
+      const uni = box.w * box.h + existing.w * existing.h - inter;
+      if (inter / uni > 0.35) { overlaps = true; break; }
+    }
+    if (!overlaps) kept.push(box);
+    if (kept.length >= 4) break;
+  }
+  return kept;
+}
+
+function regionSkinRatio(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  region: { x: number; y: number; w: number; h: number },
+): number {
+  const left = Math.max(0, Math.floor(region.x));
+  const top = Math.max(0, Math.floor(region.y));
+  const right = Math.min(width, Math.ceil(region.x + region.w));
+  const bottom = Math.min(height, Math.ceil(region.y + region.h));
+  let skin = 0;
+  let total = 0;
+  for (let y = top; y < bottom; y += 2) {
+    for (let x = left; x < right; x += 2) {
+      const i = (y * width + x) * 4;
+      if (looksLikeSkin(data[i], data[i + 1], data[i + 2])) skin++;
+      total++;
+    }
+  }
+  return skin / Math.max(1, total);
+}
+
+function estimateHeadRegionsFromSubjects(
+  subjects: Array<SubjectBox & { sharpness: number }>,
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+): Array<{ x: number; y: number; w: number; h: number; confidence: number }> {
+  const regions: Array<{ x: number; y: number; w: number; h: number; confidence: number }> = [];
+  for (const subject of subjects.slice(0, 5)) {
+    const headW = Math.max(16, Math.min(70, subject.w * 0.32));
+    const headH = Math.max(16, Math.min(78, subject.h * 0.22));
+    const candidates = [
+      { x: subject.x + subject.w * 0.5 - headW * 0.5, y: subject.y + subject.h * 0.04, w: headW, h: headH },
+      { x: subject.x + subject.w * 0.35 - headW * 0.5, y: subject.y + subject.h * 0.08, w: headW, h: headH },
+      { x: subject.x + subject.w * 0.65 - headW * 0.5, y: subject.y + subject.h * 0.08, w: headW, h: headH },
+    ];
+    for (const candidate of candidates) {
+      const box = {
+        x: Math.max(0, Math.min(width - headW, candidate.x)),
+        y: Math.max(0, Math.min(height - headH, candidate.y)),
+        w: Math.min(headW, width - Math.max(0, candidate.x)),
+        h: Math.min(headH, height - Math.max(0, candidate.y)),
+      };
+      if (box.w < 14 || box.h < 14) continue;
+      const skinRatio = regionSkinRatio(data, width, height, box);
+      if (skinRatio < 0.08) continue;
+      const sharpness = regionSharpness(data, width, height, box);
+      const confidence = skinRatio * 90 + Math.min(55, sharpness / 3) + Math.min(24, subject.sharpness / 8);
+      if (confidence < 45) continue;
+      regions.push({ ...box, confidence });
+    }
+  }
+  regions.sort((a, b) => b.confidence - a.confidence);
+  const kept: typeof regions = [];
+  for (const box of regions) {
+    let overlaps = false;
+    for (const existing of kept) {
+      const ix = Math.max(box.x, existing.x);
+      const iy = Math.max(box.y, existing.y);
+      const iw = Math.min(box.x + box.w, existing.x + existing.w) - ix;
+      const ih = Math.min(box.y + box.h, existing.y + existing.h) - iy;
+      if (iw <= 0 || ih <= 0) continue;
+      const inter = iw * ih;
+      const uni = box.w * box.h + existing.w * existing.h - inter;
+      if (inter / uni > 0.25) { overlaps = true; break; }
+    }
+    if (!overlaps) kept.push(box);
+    if (kept.length >= 4) break;
+  }
+  return kept;
+}
+
 async function analyzeSubject(src: string): Promise<{
   subjectSharpnessScore: number;
   faceCount: number;
   faceBoxes: Array<{ x: number; y: number; width: number; height: number; eyeScore?: number }>;
+  faceDetection?: 'native' | 'estimated';
   faceSignature?: string;
   subjectReasons: string[];
 }> {
@@ -282,6 +478,7 @@ async function analyzeSubject(src: string): Promise<{
       detect: (source: CanvasImageSource) => Promise<Array<{ boundingBox: DOMRectReadOnly | { x: number; y: number; width: number; height: number } }>>;
     };
   }).FaceDetector;
+  let usedFaceFallback = false;
   if (FaceDetectorCtor) {
     try {
       const detector = new FaceDetectorCtor({ fastMode: true, maxDetectedFaces: 12 });
@@ -322,6 +519,30 @@ async function analyzeSubject(src: string): Promise<{
       // Browser face detection is best-effort; fall back to subject focus below.
     }
   }
+  if (detectedFaces.length === 0) {
+    const fallbackFaces = detectFaceLikeRegions(data, width, height);
+    usedFaceFallback = fallbackFaces.length > 0;
+    for (const face of fallbackFaces) {
+      const sharpness = regionSharpness(data, width, height, face);
+      const upperSharpness = regionSharpness(data, width, height, {
+        x: face.x + face.w * 0.12,
+        y: face.y + face.h * 0.16,
+        w: face.w * 0.76,
+        h: face.h * 0.30,
+      });
+      const eyeScore = upperSharpness >= 80 ? 2 : upperSharpness >= 38 ? 1 : 0;
+      detectedFaces.push({
+        x: face.x / width,
+        y: face.y / height,
+        width: face.w / width,
+        height: face.h / height,
+        eyeScore,
+        sharpness,
+        signature: '',
+        area: face.w * face.h,
+      });
+    }
+  }
 
   // Broad center-region sharpness as baseline (works even with helmets/masks)
   const center = regionSharpness(data, width, height, {
@@ -339,6 +560,46 @@ async function analyzeSubject(src: string): Promise<{
     return { ...box, sharpness: sharp };
   });
 
+  if (detectedFaces.length < 2) {
+    const headFaces = estimateHeadRegionsFromSubjects(scored, data, width, height);
+    for (const face of headFaces) {
+      const overlapsExisting = detectedFaces.some((existing) => {
+        const ex = existing.x * width;
+        const ey = existing.y * height;
+        const ew = existing.width * width;
+        const eh = existing.height * height;
+        const ix = Math.max(face.x, ex);
+        const iy = Math.max(face.y, ey);
+        const iw = Math.min(face.x + face.w, ex + ew) - ix;
+        const ih = Math.min(face.y + face.h, ey + eh) - iy;
+        if (iw <= 0 || ih <= 0) return false;
+        const inter = iw * ih;
+        const uni = face.w * face.h + ew * eh - inter;
+        return inter / uni > 0.25;
+      });
+      if (overlapsExisting) continue;
+      const sharpness = regionSharpness(data, width, height, face);
+      const upperSharpness = regionSharpness(data, width, height, {
+        x: face.x + face.w * 0.12,
+        y: face.y + face.h * 0.18,
+        w: face.w * 0.76,
+        h: face.h * 0.30,
+      });
+      detectedFaces.push({
+        x: face.x / width,
+        y: face.y / height,
+        width: face.w / width,
+        height: face.h / height,
+        eyeScore: upperSharpness >= 80 ? 2 : upperSharpness >= 38 ? 1 : 0,
+        sharpness,
+        signature: '',
+        area: face.w * face.h,
+      });
+      usedFaceFallback = true;
+      if (detectedFaces.length >= 4) break;
+    }
+  }
+
   // Best subject sharpness wins (vs overall center/face score)
   const bestSharp = Math.max(center, ...scored.map((s) => s.sharpness), ...detectedFaces.map((f) => f.sharpness));
   const bestEye = detectedFaces.reduce((best, f) => Math.max(best, f.eyeScore ?? 0), 0);
@@ -352,10 +613,11 @@ async function analyzeSubject(src: string): Promise<{
     subjectSharpnessScore: bestSharp,
     faceCount: detectedFaces.length,
     faceBoxes: detectedFaces.map(({ sharpness: _sharpness, signature: _signature, area: _area, ...box }) => box),
-    faceSignature: primaryFace?.signature,
+    faceDetection: detectedFaces.length > 0 ? (usedFaceFallback ? 'estimated' : 'native') : undefined,
+    faceSignature: usedFaceFallback ? undefined : primaryFace?.signature,
     subjectReasons: [
       detectedFaces.length > 0
-        ? `${detectedFaces.length} face${detectedFaces.length === 1 ? '' : 's'}${bestEye >= 2 ? ', eyes sharp' : ''}`
+        ? `${detectedFaces.length} face${detectedFaces.length === 1 ? '' : 's'}${usedFaceFallback ? ' estimated' : ''}${bestEye >= 2 ? ', eyes sharp' : ''}`
         : scored.length > 0
           ? (scored.length > 1 ? `${scored.length} subject zones` : 'subject focus')
           : 'center subject',
@@ -416,6 +678,7 @@ export function ThumbnailGrid() {
   const [cacheStats, setCacheStats] = useState(getPreviewCacheStats());
   const lastClickedRef = useRef<number>(-1);
   const sharpnessInFlightRef = useRef(false);
+  const reviewBatchCounterRef = useRef(0);
   const collapsedSet = useMemo(() => new Set(collapsedBursts), [collapsedBursts]);
   const queuedSet = useMemo(() => new Set(queuedPaths), [queuedPaths]);
 
@@ -537,7 +800,7 @@ export function ThumbnailGrid() {
     if (reviewPaused) return;
     // Allow analysis in all view modes — use a smaller batch in single/split
     // so face detection doesn't compete with the detail preview load.
-    const batchSize = (viewMode === 'single' || viewMode === 'split') ? 1 : 4;
+    const batchSize = (viewMode === 'single' || viewMode === 'split') ? 2 : 8;
     // Keep batch small so scoring doesn't freeze the UI on slow machines.
     const focusedPath = focusedIndex >= 0 && focusedIndex < sortedFiles.length ? sortedFiles[focusedIndex].path : null;
     const visibleRank = new Map<string, number>();
@@ -547,7 +810,7 @@ export function ThumbnailGrid() {
         typeof f.sharpnessScore !== 'number' ||
         !f.visualHash ||
         typeof f.subjectSharpnessScore !== 'number' ||
-        ((f.faceCount ?? 0) > 0 && !f.faceSignature) ||
+        (f.faceDetection === 'native' && (f.faceCount ?? 0) > 0 && !f.faceSignature) ||
         f.faceBoxes === undefined  // re-run face detection if it hasn't been stored yet
       ))
       .sort((a, b) => {
@@ -576,6 +839,7 @@ export function ThumbnailGrid() {
               subjectSharpnessScore: f.subjectSharpnessScore,
               faceCount: f.faceCount ?? 0,
               faceBoxes: f.faceBoxes,
+              faceDetection: f.faceDetection,
               faceSignature: f.faceSignature,
               subjectReasons: f.subjectReasons ?? [],
             })
@@ -585,8 +849,11 @@ export function ThumbnailGrid() {
     }))
       .then((entries) => {
         dispatch({ type: 'SET_REVIEW_SCORES', scores: Object.fromEntries(entries) });
-        dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10 });
-        dispatch({ type: 'GROUP_VISUAL_DUPLICATES', threshold: 8 });
+        reviewBatchCounterRef.current += 1;
+        if (reviewBatchCounterRef.current % 5 === 0 || entries.length < batchSize) {
+          dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10 });
+          dispatch({ type: 'GROUP_VISUAL_DUPLICATES', threshold: 8 });
+        }
       })
       .catch(() => undefined)
       .finally(() => {
@@ -743,6 +1010,26 @@ export function ThumbnailGrid() {
     }
     setShowBestOfSelection(true);
   }, [files, focusedIndex, selectedIndices, sortedFiles]);
+
+  const openBestOfBatch = useCallback(() => {
+    const candidates = sortedFiles
+      .filter((f) => f.type === 'photo' && f.pick !== 'rejected')
+      .slice(0, 120);
+    if (candidates.length === 0) return;
+    const paths = candidates.map((f) => f.path);
+    const pathSet = new Set(paths);
+    const visibleIndices = new Set<number>();
+    sortedFiles.forEach((f, i) => {
+      if (pathSet.has(f.path)) visibleIndices.add(i);
+    });
+    setSelectedIndices(visibleIndices);
+    setBestScope({
+      paths,
+      title: 'Best of Batch',
+      subtitle: `${candidates.length} visible photos ranked together`,
+    });
+    setShowBestOfSelection(true);
+  }, [sortedFiles]);
 
   const openAdjacentBurst = useCallback((direction: 1 | -1) => {
     if (files.length === 0) return;
@@ -1014,17 +1301,27 @@ export function ThumbnailGrid() {
   useEffect(() => {
     if (viewMode !== 'single' && viewMode !== 'split') return;
     if (focusedIndex < 0 || sortedFiles.length === 0) return;
-    const neighbors = [
-      focusedIndex + 1, focusedIndex + 2, focusedIndex + 3, focusedIndex + 4,
-      focusedIndex - 1, focusedIndex - 2,
-    ];
+    const focusedFile = sortedFiles[focusedIndex];
+    const isRawFocused = !!focusedFile && /\.(nef|nrw|cr2|cr3|arw|raf|rw2|orf|dng|pef|srw)$/i.test(focusedFile.name || focusedFile.extension);
+    const neighbors = isRawFocused
+      ? [focusedIndex + 1]
+      : [
+          focusedIndex + 1, focusedIndex + 2, focusedIndex + 3,
+          focusedIndex - 1,
+        ];
     const id = setTimeout(() => {
       for (const i of neighbors) {
         if (i >= 0 && i < sortedFiles.length) {
-          warmPreview(sortedFiles[i].path, i === focusedIndex + 1 ? 'normal' : 'low');
+          const candidate = sortedFiles[i];
+          const isRawCandidate = /\.(nef|nrw|cr2|cr3|arw|raf|rw2|orf|dng|pef|srw)$/i.test(candidate.name || candidate.extension);
+          if (isRawFocused || isRawCandidate) {
+            if (i === focusedIndex + 1) warmPreview(candidate.path, 'normal');
+          } else {
+            warmPreview(candidate.path, i === focusedIndex + 1 ? 'normal' : 'low');
+          }
         }
       }
-    }, 40);
+    }, isRawFocused ? 180 : 50);
     return () => clearTimeout(id);
   }, [focusedIndex, viewMode, sortedFiles]);
 
@@ -1479,9 +1776,9 @@ export function ThumbnailGrid() {
       <button
         onClick={() => dispatch({ type: 'QUEUE_BEST' })}
         className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-surface-raised text-text-secondary hover:text-yellow-300 hover:bg-yellow-500/10 transition-colors shrink-0"
-        title={`Add high-scoring keeper candidates to the queue. Based on review score, protected flag, star rating, blur risk, and subject focus. Analyzed ${reviewStats.analyzed}/${reviewStats.total}.`}
+        title={`Create a fresh best-of-batch queue. Picks one winner per burst/similar group, then the strongest ungrouped keepers. AI review ${reviewStats.analyzed}/${reviewStats.total}.`}
       >
-        2. Queue Best
+        2. Queue Batch Best
       </button>
 
       {queuedPaths.length > 0 ? (
@@ -1526,11 +1823,11 @@ export function ThumbnailGrid() {
       {showAdvancedTools && (
         <>
       <button
-        onClick={() => dispatch({ type: 'SET_FILTER', filter: 'best' })}
+        onClick={openBestOfBatch}
         className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-yellow-300 transition-colors shrink-0"
-        title={`Show files with strong local keeper scores. Review analyzed ${reviewStats.analyzed}/${reviewStats.total}; faces found in ${reviewStats.faces}.`}
+        title={`Rank the current visible batch together. Review analyzed ${reviewStats.analyzed}/${reviewStats.total}; faces found in ${reviewStats.faces}.`}
       >
-        Find Best
+        Best of Batch
       </button>
       <button
         onClick={openBestOfSelection}
@@ -1568,9 +1865,9 @@ export function ThumbnailGrid() {
             ? 'bg-violet-500/10 text-violet-300 hover:bg-violet-500/20'
             : 'bg-surface-raised text-text-muted hover:text-violet-300'
         }`}
-        title={`Re-run BlazeFace detection on all ${reviewStats.total} photos. Faces found so far: ${reviewStats.faces}.`}
+        title={`Re-run face and subject detection on all ${reviewStats.total} photos. Uses Chromium FaceDetector when available, then a local thumbnail fallback. Faces found so far: ${reviewStats.faces}.`}
       >
-        Faces {reviewStats.faces}
+        Re-scan AI {reviewStats.faces}
       </button>
       <button
         onClick={() => setBackgroundLoadingPaused((v) => !v)}
@@ -1767,14 +2064,13 @@ export function ThumbnailGrid() {
 
             {/* Single consolidated filter dropdown — replaces 6 individual ones */}
             <select
-              value=""
+              value={['all', 'picked', 'rejected', 'queue'].includes(filter) ? '' : filter}
               onChange={(e) => {
                 if (!e.target.value) return;
                 dispatch({ type: 'SET_FILTER', filter: e.target.value as typeof filter });
-                e.currentTarget.value = '';
               }}
               className="px-1 py-0.5 text-[10px] bg-surface border border-border rounded text-text-muted hover:text-text focus:outline-none focus:border-text cursor-pointer"
-              title="More filters"
+              title={filter === 'all' ? 'More filters' : `Active filter: ${filter}`}
             >
               <option value="">Filter ▾</option>
               <optgroup label="Status">
@@ -1783,6 +2079,8 @@ export function ThumbnailGrid() {
                 <option value="unrated">Unrated</option>
                 <option value="duplicates">Duplicates</option>
                 <option value="best">Best shots</option>
+                <option value="faces">Faces detected</option>
+                <option value="face-groups">Face groups</option>
                 <option value="blur-risk">Blur risk</option>
                 <option value="near-duplicates">Similar photos</option>
               </optgroup>

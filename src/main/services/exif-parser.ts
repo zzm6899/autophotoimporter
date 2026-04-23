@@ -1,5 +1,5 @@
 import exifr from 'exifr';
-import { stat, readFile, mkdir, open as fsOpen } from 'node:fs/promises';
+import { stat, readFile, mkdir, open as fsOpen, writeFile, unlink } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -41,6 +41,9 @@ const RAW_EXTENSIONS = new Set([
 const THUMB_WIDTH = 320;
 const PREVIEW_WIDTH = 1920;
 const PREVIEW_QUALITY = 85;
+const MAX_RAW_SCAN_BYTES = 32 * 1024 * 1024;
+const MAX_DIRECT_THUMB_BYTES = 512 * 1024;
+const MAX_DIRECT_PREVIEW_BYTES = 3 * 1024 * 1024;
 
 let thumbDir: string | null = null;
 
@@ -59,6 +62,17 @@ async function isFileProtected(filePath: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+function normalizeExifOrientation(value: unknown): number | undefined {
+  if (typeof value === 'number' && value >= 1 && value <= 8) return value;
+  if (typeof value !== 'string') return undefined;
+  const text = value.toLowerCase();
+  if (/\b8\b/.test(text) || text.includes('270') || text.includes('ccw') || text.includes('left')) return 8;
+  if (/\b6\b/.test(text) || text.includes('90') || text.includes('cw') || text.includes('right')) return 6;
+  if (/\b3\b/.test(text) || text.includes('180')) return 3;
+  if (/\b1\b/.test(text) || text.includes('horizontal') || text.includes('normal')) return 1;
+  return undefined;
 }
 
 export async function parseExifDate(
@@ -104,7 +118,7 @@ export async function parseExifDate(
       });
       if (exif) {
         dateTaken = exif.DateTimeOriginal || exif.CreateDate || exif.ModifyDate || null;
-        if (typeof exif.Orientation === 'number') orientation = exif.Orientation;
+        orientation = normalizeExifOrientation(exif.Orientation);
         if (typeof exif.ISO === 'number') iso = exif.ISO;
         if (typeof exif.FNumber === 'number') aperture = exif.FNumber;
         if (typeof exif.ExposureTime === 'number') shutterSpeed = exif.ExposureTime;
@@ -164,6 +178,7 @@ export async function extractEmbeddedThumbnail(
     const thumbData = await exifr.thumbnail(filePath);
     if (!thumbData || thumbData.byteLength === 0) return undefined;
     const buffer = Buffer.isBuffer(thumbData) ? thumbData : Buffer.from(thumbData);
+    if (buffer.length > MAX_DIRECT_THUMB_BYTES) return undefined;
     return `data:image/jpeg;base64,${buffer.toString('base64')}`;
   } catch {
     return undefined;
@@ -260,17 +275,40 @@ async function platformResize(
   return linuxResize(srcPath, outPath, width, quality, timeoutMs);
 }
 
+async function readJpegDataUri(filePath: string): Promise<string> {
+  const buf = await readFile(filePath);
+  return `data:image/jpeg;base64,${buf.toString('base64')}`;
+}
+
+async function resizeEmbeddedJpegToDataUri(
+  jpeg: Buffer,
+  outPath: string,
+  width: number,
+  quality: number,
+  timeoutMs: number,
+): Promise<string | undefined> {
+  const tmpPath = `${outPath}.${process.pid}.${Date.now()}.embedded.jpg`;
+  try {
+    await writeFile(tmpPath, jpeg);
+    await platformResize(tmpPath, outPath, width, quality, timeoutMs);
+    return readJpegDataUri(outPath);
+  } catch {
+    return undefined;
+  } finally {
+    void unlink(tmpPath).catch(() => undefined);
+  }
+}
+
 // Most RAW files (NEF, CR2, ARW, DNG, RAF, ORF, RW2...) embed one or more JPEG
 // previews inside the TIFF container. exifr.thumbnail() typically only returns
 // the small ~160x120 IFD1 thumbnail, which is useless at loupe size. To get
 // the usable full-size preview (~1620x1080 for NEF) we scan the raw bytes for
 // JPEG SOI/EOI markers and keep the largest embedded JPEG.
 async function extractLargestEmbeddedJpeg(filePath: string): Promise<Buffer | undefined> {
-  const MAX_READ = 96 * 1024 * 1024;
   let buf: Buffer;
   try {
     const fullStat = await stat(filePath);
-    const toRead = Math.min(Number(fullStat.size), MAX_READ);
+    const toRead = Math.min(Number(fullStat.size), MAX_RAW_SCAN_BYTES);
     buf = Buffer.alloc(toRead);
     const handle = await fsOpen(filePath, 'r');
     try {
@@ -336,12 +374,20 @@ function findJpegEnd(buf: Buffer, start: number): number {
   return -1;
 }
 
-async function embeddedFallback(filePath: string, extension: string): Promise<string | undefined> {
+async function embeddedFallback(
+  filePath: string,
+  extension: string,
+  outPath?: string,
+): Promise<string | undefined> {
   if (!EXIFR_SUPPORTED.has(extension)) return undefined;
 
   try {
     const big = await extractLargestEmbeddedJpeg(filePath);
     if (big && big.length > 32 * 1024) {
+      if (outPath && big.length > MAX_DIRECT_PREVIEW_BYTES) {
+        const resized = await resizeEmbeddedJpegToDataUri(big, outPath, PREVIEW_WIDTH, PREVIEW_QUALITY, 20000);
+        if (resized) return resized;
+      }
       return `data:image/jpeg;base64,${big.toString('base64')}`;
     }
   } catch {
@@ -363,7 +409,11 @@ async function embeddedFallback(filePath: string, extension: string): Promise<st
  * Tries exifr.thumbnail() first (fast, no full file read) and only falls
  * back to the slower byte-scan when that returns nothing useful.
  */
-async function embeddedFallbackForThumbnail(filePath: string, extension: string): Promise<string | undefined> {
+async function embeddedFallbackForThumbnail(
+  filePath: string,
+  extension: string,
+  outPath?: string,
+): Promise<string | undefined> {
   if (!EXIFR_SUPPORTED.has(extension)) return undefined;
 
   // Fast path: exifr parses the IFD1 thumbnail without reading the whole file.
@@ -371,6 +421,10 @@ async function embeddedFallbackForThumbnail(filePath: string, extension: string)
     const thumbData = await exifr.thumbnail(filePath);
     if (thumbData && thumbData.byteLength > 0) {
       const buffer = Buffer.isBuffer(thumbData) ? thumbData : Buffer.from(thumbData);
+      if (outPath && buffer.length > MAX_DIRECT_THUMB_BYTES) {
+        const resized = await resizeEmbeddedJpegToDataUri(buffer, outPath, THUMB_WIDTH, 60, 12000);
+        if (resized) return resized;
+      }
       return `data:image/jpeg;base64,${buffer.toString('base64')}`;
     }
   } catch {
@@ -382,6 +436,11 @@ async function embeddedFallbackForThumbnail(filePath: string, extension: string)
   try {
     const big = await extractLargestEmbeddedJpeg(filePath);
     if (big && big.length > 32 * 1024) {
+      if (outPath) {
+        const resized = await resizeEmbeddedJpegToDataUri(big, outPath, THUMB_WIDTH, 60, 12000);
+        if (resized) return resized;
+      }
+      if (big.length > MAX_DIRECT_THUMB_BYTES) return undefined;
       return `data:image/jpeg;base64,${big.toString('base64')}`;
     }
   } catch {
@@ -426,16 +485,15 @@ export async function generatePreview(filePath: string): Promise<string | undefi
       }
 
       if (RAW_EXTENSIONS.has(ext) && process.platform !== 'darwin') {
-        const fallback = await embeddedFallback(filePath, ext);
+        const fallback = await embeddedFallback(filePath, ext, outPath);
         if (fallback) return fallback;
       }
 
       try {
         await platformResize(filePath, outPath, PREVIEW_WIDTH, PREVIEW_QUALITY, 30000);
-        const buf = await readFile(outPath);
-        return `data:image/jpeg;base64,${buf.toString('base64')}`;
+        return readJpegDataUri(outPath);
       } catch {
-        return embeddedFallback(filePath, ext);
+        return embeddedFallback(filePath, ext, outPath);
       }
     } catch {
       return undefined;
@@ -470,16 +528,15 @@ export async function generateThumbnail(filePath: string, _fileName: string): Pr
     // files that already contain a usable preview in their header.
     // Uses the fast exifr.thumbnail() path before falling back to the full scan.
     if (RAW_EXTENSIONS.has(ext)) {
-      const fallback = await embeddedFallbackForThumbnail(filePath, ext);
+      const fallback = await embeddedFallbackForThumbnail(filePath, ext, outPath);
       if (fallback) return fallback;
     }
 
     try {
       await platformResize(filePath, outPath, THUMB_WIDTH, 60, 15000);
-      const thumbBuffer = await readFile(outPath);
-      return `data:image/jpeg;base64,${thumbBuffer.toString('base64')}`;
+      return readJpegDataUri(outPath);
     } catch {
-      return embeddedFallbackForThumbnail(filePath, ext);
+      return embeddedFallbackForThumbnail(filePath, ext, outPath);
     }
   } catch {
     return undefined;

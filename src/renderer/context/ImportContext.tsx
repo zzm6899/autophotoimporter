@@ -371,7 +371,7 @@ export function reducer(state: State, action: Action): State {
       const valid = new Set(state.files.map((f) => f.path));
       const next = new Set(state.queuedPaths);
       for (const p of action.paths) if (valid.has(p)) next.add(p);
-      return { ...state, queuedPaths: [...next] };
+      return { ...state, queuedPaths: [...next], filter: next.size > 0 ? 'queue' : state.filter };
     }
     case 'QUEUE_REMOVE_PATHS': {
       const remove = new Set(action.paths);
@@ -560,6 +560,7 @@ export function reducer(state: State, action: Action): State {
             ...f,
             faceBoxes: undefined,
             faceCount: undefined,
+            faceDetection: undefined,
             faceSignature: undefined,
             faceGroupId: undefined,
             faceGroupSize: undefined,
@@ -626,7 +627,7 @@ export function reducer(state: State, action: Action): State {
     }
     case 'QUEUE_BEST': {
       const candidates = state.files
-        .filter((f) => f.type === 'photo' && f.pick !== 'rejected' && (keeperScore(f) >= 95 || (f.reviewScore ?? 0) >= 74))
+        .filter((f) => f.type === 'photo' && f.pick !== 'rejected' && !f.duplicate)
         .sort((a, b) =>
           Number(!!b.isProtected) - Number(!!a.isProtected) ||
           (b.rating ?? 0) - (a.rating ?? 0) ||
@@ -634,19 +635,59 @@ export function reducer(state: State, action: Action): State {
           faceQuality(b) - faceQuality(a) ||
           (b.reviewScore ?? 0) - (a.reviewScore ?? 0),
         );
-      const next = new Set(state.queuedPaths);
-      for (const f of candidates) next.add(f.path);
-      const faceGroups = new Map<string, MediaFile[]>();
-      for (const f of state.files) {
-        if (f.faceGroupId && f.faceGroupSize && f.faceGroupSize > 1 && f.pick !== 'rejected') {
-          faceGroups.set(f.faceGroupId, [...(faceGroups.get(f.faceGroupId) ?? []), f]);
+      const groupByPath = new Set<string>();
+      const groups = new Map<string, MediaFile[]>();
+      for (const f of candidates) {
+        const groupId =
+          f.burstId && f.burstSize && f.burstSize > 1 ? `burst:${f.burstId}` :
+          f.visualGroupId && f.visualGroupSize && f.visualGroupSize > 1 ? `visual:${f.visualGroupId}` :
+          f.faceGroupId && f.faceGroupSize && f.faceGroupSize > 1 ? `face:${f.faceGroupId}` :
+          null;
+        if (groupId) {
+          groupByPath.add(f.path);
+          groups.set(groupId, [...(groups.get(groupId) ?? []), f]);
         }
       }
-      for (const group of faceGroups.values()) {
-        const best = bestInGroup(group);
-        if (best && keeperScore(best) >= 80) next.add(best.path);
+
+      const next = new Set<string>();
+      for (const f of candidates) {
+        if ((f.rating ?? 0) > 0 || f.pick === 'selected') next.add(f.path);
       }
-      return { ...state, queuedPaths: [...next] };
+      const autoBestInGroup = (group: MediaFile[]): MediaFile | null => {
+        if (group.length === 0) return null;
+        return group.slice().sort((a, b) =>
+          Number(!!b.isProtected) - Number(!!a.isProtected) ||
+          faceQuality(b) - faceQuality(a) ||
+          (b.faceCount ?? 0) - (a.faceCount ?? 0) ||
+          (b.subjectSharpnessScore ?? 0) - (a.subjectSharpnessScore ?? 0) ||
+          Number(a.blurRisk === 'high') - Number(b.blurRisk === 'high') ||
+          (b.sharpnessScore ?? 0) - (a.sharpnessScore ?? 0) ||
+          (b.reviewScore ?? 0) - (a.reviewScore ?? 0) ||
+          keeperScore(b) - keeperScore(a) ||
+          (a.burstIndex ?? 0) - (b.burstIndex ?? 0),
+        )[0];
+      };
+      for (const group of groups.values()) {
+        const best = autoBestInGroup(group);
+        if (!best) continue;
+        if (best.pick === 'selected' || best.isProtected || (best.rating ?? 0) > 0 || keeperScore(best) >= 70 || (best.reviewScore ?? 0) >= 62) {
+          next.add(best.path);
+        }
+      }
+
+      const targetCount = Math.min(120, Math.max(8, Math.ceil(candidates.length * 0.08)));
+      for (const f of candidates) {
+        if (next.has(f.path)) continue;
+        if (f.pick === 'selected') {
+          next.add(f.path);
+          continue;
+        }
+        if (groupByPath.has(f.path)) continue;
+        if ((keeperScore(f) >= 85 || (f.reviewScore ?? 0) >= 70 || (f.rating ?? 0) > 0 || f.isProtected) && next.size < targetCount) {
+          next.add(f.path);
+        }
+      }
+      return { ...state, queuedPaths: [...next], filter: next.size > 0 ? 'queue' : state.filter };
     }
     case 'AUTO_CULL_SAFE': {
       const groups = new Map<string, MediaFile[]>();

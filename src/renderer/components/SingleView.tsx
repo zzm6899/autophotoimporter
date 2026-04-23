@@ -15,6 +15,40 @@ interface SingleViewProps {
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 5;
 const ZOOM_STEP = 0.008;
+const RAW_EXT_RE = /\.(nef|nrw|cr2|cr3|arw|raf|rw2|orf|dng|pef|srw)$/i;
+
+function isRawPhoto(file: MediaFile) {
+  return file.type === 'photo' && RAW_EXT_RE.test(file.name || file.extension);
+}
+
+function orientationTransform(orientation?: number) {
+  switch (orientation) {
+    case 2: return 'scaleX(-1)';
+    case 3: return 'rotate(180deg)';
+    case 4: return 'scaleY(-1)';
+    case 5: return 'rotate(90deg) scaleX(-1)';
+    case 6: return 'rotate(90deg)';
+    case 7: return 'rotate(270deg) scaleX(-1)';
+    case 8: return 'rotate(270deg)';
+    default: return undefined;
+  }
+}
+
+function orientationQuarterTurns(orientation?: number) {
+  switch (orientation) {
+    case 3:
+    case 4:
+      return 2;
+    case 5:
+    case 6:
+      return 1;
+    case 7:
+    case 8:
+      return 3;
+    default:
+      return 0;
+  }
+}
 
 export function SingleView({ file, index, total }: SingleViewProps) {
   const [preview, setPreview] = useState<string | undefined>(undefined);
@@ -36,10 +70,14 @@ export function SingleView({ file, index, total }: SingleViewProps) {
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [previewNormalized, setPreviewNormalized] = useState(false);
   const [holdOriginal, setHoldOriginal] = useState(false);
+  const [manualQuarterTurns, setManualQuarterTurns] = useState(0);
   const [clipping, setClipping] = useState<{ highlights: number; shadows: number } | null>(null);
+  const [imageNatural, setImageNatural] = useState<{ width: number; height: number } | null>(null);
+  const [viewportSize, setViewportSize] = useState<{ width: number; height: number } | null>(null);
   const isDragging = useRef(false);
   const lastMouse = useRef({ x: 0, y: 0 });
   const containerRef = useRef<HTMLDivElement>(null);
+  const rawPreview = isRawPhoto(file);
 
   // Reset zoom/pan and preview toggle when file changes
   useEffect(() => {
@@ -47,7 +85,22 @@ export function SingleView({ file, index, total }: SingleViewProps) {
     setPan({ x: 0, y: 0 });
     setPreviewNormalized(false);
     setHoldOriginal(false);
+    setManualQuarterTurns(0);
+    setImageNatural(null);
   }, [file.path]);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const update = () => {
+      const rect = el.getBoundingClientRect();
+      setViewportSize({ width: rect.width, height: rect.height });
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
@@ -55,6 +108,9 @@ export function SingleView({ file, index, total }: SingleViewProps) {
       if (e.code === 'Space') {
         e.preventDefault();
         setHoldOriginal(true);
+      } else if (e.key.toLowerCase() === 'r') {
+        e.preventDefault();
+        setManualQuarterTurns((turns) => (turns + (e.shiftKey ? 3 : 1)) % 4);
       }
     };
     const up = (e: KeyboardEvent) => {
@@ -97,13 +153,13 @@ export function SingleView({ file, index, total }: SingleViewProps) {
           setLoadError(!file.thumbnail);
         }
       });
-    }, file.thumbnail ? 80 : 0);
+    }, file.thumbnail ? (rawPreview ? 220 : 80) : 0);
 
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [file.path, file.thumbnail]);
+  }, [file.path, file.thumbnail, rawPreview]);
 
   useEffect(() => {
     if (!file.thumbnail) return;
@@ -187,6 +243,24 @@ export function SingleView({ file, index, total }: SingleViewProps) {
     showingThumbnailOnly ? 'blur(0.35px)' : '',
     brightnessMultiplier !== 1 ? `brightness(${brightnessMultiplier.toFixed(3)})` : '',
   ].filter(Boolean).join(' ');
+  const orientation = orientationTransform(file.orientation);
+  const manualRotation = manualQuarterTurns ? `rotate(${manualQuarterTurns * 90}deg)` : undefined;
+  const displayTransform = [orientation, manualRotation].filter(Boolean).join(' ') || undefined;
+  const totalQuarterTurns = (orientationQuarterTurns(file.orientation) + manualQuarterTurns) % 4;
+  const rotatedSwapsAxes = totalQuarterTurns === 1 || totalQuarterTurns === 3;
+  const fittedSize = imageNatural && viewportSize
+    ? (() => {
+        const availableWidth = Math.max(320, viewportSize.width - 24);
+        const availableHeight = Math.max(240, viewportSize.height - 24);
+        const fit = rotatedSwapsAxes
+          ? Math.min(availableHeight / imageNatural.width, availableWidth / imageNatural.height)
+          : Math.min(availableWidth / imageNatural.width, availableHeight / imageNatural.height);
+        return {
+          width: Math.max(1, Math.round(imageNatural.width * fit)),
+          height: Math.max(1, Math.round(imageNatural.height * fit)),
+        };
+      })()
+    : null;
   const canPreviewAdjust = imageSrc && (canPreviewNorm || Math.abs(manualStops) >= 0.01);
   const clippingRisk = Math.abs(previewStops) >= exposureMaxStops - 0.01 || brightnessMultiplier >= 2.25 || brightnessMultiplier <= 0.4;
 
@@ -242,12 +316,19 @@ export function SingleView({ file, index, total }: SingleViewProps) {
           <img
             src={imageSrc}
             alt={file.name}
-            className="max-h-[calc(100vh-6rem)] max-w-full object-contain"
+            className={fittedSize ? 'object-contain' : 'max-h-[calc(100vh-6rem)] max-w-full object-contain'}
             draggable={false}
+            onLoad={(event) => {
+              const img = event.currentTarget;
+              setImageNatural({ width: img.naturalWidth || img.width, height: img.naturalHeight || img.height });
+            }}
             style={{
+              imageOrientation: 'none',
+              transform: displayTransform,
+              transformOrigin: 'center center',
               filter: imageFilter || undefined,
-              width: showingThumbnailOnly ? 'min(94vw, 1280px)' : undefined,
-              height: showingThumbnailOnly ? 'calc(100vh - 6rem)' : undefined,
+              width: fittedSize ? `${fittedSize.width}px` : showingThumbnailOnly ? 'min(94vw, 1280px)' : undefined,
+              height: fittedSize ? `${fittedSize.height}px` : showingThumbnailOnly ? 'calc(100vh - 6rem)' : undefined,
             }}
           />
         ) : (
@@ -299,12 +380,20 @@ export function SingleView({ file, index, total }: SingleViewProps) {
           </div>
         )}
         {!isZoomed && imageSrc && (file.faceBoxes?.length ?? 0) > 0 && (
-          <div className="absolute inset-0 pointer-events-none z-[15]">
+          <div
+            className="absolute inset-0 pointer-events-none z-[15]"
+            style={{
+              transform: displayTransform,
+              transformOrigin: 'center center',
+            }}
+          >
             {file.faceBoxes!.map((box, i) => (
               <div
                 key={i}
                 className={`absolute rounded-sm shadow-[0_0_0_1px_rgba(0,0,0,0.4)] ${
-                  (box.eyeScore ?? 0) >= 2
+                  file.faceDetection === 'estimated'
+                    ? 'border border-dashed border-cyan-300/75'
+                    : (box.eyeScore ?? 0) >= 2
                     ? 'border-2 border-emerald-400/90'
                     : 'border border-yellow-400/70'
                 }`}
@@ -314,7 +403,9 @@ export function SingleView({ file, index, total }: SingleViewProps) {
                   width: `${box.width * 100}%`,
                   height: `${box.height * 100}%`,
                 }}
-                title={(box.eyeScore ?? 0) >= 2 ? 'Eyes open' : (box.eyeScore ?? 0) === 1 ? 'One eye visible' : 'Face detected'}
+                title={file.faceDetection === 'estimated'
+                  ? 'Estimated face region'
+                  : (box.eyeScore ?? 0) >= 2 ? 'Eyes open' : (box.eyeScore ?? 0) === 1 ? 'One eye visible' : 'Face detected'}
               />
             ))}
           </div>
@@ -350,6 +441,24 @@ export function SingleView({ file, index, total }: SingleViewProps) {
               face group {file.faceGroupSize ?? 0}
             </span>
           )}
+          {!!file.faceCount && (
+            <span className="rounded bg-emerald-500/35 px-2 py-1 text-[10px] font-mono text-emerald-100">
+              {file.faceDetection === 'estimated' ? 'estimated faces' : 'faces'} {file.faceCount}
+            </span>
+          )}
+          {file.orientation && file.orientation > 1 && (
+            <span className="rounded bg-black/65 px-2 py-1 text-[10px] font-mono text-white/90">
+              rotated
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => setManualQuarterTurns((turns) => (turns + 1) % 4)}
+            className="rounded bg-black/65 px-2 py-1 text-[10px] font-mono text-white/90 hover:bg-black/80"
+            title="Rotate this view 90 degrees. Shortcut: R, Shift+R."
+          >
+            rotate
+          </button>
         </div>
       )}
 

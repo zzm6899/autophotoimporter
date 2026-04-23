@@ -1,10 +1,10 @@
 const previewCache = new Map<string, string | undefined>();
 const previewInflight = new Map<string, Promise<string | undefined>>();
 const decodedCache = new Set<string>();
-const MAX_PREVIEWS = 40;
-const MAX_DECODED = 60;
+const MAX_PREVIEWS = 16;
+const MAX_DECODED = 24;
 const MAX_ACTIVE_REQUESTS = 2;
-const MAX_QUEUED_REQUESTS = 80;
+const MAX_QUEUED_REQUESTS = 24;
 let activeRequests = 0;
 let backgroundPaused = false;
 const queuedRequests: Array<() => void> = [];
@@ -65,7 +65,8 @@ export function getCachedPreview(
 }
 
 export async function decodeImage(src: string): Promise<void> {
-  if (decodedCache.has(src)) return;
+  const cacheKey = src.length > 512 ? `${src.slice(0, 64)}:${src.length}` : src;
+  if (decodedCache.has(cacheKey)) return;
   const img = new Image();
   img.decoding = 'async';
   img.src = src;
@@ -77,7 +78,7 @@ export async function decodeImage(src: string): Promise<void> {
       img.onerror = () => reject(new Error('Image decode failed'));
     });
   }
-  decodedCache.add(src);
+  decodedCache.add(cacheKey);
   while (decodedCache.size > MAX_DECODED) {
     const oldest = decodedCache.values().next().value as string | undefined;
     if (!oldest) break;

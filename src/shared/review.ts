@@ -5,6 +5,7 @@ export interface ReviewScoreInput {
   subjectSharpnessScore?: number;
   faceCount?: number;
   faceBoxes?: MediaFile['faceBoxes'];
+  faceDetection?: MediaFile['faceDetection'];
   rating?: number;
   isProtected?: boolean;
   exposureValue?: number;
@@ -17,18 +18,19 @@ export interface ReviewScore {
   reasons: string[];
 }
 
-export function faceQuality(file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'subjectSharpnessScore'>): number {
+export function faceQuality(file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'faceDetection' | 'subjectSharpnessScore'>): number {
   const boxes = file.faceBoxes ?? [];
   const bestEye = boxes.reduce((best, box) => Math.max(best, box.eyeScore ?? 0), 0);
   const eyeSum = boxes.reduce((sum, box) => sum + (box.eyeScore ?? 0), 0);
   const faceCount = file.faceCount ?? boxes.length;
   const faceArea = boxes.reduce((sum, box) => sum + box.width * box.height, 0);
   const sharp = Math.min(60, (file.subjectSharpnessScore ?? 0) / 3);
+  const faceConfidence = file.faceDetection === 'estimated' ? 0.4 : 1;
   return Math.round(
-    Math.min(faceCount, 4) * 18 +
+    (Math.min(faceCount, 4) * 18 +
     bestEye * 18 +
     eyeSum * 7 +
-    Math.min(18, faceArea * 120) +
+    Math.min(18, faceArea * 120)) * faceConfidence +
     sharp,
   );
 }
