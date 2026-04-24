@@ -271,7 +271,7 @@ app.get('/admin/licenses', authSession, async (_req, res) => {
       </div>
       <div class="panel">
         <h2>Status guide</h2>
-        <p class="muted">`active` can update, `revoked` blocks updates immediately, `expired` is for admin-side mirror of a lapsed subscription, and `disabled` is a temporary hold.</p>
+        <p class="muted">Active can update, revoked blocks updates immediately, expired is for admin-side mirror of a lapsed subscription, and disabled is a temporary hold.</p>
       </div>
     </div>
     <div class="panel">
@@ -362,7 +362,7 @@ app.get('/admin/releases', authSession, async (_req, res) => {
       </div>
       <div class="panel">
         <h2>Automation</h2>
-        <p class="muted">Use the admin API token with the `scripts/publish-update-release.mjs` helper from CI or your local release machine to import Windows/macOS artifacts after GitHub builds them.</p>
+        <p class="muted">Use the admin API token with the scripts/publish-update-release.mjs helper from CI or your local release machine to import Windows/macOS artifacts after GitHub builds them.</p>
       </div>
     </div>
     <div class="panel">
