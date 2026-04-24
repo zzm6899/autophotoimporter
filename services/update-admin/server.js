@@ -660,7 +660,7 @@ app.get('/admin/releases', authSession, async (_req, res) => {
           </div>
           <div class="row" style="margin-top:4px">
             <div><label>Channel</label><input name="channel" value="stable" required /></div>
-            <div><label>Rollout</label><select name="rolloutState"><option value="draft">Draft</option><option value="live">Live</option><option value="hidden">Hidden</option></select></div>
+            <div><label>Rollout</label><select name="rolloutState"><option value="live">Live</option><option value="draft">Draft</option><option value="hidden">Hidden</option></select></div>
           </div>
           <label>Release name</label><input name="releaseName" placeholder="Photo Importer 1.1.1" required />
           <label>Artifact URL</label><input name="artifactUrl" placeholder="https://updates.culler.z2hs.au/artifacts/windows/PhotoImporter-Setup-1.1.1.exe" required />
@@ -1025,7 +1025,7 @@ app.get('/api/v1/app/releases', async (req, res) => {
      FROM releases
      WHERE ($1::text IS NULL OR platform = $1)
        AND channel = $2
-       AND rollout_state = 'live'
+       AND rollout_state != 'hidden'
      ORDER BY published_at DESC, id DESC
      LIMIT $3`,
     [platform, channel, limit],
