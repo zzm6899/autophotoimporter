@@ -69,7 +69,9 @@ function htmlPage(title, body) {
     @media (max-width: 900px){.row{flex-direction:column}}
   </style>
 </head>
-<body><div class="shell">${body}</div></body></html>`;
+<body><div class="shell">${body}</div>
+<script>document.querySelectorAll('time[data-utc]').forEach(function(el){el.textContent=new Date(el.dataset.utc).toLocaleString();});</script>
+</body></html>`;
 }
 
 function nav() {
@@ -487,7 +489,7 @@ app.get('/admin/licenses', authSession, async (_req, res) => {
         <td><span class="pill">${row.status}</span></td>
         <td><code>${row.activation_code || 'Pending'}</code></td>
         <td>${formatLicenseDate(row.expires_at)}</td>
-        <td>${row.last_seen_at ? new Date(row.last_seen_at).toLocaleString('en-AU') : 'Never'}</td>
+        <td>${row.last_seen_at ? `<time data-utc="${new Date(row.last_seen_at).toISOString()}"></time>` : 'Never'}</td>
         <td>
           <a href="/admin/licenses/${row.id}"><button class="secondary" type="button">View</button></a>
           ${row.status !== 'revoked' ? `<form class="inline" method="post" action="/admin/licenses/${row.id}/revoke"><button class="secondary" type="submit">Revoke</button></form>` : ''}
@@ -562,7 +564,7 @@ app.get('/admin/licenses/:id', authSession, async (req, res) => {
         <p class="muted">Email: ${record.customer_email || 'None'}</p>
         <p class="muted">Issued: ${formatLicenseDate(record.issued_at)}</p>
         <p class="muted">Expires: ${formatLicenseDate(record.expires_at)}</p>
-        <p class="muted">Last seen: ${record.last_seen_at ? new Date(record.last_seen_at).toLocaleString('en-AU') : 'Never'}</p>
+        <p class="muted">Last seen: ${record.last_seen_at ? `<time data-utc="${new Date(record.last_seen_at).toISOString()}"></time>` : 'Never'}</p>
       </div>
       <div class="panel">
         <h2>Stored key</h2>
