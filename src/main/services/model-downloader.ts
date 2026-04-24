@@ -37,7 +37,7 @@ interface ModelSpec {
 // the release and upload the files. The tag never changes between app versions
 // so these URLs remain stable indefinitely.
 const MODEL_RELEASE_BASE =
-  'https://github.com/zzm6899/importer/releases/download/models-v1';
+  'https://github.com/zzm6899/autophotoimporter/releases/download/models-v1';
 
 const MODELS: ModelSpec[] = [
   {

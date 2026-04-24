@@ -2,7 +2,7 @@
 /**
  * publish-models.mjs
  *
- * Creates a stable "models-v1" GitHub release on zzm6899/importer and
+ * Creates a stable "models-v1" GitHub release on zzm6899/autophotoimporter and
  * uploads the ONNX culling models as release assets.
  *
  * Run once (or whenever you want to update the models):
@@ -33,7 +33,7 @@ const CACHE_DIR = join(ROOT, 'models');
 // Config
 // ---------------------------------------------------------------------------
 
-const REPO = 'zzm6899/importer';
+const REPO = 'zzm6899/autophotoimporter';
 const TAG  = 'models-v1';
 const RELEASE_NAME = 'Culling Vision Models';
 const RELEASE_BODY =
