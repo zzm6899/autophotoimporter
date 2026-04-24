@@ -1,0 +1,33 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: photo_importer_updates
+      POSTGRES_USER: photo_importer
+      POSTGRES_PASSWORD: CHANGE_ME_POSTGRES_PASSWORD
+    restart: unless-stopped
+    volumes:
+      - /mnt/tank/apps/photo-importer/postgres:/var/lib/postgresql/data
+      - /mnt/tank/apps/photo-importer/services/update-admin/db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+
+  app:
+    image: ghcr.io/zzm6899/photo-importer-update-admin:latest
+    environment:
+      PORT: "5071"
+      DATABASE_URL: postgres://photo_importer:CHANGE_ME_POSTGRES_PASSWORD@db:5432/photo_importer_updates
+      LICENSE_PUBLIC_KEY_PATH: /config/public.pem
+      ADMIN_EMAIL: CHANGE_ME_ADMIN_EMAIL
+      ADMIN_PASSWORD: CHANGE_ME_ADMIN_PASSWORD
+      ADMIN_SESSION_SECRET: CHANGE_ME_ADMIN_SESSION_SECRET
+      UPDATE_TOKEN_SECRET: CHANGE_ME_UPDATE_TOKEN_SECRET
+      ADMIN_API_TOKEN: CHANGE_ME_ADMIN_API_TOKEN
+      PUBLIC_UPDATES_BASE_URL: https://updates.culler.z2hs.au
+      COOKIE_SECURE: "true"
+    restart: unless-stopped
+    depends_on:
+      - db
+    ports:
+      - "5071:5071"
+    volumes:
+      - /mnt/tank/apps/photo-importer/scripts/license-keys/public.pem:/config/public.pem:ro
+      - /mnt/tank/apps/photo-importer/artifacts:/srv/artifacts

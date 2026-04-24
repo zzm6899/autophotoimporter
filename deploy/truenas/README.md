@@ -7,6 +7,29 @@ This stack hosts:
 
 The Node service listens on `0.0.0.0:5071` inside the app container, and the reverse proxy publishes it over HTTPS.
 
+## TrueNAS Apps UI
+
+If you want this to show up in the TrueNAS Apps UI as a Custom App, use:
+
+- [custom-app.yaml](/C:/Users/24681/Documents/Claude/importer/deploy/truenas/custom-app.yaml)
+
+Recommended image:
+
+- `ghcr.io/zzm6899/photo-importer-update-admin:latest`
+
+This image is published from the private GitHub repo by:
+
+- [publish-update-admin-image.yml](/C:/Users/24681/Documents/Claude/importer/.github/workflows/publish-update-admin-image.yml)
+
+In TrueNAS:
+
+1. Apps
+2. Discover Apps
+3. `...`
+4. Install via YAML
+5. Paste the contents of `custom-app.yaml`
+6. Replace all `CHANGE_ME_...` values before saving
+
 ## Setup
 
 1. Copy `.env.example` to `.env`
@@ -26,6 +49,12 @@ The Node service listens on `0.0.0.0:5071` inside the app container, and the rev
 ```bash
 docker compose up -d --build
 ```
+
+If you are using the Apps UI instead of `docker compose`, create these host paths first:
+
+- `/mnt/tank/apps/photo-importer/postgres`
+- `/mnt/tank/apps/photo-importer/artifacts`
+- `/mnt/tank/apps/photo-importer/scripts/license-keys/public.pem`
 
 ## Publish Flow
 

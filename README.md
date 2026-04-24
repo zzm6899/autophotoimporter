@@ -163,6 +163,14 @@ Public endpoints:
 - `https://admin.culler.z2hs.au`
 - `https://updates.culler.z2hs.au`
 
+If you prefer the TrueNAS Apps UI instead of shell-driven `docker compose`, use:
+
+- [deploy/truenas/custom-app.yaml](/C:/Users/24681/Documents/Claude/importer/deploy/truenas/custom-app.yaml)
+
+The hosted admin image is published from the private GitHub repo to:
+
+- `ghcr.io/zzm6899/photo-importer-update-admin:latest`
+
 Artifacts are served from the repo-root `artifacts/` directory through Caddy at:
 
 - `https://updates.culler.z2hs.au/artifacts/...`

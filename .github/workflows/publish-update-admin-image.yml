@@ -1,0 +1,52 @@
+name: Publish Update Admin Image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'services/update-admin/**'
+      - '.github/workflows/publish-update-admin-image.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: publish-update-admin-image-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/zzm6899/photo-importer-update-admin
+          tags: |
+            type=raw,value=latest
+            type=sha,format=short
+
+      - name: Build and push update-admin image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./services/update-admin
+          file: ./services/update-admin/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
