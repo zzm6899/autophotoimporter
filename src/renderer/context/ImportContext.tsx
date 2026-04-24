@@ -832,4 +832,17 @@ export function ImportProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
   return (
     <StateContext.Provider value={state}>
-      <DispatchContext.Provider v
+      <DispatchContext.Provider value={dispatch}>
+        {children}
+      </DispatchContext.Provider>
+    </StateContext.Provider>
+  );
+}
+
+export function useAppState() {
+  return useContext(StateContext);
+}
+
+export function useAppDispatch() {
+  return useContext(DispatchContext);
+}

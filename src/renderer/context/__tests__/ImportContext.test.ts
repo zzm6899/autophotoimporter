@@ -512,4 +512,21 @@ describe('ImportContext reducer', () => {
     });
 
     it('RESET_FILES', () => {
-      const state = make
+      const state = makeState({ files: [makeFile()], phase: 'ready', focusedIndex: 3 });
+      const next = reducer(state, { type: 'RESET_FILES' });
+      expect(next.files).toEqual([]);
+      expect(next.phase).toBe('idle');
+      expect(next.focusedIndex).toBe(-1);
+    });
+  });
+
+  // --- Edge cases ---
+
+  describe('edge cases', () => {
+    it('unknown action returns state unchanged', () => {
+      const state = makeState();
+      const next = reducer(state, { type: 'UNKNOWN_ACTION' } as any);
+      expect(next).toBe(state);
+    });
+  });
+});

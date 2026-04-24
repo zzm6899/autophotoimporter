@@ -4,12 +4,13 @@ setlocal EnableExtensions EnableDelayedExpansion
 rem ============================================================
 rem  Photo Importer - Windows setup script
 rem  Usage:  double-click, or from a cmd prompt:
-rem    scripts\setup-windows.cmd          (interactive menu)
-rem    scripts\setup-windows.cmd dev      (install + npm start)
-rem    scripts\setup-windows.cmd build    (install + npm run make)
-rem    scripts\setup-windows.cmd install  (install only)
-rem    scripts\setup-windows.cmd release  (bump version, tag, push)
-rem    scripts\setup-windows.cmd commit   (stage all, commit, push)
+rem    scripts\setup-windows.cmd                (interactive menu)
+rem    scripts\setup-windows.cmd dev            (install + npm start)
+rem    scripts\setup-windows.cmd build          (install + npm run build)
+rem    scripts\setup-windows.cmd install        (install only)
+rem    scripts\setup-windows.cmd release        (bump version, tag, push)
+rem    scripts\setup-windows.cmd commit         (stage all, commit, push)
+rem    scripts\setup-windows.cmd publish-models (upload ONNX models to GitHub)
 rem ============================================================
 
 pushd "%~dp0.."
@@ -68,8 +69,9 @@ echo What would you like to do?
 echo   [1] Install dependencies only
 echo   [2] Install + run in dev mode
 echo   [3] Install + build installer
-echo   [4] Release  - bump version, tag, and push (triggers GitHub build)
-echo   [5] Commit   - stage all changes and push to current branch
+echo   [4] Release        - bump version, tag, and push (triggers GitHub build)
+echo   [5] Commit         - stage all changes and push to current branch
+echo   [6] Publish models - upload ONNX face models to GitHub release
 echo   [q] Quit
 echo.
 set "CHOICE="
@@ -79,6 +81,7 @@ if /i "%CHOICE%"=="2" set "ACTION=dev"
 if /i "%CHOICE%"=="3" set "ACTION=build"
 if /i "%CHOICE%"=="4" set "ACTION=release"
 if /i "%CHOICE%"=="5" set "ACTION=commit"
+if /i "%CHOICE%"=="6" set "ACTION=publish-models"
 if /i "%CHOICE%"=="q" goto :done
 if "%ACTION%"=="" (
   echo Invalid choice.
@@ -88,8 +91,9 @@ if "%ACTION%"=="" (
 
 :dispatch
 rem These actions skip npm install.
-if /i "%ACTION%"=="release" goto :do_release
-if /i "%ACTION%"=="commit"  goto :do_commit
+if /i "%ACTION%"=="release"        goto :do_release
+if /i "%ACTION%"=="commit"         goto :do_commit
+if /i "%ACTION%"=="publish-models" goto :do_publish_models
 
 :run
 echo.
@@ -242,4 +246,110 @@ echo.
 echo Releasing v!NEW_VER! ...
 
 rem Check for uncommitted changes
-git diff --quie
+git diff --quiet --exit-code 2>nul
+if errorlevel 1 (
+  echo [warn] You have unstaged changes. They will NOT be included in this commit.
+  echo        Commit or stash them first if you want them in the release.
+  echo.
+  set "CONT="
+  set /p CONT="Continue anyway? [y/N]: "
+  if /i not "!CONT!"=="y" goto :fail
+)
+
+rem Update package.json version using Node (cross-platform, no jq needed)
+node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.version='!NEW_VER!';fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+if errorlevel 1 (
+  echo [ERROR] Failed to update package.json
+  goto :fail
+)
+echo [ok] package.json updated to !NEW_VER!
+
+rem Stage and commit
+git add package.json
+if errorlevel 1 goto :release_failed
+
+git commit -m "chore: release v!NEW_VER!"
+if errorlevel 1 goto :release_failed
+
+rem Create annotated tag
+git tag -a "v!NEW_VER!" -m "Release v!NEW_VER!"
+if errorlevel 1 goto :release_failed
+
+echo.
+echo [ok] Committed and tagged v!NEW_VER!
+echo.
+echo Pushing to remote (this triggers the GitHub Actions build)...
+git push --follow-tags
+if errorlevel 1 (
+  echo.
+  echo [ERROR] Push failed. Your local commit and tag are intact.
+  echo         Fix the remote issue and run:  git push --follow-tags
+  goto :fail
+)
+
+echo.
+echo [ok] Released v!NEW_VER! -- GitHub Actions will now build the installers.
+echo      Watch progress at: https://github.com/juanmnl/importer/actions
+goto :done
+
+rem ============================================================
+rem  Publish models flow
+rem  - Prompts for a GitHub token (or reads GH_TOKEN env var)
+rem  - Creates the models-v1 release if it doesn't exist
+rem  - Downloads model files and uploads them as release assets
+rem ============================================================
+:do_publish_models
+echo.
+echo --- Publish face models to GitHub ---
+echo.
+echo This uploads the ONNX face models to your GitHub release so
+echo end-users can download them automatically on first launch.
+echo.
+echo You need a GitHub Personal Access Token with "repo" scope.
+echo Get one at: https://github.com/settings/tokens
+echo.
+
+set "GH_TOKEN_INPUT=%GH_TOKEN%"
+if "!GH_TOKEN_INPUT!"=="" (
+  set /p GH_TOKEN_INPUT="GitHub token (ghp_...): "
+)
+if "!GH_TOKEN_INPUT!"=="" (
+  echo [ERROR] GitHub token is required.
+  goto :fail
+)
+
+set "GH_TOKEN=!GH_TOKEN_INPUT!"
+call npm run models:publish
+if errorlevel 1 (
+  echo [ERROR] Model publish failed. See output above.
+  goto :fail
+)
+goto :done
+
+:install_failed
+echo [ERROR] npm install failed.
+goto :fail
+
+:build_failed
+echo [ERROR] Build failed. Check the output above.
+goto :fail
+
+:release_failed
+echo [ERROR] Release step failed. Check git output above.
+goto :fail
+
+:done
+echo.
+echo Done.
+popd
+endlocal
+pause
+exit /b 0
+
+:fail
+echo.
+echo Setup did not complete. See messages above.
+popd
+endlocal
+pause
+exit /b 1

@@ -444,4 +444,28 @@ export const IPC = {
   UPDATE_STATUS: 'update:status',
   UPDATE_CHECK_NOW: 'update:check-now',
   UPDATE_DOWNLOAD: 'update:download',
-  UPDATE_I
+  UPDATE_INSTALL: 'update:install',
+  UPDATE_FETCH_HISTORY: 'update:fetch-history',
+
+  // FTP source
+  FTP_PROBE: 'ftp:probe',
+  FTP_MIRROR_START: 'ftp:mirror-start',
+  FTP_MIRROR_PROGRESS: 'ftp:mirror-progress',
+  FTP_MIRROR_CANCEL: 'ftp:mirror-cancel',
+
+  // Workflow — manifest export
+  EXPORT_MANIFEST: 'export:manifest',
+  EXPORT_CONTACT_SHEET: 'export:contact-sheet',
+
+  // Face analysis (onnxruntime-node)
+  FACE_ANALYZE: 'face:analyze',
+  FACE_MODELS_AVAILABLE: 'face:models-available',
+  FACE_MODEL_DOWNLOAD_PROGRESS: 'face:model-download-progress',
+
+  // Auto-import + device events
+  DEVICE_INSERTED: 'device:inserted',
+  AUTO_IMPORT_STARTED: 'auto-import:started',
+  AUTO_IMPORT_COMPLETE: 'auto-import:complete',
+  EJECT_VOLUME: 'volume:eject',
+  DISK_FREE_SPACE: 'disk:free-space',
+} as const;

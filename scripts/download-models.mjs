@@ -28,21 +28,21 @@ const MODELS_DIR = join(__dirname, '..', 'models');
 // ---------------------------------------------------------------------------
 // Model registry
 // ---------------------------------------------------------------------------
-// These are pinned releases from well-maintained ONNX model repositories.
-// If a URL goes stale, replace with any mirror that serves the same model.
+// Models are served from a stable pinned release in this repo.
+// Run `node scripts/publish-models.mjs --token <ghp_xxx>` once to create
+// the release and upload the files before using this script.
+const MODEL_RELEASE_BASE =
+  'https://github.com/juanmnl/importer/releases/download/models-v1';
+
 const MODELS = [
   {
     name: 'ultraface-slim-640.onnx',
-    // Ultra-Light-Fast-Generic-Face-Detector — 1MB, runs on CPU in <15ms
-    url: 'https://github.com/onnx/models/raw/main/validated/vision/body_analysis/ultraface/models/ultraface-slim-640.onnx',
-    // SHA-256 of the expected file — update if you pin a newer version
-    sha256: null, // set to null to skip verification (or fill in to lock it)
+    url: `${MODEL_RELEASE_BASE}/ultraface-slim-640.onnx`,
+    sha256: null,
   },
   {
     name: 'mobilefacenet.onnx',
-    // MobileFaceNet — 128-d face embeddings, ~4MB, ~30ms per face crop on CPU
-    // Source: https://github.com/deepinsight/insightface (MIT)
-    url: 'https://github.com/deepinsight/insightface/raw/master/model_zoo/insightface_onnx/mobilefacenet.onnx',
+    url: `${MODEL_RELEASE_BASE}/mobilefacenet.onnx`,
     sha256: null,
   },
 ];

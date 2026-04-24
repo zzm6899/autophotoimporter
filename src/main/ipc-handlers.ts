@@ -957,4 +957,64 @@ async function runAutoImport(volume: Volume): Promise<void> {
   try {
     scannedFiles = [];
     const pattern = settings.folderPreset === 'custom'
-      ? sett
+      ? settings.customPattern
+      : undefined; // main-process default is '{YYYY}-{MM}-{DD}/{filename}'
+    const total = await scanFiles(
+      volume.path,
+      (batch) => {
+        scannedFiles.push(...batch);
+        sendToRenderer(IPC.SCAN_BATCH, batch);
+      },
+      (filePath, thumbnail) => {
+        const file = scannedFiles.find((f) => f.path === filePath);
+        if (file) file.thumbnail = thumbnail;
+        sendToRenderer(IPC.SCAN_THUMBNAIL, filePath, thumbnail);
+      },
+      pattern,
+    );
+    sendToRenderer(IPC.SCAN_COMPLETE, total);
+
+    const importConfig: ImportConfig = {
+      sourcePath: volume.path,
+      destRoot: settings.autoImportDestRoot,
+      skipDuplicates: settings.skipDuplicates,
+      saveFormat: settings.saveFormat,
+      jpegQuality: settings.jpegQuality,
+      separateProtected: settings.separateProtected,
+      protectedFolderName: settings.protectedFolderName,
+      backupDestRoot: settings.backupDestRoot || undefined,
+      autoEject: settings.autoEject,
+      verifyChecksums: settings.verifyChecksums,
+    };
+
+    const filesToImport = filterFilesForImport(scannedFiles, importConfig);
+    sendToRenderer(IPC.IMPORT_PROGRESS, {
+      currentFile: filesToImport.length > 0 ? 'Preparing import...' : 'No files to import',
+      currentIndex: 0,
+      totalFiles: filesToImport.length,
+      bytesTransferred: 0,
+      totalBytes: filesToImport.reduce((sum, f) => sum + f.size, 0),
+      skipped: 0,
+      errors: 0,
+    });
+    const result = await importFiles(filesToImport, importConfig, (progress) => {
+      sendToRenderer(IPC.IMPORT_PROGRESS, progress);
+    });
+
+    if (settings.autoEject && result.imported > 0) {
+      void ejectVolume(volume.path);
+    }
+    sendToRenderer(IPC.AUTO_IMPORT_COMPLETE, result);
+  } catch (err) {
+    console.error('[auto-import] failed:', err);
+    const message = err instanceof Error ? err.message : 'Auto-import failed';
+    sendToRenderer(IPC.AUTO_IMPORT_COMPLETE, {
+      imported: 0,
+      skipped: 0,
+      verified: 0,
+      errors: [{ file: 'auto-import', error: message }],
+      totalBytes: 0,
+      durationMs: 0,
+    } satisfies ImportResult);
+  }
+}

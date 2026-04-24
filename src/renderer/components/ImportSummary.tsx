@@ -106,4 +106,19 @@ export function ImportSummary() {
           {importResult.errors.length > 0 && (
             <button
               onClick={handleRetry}
-              className="flex-1 min-w-[9
+              className="flex-1 min-w-[9rem] py-2 rounded text-sm bg-surface-raised hover:bg-red-500/10 text-red-300 transition-colors"
+            >
+              Retry Import
+            </button>
+          )}
+          <button
+            onClick={handleDismiss}
+            className="flex-1 min-w-[9rem] py-2 rounded text-sm bg-surface-raised hover:bg-accent/10 text-text transition-colors"
+          >
+            Done
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

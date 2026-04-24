@@ -153,4 +153,37 @@ export function ImportProgress() {
             </>
           ) : (
             <div className="flex justify-between text-sm">
-              <span className="text-text-secondary">Status</spa
+              <span className="text-text-secondary">Status</span>
+              <span className="text-text font-mono">Scanning card…</span>
+            </div>
+          )}
+        </div>
+
+        {/* Current file */}
+        {importProgress?.currentFile && (
+          <div className="text-[11px] text-text-muted truncate mb-5 font-mono" title={importProgress.currentFile}>
+            {importProgress.currentFile}
+          </div>
+        )}
+
+        {/* Actions */}
+        <div className="flex gap-2">
+          <button
+            onClick={() => setCollapsed(true)}
+            className="flex-1 py-2 rounded text-sm bg-surface-raised hover:bg-border text-text-secondary transition-colors"
+            title="Minimize to a small bar — import keeps running"
+          >
+            Minimize
+          </button>
+          <button
+            onClick={cancelImport}
+            className="flex-1 py-2 rounded text-sm bg-surface-raised hover:bg-red-500/10 text-red-400 transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+      </div>
+    </div>
+  );
+}

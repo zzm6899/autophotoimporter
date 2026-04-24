@@ -46,4 +46,24 @@ app.on('ready', () => {
   // Download ONNX face models in the background if not already present.
   // Non-blocking — the app is fully usable while this runs. Progress is
   // broadcast to the renderer via FACE_MODEL_DOWNLOAD_PROGRESS.
-  // Small delay so th
+  // Small delay so the window finishes painting before network I/O starts.
+  setTimeout(() => {
+    void ensureModelsDownloaded(mainWindow);
+  }, 2000);
+});
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
+
+app.on('activate', () => {
+  if (BrowserWindow.getAllWindows().length === 0) {
+    createWindow();
+  }
+});
+
+export function getMainWindow(): BrowserWindow | null {
+  return mainWindow;
+}

@@ -32,15 +32,22 @@ interface ModelSpec {
   approxBytes: number;
 }
 
+// Models are hosted as assets on a stable pinned release in this repo.
+// Run `node scripts/publish-models.mjs --token <ghp_xxx>` once to create
+// the release and upload the files. The tag never changes between app versions
+// so these URLs remain stable indefinitely.
+const MODEL_RELEASE_BASE =
+  'https://github.com/juanmnl/importer/releases/download/models-v1';
+
 const MODELS: ModelSpec[] = [
   {
     name: 'ultraface-slim-640.onnx',
-    url: 'https://github.com/onnx/models/raw/main/validated/vision/body_analysis/ultraface/models/ultraface-slim-640.onnx',
+    url: `${MODEL_RELEASE_BASE}/ultraface-slim-640.onnx`,
     approxBytes: 1_100_000,
   },
   {
     name: 'mobilefacenet.onnx',
-    url: 'https://github.com/deepinsight/insightface/raw/master/model_zoo/insightface_onnx/mobilefacenet.onnx',
+    url: `${MODEL_RELEASE_BASE}/mobilefacenet.onnx`,
     approxBytes: 4_000_000,
   },
 ];

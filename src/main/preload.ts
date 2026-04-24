@@ -165,4 +165,36 @@ const api = {
 
   // Face analysis (onnxruntime-node ONNX face models)
   /** Returns true when the ONNX face models are downloaded and usable. */
-  faceModelsAvailable: (): 
+  faceModelsAvailable: (): Promise<boolean> =>
+    ipcRenderer.invoke(IPC.FACE_MODELS_AVAILABLE),
+  /**
+   * Analyse faces in one or more images.
+   * Returns one result object per input path:
+   *   { path, boxes, embeddings (hex strings), faceCount, error? }
+   */
+  analyzeFaces: (paths: string | string[]): Promise<Array<{
+    path: string;
+    boxes: FaceBox[];
+    embeddings: string[];
+    faceCount: number;
+    error?: string;
+  }>> =>
+    ipcRenderer.invoke(IPC.FACE_ANALYZE, paths),
+
+  /** Subscribe to background face-model download progress events. */
+  onFaceModelDownloadProgress: (cb: (progress: ModelDownloadProgress) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, progress: ModelDownloadProgress) => cb(progress);
+    ipcRenderer.on(IPC.FACE_MODEL_DOWNLOAD_PROGRESS, handler);
+    return () => ipcRenderer.removeListener(IPC.FACE_MODEL_DOWNLOAD_PROGRESS, handler);
+  },
+
+  // Platform info (renderer uses this to show Ctrl vs ⌘ in shortcuts)
+  platform: process.platform,
+};
+
+// Re-export so non-preload modules can reference these types on results.
+export type { ImportError, FaceBox, ModelDownloadProgress };
+
+export type ElectronAPI = typeof api;
+
+contextBridge.exposeInMainWorld('electronAPI', api);

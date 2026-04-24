@@ -15,6 +15,7 @@
     "license:console": "node scripts/license-console.mjs",
     "update:publish": "node scripts/publish-update-release.mjs",
     "models": "node scripts/download-models.mjs",
+    "models:publish": "node scripts/publish-models.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
