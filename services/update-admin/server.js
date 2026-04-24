@@ -57,6 +57,7 @@ const githubApiBase = process.env.GITHUB_API_BASE_URL || 'https://api.github.com
 const githubRepoOwner = process.env.GITHUB_RELEASE_OWNER || '';
 const githubRepoName = process.env.GITHUB_RELEASE_REPO || '';
 const githubToken = process.env.GITHUB_RELEASE_TOKEN || '';
+const HOME_URL = process.env.HOME_URL || 'https://keptra.z2hs.au/';
 const ACTIVATION_CODE_PREFIX = 'PIC';
 const ACTIVATION_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const defaultMaxDevices = Math.max(1, Number.parseInt(process.env.DEFAULT_MAX_DEVICES || '1', 10) || 1);
@@ -356,6 +357,10 @@ function htmlPage(title, body) {
   </style>
 </head>
 <body><div class="shell">${body}</div></body></html>`;
+}
+
+function wantsHtml(req) {
+  return (req.header('accept') || '').includes('text/html');
 }
 
 function nav(page = '') {
@@ -720,12 +725,12 @@ function shouldUseSecureCookies(req) {
 
 function authSession(req, res, next) {
   const token = req.cookies.admin_session;
-  if (!token) return res.redirect('/admin/login');
+  if (!token) return res.redirect(HOME_URL);
   try {
     req.admin = jwt.verify(token, sessionSecret);
     return next();
   } catch {
-    return res.redirect('/admin/login');
+    return res.redirect(HOME_URL);
   }
 }
 
@@ -2904,6 +2909,16 @@ app.get('/api/v1/app/update', async (req, res) => {
   // Resolve license if provided — but allow update checks even without one.
   // Unlicensed installs get update info but no download token.
   let resolved = null;
+  if (!licenseKey && wantsHtml(req)) {
+    await logUpdateEvent('update-denied', {
+      appVersion: version,
+      platform,
+      channel,
+      allowed: false,
+      detail: 'Missing license key header',
+    });
+    return res.redirect(HOME_URL);
+  }
   if (licenseKey) {
     const attempt = await resolveLicenseRecord(licenseKey, { deviceId, deviceName });
     if (attempt.ok) {
@@ -2917,6 +2932,7 @@ app.get('/api/v1/app/update', async (req, res) => {
         allowed: true,
         detail: `Unlicensed check: ${attempt.message}`,
       });
+      if (wantsHtml(req)) return res.redirect(HOME_URL);
     }
   }
 
@@ -3018,11 +3034,13 @@ app.get('/api/v1/app/history', async (req, res) => {
   const limit = Math.min(Number(req.query.limit || 8), 20);
 
   if (!licenseKey) {
+    if (wantsHtml(req)) return res.redirect(HOME_URL);
     return res.status(403).json({ error: 'Missing license key.' });
   }
 
   const resolved = await resolveLicenseRecord(licenseKey);
   if (!resolved.ok) {
+    if (wantsHtml(req)) return res.redirect(HOME_URL);
     return res.status(resolved.status).json({ error: resolved.message });
   }
 
@@ -3051,6 +3069,7 @@ app.get('/api/v1/app/download/:releaseId', async (req, res) => {
     const payload = jwt.verify(String(token || ''), updateSecret);
     const releaseId = Number(req.params.releaseId);
     if (!payload || payload.releaseId !== releaseId) {
+      if (wantsHtml(req)) return res.redirect(HOME_URL);
       return res.status(403).send('Invalid download token.');
     }
 
@@ -3071,6 +3090,7 @@ app.get('/api/v1/app/download/:releaseId', async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="${artifactFilename}"`);
     return res.redirect(artifactUrl);
   } catch {
+    if (wantsHtml(req)) return res.redirect(HOME_URL);
     return res.status(403).send('Download token expired or invalid.');
   }
 });
