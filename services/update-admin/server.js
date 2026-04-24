@@ -19,6 +19,7 @@ const licensePrivateKeyPem = privateKeyPath && fs.existsSync(privateKeyPath)
 const sessionSecret = process.env.ADMIN_SESSION_SECRET || 'change-me-admin-session-secret';
 const updateSecret = process.env.UPDATE_TOKEN_SECRET || 'change-me-update-token-secret';
 const adminApiToken = process.env.ADMIN_API_TOKEN || '';
+const artifactsRoot = process.env.ARTIFACTS_ROOT || '/srv/artifacts';
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL || 'postgres://photo_importer:photo_importer@db:5432/photo_importer_updates',
@@ -28,6 +29,7 @@ app.set('trust proxy', true);
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json({ limit: '2mb' }));
 app.use(cookieParser());
+app.use('/artifacts', express.static(artifactsRoot));
 
 function htmlPage(title, body) {
   return `<!doctype html>

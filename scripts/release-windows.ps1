@@ -3,7 +3,7 @@ param(
   [string]$Version,
 
   [string]$ServerHost = "172.20.20.251",
-  [string]$ServerUser = "root",
+  [string]$ServerUser = "truenas_admin",
   [string]$ServerRepoPath = "/mnt/tank/apps/photo-importer",
   [string]$AdminEndpoint = "https://admin.culler.z2hs.au",
   [string]$ReleaseBaseUrl = "https://updates.culler.z2hs.au/artifacts/windows",
@@ -33,8 +33,12 @@ $root = Split-Path -Parent $PSScriptRoot
 $makeRoot = Join-Path $root "out\make\squirrel.windows\x64"
 $setupSrc = Join-Path $makeRoot "PhotoImporter-Setup.exe"
 $releasesSrc = Join-Path $makeRoot "RELEASES"
-$nupkgSrc = Join-Path $makeRoot "photo-importer-$Version-full.nupkg"
-$zipSrc = Join-Path $root "out\make\zip\win32\x64\Photo Importer-win32-x64-$Version.zip"
+$nupkgCandidates = @(
+  Join-Path $makeRoot "photo-importer-$Version-full.nupkg"
+)
+$zipCandidates = @(
+  Join-Path $root "out\make\zip\win32\x64\Photo Importer-win32-x64-$Version.zip"
+)
 
 if (-not $SkipBuild) {
   Write-Host "Building Windows release..." -ForegroundColor Cyan
@@ -46,6 +50,39 @@ if (-not $SkipBuild) {
     }
   } finally {
     Pop-Location
+  }
+}
+
+if (-not (Test-Path $setupSrc)) {
+  throw "Required build artifact missing: $setupSrc"
+}
+if (-not (Test-Path $releasesSrc)) {
+  throw "Required build artifact missing: $releasesSrc"
+}
+
+$nupkgSrc = $nupkgCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $nupkgSrc) {
+  $nupkgMatch = Get-ChildItem $makeRoot -Filter "photo-importer-*-full.nupkg" -File |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1
+  if ($nupkgMatch) {
+    $nupkgSrc = $nupkgMatch.FullName
+  }
+}
+if (-not $nupkgSrc) {
+  throw "Required build artifact missing: no matching photo-importer-*-full.nupkg found in $makeRoot"
+}
+
+$zipSrc = $zipCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $zipSrc) {
+  $zipDir = Join-Path $root "out\make\zip\win32\x64"
+  if (Test-Path $zipDir) {
+    $zipMatch = Get-ChildItem $zipDir -Filter "Photo Importer-win32-x64-*.zip" -File |
+      Sort-Object LastWriteTime -Descending |
+      Select-Object -First 1
+    if ($zipMatch) {
+      $zipSrc = $zipMatch.FullName
+    }
   }
 }
 
