@@ -21,7 +21,9 @@ export function Layout({ left, center, right }: LayoutProps) {
         setTimeout(() => setModelDl(null), 3000);
       }
     });
-    return unsub;
+    return () => {
+      unsub();
+    };
   }, []);
 
   const {

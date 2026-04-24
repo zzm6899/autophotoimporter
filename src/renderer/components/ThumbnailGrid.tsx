@@ -3,6 +3,7 @@ import { useMemo, useEffect, useCallback, useRef, useState } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import { useFileScanner } from '../hooks/useFileScanner';
 import { useImport } from '../hooks/useImport';
+import type { MediaFile } from '../../shared/types';
 import { ThumbnailCard } from './ThumbnailCard';
 import { SingleView } from './SingleView';
 import { CompareView } from './CompareView';
@@ -853,28 +854,58 @@ export function ThumbnailGrid() {
       .slice(0, batchSize);
     if (candidates.length === 0) return;
     sharpnessInFlightRef.current = true;
-    const run = () => void Promise.all(candidates.map(async (f) => {
-      const thumbnail = f.thumbnail as string;
-      const [sharpnessScore, hash, subject] = await Promise.all([
-        typeof f.sharpnessScore === 'number' ? Promise.resolve(f.sharpnessScore) : scoreSharpness(thumbnail),
-        f.visualHash ? Promise.resolve(f.visualHash) : visualHash(thumbnail),
-        // Re-run analyzeSubject if faceBoxes is undefined (never analyzed, or
-        // analyzed before FaceDetector was enabled and data was cleared).
-        // Even if subjectSharpnessScore is already set we still re-analyze so
-        // that face boxes get populated now that FaceDetector is available.
-        (typeof f.subjectSharpnessScore === 'number' && f.faceBoxes !== undefined)
-          ? Promise.resolve({
-              subjectSharpnessScore: f.subjectSharpnessScore,
-              faceCount: f.faceCount ?? 0,
-              faceBoxes: f.faceBoxes,
-              faceDetection: f.faceDetection,
-              faceSignature: f.faceSignature,
-              subjectReasons: f.subjectReasons ?? [],
-            })
-          : analyzeSubject(thumbnail),
-      ]);
-      return [f.path, { sharpnessScore, visualHash: hash, ...subject }] as const;
-    }))
+    const run = () => void (async () => {
+      const onnxResults = await window.electronAPI.analyzeFaces(candidates.map((f) => f.path)).catch(() => []);
+      const onnxByPath = new Map(onnxResults.map((result) => [result.path, result]));
+
+      return Promise.all(candidates.map(async (f) => {
+        const thumbnail = f.thumbnail as string;
+        const onnx = onnxByPath.get(f.path);
+        const [sharpnessScore, hash, subject] = await Promise.all([
+          typeof f.sharpnessScore === 'number' ? Promise.resolve(f.sharpnessScore) : scoreSharpness(thumbnail),
+          f.visualHash ? Promise.resolve(f.visualHash) : visualHash(thumbnail),
+          // Re-run analyzeSubject if faceBoxes is undefined (never analyzed, or
+          // analyzed before FaceDetector was enabled and data was cleared).
+          // Even if subjectSharpnessScore is already set we still re-analyze so
+          // that face boxes get populated now that FaceDetector is available.
+          (typeof f.subjectSharpnessScore === 'number' && f.faceBoxes !== undefined)
+            ? Promise.resolve({
+                subjectSharpnessScore: f.subjectSharpnessScore,
+                faceCount: f.faceCount ?? 0,
+                faceBoxes: f.faceBoxes,
+                faceDetection: f.faceDetection,
+                faceSignature: f.faceSignature,
+                subjectReasons: f.subjectReasons ?? [],
+              })
+            : analyzeSubject(thumbnail),
+        ]);
+
+        const onnxFaceBoxes = (onnx?.boxes ?? [])
+          .filter((box) => box.width > 0 && box.height > 0)
+          .map((box) => ({ x: box.x, y: box.y, width: box.width, height: box.height }));
+        const onnxPersonBoxes = (onnx?.personBoxes ?? [])
+          .filter((box) => box.width > 0 && box.height > 0)
+          .map((box) => ({ x: box.x, y: box.y, width: box.width, height: box.height, score: box.score }));
+        const mergedReasons = [
+          ...(subject.subjectReasons ?? []),
+          ...(onnxFaceBoxes.length > 0 ? ['onnx faces'] : []),
+          ...(onnxPersonBoxes.length > 0 ? ['person detected'] : []),
+        ];
+
+        return [f.path, {
+          sharpnessScore,
+          visualHash: hash,
+          ...subject,
+          faceCount: onnxFaceBoxes.length > 0 ? onnxFaceBoxes.length : subject.faceCount,
+          faceBoxes: onnxFaceBoxes.length > 0 ? onnxFaceBoxes : subject.faceBoxes,
+          faceDetection: onnxFaceBoxes.length > 0 ? 'native' : subject.faceDetection,
+          faceEmbedding: onnx?.embeddings?.[0] || f.faceEmbedding,
+          personCount: onnxPersonBoxes.length,
+          personBoxes: onnxPersonBoxes,
+          subjectReasons: [...new Set(mergedReasons)],
+        }] as [string, Partial<MediaFile>];
+      }));
+    })()
       .then((entries) => {
         dispatch({ type: 'SET_REVIEW_SCORES', scores: Object.fromEntries(entries) });
         reviewBatchCounterRef.current += 1;

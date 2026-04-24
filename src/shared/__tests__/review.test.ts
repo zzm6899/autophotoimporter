@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bestInGroup, groupByVisualHash, hammingDistanceHex, scoreReview } from '../review';
+import { bestInGroup, groupByVisualHash, hammingDistanceHex, scoreReview, subjectPresenceQuality } from '../review';
 import type { MediaFile } from '../types';
 
 function file(path: string, hash?: string, overrides: Partial<MediaFile> = {}): MediaFile {
@@ -34,6 +34,22 @@ describe('review utilities', () => {
     const weak = scoreReview({ sharpnessScore: 10 });
     expect(strong.score).toBeGreaterThan(weak.score);
     expect(weak.blurRisk).toBe('high');
+  });
+
+  it('rewards clear person detections even when no face is found', () => {
+    const review = scoreReview({
+      sharpnessScore: 95,
+      subjectSharpnessScore: 110,
+      personCount: 1,
+      personBoxes: [{ x: 0.2, y: 0.05, width: 0.45, height: 0.88, score: 0.94 }],
+    });
+    expect(review.score).toBeGreaterThan(40);
+    expect(review.reasons).toContain('1 person');
+    expect(subjectPresenceQuality({
+      personCount: 1,
+      personBoxes: [{ x: 0.2, y: 0.05, width: 0.45, height: 0.88, score: 0.94 }],
+      subjectSharpnessScore: 110,
+    })).toBeGreaterThan(20);
   });
 
   it('chooses protected and rated files before face/subject tie-breakers', () => {

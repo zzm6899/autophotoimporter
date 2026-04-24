@@ -6,6 +6,8 @@ export interface ReviewScoreInput {
   faceCount?: number;
   faceBoxes?: MediaFile['faceBoxes'];
   faceDetection?: MediaFile['faceDetection'];
+  personCount?: number;
+  personBoxes?: MediaFile['personBoxes'];
   rating?: number;
   isProtected?: boolean;
   exposureValue?: number;
@@ -35,11 +37,26 @@ export function faceQuality(file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'f
   );
 }
 
+export function subjectPresenceQuality(
+  file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'faceDetection' | 'personCount' | 'personBoxes' | 'subjectSharpnessScore'>,
+): number {
+  const face = faceQuality(file);
+  const personBoxes = file.personBoxes ?? [];
+  const personCount = file.personCount ?? personBoxes.length;
+  const personArea = personBoxes.reduce((sum, box) => sum + box.width * box.height, 0);
+  const personScore = Math.round(
+    Math.min(personCount, 3) * 12 +
+    Math.min(26, personArea * 90) +
+    Math.min(20, (file.subjectSharpnessScore ?? 0) / 5),
+  );
+  return Math.max(face, personScore);
+}
+
 export function keeperScore(file: MediaFile): number {
   return (
     (file.isProtected ? 120 : 0) +
     (file.rating ?? 0) * 30 +
-    faceQuality(file) +
+    subjectPresenceQuality(file) +
     Math.min(70, (file.subjectSharpnessScore ?? 0) / 2.4) +
     Math.min(45, (file.sharpnessScore ?? 0) / 6) +
     Math.min(55, file.reviewScore ?? 0) -
@@ -87,6 +104,9 @@ export function scoreReview(input: ReviewScoreInput): ReviewScore {
     const eyeScore = (input.faceBoxes ?? []).reduce((best, box) => Math.max(best, box.eyeScore ?? 0), 0);
     if (eyeScore >= 2) reasons.push('eyes sharp');
     else if (eyeScore === 1) reasons.push('face present');
+  } else if ((input.personCount ?? 0) > 0) {
+    score += 12 + Math.min(14, subjectPresenceQuality(input) / 6);
+    reasons.push(`${input.personCount} person${input.personCount === 1 ? '' : 's'}`);
   }
   if (subjectSharpness >= 120) {
     score += 22;
@@ -174,8 +194,10 @@ export function bestInGroup(files: MediaFile[]): MediaFile | null {
   return files.slice().sort((a, b) =>
     Number(!!b.isProtected) - Number(!!a.isProtected) ||
     (b.rating ?? 0) - (a.rating ?? 0) ||
+    subjectPresenceQuality(b) - subjectPresenceQuality(a) ||
     faceQuality(b) - faceQuality(a) ||
     (b.faceCount ?? 0) - (a.faceCount ?? 0) ||
+    (b.personCount ?? 0) - (a.personCount ?? 0) ||
     (b.subjectSharpnessScore ?? 0) - (a.subjectSharpnessScore ?? 0) ||
     Number(a.blurRisk === 'high') - Number(b.blurRisk === 'high') ||
     keeperScore(b) - keeperScore(a) ||

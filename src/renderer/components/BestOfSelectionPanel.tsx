@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import type { MediaFile } from '../../shared/types';
 import { formatFileSize, formatExposure } from '../utils/formatters';
 import { getCachedPreview } from '../utils/previewCache';
-import { faceQuality, keeperScore } from '../../shared/review';
+import { faceQuality, keeperScore, subjectPresenceQuality } from '../../shared/review';
 
 interface BestOfSelectionPanelProps {
   files: MediaFile[];
@@ -23,6 +23,7 @@ function explain(file: MediaFile): string {
     file.isProtected ? 'protected' : '',
     file.rating ? `${file.rating} star` : '',
     file.faceCount ? `${file.faceCount} face${file.faceCount === 1 ? '' : 's'}` : '',
+    file.personCount ? `${file.personCount} person${file.personCount === 1 ? '' : 's'}` : '',
     file.faceGroupId ? `face group ${file.faceGroupSize ?? 0}` : '',
     typeof file.subjectSharpnessScore === 'number' ? `subject ${file.subjectSharpnessScore}` : '',
     typeof file.reviewScore === 'number' ? `score ${file.reviewScore}` : '',
@@ -42,8 +43,10 @@ export function rankBestOfSelection(files: MediaFile[]): MediaFile[] {
   return files.slice().sort((a, b) =>
     Number(!!b.isProtected) - Number(!!a.isProtected) ||
     (b.rating ?? 0) - (a.rating ?? 0) ||
+    subjectPresenceQuality(b) - subjectPresenceQuality(a) ||
     faceQuality(b) - faceQuality(a) ||
     (b.faceCount ?? 0) - (a.faceCount ?? 0) ||
+    (b.personCount ?? 0) - (a.personCount ?? 0) ||
     (b.subjectSharpnessScore ?? 0) - (a.subjectSharpnessScore ?? 0) ||
     Number(a.blurRisk === 'high') - Number(b.blurRisk === 'high') ||
     keeperScore(b) - keeperScore(a) ||

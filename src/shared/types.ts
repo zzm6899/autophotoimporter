@@ -72,6 +72,10 @@ export interface MediaFile {
   faceBoxes?: Array<{ x: number; y: number; width: number; height: number; eyeScore?: number }>;
   /** Whether faces came from Chromium's detector or the conservative thumbnail fallback. */
   faceDetection?: 'native' | 'estimated';
+  /** Number of person/body detections from the ONNX review pipeline. */
+  personCount?: number;
+  /** Normalized person/body boxes from the ONNX review pipeline. */
+  personBoxes?: Array<{ x: number; y: number; width: number; height: number; score?: number }>;
   /** Compact perceptual hash of the primary detected face crop. Used only for local same-face clustering. */
   faceSignature?: string;
   /**

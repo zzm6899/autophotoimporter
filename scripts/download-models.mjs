@@ -11,8 +11,9 @@
  * They are listed in .gitignore (large binary files, not source).
  *
  * Model sources (all MIT / Apache-2.0 licensed):
- *  - ultraface-slim-640.onnx  ~1.1 MB  — face detection (Ultra-Light-Fast)
- *  - mobilefacenet.onnx       ~4.0 MB  — 128-d face embeddings (MobileFaceNet)
+ *  - version-RFB-640.onnx     ~1.6 MB  - stronger face detection (UltraFace RFB)
+ *  - mobilefacenet.onnx       ~4.0 MB  - 128-d face embeddings (MobileFaceNet)
+ *  - ssd_mobilenet_v1_12.onnx ~28 MB   - person/body detection for culling
  */
 
 import { createWriteStream, existsSync } from 'node:fs';
@@ -28,21 +29,23 @@ const MODELS_DIR = join(__dirname, '..', 'models');
 // ---------------------------------------------------------------------------
 // Model registry
 // ---------------------------------------------------------------------------
-// Models are served from a stable pinned release in this repo.
-// Run `node scripts/publish-models.mjs --token <ghp_xxx>` once to create
-// the release and upload the files before using this script.
-const MODEL_RELEASE_BASE =
-  'https://github.com/juanmnl/importer/releases/download/models-v1';
-
+// Bootstrap: fetch from upstream sources the first time, before the
+// models-v1 release exists on this repo. Once publish-models.mjs has
+// been run successfully, update these URLs to point at the release assets.
 const MODELS = [
   {
-    name: 'ultraface-slim-640.onnx',
-    url: `${MODEL_RELEASE_BASE}/ultraface-slim-640.onnx`,
+    name: 'version-RFB-640.onnx',
+    url: 'https://huggingface.co/onnxmodelzoo/version-RFB-640/resolve/main/version-RFB-640.onnx?download=true',
     sha256: null,
   },
   {
     name: 'mobilefacenet.onnx',
-    url: `${MODEL_RELEASE_BASE}/mobilefacenet.onnx`,
+    url: 'https://github.com/deepinsight/insightface/raw/master/model_zoo/insightface_onnx/mobilefacenet.onnx',
+    sha256: null,
+  },
+  {
+    name: 'ssd_mobilenet_v1_12.onnx',
+    url: 'https://huggingface.co/onnxmodelzoo/ssd_mobilenet_v1_12/resolve/main/ssd_mobilenet_v1_12.onnx?download=true',
     sha256: null,
   },
 ];

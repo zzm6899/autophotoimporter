@@ -3,7 +3,7 @@
  * publish-models.mjs
  *
  * Creates a stable "models-v1" GitHub release on juanmnl/importer and
- * uploads the ONNX face models as release assets.
+ * uploads the ONNX culling models as release assets.
  *
  * Run once (or whenever you want to update the models):
  *
@@ -35,23 +35,29 @@ const CACHE_DIR = join(ROOT, 'models');
 
 const REPO = 'juanmnl/importer';
 const TAG  = 'models-v1';
-const RELEASE_NAME = 'Face Recognition Models';
+const RELEASE_NAME = 'Culling Vision Models';
 const RELEASE_BODY =
-  'Stable ONNX face model assets for Photo Importer.\n\n' +
-  '- `ultraface-slim-640.onnx` — Ultra-Light face detector (~1 MB)\n' +
-  '- `mobilefacenet.onnx` — MobileFaceNet 128-d embeddings (~4 MB)\n\n' +
-  'Do not delete this release — the app downloads models from here on first launch.';
+  'Stable ONNX review-model assets for Photo Importer.\n\n' +
+  '- `version-RFB-640.onnx` - UltraFace RFB face detector (~1.6 MB)\n' +
+  '- `mobilefacenet.onnx` - MobileFaceNet 128-d embeddings (~4 MB)\n\n' +
+  '- `ssd_mobilenet_v1_12.onnx` - SSD MobileNet person detector (~28 MB)\n\n' +
+  'Do not delete this release - the app downloads models from here on first launch.';
 
 const MODELS = [
   {
-    name: 'ultraface-slim-640.onnx',
-    url: 'https://github.com/onnx/models/raw/main/validated/vision/body_analysis/ultraface/models/ultraface-slim-640.onnx',
-    approxBytes: 1_100_000,
+    name: 'version-RFB-640.onnx',
+    url: 'https://huggingface.co/onnxmodelzoo/version-RFB-640/resolve/main/version-RFB-640.onnx?download=true',
+    approxBytes: 1_600_000,
   },
   {
     name: 'mobilefacenet.onnx',
     url: 'https://github.com/deepinsight/insightface/raw/master/model_zoo/insightface_onnx/mobilefacenet.onnx',
     approxBytes: 4_000_000,
+  },
+  {
+    name: 'ssd_mobilenet_v1_12.onnx',
+    url: 'https://huggingface.co/onnxmodelzoo/ssd_mobilenet_v1_12/resolve/main/ssd_mobilenet_v1_12.onnx?download=true',
+    approxBytes: 29_000_000,
   },
 ];
 

@@ -175,8 +175,10 @@ const api = {
   analyzeFaces: (paths: string | string[]): Promise<Array<{
     path: string;
     boxes: FaceBox[];
+    personBoxes: FaceBox[];
     embeddings: string[];
     faceCount: number;
+    personCount: number;
     error?: string;
   }>> =>
     ipcRenderer.invoke(IPC.FACE_ANALYZE, paths),

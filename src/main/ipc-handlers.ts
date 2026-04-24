@@ -856,8 +856,10 @@ export function registerIpcHandlers(): void {
    * Output: Array<{
    *   path: string,
    *   boxes: FaceBox[],
+   *   personBoxes: FaceBox[],
    *   embeddings: string[],   // hex-serialised Float32Array per face
    *   faceCount: number,
+   *   personCount: number,
    * }>
    *
    * Errors per file are returned as { path, error } rather than throwing, so
@@ -868,19 +870,23 @@ export function registerIpcHandlers(): void {
     const results = await Promise.all(
       paths.map(async (filePath) => {
         try {
-          const { boxes, embeddings } = await analyzeFaces(filePath);
+          const { boxes, personBoxes, embeddings } = await analyzeFaces(filePath);
           return {
             path: filePath,
             boxes,
+            personBoxes,
             embeddings: embeddings.map(serializeEmbedding),
             faceCount: boxes.length,
+            personCount: personBoxes.length,
           };
         } catch (err: unknown) {
           return {
             path: filePath,
             boxes: [],
+            personBoxes: [],
             embeddings: [],
             faceCount: 0,
+            personCount: 0,
             error: (err as Error).message,
           };
         }

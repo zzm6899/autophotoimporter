@@ -25,14 +25,27 @@
 
 import path from 'node:path';
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
 import { app } from 'electron';
 
 // onnxruntime-node is a native addon — it must be outside the asar.
 // The forge config sets unpackDir for it. Require at runtime to avoid
 // Vite trying to bundle it (it's CJS with a native .node binary).
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const ort = require('onnxruntime-node') as typeof import('onnxruntime-node');
+type OrtModule = {
+  InferenceSession: {
+    create: (modelPath: string, options: Record<string, unknown>) => Promise<any>;
+  };
+  Tensor: new (type: string, data: Float32Array | Uint8Array, dims: number[]) => any;
+};
+
+let ort: OrtModule | null = null;
+
+function getOrt(): OrtModule {
+  if (!ort) {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    ort = require('onnxruntime-node') as OrtModule;
+  }
+  return ort;
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -51,6 +64,8 @@ export interface FaceBox {
 export interface FaceAnalysisResult {
   /** Detected face bounding boxes (may be empty if no faces found) */
   boxes: FaceBox[];
+  /** Detected person/body bounding boxes (may be empty if no people found) */
+  personBoxes: FaceBox[];
   /**
    * 128-d L2-normalised embedding for each detected face, in the same order
    * as boxes. Use cosineSimilarity() to compare embeddings across images.
@@ -94,35 +109,40 @@ function modelPath(fileName: string): string {
 // Session lifecycle
 // ---------------------------------------------------------------------------
 
-let detectorSession: import('onnxruntime-node').InferenceSession | null = null;
-let embedderSession: import('onnxruntime-node').InferenceSession | null = null;
+let detectorSession: any | null = null;
+let embedderSession: any | null = null;
+let personSession: any | null = null;
 let sessionLoadPromise: Promise<void> | null = null;
 
 async function loadSessions(): Promise<void> {
   if (sessionLoadPromise) return sessionLoadPromise;
   sessionLoadPromise = (async () => {
-    const opts: import('onnxruntime-node').InferenceSession.SessionOptions = {
+    const runtime = getOrt();
+    const opts = {
       executionProviders: ['cpu'],
       graphOptimizationLevel: 'all',
     };
     const [detPath, embPath] = [
-      modelPath('ultraface-slim-640.onnx'),
+      modelPath('version-RFB-640.onnx'),
       modelPath('mobilefacenet.onnx'),
     ];
-    [detectorSession, embedderSession] = await Promise.all([
-      ort.InferenceSession.create(detPath, opts),
-      ort.InferenceSession.create(embPath, opts),
+    const personPath = modelPath('ssd_mobilenet_v1_12.onnx');
+    [detectorSession, embedderSession, personSession] = await Promise.all([
+      runtime.InferenceSession.create(detPath, opts),
+      runtime.InferenceSession.create(embPath, opts),
+      runtime.InferenceSession.create(personPath, opts),
     ]);
   })();
   return sessionLoadPromise;
 }
 
 export async function disposeFaceEngine(): Promise<void> {
-  const [d, e] = [detectorSession, embedderSession];
+  const [d, e, p] = [detectorSession, embedderSession, personSession];
   detectorSession = null;
   embedderSession = null;
+  personSession = null;
   sessionLoadPromise = null;
-  await Promise.allSettled([d?.release(), e?.release()]);
+  await Promise.allSettled([d?.release(), e?.release(), p?.release()]);
 }
 
 // ---------------------------------------------------------------------------
@@ -157,7 +177,7 @@ async function decodeImage(
   // Resize to target dimensions preserving aspect ratio with letterboxing
   img = img.resize({ width: targetW, height: targetH });
 
-  const bitmap = img.getBitmap();  // raw BGRA on macOS/Win, RGBA elsewhere
+  const bitmap = img.getBitmap() as unknown as Buffer;  // raw BGRA on macOS/Win, RGBA elsewhere
   const size = img.getSize();
 
   return { data: bitmap, width: size.width, height: size.height };
@@ -176,16 +196,32 @@ function pixelsToCHW(
 ): Float32Array {
   const channelSize = width * height;
   const tensor = new Float32Array(3 * channelSize);
+  const bgraBitmap = process.platform === 'win32' || process.platform === 'darwin';
   for (let i = 0; i < channelSize; i++) {
     const base = i * 4;
-    // nativeImage returns BGRA on Windows, RGBA on macOS. We normalise both
-    // by checking platform — for face detection the channel order matters.
-    const r = pixels[base] / 255.0;
+    const r = (bgraBitmap ? pixels[base + 2] : pixels[base]) / 255.0;
     const g = pixels[base + 1] / 255.0;
-    const b = pixels[base + 2] / 255.0;
+    const b = (bgraBitmap ? pixels[base] : pixels[base + 2]) / 255.0;
     tensor[i] = (r - mean[0]) / std[0];
     tensor[channelSize + i] = (g - mean[1]) / std[1];
     tensor[2 * channelSize + i] = (b - mean[2]) / std[2];
+  }
+  return tensor;
+}
+
+function pixelsToHWCUint8(
+  pixels: Buffer,
+  width: number,
+  height: number,
+): Uint8Array {
+  const tensor = new Uint8Array(width * height * 3);
+  const bgraBitmap = process.platform === 'win32' || process.platform === 'darwin';
+  for (let i = 0; i < width * height; i++) {
+    const src = i * 4;
+    const dst = i * 3;
+    tensor[dst] = bgraBitmap ? pixels[src + 2] : pixels[src];
+    tensor[dst + 1] = pixels[src + 1];
+    tensor[dst + 2] = bgraBitmap ? pixels[src] : pixels[src + 2];
   }
   return tensor;
 }
@@ -201,6 +237,8 @@ const DET_MEAN = [127 / 255, 127 / 255, 127 / 255];
 const DET_STD  = [128 / 255, 128 / 255, 128 / 255];
 const CONF_THRESHOLD = 0.7;
 const IOU_THRESHOLD  = 0.3;
+const PERSON_THRESHOLD = 0.45;
+const PERSON_CLASS_ID = 1;
 
 interface RawBox {
   x1: number; y1: number; x2: number; y2: number; score: number;
@@ -240,10 +278,10 @@ async function detectFaces(imagePath: string): Promise<FaceBox[]> {
 
   const { data, width, height } = await decodeImage(imagePath, DETECTOR_W, DETECTOR_H);
   const floats = pixelsToCHW(data, width, height, DET_MEAN, DET_STD);
-  const tensor = new ort.Tensor('float32', floats, [1, 3, height, width]);
+  const tensor = new (getOrt().Tensor)('float32', floats, [1, 3, height, width]);
 
   // UltraFace outputs: scores [1, N, 2], boxes [1, N, 4]
-  const feeds: Record<string, import('onnxruntime-node').Tensor> = { input: tensor };
+  const feeds: Record<string, any> = { input: tensor };
   const result = await detectorSession.run(feeds);
 
   // Output names vary by export — try common variants
@@ -278,6 +316,62 @@ async function detectFaces(imagePath: string): Promise<FaceBox[]> {
   }));
 }
 
+async function detectPersons(imagePath: string): Promise<FaceBox[]> {
+  if (!personSession) throw new Error('Person detector not loaded');
+
+  let img = nativeImage.createFromPath(imagePath);
+  if (img.isEmpty()) {
+    throw new Error(`Cannot decode image for person analysis: ${imagePath}`);
+  }
+
+  const original = img.getSize();
+  const scale = Math.min(1, 640 / Math.max(original.width, original.height));
+  const targetW = Math.max(32, Math.round(original.width * scale));
+  const targetH = Math.max(32, Math.round(original.height * scale));
+  img = img.resize({ width: targetW, height: targetH });
+
+  const bitmap = img.getBitmap() as unknown as Buffer;
+  const input = pixelsToHWCUint8(bitmap, targetW, targetH);
+  const tensor = new (getOrt().Tensor)('uint8', input, [1, targetH, targetW, 3]);
+  const result = await personSession.run({ 'image_tensor:0': tensor });
+
+  const countKey = Object.keys(result).find((k) => k.includes('num_detections')) ?? Object.keys(result)[0];
+  const boxesKey = Object.keys(result).find((k) => k.includes('detection_boxes')) ?? Object.keys(result)[1];
+  const scoresKey = Object.keys(result).find((k) => k.includes('detection_scores')) ?? Object.keys(result)[2];
+  const classesKey = Object.keys(result).find((k) => k.includes('detection_classes')) ?? Object.keys(result)[3];
+
+  const countData = result[countKey].data as Float32Array | BigInt64Array | BigUint64Array;
+  const boxes = result[boxesKey].data as Float32Array;
+  const scores = result[scoresKey].data as Float32Array;
+  const classes = result[classesKey].data as Float32Array;
+  const detectionCount = Math.min(
+    Math.round(Number(countData[0] ?? scores.length)),
+    scores.length,
+    classes.length,
+    Math.floor(boxes.length / 4),
+  );
+
+  const raw: RawBox[] = [];
+  for (let i = 0; i < detectionCount; i++) {
+    const klass = Math.round(classes[i]);
+    const score = scores[i];
+    if (klass !== PERSON_CLASS_ID || score < PERSON_THRESHOLD) continue;
+    const top = boxes[i * 4];
+    const left = boxes[i * 4 + 1];
+    const bottom = boxes[i * 4 + 2];
+    const right = boxes[i * 4 + 3];
+    raw.push({ x1: left, y1: top, x2: right, y2: bottom, score });
+  }
+
+  return nms(raw).map((b) => ({
+    x: Math.max(0, b.x1),
+    y: Math.max(0, b.y1),
+    width: Math.max(0, b.x2 - b.x1),
+    height: Math.max(0, b.y2 - b.y1),
+    score: b.score,
+  }));
+}
+
 // ---------------------------------------------------------------------------
 // MobileFaceNet embedding
 // ---------------------------------------------------------------------------
@@ -304,11 +398,11 @@ async function embedFace(imagePath: string, box: FaceBox): Promise<Float32Array>
   img = img.crop({ x: cropX, y: cropY, width: cropW, height: cropH });
   img = img.resize({ width: EMBED_W, height: EMBED_H });
 
-  const bitmap = img.getBitmap();
+  const bitmap = img.getBitmap() as unknown as Buffer;
   const floats = pixelsToCHW(bitmap, EMBED_W, EMBED_H, EMB_MEAN, EMB_STD);
-  const tensor = new ort.Tensor('float32', floats, [1, 3, EMBED_H, EMBED_W]);
+  const tensor = new (getOrt().Tensor)('float32', floats, [1, 3, EMBED_H, EMBED_W]);
 
-  const feeds: Record<string, import('onnxruntime-node').Tensor> = { input: tensor };
+  const feeds: Record<string, any> = { input: tensor };
   const result = await embedderSession.run(feeds);
 
   // First (and only) output is the embedding vector
@@ -339,17 +433,14 @@ async function embedFace(imagePath: string, box: FaceBox): Promise<Float32Array>
 export async function analyzeFaces(imagePath: string): Promise<FaceAnalysisResult> {
   await loadSessions();
 
-  let boxes: FaceBox[];
-  try {
-    boxes = await detectFaces(imagePath);
-  } catch {
-    // Undecodable image (e.g. unsupported RAW) — return empty result
-    return { boxes: [], embeddings: [] };
-  }
+  const [boxes, personBoxes] = await Promise.all([
+    detectFaces(imagePath).catch(() => [] as FaceBox[]),
+    detectPersons(imagePath).catch(() => [] as FaceBox[]),
+  ]);
 
-  if (boxes.length === 0) return { boxes, embeddings: [] };
+  if (boxes.length === 0) return { boxes, personBoxes, embeddings: [] };
 
-  // Embed each detected face (up to 4 — more than that is unusual in photos)
+  // Embed each detected face (up to 4 - more than that is unusual in photos)
   const facesToEmbed = boxes.slice(0, 4);
   const embeddings = await Promise.all(
     facesToEmbed.map((box) =>
@@ -357,7 +448,7 @@ export async function analyzeFaces(imagePath: string): Promise<FaceAnalysisResul
     ),
   );
 
-  return { boxes: facesToEmbed, embeddings };
+  return { boxes: facesToEmbed, personBoxes, embeddings };
 }
 
 /**
@@ -394,8 +485,9 @@ export function deserializeEmbedding(hex: string): Float32Array {
  */
 export function faceModelsAvailable(): boolean {
   try {
-    modelPath('ultraface-slim-640.onnx');
+    modelPath('version-RFB-640.onnx');
     modelPath('mobilefacenet.onnx');
+    modelPath('ssd_mobilenet_v1_12.onnx');
     return true;
   } catch {
     return false;

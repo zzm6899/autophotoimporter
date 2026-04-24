@@ -635,6 +635,11 @@ export function SingleView({ file, index, total }: SingleViewProps) {
                 Face {file.faceCount}
               </span>
             ) : null}
+            {file.personCount ? (
+              <span className="text-[9px] font-mono text-sky-300 bg-sky-500/30 px-1.5 py-0.5 rounded" title="ONNX person/body detection signal">
+                Person {file.personCount}
+              </span>
+            ) : null}
             {typeof file.subjectSharpnessScore === 'number' && (
               <span className="text-[9px] font-mono text-yellow-300 bg-yellow-500/30 px-1.5 py-0.5 rounded" title={file.subjectReasons?.join(', ') || 'Subject focus score'}>
                 Subject {file.subjectSharpnessScore}

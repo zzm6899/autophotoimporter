@@ -102,3 +102,4 @@ scripts/license-keys/private.pem
 
 # ONNX face models — large binary files, downloaded via "npm run models"
 models/*.onnx
+models/*.tmp

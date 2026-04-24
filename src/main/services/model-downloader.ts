@@ -41,14 +41,19 @@ const MODEL_RELEASE_BASE =
 
 const MODELS: ModelSpec[] = [
   {
-    name: 'ultraface-slim-640.onnx',
-    url: `${MODEL_RELEASE_BASE}/ultraface-slim-640.onnx`,
-    approxBytes: 1_100_000,
+    name: 'version-RFB-640.onnx',
+    url: `${MODEL_RELEASE_BASE}/version-RFB-640.onnx`,
+    approxBytes: 1_600_000,
   },
   {
     name: 'mobilefacenet.onnx',
     url: `${MODEL_RELEASE_BASE}/mobilefacenet.onnx`,
     approxBytes: 4_000_000,
+  },
+  {
+    name: 'ssd_mobilenet_v1_12.onnx',
+    url: `${MODEL_RELEASE_BASE}/ssd_mobilenet_v1_12.onnx`,
+    approxBytes: 29_000_000,
   },
 ];
 

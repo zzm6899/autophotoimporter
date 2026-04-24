@@ -203,11 +203,16 @@ function ThumbnailCardInner({
             </div>
           )}
 
-          {(file.reviewScore || file.blurRisk === 'high' || file.visualGroupId || file.faceCount) && (
+          {(file.reviewScore || file.blurRisk === 'high' || file.visualGroupId || file.faceCount || file.personCount) && (
             <div className="absolute left-1.5 bottom-1.5 flex gap-0.5 z-20">
               {!!file.faceCount && (
                 <span className="bg-emerald-600/90 text-[9px] text-white px-1 py-0.5 rounded font-medium" title={`${file.faceCount} ${file.faceDetection === 'estimated' ? 'estimated ' : ''}face(s) detected`}>
                   {file.faceDetection === 'estimated' ? 'FACE?' : 'FACE'}
+                </span>
+              )}
+              {!!file.personCount && (
+                <span className="bg-sky-600/90 text-[9px] text-white px-1 py-0.5 rounded font-medium" title={`${file.personCount} person/body detection(s)`}>
+                  PERSON
                 </span>
               )}
               {(file.reviewScore ?? 0) >= 70 && (
