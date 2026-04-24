@@ -5,7 +5,7 @@
  *
  * Pipeline per image:
  *   1. UltraFace-slim-640  → bounding boxes for each detected face
- *   2. MobileFaceNet        → 128-d L2-normalised embedding per face crop
+ *   2. MobileFaceNet        → L2-normalised embedding per face crop
  *
  * The embedding can be stored on MediaFile.faceEmbedding and used to cluster
  * similar faces across a session via cosine similarity (see cosineSimilarity
@@ -67,7 +67,7 @@ export interface FaceAnalysisResult {
   /** Detected person/body bounding boxes (may be empty if no people found) */
   personBoxes: FaceBox[];
   /**
-   * 128-d L2-normalised embedding for each detected face, in the same order
+   * L2-normalised embedding for each detected face, in the same order
    * as boxes. Use cosineSimilarity() to compare embeddings across images.
    */
   embeddings: Float32Array[];
@@ -124,7 +124,7 @@ async function loadSessions(): Promise<void> {
     };
     const [detPath, embPath] = [
       modelPath('version-RFB-640.onnx'),
-      modelPath('mobilefacenet.onnx'),
+      modelPath('w600k_mbf.onnx'),
     ];
     const personPath = modelPath('ssd_mobilenet_v1_12.onnx');
     [detectorSession, embedderSession, personSession] = await Promise.all([
@@ -428,7 +428,7 @@ async function embedFace(imagePath: string, box: FaceBox): Promise<Float32Array>
  * Lazy-loads ONNX sessions on first call (~200ms warm-up, then reused).
  *
  * @param imagePath  Absolute path to a JPEG/PNG/HEIC/WEBP image.
- * @returns          Detected boxes + per-face 128-d embeddings.
+ * @returns          Detected boxes + per-face embeddings.
  */
 export async function analyzeFaces(imagePath: string): Promise<FaceAnalysisResult> {
   await loadSessions();
@@ -444,7 +444,7 @@ export async function analyzeFaces(imagePath: string): Promise<FaceAnalysisResul
   const facesToEmbed = boxes.slice(0, 4);
   const embeddings = await Promise.all(
     facesToEmbed.map((box) =>
-      embedFace(imagePath, box).catch(() => new Float32Array(128)),
+      embedFace(imagePath, box).catch(() => new Float32Array(512)),
     ),
   );
 
@@ -466,7 +466,7 @@ export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
 
 /**
  * Serialise a Float32Array embedding to a compact hex string for storage
- * on MediaFile.faceEmbedding. 128 floats × 4 bytes = 512 bytes → 1024 hex chars.
+ * on MediaFile.faceEmbedding.
  * Use deserializeEmbedding() to recover the Float32Array.
  */
 export function serializeEmbedding(embedding: Float32Array): string {
@@ -486,7 +486,7 @@ export function deserializeEmbedding(hex: string): Float32Array {
 export function faceModelsAvailable(): boolean {
   try {
     modelPath('version-RFB-640.onnx');
-    modelPath('mobilefacenet.onnx');
+    modelPath('w600k_mbf.onnx');
     modelPath('ssd_mobilenet_v1_12.onnx');
     return true;
   } catch {

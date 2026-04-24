@@ -79,8 +79,8 @@ export interface MediaFile {
   /** Compact perceptual hash of the primary detected face crop. Used only for local same-face clustering. */
   faceSignature?: string;
   /**
-   * Hex-serialised 128-d L2-normalised face embedding from MobileFaceNet
-   * (via onnxruntime-node). 1024 hex chars. Use deserializeEmbedding() to
+   * Hex-serialised L2-normalised face embedding from MobileFaceNet
+   * (via onnxruntime-node). Use deserializeEmbedding() to
    * recover the Float32Array, then cosineSimilarity() to compare.
    * Only populated when the ONNX face models are present on disk.
    */

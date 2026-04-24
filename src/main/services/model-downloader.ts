@@ -46,9 +46,9 @@ const MODELS: ModelSpec[] = [
     approxBytes: 1_600_000,
   },
   {
-    name: 'mobilefacenet.onnx',
-    url: `${MODEL_RELEASE_BASE}/mobilefacenet.onnx`,
-    approxBytes: 4_000_000,
+    name: 'w600k_mbf.onnx',
+    url: `${MODEL_RELEASE_BASE}/w600k_mbf.onnx`,
+    approxBytes: 5_200_000,
   },
   {
     name: 'ssd_mobilenet_v1_12.onnx',

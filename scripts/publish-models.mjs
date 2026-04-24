@@ -39,7 +39,7 @@ const RELEASE_NAME = 'Culling Vision Models';
 const RELEASE_BODY =
   'Stable ONNX review-model assets for Photo Importer.\n\n' +
   '- `version-RFB-640.onnx` - UltraFace RFB face detector (~1.6 MB)\n' +
-  '- `mobilefacenet.onnx` - MobileFaceNet 128-d embeddings (~4 MB)\n\n' +
+  '- `w600k_mbf.onnx` - MobileFaceNet WebFace600K embeddings (~5 MB)\n\n' +
   '- `ssd_mobilenet_v1_12.onnx` - SSD MobileNet person detector (~28 MB)\n\n' +
   'Do not delete this release - the app downloads models from here on first launch.';
 
@@ -50,9 +50,9 @@ const MODELS = [
     approxBytes: 1_600_000,
   },
   {
-    name: 'mobilefacenet.onnx',
-    url: 'https://github.com/deepinsight/insightface/raw/master/model_zoo/insightface_onnx/mobilefacenet.onnx',
-    approxBytes: 4_000_000,
+    name: 'w600k_mbf.onnx',
+    url: 'https://github.com/ruhyadi/vision-fr/releases/download/v1.0.0/w600k_mbf.onnx',
+    approxBytes: 5_200_000,
   },
   {
     name: 'ssd_mobilenet_v1_12.onnx',

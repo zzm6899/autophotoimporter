@@ -12,7 +12,7 @@
  *
  * Model sources (all MIT / Apache-2.0 licensed):
  *  - version-RFB-640.onnx     ~1.6 MB  - stronger face detection (UltraFace RFB)
- *  - mobilefacenet.onnx       ~4.0 MB  - 128-d face embeddings (MobileFaceNet)
+ *  - w600k_mbf.onnx           ~5.0 MB  - face embeddings (MobileFaceNet / WebFace600K)
  *  - ssd_mobilenet_v1_12.onnx ~28 MB   - person/body detection for culling
  */
 
@@ -39,8 +39,8 @@ const MODELS = [
     sha256: null,
   },
   {
-    name: 'mobilefacenet.onnx',
-    url: 'https://github.com/deepinsight/insightface/raw/master/model_zoo/insightface_onnx/mobilefacenet.onnx',
+    name: 'w600k_mbf.onnx',
+    url: 'https://github.com/ruhyadi/vision-fr/releases/download/v1.0.0/w600k_mbf.onnx',
     sha256: null,
   },
   {
