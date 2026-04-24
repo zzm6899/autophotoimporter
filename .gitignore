@@ -93,6 +93,9 @@ out/
 
 # Claude Code
 CLAUDE.md
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+.claude/worktrees/
 
 # Local license signing keys
 scripts/license-keys/private.pem
