@@ -126,6 +126,8 @@ export interface LicenseValidation {
   key?: string;
   message: string;
   entitlement?: LicenseEntitlement;
+  activationCode?: string;
+  status?: 'active' | 'revoked' | 'expired' | 'disabled' | 'unknown';
 }
 
 // Folder naming presets for organizing imported files
@@ -314,6 +316,7 @@ export interface UpdateState {
   releaseDate?: string;
   releaseUrl?: string;
   downloadUrl?: string;
+  feedUrl?: string;
   lastCheckedAt?: string;
   message?: string;
   history?: UpdateReleaseSummary[];
@@ -424,6 +427,7 @@ export const IPC = {
   UPDATE_STATUS: 'update:status',
   UPDATE_CHECK_NOW: 'update:check-now',
   UPDATE_DOWNLOAD: 'update:download',
+  UPDATE_INSTALL: 'update:install',
   UPDATE_FETCH_HISTORY: 'update:fetch-history',
 
   // FTP source

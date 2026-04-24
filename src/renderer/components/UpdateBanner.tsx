@@ -8,7 +8,7 @@ function formatDate(value?: string) {
 }
 
 export function UpdateBanner() {
-  const { visibleState, dismiss, downloadUpdate, openRelease } = useUpdateNotification();
+  const { visibleState, dismiss, downloadUpdate, installUpdate, openRelease } = useUpdateNotification();
 
   if (!['available', 'downloading', 'ready', 'error', 'denied'].includes(visibleState.status)) {
     return null;
@@ -19,7 +19,7 @@ export function UpdateBanner() {
     : visibleState.status === 'error'
       ? 'Update check failed'
       : visibleState.status === 'ready'
-        ? 'Update download opened'
+        ? 'Update ready'
         : visibleState.status === 'downloading'
           ? 'Preparing update'
           : 'Update available';
@@ -29,10 +29,10 @@ export function UpdateBanner() {
     : visibleState.status === 'error'
       ? (visibleState.message || 'The update service could not be reached.')
       : visibleState.status === 'ready'
-        ? (visibleState.message || 'Finish the installer, then relaunch the app.')
+        ? (visibleState.message || 'Update is ready to install. Restart when you are ready.')
         : visibleState.status === 'downloading'
-          ? (visibleState.message || 'Opening the latest installer...')
-          : `v${visibleState.latestVersion} is available${visibleState.releaseDate ? ` · ${formatDate(visibleState.releaseDate)}` : ''}. Update now or later.`;
+          ? (visibleState.message || 'Downloading the latest update...')
+          : `v${visibleState.latestVersion} is available${visibleState.releaseDate ? ` - ${formatDate(visibleState.releaseDate)}` : ''}. Update now or later.`;
 
   return (
     <div className="fixed bottom-4 right-4 z-40 max-w-sm w-full animate-in">
@@ -64,7 +64,15 @@ export function UpdateBanner() {
               Update now
             </button>
           )}
-          {(visibleState.releaseUrl || visibleState.status === 'available') && (
+          {visibleState.status === 'ready' && (
+            <button
+              onClick={() => { void installUpdate(); }}
+              className="flex-1 py-1.5 rounded text-xs font-medium bg-accent hover:bg-accent-hover text-white transition-colors"
+            >
+              Restart to update
+            </button>
+          )}
+          {(visibleState.releaseUrl || visibleState.status === 'available' || visibleState.status === 'ready') && (
             <button
               onClick={openRelease}
               className="flex-1 py-1.5 rounded text-xs font-medium bg-surface-alt hover:bg-border text-text-secondary transition-colors"

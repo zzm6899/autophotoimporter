@@ -15,6 +15,12 @@ vi.mock('electron', () => ({
   shell: { openPath: (...args: unknown[]) => mockOpenPath(...args) },
   app: { getPath: (name: string) => mockGetPath(name), on: (event: string, cb: Function) => mockOn(event, cb) },
   BrowserWindow: { getAllWindows: () => mockGetAllWindows() },
+  autoUpdater: {
+    on: vi.fn(),
+    setFeedURL: vi.fn(),
+    checkForUpdates: vi.fn(),
+    quitAndInstall: vi.fn(),
+  },
 }));
 
 vi.mock('node:fs/promises', () => ({
@@ -63,6 +69,11 @@ vi.mock('../services/license', () => ({
     key === 'valid-key'
       ? { valid: true, key, message: 'License active.', entitlement: { product: 'photo-importer', name: 'Test', issuedAt: '2026-04-24', tier: 'Full access' } }
       : { valid: false, key, message: 'Signature check failed.' }),
+  activateLicenseInput: vi.fn(async (key: string) =>
+    key === 'valid-key'
+      ? { valid: true, key, message: 'License active.', entitlement: { product: 'photo-importer', name: 'Test', issuedAt: '2026-04-24', tier: 'Full access' } }
+      : { valid: false, key, message: 'Signature check failed.' }),
+  checkHostedLicenseStatus: vi.fn(async (_key: string, existing: any) => existing ?? { valid: false, message: 'No license activated.' }),
 }));
 
 import { registerIpcHandlers } from '../ipc-handlers';

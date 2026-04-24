@@ -41,10 +41,18 @@ export function useUpdateNotification() {
   };
 
   const downloadUpdate = async () => {
-    setUpdateState((prev) => ({ ...prev, status: 'downloading', message: 'Opening installer download...' }));
+    setUpdateState((prev) => ({ ...prev, status: 'downloading', message: 'Preparing update...' }));
     const result = await window.electronAPI.downloadUpdate();
     if (!result.ok) {
       setUpdateState((prev) => ({ ...prev, status: 'error', message: result.message || 'Could not open the installer download.' }));
+    }
+    return result;
+  };
+
+  const installUpdate = async () => {
+    const result = await window.electronAPI.installUpdate();
+    if (!result.ok) {
+      setUpdateState((prev) => ({ ...prev, status: 'error', message: result.message || 'Could not install the update.' }));
     }
     return result;
   };
@@ -61,6 +69,7 @@ export function useUpdateNotification() {
     dismiss,
     checkNow,
     downloadUpdate,
+    installUpdate,
     openRelease,
     visibleState: dismissed ? { ...updateState, status: 'idle' as const } : updateState,
   };

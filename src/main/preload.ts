@@ -111,6 +111,8 @@ const api = {
     ipcRenderer.invoke(IPC.UPDATE_FETCH_HISTORY),
   downloadUpdate: (): Promise<{ ok: boolean; message?: string }> =>
     ipcRenderer.invoke(IPC.UPDATE_DOWNLOAD),
+  installUpdate: (): Promise<{ ok: boolean; message?: string }> =>
+    ipcRenderer.invoke(IPC.UPDATE_INSTALL),
   openReleaseUrl: (url: string): Promise<void> =>
     ipcRenderer.invoke(IPC.UPDATE_OPEN_RELEASE, url),
 

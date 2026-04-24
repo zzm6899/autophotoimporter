@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS license_records (
   id SERIAL PRIMARY KEY,
   fingerprint TEXT NOT NULL UNIQUE,
   license_key TEXT NOT NULL,
+  activation_code TEXT UNIQUE,
   customer_name TEXT NOT NULL,
   customer_email TEXT,
   issued_at DATE,

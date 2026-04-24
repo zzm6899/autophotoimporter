@@ -41,7 +41,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     licenseStatus,
   } = useAppState();
   const dispatch = useAppDispatch();
-  const { updateState, history, checkNow, downloadUpdate, openRelease } = useUpdateNotification();
+  const { updateState, history, checkNow, downloadUpdate, installUpdate, openRelease } = useUpdateNotification();
   const [postImportStatus, setPostImportStatus] = useState<string | null>(null);
   const [licenseInput, setLicenseInput] = useState('');
   const [licenseBusy, setLicenseBusy] = useState(false);
@@ -68,9 +68,9 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   };
 
   useEffect(() => {
-    setLicenseInput(licenseStatus?.key ?? '');
+    setLicenseInput(licenseStatus?.activationCode ?? licenseStatus?.key ?? '');
     if (licenseStatus?.valid) setLicenseFeedback(null);
-  }, [licenseStatus?.key]);
+  }, [licenseStatus?.activationCode, licenseStatus?.key, licenseStatus?.valid]);
 
   const set = <K extends string>(key: K, value: unknown) => {
     void window.electronAPI.setSettings({ [key]: value } as Record<string, unknown>);
@@ -204,7 +204,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
       if (status.valid) {
         dispatch({ type: 'SET_LICENSE_STATUS', status });
         setLicenseFeedback(null);
-        if (status.key) setLicenseInput(status.key);
+        setLicenseInput(status.activationCode ?? status.key ?? '');
       } else {
         setLicenseFeedback(status.message);
       }
@@ -329,7 +329,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                 value={licenseInput}
                 onChange={(e) => setLicenseInput(e.target.value)}
                 rows={3}
-                placeholder="Paste license key"
+                placeholder="Paste license key or activation code"
                 className="w-full resize-y px-2 py-1.5 text-xs font-mono bg-surface-raised border border-border rounded text-text placeholder-text-muted focus:border-text focus:outline-none"
               />
               <div className="flex items-center gap-2">
@@ -368,6 +368,11 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
               )}
               {licenseStatus?.entitlement && (
                 <div className="grid grid-cols-2 gap-1 text-[10px] text-text-muted">
+                  {licenseStatus.activationCode && (
+                    <div className="bg-surface-alt border border-border rounded px-2 py-1 col-span-2">
+                      Activation: <span className="text-text-secondary font-mono">{licenseStatus.activationCode}</span>
+                    </div>
+                  )}
                   <div className="bg-surface-alt border border-border rounded px-2 py-1">
                     Owner: <span className="text-text-secondary">{licenseStatus.entitlement.name}</span>
                   </div>
@@ -421,6 +426,14 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                     className="px-3 py-1 text-xs rounded bg-accent text-white hover:bg-accent-hover"
                   >
                     Update now
+                  </button>
+                )}
+                {updateState.status === 'ready' && (
+                  <button
+                    onClick={() => { void installUpdate(); }}
+                    className="px-3 py-1 text-xs rounded bg-accent text-white hover:bg-accent-hover"
+                  >
+                    Restart to update
                   </button>
                 )}
                 {updateState.releaseUrl && (

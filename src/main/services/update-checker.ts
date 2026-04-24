@@ -13,6 +13,7 @@ type CheckResponse = {
   releaseDate?: string;
   releaseUrl?: string;
   downloadUrl?: string;
+  feedUrl?: string;
   message?: string;
 };
 
@@ -116,6 +117,7 @@ export async function checkForUpdate(licenseKey?: string): Promise<UpdateState> 
       releaseDate: data.releaseDate,
       releaseUrl: data.releaseUrl,
       downloadUrl: data.downloadUrl,
+      feedUrl: data.feedUrl,
       lastCheckedAt: checkedAt,
       message: data.message,
     };

@@ -20,6 +20,8 @@ const sessionSecret = process.env.ADMIN_SESSION_SECRET || 'change-me-admin-sessi
 const updateSecret = process.env.UPDATE_TOKEN_SECRET || 'change-me-update-token-secret';
 const adminApiToken = process.env.ADMIN_API_TOKEN || '';
 const artifactsRoot = process.env.ARTIFACTS_ROOT || '/srv/artifacts';
+const ACTIVATION_CODE_PREFIX = 'PIC';
+const ACTIVATION_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL || 'postgres://photo_importer:photo_importer@db:5432/photo_importer_updates',
@@ -116,6 +118,15 @@ function canGenerateLicenses() {
   return Boolean(licensePrivateKeyPem);
 }
 
+function generateActivationCode() {
+  const chars = [];
+  for (let i = 0; i < 12; i += 1) {
+    const byte = crypto.randomBytes(1)[0];
+    chars.push(ACTIVATION_ALPHABET[byte % ACTIVATION_ALPHABET.length]);
+  }
+  return `${ACTIVATION_CODE_PREFIX}-${chars.slice(0, 4).join('')}-${chars.slice(4, 8).join('')}-${chars.slice(8, 12).join('')}`;
+}
+
 function createLicenseKey({ name, email, expiry, notes }) {
   if (!canGenerateLicenses()) {
     throw new Error('License generation is not enabled on this server.');
@@ -197,6 +208,28 @@ async function ensureAdminUser() {
   await pool.query('INSERT INTO admin_users (email, password_hash) VALUES ($1, $2)', [email, hash]);
 }
 
+async function ensureRuntimeSchema() {
+  await pool.query('ALTER TABLE license_records ADD COLUMN IF NOT EXISTS activation_code TEXT');
+  await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_license_records_activation_code ON license_records(activation_code)');
+}
+
+async function assignActivationCode(fingerprint) {
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const activationCode = generateActivationCode();
+    const result = await pool.query(
+      `UPDATE license_records
+       SET activation_code = $2, updated_at = NOW()
+       WHERE fingerprint = $1 AND activation_code IS NULL
+       RETURNING activation_code`,
+      [fingerprint, activationCode],
+    );
+    if (result.rowCount > 0) return result.rows[0].activation_code;
+    const existing = await pool.query('SELECT activation_code FROM license_records WHERE fingerprint = $1', [fingerprint]);
+    if (existing.rowCount && existing.rows[0].activation_code) return existing.rows[0].activation_code;
+  }
+  throw new Error('Could not assign an activation code.');
+}
+
 async function upsertLicenseRecord(validated, notes) {
   await pool.query(
     `INSERT INTO license_records (fingerprint, license_key, customer_name, customer_email, issued_at, expires_at, status, notes, last_seen_at, updated_at)
@@ -220,6 +253,7 @@ async function upsertLicenseRecord(validated, notes) {
       notes || validated.entitlement.notes || null,
     ],
   );
+  return assignActivationCode(validated.fingerprint);
 }
 
 async function resolveLicenseRecord(licenseKey) {
@@ -251,10 +285,13 @@ async function resolveLicenseRecord(licenseKey) {
   const record = row.rows[0];
   await pool.query('UPDATE license_records SET last_seen_at = NOW(), updated_at = NOW() WHERE fingerprint = $1', [fingerprint]);
   if (record.status === 'revoked' || record.status === 'expired' || record.status === 'disabled') {
+    const message = record.status === 'revoked' || record.status === 'disabled'
+      ? 'License no longer active.'
+      : `License expired on ${formatLicenseDate(record.expires_at)}.`;
     return {
       ok: false,
       status: 403,
-      message: `Updates are blocked for this license (${record.status}).`,
+      message,
       fingerprint,
       validated,
       record,
@@ -275,9 +312,43 @@ async function latestRelease(platform, channel) {
   return result.rows[0] || null;
 }
 
+async function releaseByVersion(version) {
+  const result = await pool.query(
+    `SELECT * FROM releases
+     WHERE version = $1
+     ORDER BY published_at DESC, id DESC
+     LIMIT 1`,
+    [version],
+  );
+  return result.rows[0] || null;
+}
+
 app.get('/healthz', async (_req, res) => {
   await pool.query('SELECT 1');
   res.json({ ok: true });
+});
+
+app.get('/releases/:version', async (req, res) => {
+  const release = await releaseByVersion(req.params.version);
+  if (!release) {
+    return res.status(404).send(htmlPage('Release Not Found', `
+      <div class="panel" style="max-width:760px;margin:48px auto">
+        <h1>Release not found</h1>
+        <p class="muted">No hosted release exists for version ${req.params.version}.</p>
+      </div>
+    `));
+  }
+
+  return res.send(htmlPage(`${release.release_name} (${release.version})`, `
+    <div class="panel" style="max-width:760px;margin:48px auto">
+      <h1>${release.release_name}</h1>
+      <p class="muted">Version ${release.version} - ${release.platform} - ${release.channel} - ${new Date(release.published_at).toLocaleDateString('en-AU')}</p>
+      ${release.release_notes ? `<pre style="white-space:pre-wrap;background:#020617;border:1px solid #334155;border-radius:12px;padding:14px;margin-top:16px">${release.release_notes}</pre>` : '<p class="muted">No release notes were provided for this version.</p>'}
+      <div class="actions" style="margin-top:16px">
+        <a href="${release.artifact_url}"><button type="button">Download installer</button></a>
+      </div>
+    </div>
+  `));
 });
 
 app.get('/admin/login', (req, res, next) => {
@@ -409,13 +480,15 @@ app.get('/admin/licenses', authSession, async (_req, res) => {
       </div>
     </div>
     <div class="panel">
-      <table><thead><tr><th>Customer</th><th>Status</th><th>Expires</th><th>Last seen</th><th>Action</th></tr></thead><tbody>
+      <table><thead><tr><th>Customer</th><th>Status</th><th>Activation</th><th>Expires</th><th>Last seen</th><th>Action</th></tr></thead><tbody>
       ${result.rows.map((row) => `<tr>
         <td><strong>${row.customer_name}</strong><div class="muted">${row.customer_email || ''}</div></td>
         <td><span class="pill">${row.status}</span></td>
+        <td><code>${row.activation_code || 'Pending'}</code></td>
         <td>${formatLicenseDate(row.expires_at)}</td>
         <td>${row.last_seen_at ? new Date(row.last_seen_at).toLocaleString('en-AU') : 'Never'}</td>
         <td>
+          <a href="/admin/licenses/${row.id}"><button class="secondary" type="button">View</button></a>
           ${row.status !== 'revoked' ? `<form class="inline" method="post" action="/admin/licenses/${row.id}/revoke"><button class="secondary" type="submit">Revoke</button></form>` : ''}
           ${row.status !== 'active' ? `<form class="inline" method="post" action="/admin/licenses/${row.id}/activate"><button class="secondary" type="submit">Activate</button></form>` : ''}
         </td>
@@ -438,13 +511,16 @@ app.post('/admin/licenses/generate', authSession, async (req, res) => {
       throw new Error(validated.message || 'Generated key did not validate.');
     }
 
-    await upsertLicenseRecord(validated, req.body.notes);
+    const activationCode = await upsertLicenseRecord(validated, req.body.notes);
 
     return res.send(htmlPage('License Generated', `
       <div class="top"><div><h1>License generated</h1><p class="muted">Store this key somewhere safe before leaving the page.</p></div>${nav()}</div>
       <div class="panel">
         <p><strong>${validated.entitlement.name}</strong>${validated.entitlement.email ? ` <span class="muted">(${validated.entitlement.email})</span>` : ''}</p>
         <p class="muted">Full access${validated.entitlement.expiresAt ? ` until ${formatLicenseDate(validated.entitlement.expiresAt)}` : ' with no expiry'}.</p>
+        <label>Activation code</label>
+        <input value="${activationCode}" readonly />
+        <div style="height:10px"></div>
         <label>License key</label>
         <textarea rows="6" readonly>${licenseKey}</textarea>
         <div style="height:14px"></div>
@@ -467,6 +543,32 @@ app.post('/admin/licenses/import', authSession, async (req, res) => {
 
   await upsertLicenseRecord(validated, req.body.notes);
   return res.redirect('/admin/licenses');
+});
+
+app.get('/admin/licenses/:id', authSession, async (req, res) => {
+  const result = await pool.query('SELECT * FROM license_records WHERE id = $1', [req.params.id]);
+  if (!result.rowCount) {
+    return res.status(404).send(htmlPage('License Not Found', `<div class="panel"><h1>License not found</h1><a href="/admin/licenses">Back</a></div>`));
+  }
+  const record = result.rows[0];
+  return res.send(htmlPage(`License ${record.customer_name}`, `
+    <div class="top"><div><h1>${record.customer_name}</h1><p class="muted">License details and activation info.</p></div>${nav()}</div>
+    <div class="grid">
+      <div class="panel">
+        <h2>Status</h2>
+        <p><span class="pill">${record.status}</span></p>
+        <p class="muted">Activation code: <code>${record.activation_code || 'Pending'}</code></p>
+        <p class="muted">Email: ${record.customer_email || 'None'}</p>
+        <p class="muted">Issued: ${formatLicenseDate(record.issued_at)}</p>
+        <p class="muted">Expires: ${formatLicenseDate(record.expires_at)}</p>
+        <p class="muted">Last seen: ${record.last_seen_at ? new Date(record.last_seen_at).toLocaleString('en-AU') : 'Never'}</p>
+      </div>
+      <div class="panel">
+        <h2>Stored key</h2>
+        <textarea rows="8" readonly>${record.license_key}</textarea>
+      </div>
+    </div>
+  `));
 });
 
 app.post('/admin/licenses/:id/revoke', authSession, async (req, res) => {
@@ -531,16 +633,18 @@ app.get('/admin/releases', authSession, async (_req, res) => {
 });
 
 app.post('/admin/releases', authSession, async (req, res) => {
+  const version = req.body.version;
+  const releaseUrl = req.body.releaseUrl || `${process.env.PUBLIC_UPDATES_BASE_URL || 'https://updates.culler.z2hs.au'}`.replace('updates.', 'admin.') + `/releases/${version}`;
   await pool.query(
     `INSERT INTO releases (version, platform, channel, release_name, release_notes, release_url, artifact_url, rollout_state, published_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())`,
     [
-      req.body.version,
+      version,
       req.body.platform,
       req.body.channel || 'stable',
       req.body.releaseName,
       req.body.releaseNotes || null,
-      req.body.releaseUrl || null,
+      releaseUrl,
       req.body.artifactUrl,
       req.body.rolloutState || 'draft',
     ],
@@ -590,13 +694,92 @@ app.post('/admin/api/releases/import', requireAdminApiToken, async (req, res) =>
   if (!version || !platform || !releaseName || !artifactUrl) {
     return res.status(400).json({ error: 'version, platform, releaseName, and artifactUrl are required.' });
   }
+  const resolvedReleaseUrl = releaseUrl || `${process.env.PUBLIC_UPDATES_BASE_URL || 'https://updates.culler.z2hs.au'}`.replace('updates.', 'admin.') + `/releases/${version}`;
   const result = await pool.query(
     `INSERT INTO releases (version, platform, channel, release_name, release_notes, release_url, artifact_url, rollout_state, published_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
      RETURNING id`,
-    [version, platform, channel, releaseName, releaseNotes || null, releaseUrl || null, artifactUrl, rolloutState],
+    [version, platform, channel, releaseName, releaseNotes || null, resolvedReleaseUrl, artifactUrl, rolloutState],
   );
   return res.json({ ok: true, id: result.rows[0].id });
+});
+
+app.post('/api/v1/license/resolve', async (req, res) => {
+  const activationCode = String(req.body.activationCode || '').trim().toUpperCase();
+  if (!activationCode) {
+    return res.status(400).json({ allowed: false, message: 'Enter an activation code.', status: 'unknown' });
+  }
+
+  const result = await pool.query('SELECT * FROM license_records WHERE activation_code = $1', [activationCode]);
+  if (!result.rowCount) {
+    return res.status(404).json({ allowed: false, message: 'Activation code not found.', activationCode, status: 'unknown' });
+  }
+
+  const record = result.rows[0];
+  if (record.status === 'revoked' || record.status === 'disabled') {
+    return res.status(403).json({
+      allowed: false,
+      message: 'License no longer active.',
+      activationCode,
+      status: record.status,
+    });
+  }
+  if (record.status === 'expired') {
+    return res.status(403).json({
+      allowed: false,
+      message: `License expired on ${formatLicenseDate(record.expires_at)}.`,
+      activationCode,
+      status: 'expired',
+    });
+  }
+
+  await pool.query('UPDATE license_records SET last_seen_at = NOW(), updated_at = NOW() WHERE id = $1', [record.id]);
+  return res.json({
+    allowed: true,
+    activationCode,
+    licenseKey: record.license_key,
+    message: record.expires_at
+      ? `License active until ${formatLicenseDate(record.expires_at)}.`
+      : 'License active.',
+    status: 'active',
+    entitlement: {
+      product: 'photo-importer',
+      name: record.customer_name,
+      email: record.customer_email || undefined,
+      issuedAt: record.issued_at,
+      expiresAt: record.expires_at || undefined,
+      tier: 'Full access',
+      notes: record.notes || undefined,
+    },
+  });
+});
+
+app.get('/api/v1/license/status', async (req, res) => {
+  const licenseKey = req.header('x-license-key');
+  if (!licenseKey) {
+    return res.status(400).json({ allowed: false, message: 'Missing license key.', status: 'unknown' });
+  }
+
+  const resolved = await resolveLicenseRecord(licenseKey);
+  if (!resolved.ok) {
+    return res.status(resolved.status).json({
+      allowed: false,
+      message: resolved.message,
+      status: resolved.record?.status || 'unknown',
+      activationCode: resolved.record?.activation_code,
+      entitlement: resolved.validated?.entitlement,
+    });
+  }
+
+  return res.json({
+    allowed: true,
+    message: resolved.record?.expires_at
+      ? `License active until ${formatLicenseDate(resolved.record.expires_at)}.`
+      : 'License active.',
+    status: resolved.record?.status || 'active',
+    activationCode: resolved.record?.activation_code,
+    entitlement: resolved.validated?.entitlement,
+  });
 });
 
 app.get('/api/v1/app/update', async (req, res) => {
@@ -671,6 +854,7 @@ app.get('/api/v1/app/update', async (req, res) => {
     releaseDate: release.published_at,
     releaseUrl: release.release_url,
     downloadUrl: `${process.env.PUBLIC_UPDATES_BASE_URL || 'https://updates.culler.z2hs.au'}/api/v1/app/download/${release.id}?token=${encodeURIComponent(token)}`,
+    feedUrl: platform === 'windows' ? `${process.env.PUBLIC_UPDATES_BASE_URL || 'https://updates.culler.z2hs.au'}/artifacts/windows` : undefined,
   });
 });
 
@@ -749,6 +933,7 @@ async function waitForDatabase(maxAttempts = 20, delayMs = 1500) {
 
 async function start() {
   await waitForDatabase();
+  await ensureRuntimeSchema();
   await ensureAdminUser();
   app.listen(port, '0.0.0.0', () => {
     console.log(`[update-admin] Listening on 0.0.0.0:${port}`);

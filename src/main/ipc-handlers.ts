@@ -1,4 +1,4 @@
-import { ipcMain, dialog, shell, app, BrowserWindow } from 'electron';
+import { ipcMain, dialog, shell, app, BrowserWindow, autoUpdater } from 'electron';
 import { readFile, writeFile, mkdir, statfs } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -12,7 +12,7 @@ import { isDuplicate } from './services/duplicate-detector';
 import { generatePreview } from './services/exif-parser';
 import { checkForUpdate, fetchUpdateHistory } from './services/update-checker';
 import { probeFtp, mirrorFtp } from './services/ftp-source';
-import { validateLicenseKey } from './services/license';
+import { activateLicenseInput, checkHostedLicenseStatus, validateLicenseKey } from './services/license';
 
 const execFileAsync = promisify(execFile);
 
@@ -22,6 +22,8 @@ let autoImportQueue: Volume[] = [];
 let autoImportRunning = false;
 let currentAutoImportPath: string | null = null;
 let lastUpdateState: UpdateState | null = null;
+let configuredFeedUrl: string | null = null;
+let autoUpdaterReady = false;
 
 function getSettingsPath(): string {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -72,7 +74,7 @@ async function loadSettings(): Promise<AppSettings> {
     const merged = { ...DEFAULT_SETTINGS, ...parsed };
     const licenseStatus = merged.licenseKey
       ? validateLicenseKey(merged.licenseKey)
-      : { valid: false, message: 'No license activated.' };
+      : { valid: false, message: 'No license activated.', status: 'unknown' as const };
     return { ...merged, licenseStatus };
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -91,7 +93,14 @@ async function saveSettings(settings: Partial<AppSettings>): Promise<void> {
 
 async function getLicenseStatus() {
   const settings = await loadSettings();
-  return settings.licenseStatus ?? { valid: false, message: 'No license activated.' };
+  const storedKey = settings.licenseKey?.trim();
+  if (!storedKey) {
+    return settings.licenseStatus ?? { valid: false, message: 'No license activated.', status: 'unknown' as const };
+  }
+
+  const status = await checkHostedLicenseStatus(storedKey, settings.licenseStatus ?? undefined);
+  await saveSettings({ licenseKey: status.valid && status.key ? status.key : '' });
+  return status;
 }
 
 async function getStoredLicenseKey() {
@@ -112,8 +121,74 @@ async function refreshUpdateState() {
     ? await fetchUpdateHistory(licenseKey).catch(() => [])
     : [];
   lastUpdateState = { ...update, history };
+  if (lastUpdateState.feedUrl) {
+    ensureAutoUpdaterConfigured(lastUpdateState.feedUrl);
+  }
   sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
   return lastUpdateState;
+}
+
+function canUseNativeUpdater() {
+  return process.platform === 'win32' && app.isPackaged;
+}
+
+function ensureAutoUpdaterConfigured(feedUrl?: string) {
+  if (!feedUrl || !canUseNativeUpdater()) return;
+
+  if (!autoUpdaterReady) {
+    const updater = autoUpdater as unknown as {
+      on: (event: string, listener: (...args: any[]) => void) => void;
+      setFeedURL: (options: { url: string }) => void;
+      checkForUpdates: () => void;
+      quitAndInstall: () => void;
+    };
+
+    updater.on('error', (_event, error) => {
+      lastUpdateState = {
+        ...(lastUpdateState ?? { currentVersion: app.getVersion() }),
+        status: 'error',
+        message: error?.message || 'Could not download the update.',
+      };
+      sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
+    });
+
+    updater.on('update-available', () => {
+      lastUpdateState = {
+        ...(lastUpdateState ?? { currentVersion: app.getVersion() }),
+        status: 'downloading',
+        message: 'Downloading the latest update...',
+      };
+      sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
+    });
+
+    updater.on('update-not-available', () => {
+      lastUpdateState = {
+        ...(lastUpdateState ?? { currentVersion: app.getVersion() }),
+        status: 'up-to-date',
+        latestVersion: lastUpdateState?.latestVersion ?? app.getVersion(),
+        message: 'You already have the latest version.',
+      };
+      sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
+    });
+
+    updater.on('update-downloaded', (_event, releaseNotes, releaseName) => {
+      lastUpdateState = {
+        ...(lastUpdateState ?? { currentVersion: app.getVersion() }),
+        status: 'ready',
+        releaseName: releaseName || lastUpdateState?.releaseName,
+        releaseNotes: releaseNotes || lastUpdateState?.releaseNotes,
+        message: 'Update ready. Restart the app to install it.',
+      };
+      sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
+    });
+
+    autoUpdaterReady = true;
+  }
+
+  if (configuredFeedUrl !== feedUrl) {
+    (autoUpdater as unknown as { setFeedURL: (options: { url: string }) => void }).setFeedURL({ url: feedUrl });
+    configuredFeedUrl = feedUrl;
+  }
 }
 
 function sendToRenderer(channel: string, ...args: unknown[]): void {
@@ -400,18 +475,21 @@ export function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC.LICENSE_ACTIVATE, async (_event, key: string) => {
-    const status = validateLicenseKey(key);
+    const status = await activateLicenseInput(key);
     if (status.valid && status.key) {
       await saveSettings({ licenseKey: status.key });
       const settings = await loadSettings();
       return settings.licenseStatus ?? status;
+    }
+    if (!status.valid) {
+      await saveSettings({ licenseKey: '' });
     }
     return status;
   });
 
   ipcMain.handle(IPC.LICENSE_CLEAR, async () => {
     await saveSettings({ licenseKey: '' });
-    return { valid: false, message: 'License removed.' };
+    return { valid: false, message: 'License removed.', status: 'unknown' as const };
   });
 
   // Updates
@@ -430,6 +508,22 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC.UPDATE_DOWNLOAD, async () => {
     const latest = lastUpdateState ?? await refreshUpdateState();
+    if (latest.feedUrl && canUseNativeUpdater()) {
+      try {
+        ensureAutoUpdaterConfigured(latest.feedUrl);
+        lastUpdateState = {
+          ...latest,
+          status: 'downloading',
+          message: 'Downloading the latest update...',
+        };
+        sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
+        (autoUpdater as unknown as { checkForUpdates: () => void }).checkForUpdates();
+        return { ok: true as const };
+      } catch (error) {
+        return { ok: false as const, message: error instanceof Error ? error.message : 'Could not start the updater.' };
+      }
+    }
+
     const downloadUrl = latest.downloadUrl || latest.releaseUrl;
     if (!downloadUrl) {
       return { ok: false as const, message: 'No download is available for this release yet.' };
@@ -441,6 +535,17 @@ export function registerIpcHandlers(): void {
       message: 'Installer opened. Finish the update, then relaunch the app.',
     };
     sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
+    return { ok: true as const };
+  });
+
+  ipcMain.handle(IPC.UPDATE_INSTALL, async () => {
+    if (!canUseNativeUpdater()) {
+      return { ok: false as const, message: 'Restart-to-install is only available in packaged Windows builds.' };
+    }
+    if (lastUpdateState?.status !== 'ready') {
+      return { ok: false as const, message: 'No downloaded update is ready to install yet.' };
+    }
+    (autoUpdater as unknown as { quitAndInstall: () => void }).quitAndInstall();
     return { ok: true as const };
   });
 

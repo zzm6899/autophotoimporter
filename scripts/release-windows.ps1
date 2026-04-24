@@ -17,8 +17,42 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-if (-not $ReleaseName) {
-  $ReleaseName = "Photo Importer $Version"
+function Parse-SemVer {
+  param([string]$Value)
+
+  if ($Value -notmatch '^(\d+)\.(\d+)\.(\d+)$') {
+    throw "Version must use semantic version format like 1.1.1."
+  }
+
+  return [PSCustomObject]@{
+    Major = [int]$matches[1]
+    Minor = [int]$matches[2]
+    Patch = [int]$matches[3]
+  }
+}
+
+function Compare-SemVer {
+  param(
+    [string]$Left,
+    [string]$Right
+  )
+
+  $leftParsed = Parse-SemVer $Left
+  $rightParsed = Parse-SemVer $Right
+
+  foreach ($part in @('Major', 'Minor', 'Patch')) {
+    if ($leftParsed.$part -lt $rightParsed.$part) { return -1 }
+    if ($leftParsed.$part -gt $rightParsed.$part) { return 1 }
+  }
+
+  return 0
+}
+
+function Get-NextPatchVersion {
+  param([string]$Value)
+
+  $parsed = Parse-SemVer $Value
+  return "$($parsed.Major).$($parsed.Minor).$($parsed.Patch + 1)"
 }
 
 $adminToken = $AdminToken
@@ -30,6 +64,54 @@ if (-not $adminToken) {
 }
 
 $root = Split-Path -Parent $PSScriptRoot
+$packageJsonPath = Join-Path $root "package.json"
+$packageJson = Get-Content $packageJsonPath -Raw | ConvertFrom-Json
+$currentPackageVersion = [string]$packageJson.version
+
+$versionComparison = Compare-SemVer $Version $currentPackageVersion
+if ($versionComparison -le 0) {
+  $suggestedVersion = Get-NextPatchVersion $currentPackageVersion
+  Write-Host "Requested version $Version is not newer than current package version $currentPackageVersion." -ForegroundColor Yellow
+  $response = Read-Host "Use suggested version $suggestedVersion instead? [Y/n]"
+  if ([string]::IsNullOrWhiteSpace($response) -or $response.Trim().ToLowerInvariant() -in @('y', 'yes')) {
+    $Version = $suggestedVersion
+  } elseif ($versionComparison -lt 0) {
+    throw "Requested version $Version is older than current package version $currentPackageVersion."
+  }
+}
+
+if (-not $ReleaseName) {
+  $ReleaseName = "Photo Importer $Version"
+}
+
+$packageVersionChanged = $currentPackageVersion -ne $Version
+if ($packageVersionChanged) {
+  Write-Host "Updating app version from $currentPackageVersion to $Version..." -ForegroundColor Cyan
+  Push-Location $root
+  try {
+    npm version $Version --no-git-tag-version
+    if ($LASTEXITCODE -ne 0) {
+      throw "npm version $Version failed."
+    }
+  } finally {
+    Pop-Location
+  }
+}
+
+if ([string]::IsNullOrWhiteSpace($ReleaseNotes)) {
+  Push-Location $root
+  try {
+    $latestCommit = git log -1 --pretty=%B
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($latestCommit)) {
+      $ReleaseNotes = $latestCommit.Trim()
+    } else {
+      $ReleaseNotes = "Release $Version"
+    }
+  } finally {
+    Pop-Location
+  }
+}
+
 $makeRoot = Join-Path $root "out\make\squirrel.windows\x64"
 $setupSrc = Join-Path $makeRoot "PhotoImporter-Setup.exe"
 $releasesSrc = Join-Path $makeRoot "RELEASES"
