@@ -20,6 +20,7 @@ const sessionSecret = process.env.ADMIN_SESSION_SECRET || 'change-me-admin-sessi
 const updateSecret = process.env.UPDATE_TOKEN_SECRET || 'change-me-update-token-secret';
 const adminApiToken = process.env.ADMIN_API_TOKEN || '';
 const artifactsRoot = process.env.ARTIFACTS_ROOT || '/srv/artifacts';
+const HOME_URL = process.env.HOME_URL || 'https://culler.z2hs.au/';
 const ACTIVATION_CODE_PREFIX = 'PIC';
 const ACTIVATION_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
@@ -70,6 +71,10 @@ function htmlPage(title, body) {
   </style>
 </head>
 <body><div class="shell">${body}</div></body></html>`;
+}
+
+function wantsHtml(req) {
+  return (req.header('accept') || '').includes('text/html');
 }
 
 function nav() {
@@ -166,12 +171,12 @@ function shouldUseSecureCookies(req) {
 
 function authSession(req, res, next) {
   const token = req.cookies.admin_session;
-  if (!token) return res.redirect('/admin/login');
+  if (!token) return res.redirect(HOME_URL);
   try {
     req.admin = jwt.verify(token, sessionSecret);
     return next();
   } catch {
-    return res.redirect('/admin/login');
+    return res.redirect(HOME_URL);
   }
 }
 
@@ -868,6 +873,7 @@ app.get('/api/v1/app/update', async (req, res) => {
       allowed: false,
       detail: 'Missing license key header',
     });
+    if (wantsHtml(req)) return res.redirect(HOME_URL);
     return res.status(403).json({ allowed: false, message: 'Activate a valid license before checking for updates.' });
   }
 
@@ -881,6 +887,7 @@ app.get('/api/v1/app/update', async (req, res) => {
       allowed: false,
       detail: resolved.message,
     });
+    if (wantsHtml(req)) return res.redirect(HOME_URL);
     return res.status(resolved.status).json({ allowed: false, message: resolved.message });
   }
 
@@ -968,11 +975,13 @@ app.get('/api/v1/app/history', async (req, res) => {
   const limit = Math.min(Number(req.query.limit || 8), 20);
 
   if (!licenseKey) {
+    if (wantsHtml(req)) return res.redirect(HOME_URL);
     return res.status(403).json({ error: 'Missing license key.' });
   }
 
   const resolved = await resolveLicenseRecord(licenseKey);
   if (!resolved.ok) {
+    if (wantsHtml(req)) return res.redirect(HOME_URL);
     return res.status(resolved.status).json({ error: resolved.message });
   }
 
@@ -1002,6 +1011,7 @@ app.get('/api/v1/app/download/:releaseId', async (req, res) => {
     const payload = jwt.verify(String(token || ''), updateSecret);
     const releaseId = Number(req.params.releaseId);
     if (!payload || payload.releaseId !== releaseId) {
+      if (wantsHtml(req)) return res.redirect(HOME_URL);
       return res.status(403).send('Invalid download token.');
     }
 
@@ -1017,6 +1027,7 @@ app.get('/api/v1/app/download/:releaseId', async (req, res) => {
     });
     return res.redirect(release.rows[0].artifact_url);
   } catch {
+    if (wantsHtml(req)) return res.redirect(HOME_URL);
     return res.status(403).send('Download token expired or invalid.');
   }
 });
