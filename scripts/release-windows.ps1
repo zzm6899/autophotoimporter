@@ -4,6 +4,9 @@ param(
 
   [string]$ServerHost = "172.20.20.251",
   [string]$ServerUser = "truenas_admin",
+  # SSH password for truenas_admin — can also be set via $env:TRUENAS_SSH_PASSWORD.
+  # Requires plink/pscp (PuTTY) on PATH. Falls back to key-based ssh/scp if not found.
+  [string]$ServerPassword,
   [string]$ServerRepoPath = "/mnt/tank/apps/photo-importer",
   [string]$AdminEndpoint = "https://admin.culler.z2hs.au",
   [string]$ReleaseBaseUrl = "https://updates.culler.z2hs.au/artifacts/windows",
@@ -16,6 +19,46 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# ---------------------------------------------------------------------------
+# Resolve SSH password and choose ssh tool
+# ---------------------------------------------------------------------------
+if (-not $ServerPassword) {
+  $ServerPassword = $env:TRUENAS_SSH_PASSWORD
+}
+
+$UsePlink = $false
+if ($ServerPassword) {
+  if (Get-Command plink -ErrorAction SilentlyContinue) {
+    $UsePlink = $true
+    Write-Host "Using plink/pscp with password auth." -ForegroundColor DarkGray
+  } else {
+    Write-Warning "plink not found — ignoring password and using key-based ssh/scp."
+    Write-Warning "Install PuTTY and add it to PATH to enable password auth."
+  }
+}
+
+function Invoke-RemoteSsh {
+  param([string]$Command)
+  if ($UsePlink) {
+    plink -ssh -batch -pw $ServerPassword "$ServerUser@$ServerHost" $Command
+  } else {
+    ssh "$ServerUser@$ServerHost" $Command
+  }
+  return $LASTEXITCODE
+}
+
+function Invoke-RemoteScp {
+  param([string]$LocalPath, [string]$RemotePath)
+  if ($UsePlink) {
+    pscp -pw $ServerPassword -batch $LocalPath "$ServerUser@${ServerHost}:$RemotePath"
+  } else {
+    scp $LocalPath "$ServerUser@${ServerHost}:$RemotePath"
+  }
+  return $LASTEXITCODE
+}
+
+# ---------------------------------------------------------------------------
 
 function Parse-SemVer {
   param([string]$Value)
@@ -178,21 +221,21 @@ $remoteDir = "$ServerRepoPath/artifacts/windows"
 $setupRemote = "PhotoImporter-Setup-$Version.exe"
 
 Write-Host "Creating remote artifact directory..." -ForegroundColor Cyan
-ssh "$ServerUser@$ServerHost" "mkdir -p '$remoteDir'"
-if ($LASTEXITCODE -ne 0) {
+$exitCode = Invoke-RemoteSsh "mkdir -p '$remoteDir'"
+if ($exitCode -ne 0) {
   throw "Could not create remote directory $remoteDir"
 }
 
 Write-Host "Uploading Windows artifacts to $ServerHost..." -ForegroundColor Cyan
-scp $setupSrc "$ServerUser@${ServerHost}:$remoteDir/$setupRemote"
-if ($LASTEXITCODE -ne 0) { throw "Failed to upload setup exe." }
-scp $releasesSrc "$ServerUser@${ServerHost}:$remoteDir/RELEASES"
-if ($LASTEXITCODE -ne 0) { throw "Failed to upload RELEASES." }
-scp $nupkgSrc "$ServerUser@${ServerHost}:$remoteDir/"
-if ($LASTEXITCODE -ne 0) { throw "Failed to upload NUPKG." }
-if (Test-Path $zipSrc) {
-  scp $zipSrc "$ServerUser@${ServerHost}:$remoteDir/"
-  if ($LASTEXITCODE -ne 0) { throw "Failed to upload ZIP." }
+$exitCode = Invoke-RemoteScp $setupSrc "$remoteDir/$setupRemote"
+if ($exitCode -ne 0) { throw "Failed to upload setup exe." }
+$exitCode = Invoke-RemoteScp $releasesSrc "$remoteDir/RELEASES"
+if ($exitCode -ne 0) { throw "Failed to upload RELEASES." }
+$exitCode = Invoke-RemoteScp $nupkgSrc "$remoteDir/"
+if ($exitCode -ne 0) { throw "Failed to upload NUPKG." }
+if ($zipSrc -and (Test-Path $zipSrc)) {
+  $exitCode = Invoke-RemoteScp $zipSrc "$remoteDir/"
+  if ($exitCode -ne 0) { throw "Failed to upload ZIP." }
 }
 
 $artifactUrl = "$ReleaseBaseUrl/$setupRemote"

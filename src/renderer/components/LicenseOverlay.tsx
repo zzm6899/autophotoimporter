@@ -18,9 +18,11 @@ export function LicenseOverlay() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    if (licenseStatus?.key) setLicenseInput(licenseStatus.key);
+    // Show the short activation code once validated, not the full stored key
+    if (licenseStatus?.activationCode) setLicenseInput(licenseStatus.activationCode);
+    else if (licenseStatus?.key) setLicenseInput(licenseStatus.key);
     if (licenseStatus?.valid) setFeedback(null);
-  }, [licenseStatus?.key, licenseStatus?.valid]);
+  }, [licenseStatus?.activationCode, licenseStatus?.key, licenseStatus?.valid]);
 
   if (!licenseHydrated || licenseStatus?.valid || !licensePromptOpen) return null;
 

@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Download Culler</title>
+  <meta name="description" content="Download Culler for macOS or Windows. Free photo culling and import app." />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0d0d0f;
+      --surface: #141416;
+      --surface-raised: #1c1c1f;
+      --border: #2a2a2e;
+      --text: #f0f0f0;
+      --text-muted: #888;
+      --text-faint: #444;
+      --accent: #6c63ff;
+      --accent-hover: #7b73ff;
+      --green: #34d399;
+      --radius: 12px;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      --mono: "SF Mono", "Fira Code", Consolas, monospace;
+    }
+
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      min-height: 100vh;
+    }
+
+    a { color: inherit; text-decoration: none; }
+
+    /* NAV */
+    nav {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 2rem; height: 56px;
+      border-bottom: 1px solid var(--border);
+    }
+    .nav-logo { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 1rem; }
+    .nav-logo svg { width: 28px; height: 28px; }
+    .nav-back {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 0.875rem; color: var(--text-muted);
+      transition: color 0.15s;
+    }
+    .nav-back:hover { color: var(--text); }
+
+    /* PAGE */
+    .page {
+      max-width: 800px; margin: 0 auto;
+      padding: 4rem 2rem 6rem;
+    }
+
+    .page-header { text-align: center; margin-bottom: 3.5rem; }
+    .page-header h1 {
+      font-size: 2.4rem; font-weight: 700; letter-spacing: -.03em; margin-bottom: 0.75rem;
+    }
+    .page-header p { color: var(--text-muted); font-size: 1rem; }
+
+    /* PLATFORM TABS */
+    .platform-tabs {
+      display: flex; gap: 0; border-radius: var(--radius); overflow: hidden;
+      border: 1px solid var(--border); margin-bottom: 2rem;
+      background: var(--surface);
+    }
+    .platform-tab {
+      flex: 1; display: flex; align-items: center; justify-content: center; gap: 10px;
+      padding: 1rem; cursor: pointer; font-size: 0.9375rem; font-weight: 500;
+      color: var(--text-muted); border: none; background: transparent;
+      transition: color 0.15s, background 0.15s;
+    }
+    .platform-tab:first-child { border-right: 1px solid var(--border); }
+    .platform-tab.active { background: var(--surface-raised); color: var(--text); }
+    .platform-tab:hover:not(.active) { color: var(--text); }
+
+    /* DOWNLOAD CARD */
+    .download-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+
+    .version-list { }
+    .version-row {
+      display: flex; align-items: center; gap: 1rem;
+      padding: 1.25rem 1.5rem;
+      border-bottom: 1px solid var(--border);
+      transition: background 0.15s;
+    }
+    .version-row:last-child { border-bottom: none; }
+    .version-row:hover { background: var(--surface-raised); }
+    .version-badge {
+      font-size: 0.75rem; font-weight: 600;
+      background: var(--accent); color: white;
+      border-radius: 6px; padding: 2px 8px; white-space: nowrap;
+    }
+    .version-badge.stable { background: var(--accent); }
+    .version-badge.beta { background: #b45309; }
+    .version-info { flex: 1; min-width: 0; }
+    .version-name { font-weight: 600; font-size: 0.9375rem; }
+    .version-meta {
+      font-size: 0.8rem; color: var(--text-muted); margin-top: 2px;
+      display: flex; flex-wrap: wrap; gap: 0.75rem;
+    }
+    .version-notes {
+      font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .version-actions { display: flex; gap: 8px; flex-shrink: 0; }
+    .btn-dl {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 0.45rem 1rem; font-size: 0.8125rem; font-weight: 500;
+      border-radius: 8px; white-space: nowrap; cursor: pointer;
+      transition: background 0.15s, transform 0.1s; border: none;
+    }
+    .btn-dl:hover { transform: translateY(-1px); }
+    .btn-dl.primary {
+      background: var(--accent); color: white;
+    }
+    .btn-dl.primary:hover { background: var(--accent-hover); }
+    .btn-dl.secondary {
+      background: var(--surface-raised); color: var(--text-muted);
+      border: 1px solid var(--border);
+    }
+    .btn-dl.secondary:hover { color: var(--text); background: var(--border); }
+
+    /* EMPTY / LOADING */
+    .state-block {
+      padding: 3rem; text-align: center; color: var(--text-faint); font-size: 0.875rem;
+    }
+    .spinner {
+      width: 20px; height: 20px; border: 2px solid var(--border);
+      border-top-color: var(--accent); border-radius: 50%;
+      animation: spin 0.7s linear infinite; margin: 0 auto 1rem;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* REQUIREMENTS */
+    .requirements {
+      margin-top: 1.5rem;
+      display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;
+    }
+    .req-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 1.25rem;
+    }
+    .req-card h4 { font-size: 0.8rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 0.75rem; }
+    .req-list { list-style: none; }
+    .req-list li { font-size: 0.875rem; color: var(--text-muted); padding: 2px 0; display: flex; gap: 8px; }
+    .req-list li::before { content: "·"; color: var(--text-faint); }
+
+    /* FOOTER */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 1.5rem 2rem;
+      display: flex; justify-content: space-between; align-items: center;
+      flex-wrap: wrap; gap: 1rem;
+      color: var(--text-muted); font-size: 0.8125rem;
+    }
+
+    @media (max-width: 580px) {
+      .version-row { flex-wrap: wrap; }
+      .requirements { grid-template-columns: 1fr; }
+      .version-actions { width: 100%; }
+      .btn-dl { flex: 1; justify-content: center; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <a href="index.html" class="nav-logo">
+    <svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path fill-rule="evenodd" clip-rule="evenodd" d="M128 252C196.483 252 252 196.483 252 128C252 59.5167 196.483 4 128 4C59.5167 4 4 59.5167 4 128C4 196.483 59.5167 252 128 252ZM128 226.694C182.507 226.694 226.694 182.507 226.694 128C226.694 73.4929 182.507 29.3061 128 29.3061C73.4929 29.3061 29.3061 73.4929 29.3061 128C29.3061 182.507 73.4929 226.694 128 226.694ZM188.633 131.549C181.333 137.253 172.145 140.653 162.163 140.653C138.404 140.653 119.143 121.392 119.143 97.6327C119.143 85.8325 123.894 75.1419 131.587 67.3695C130.4 67.3004 129.204 67.2653 128 67.2653C94.4572 67.2653 67.2653 94.4572 67.2653 128C67.2653 161.543 94.4572 188.735 128 188.735C160.352 188.735 186.795 163.44 188.633 131.549ZM117.878 148.245C123.468 148.245 128 143.713 128 138.122C128 132.532 123.468 128 117.878 128C112.287 128 107.755 132.532 107.755 138.122C107.755 143.713 112.287 148.245 117.878 148.245ZM107.755 153.306C107.755 156.101 105.489 158.367 102.694 158.367C99.8986 158.367 97.6327 156.101 97.6327 153.306C97.6327 150.511 99.8986 148.245 102.694 148.245C105.489 148.245 107.755 150.511 107.755 153.306ZM177.347 97.6326C177.347 106.018 170.549 112.816 162.163 112.816C161.21 112.816 160.278 112.729 159.373 112.561C163.87 111.53 167.225 107.503 167.225 102.694C167.225 97.1034 162.693 92.5714 157.102 92.5714C152.292 92.5714 148.266 95.9258 147.235 100.423C147.067 99.5183 146.98 98.5857 146.98 97.6326C146.98 89.2469 153.778 82.449 162.163 82.449C170.549 82.449 177.347 89.2469 177.347 97.6326Z" fill="white"/>
+    </svg>
+    Culler
+  </a>
+  <a href="index.html" class="nav-back">
+    <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M17 10a.75.75 0 01-.75.75H5.612l4.158 3.96a.75.75 0 11-1.04 1.08l-5.5-5.25a.75.75 0 010-1.08l5.5-5.25a.75.75 0 111.04 1.08L5.612 9.25H16.25A.75.75 0 0117 10z" clip-rule="evenodd"/></svg>
+    Back to home
+  </a>
+</nav>
+
+<div class="page">
+  <div class="page-header">
+    <h1>Download Culler</h1>
+    <p>Free to download. One-time license for importing. Works offline.</p>
+  </div>
+
+  <!-- PLATFORM TABS -->
+  <div class="platform-tabs">
+    <button class="platform-tab active" id="tab-mac" onclick="switchPlatform('mac')">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg>
+      macOS
+    </button>
+    <button class="platform-tab" id="tab-win" onclick="switchPlatform('windows')">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.557l7.357-1.002.003 7.096-7.354.042L3 5.557zm7.354 6.913l.004 7.098L3.003 18.56l-.002-6.14 7.353.05zm.892-8.046L21 2.5v8.402l-9.754.077V4.424zm9.758 8.048l-.002 8.31L11.246 19.44v-7.022l9.758.054z"/></svg>
+      Windows
+    </button>
+  </div>
+
+  <!-- RELEASES -->
+  <div class="download-card">
+    <div id="release-list">
+      <div class="state-block">
+        <div class="spinner"></div>
+        Loading releases…
+      </div>
+    </div>
+  </div>
+
+  <!-- REQUIREMENTS -->
+  <div class="requirements">
+    <div class="req-card" id="req-mac">
+      <h4>macOS requirements</h4>
+      <ul class="req-list">
+        <li>macOS 12 Monterey or later</li>
+        <li>Apple Silicon or Intel (universal binary)</li>
+        <li>~80 MB disk space</li>
+      </ul>
+    </div>
+    <div class="req-card" id="req-win" style="display:none">
+      <h4>Windows requirements</h4>
+      <ul class="req-list">
+        <li>Windows 10 or 11 (64-bit)</li>
+        <li>~120 MB disk space</li>
+        <li>Auto-updates via Squirrel</li>
+      </ul>
+    </div>
+    <div class="req-card">
+      <h4>Both platforms</h4>
+      <ul class="req-list">
+        <li>No internet required after install</li>
+        <li>Works with SD, CF, XQD cards</li>
+        <li>Camera USB-C / USB-A connections</li>
+        <li>FTP/FTPS output (optional)</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- FOOTER -->
+<footer>
+  <span>© 2025 Culler</span>
+  <a href="index.html" style="color:var(--text-muted)">← Back to home</a>
+</footer>
+
+<script>
+  // -------------------------------------------------------------------------
+  // Config — point at your real admin API
+  // -------------------------------------------------------------------------
+  const API_BASE = 'https://admin.culler.z2hs.au';
+  const ARTIFACTS_BASE_MAC = 'https://updates.culler.z2hs.au/artifacts/mac';
+  const ARTIFACTS_BASE_WIN = 'https://updates.culler.z2hs.au/artifacts/windows';
+
+  // -------------------------------------------------------------------------
+  // State
+  // -------------------------------------------------------------------------
+  /** @type {'mac'|'windows'} */
+  let currentPlatform = 'mac';
+
+  /** @type {Array<{version:string, releaseName:string, publishedAt:string, notes:string, channel:string, rollout:string, platforms:{mac?:{artifactUrl:string}, windows?:{artifactUrl:string}}}>} */
+  let releases = [];
+
+  // -------------------------------------------------------------------------
+  // Tab switching
+  // -------------------------------------------------------------------------
+  window.switchPlatform = function(platform) {
+    currentPlatform = platform;
+    document.getElementById('tab-mac').classList.toggle('active', platform === 'mac');
+    document.getElementById('tab-win').classList.toggle('active', platform === 'windows');
+    document.getElementById('req-mac').style.display = platform === 'mac' ? '' : 'none';
+    document.getElementById('req-win').style.display = platform === 'windows' ? '' : 'none';
+    renderReleases();
+
+    // Auto-detect platform suggestion
+    const ua = navigator.userAgent;
+    if (platform === 'mac' && !ua.includes('Mac')) {
+      // fine, user switched manually
+    }
+  };
+
+  // -------------------------------------------------------------------------
+  // Fetch releases
+  // -------------------------------------------------------------------------
+  async function loadReleases() {
+    try {
+      const res = await fetch(`${API_BASE}/releases?platform=${currentPlatform}&channel=stable`, {
+        headers: { 'Accept': 'application/json' }
+      });
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      const data = await res.json();
+      releases = Array.isArray(data) ? data : (data.releases ?? []);
+      renderReleases();
+    } catch (err) {
+      showError(err.message);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Render
+  // -------------------------------------------------------------------------
+  function formatDate(iso) {
+    if (!iso) return '';
+    try {
+      return new Intl.DateTimeFormat('en-AU', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(iso));
+    } catch { return iso; }
+  }
+
+  function renderReleases() {
+    const list = document.getElementById('release-list');
+    const platformReleases = releases.filter(r => {
+      const p = r.platforms?.[currentPlatform];
+      return p && (p.artifactUrl || r.artifactUrl);
+    });
+
+    if (platformReleases.length === 0) {
+      list.innerHTML = `<div class="state-block">No ${currentPlatform === 'mac' ? 'macOS' : 'Windows'} releases found yet.</div>`;
+      return;
+    }
+
+    const rows = platformReleases.map((r, i) => {
+      const p = r.platforms?.[currentPlatform] ?? {};
+      const artifactUrl = p.artifactUrl ?? r.artifactUrl ?? '';
+      const isLatest = i === 0;
+      const notes = r.notes ?? r.releaseNotes ?? '';
+      const channel = r.channel ?? 'stable';
+
+      return `
+        <div class="version-row">
+          <div>
+            ${isLatest ? `<span class="version-badge stable">Latest</span>` : ''}
+            ${!isLatest && channel === 'beta' ? `<span class="version-badge beta">Beta</span>` : ''}
+          </div>
+          <div class="version-info">
+            <div class="version-name">${escHtml(r.releaseName || `Culler ${r.version}`)}</div>
+            <div class="version-meta">
+              <span>v${escHtml(r.version)}</span>
+              ${r.publishedAt ? `<span>${formatDate(r.publishedAt)}</span>` : ''}
+            </div>
+            ${notes ? `<div class="version-notes" title="${escHtml(notes)}">${escHtml(notes.split('\n')[0])}</div>` : ''}
+          </div>
+          <div class="version-actions">
+            ${artifactUrl
+              ? `<a href="${escHtml(artifactUrl)}" class="btn-dl primary">
+                   <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path d="M10 2a.75.75 0 01.75.75v8.69l2.97-2.97a.75.75 0 111.06 1.06l-4.25 4.25a.75.75 0 01-1.06 0L5.22 9.53a.75.75 0 011.06-1.06l2.97 2.97V2.75A.75.75 0 0110 2z"/><path d="M3 15.75a.75.75 0 000 1.5h14a.75.75 0 000-1.5H3z"/></svg>
+                   Download
+                 </a>`
+              : `<span class="btn-dl secondary" style="cursor:default;opacity:.5">No artifact</span>`
+            }
+          </div>
+        </div>`;
+    }).join('');
+
+    list.innerHTML = rows;
+  }
+
+  function showError(msg) {
+    document.getElementById('release-list').innerHTML = `
+      <div class="state-block" style="color:var(--text-muted)">
+        <div style="margin-bottom:.5rem">⚠ Could not load releases</div>
+        <div style="font-size:.75rem;font-family:var(--mono);color:var(--text-faint)">${escHtml(msg)}</div>
+      </div>`;
+  }
+
+  function escHtml(s) {
+    return String(s ?? '')
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+
+  // -------------------------------------------------------------------------
+  // Auto-detect platform
+  // -------------------------------------------------------------------------
+  (function detectPlatform() {
+    const ua = navigator.userAgent;
+    if (!ua.includes('Mac') && (ua.includes('Win') || ua.includes('Windows'))) {
+      switchPlatform('windows');
+    }
+  })();
+
+  loadReleases();
+</script>
+</body>
+</html>
