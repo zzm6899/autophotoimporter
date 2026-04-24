@@ -298,7 +298,7 @@ runOnMac('generatePreview (macOS sips)', () => {
   });
 
   it('generates via sips on cache miss', async () => {
-    mockStat.mockRejectedValueOnce(new Error('ENOENT'));
+    mockStat.mockRejectedValue(new Error('ENOENT'));
     mockReadFile.mockResolvedValue(Buffer.from('new-preview'));
 
     const result = await generatePreview('/photo.jpg');
@@ -331,6 +331,8 @@ runOnMac('generateThumbnail (macOS sips)', () => {
   });
 
   it('returns base64 data URI from sips output', async () => {
+    mockStat.mockRejectedValue(new Error('ENOENT'));
+
     const result = await generateThumbnail('/photo.tiff', 'photo.tiff');
     expect(result).toContain('data:image/jpeg;base64,');
     expect(mockExecFile).toHaveBeenCalledWith(
@@ -341,6 +343,7 @@ runOnMac('generateThumbnail (macOS sips)', () => {
   });
 
   it('returns undefined on sips failure with no embedded fallback', async () => {
+    mockStat.mockRejectedValue(new Error('ENOENT'));
     mockExecFile.mockRejectedValue(new Error('timeout'));
     mockExifrThumbnail.mockRejectedValue(new Error('no embedded thumb'));
 
