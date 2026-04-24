@@ -24,6 +24,7 @@ services:
       PORT: 5071
       DATABASE_URL: postgres://photo_importer:${POSTGRES_PASSWORD}@db:5432/photo_importer_updates
       LICENSE_PUBLIC_KEY_PATH: /run/secrets/license_public_key.pem
+      LICENSE_PRIVATE_KEY_PATH: /run/secrets/license_private_key.pem
       ADMIN_EMAIL: ${ADMIN_EMAIL}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
       ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET}
@@ -35,6 +36,7 @@ services:
       - "5071:5071"
     secrets:
       - license_public_key.pem
+      - license_private_key.pem
 
   proxy:
     image: caddy:2.8-alpine
@@ -59,3 +61,5 @@ volumes:
 secrets:
   license_public_key.pem:
     file: ./scripts/license-keys/public.pem
+  license_private_key.pem:
+    file: ./scripts/license-keys/private.pem

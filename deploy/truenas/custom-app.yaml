@@ -16,6 +16,7 @@ services:
       PORT: "5071"
       DATABASE_URL: postgres://photo_importer:CHANGE_ME_POSTGRES_PASSWORD@db:5432/photo_importer_updates
       LICENSE_PUBLIC_KEY_PATH: /config/public.pem
+      LICENSE_PRIVATE_KEY_PATH: /config/private.pem
       ADMIN_EMAIL: CHANGE_ME_ADMIN_EMAIL
       ADMIN_PASSWORD: CHANGE_ME_ADMIN_PASSWORD
       ADMIN_SESSION_SECRET: CHANGE_ME_ADMIN_SESSION_SECRET
@@ -30,4 +31,5 @@ services:
       - "5071:5071"
     volumes:
       - /mnt/tank/apps/photo-importer/scripts/license-keys/public.pem:/config/public.pem:ro
+      - /mnt/tank/apps/photo-importer/scripts/license-keys/private.pem:/config/private.pem:ro
       - /mnt/tank/apps/photo-importer/artifacts:/srv/artifacts

@@ -11,7 +11,11 @@ const { validateLicenseKey } = require('./lib/license');
 const app = express();
 const port = Number(process.env.PORT || 5071);
 const publicKeyPath = process.env.LICENSE_PUBLIC_KEY_PATH || path.resolve(__dirname, '../../scripts/license-keys/public.pem');
+const privateKeyPath = process.env.LICENSE_PRIVATE_KEY_PATH || '';
 const licensePublicKeyPem = fs.readFileSync(publicKeyPath, 'utf8');
+const licensePrivateKeyPem = privateKeyPath && fs.existsSync(privateKeyPath)
+  ? fs.readFileSync(privateKeyPath, 'utf8')
+  : '';
 const sessionSecret = process.env.ADMIN_SESSION_SECRET || 'change-me-admin-session-secret';
 const updateSecret = process.env.UPDATE_TOKEN_SECRET || 'change-me-update-token-secret';
 const adminApiToken = process.env.ADMIN_API_TOKEN || '';
@@ -35,26 +39,29 @@ function htmlPage(title, body) {
   <style>
     body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0f172a;color:#e2e8f0;margin:0}
     a{color:#93c5fd;text-decoration:none}
+    code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
     .shell{max-width:1120px;margin:0 auto;padding:24px}
-    .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}
+    .top{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:20px}
     .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:20px}
     .card,.panel{background:#111827;border:1px solid #334155;border-radius:14px;padding:16px}
     .panel{margin-bottom:16px}
-    .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}
     table{width:100%;border-collapse:collapse;font-size:13px}
     th,td{padding:10px 8px;border-bottom:1px solid #334155;text-align:left;vertical-align:top}
     input,textarea,select{width:100%;background:#0f172a;border:1px solid #334155;border-radius:10px;color:#e2e8f0;padding:10px;box-sizing:border-box}
+    textarea[readonly]{background:#020617}
     button{background:#2563eb;color:white;border:none;border-radius:10px;padding:10px 14px;cursor:pointer}
     button.secondary{background:#334155}
     form.inline{display:inline}
     .muted{color:#94a3b8;font-size:13px}
     .row{display:flex;gap:10px}
     .row > *{flex:1}
-    .nav{display:flex;gap:10px}
+    .nav{display:flex;gap:10px;flex-wrap:wrap}
     .pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#1e293b;font-size:12px}
     .ok{color:#86efac}
     .bad{color:#fca5a5}
-    @media (max-width: 900px){.grid{grid-template-columns:1fr}.row{flex-direction:column}}
+    .actions{display:flex;gap:10px;flex-wrap:wrap}
+    @media (max-width: 900px){.row{flex-direction:column}}
   </style>
 </head>
 <body><div class="shell">${body}</div></body></html>`;
@@ -76,6 +83,62 @@ function signSession(payload) {
 
 function signDownloadToken(payload) {
   return jwt.sign(payload, updateSecret, { expiresIn: '15m' });
+}
+
+function base64Url(input) {
+  return Buffer.from(input).toString('base64url');
+}
+
+function normalizeLicenseDate(value) {
+  if (!value) return undefined;
+  if (/^\d{2}-\d{2}-\d{4}$/.test(value)) {
+    const [day, month, year] = value.split('-');
+    return `${year}-${month}-${day}`;
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  return undefined;
+}
+
+function formatLicenseDate(value) {
+  const normalized = normalizeLicenseDate(value);
+  if (!normalized) return 'Never';
+  const [year, month, day] = normalized.split('-');
+  return `${day}-${month}-${year}`;
+}
+
+function todayLicenseDate() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function canGenerateLicenses() {
+  return Boolean(licensePrivateKeyPem);
+}
+
+function createLicenseKey({ name, email, expiry, notes }) {
+  if (!canGenerateLicenses()) {
+    throw new Error('License generation is not enabled on this server.');
+  }
+  if (!name || !name.trim()) {
+    throw new Error('Customer name is required.');
+  }
+
+  const normalizedExpiry = expiry ? normalizeLicenseDate(expiry) : undefined;
+  if (expiry && !normalizedExpiry) {
+    throw new Error('Expiry must use DD-MM-YYYY.');
+  }
+
+  const payload = {
+    n: name.trim(),
+    i: todayLicenseDate(),
+    t: 'Full access',
+  };
+  if (email?.trim()) payload.e = email.trim();
+  if (normalizedExpiry) payload.x = normalizedExpiry;
+  if (notes?.trim()) payload.o = notes.trim();
+
+  const payloadBuffer = Buffer.from(JSON.stringify(payload), 'utf8');
+  const signature = crypto.sign(null, payloadBuffer, crypto.createPrivateKey(licensePrivateKeyPem));
+  return `PI1-${base64Url(payloadBuffer)}.${base64Url(signature)}`;
 }
 
 function shouldUseSecureCookies(req) {
@@ -129,9 +192,31 @@ async function ensureAdminUser() {
   const existing = await pool.query('SELECT id FROM admin_users WHERE email = $1', [email]);
   if (existing.rowCount) return;
   const hash = await bcrypt.hash(password, 10);
+  await pool.query('INSERT INTO admin_users (email, password_hash) VALUES ($1, $2)', [email, hash]);
+}
+
+async function upsertLicenseRecord(validated, notes) {
   await pool.query(
-    'INSERT INTO admin_users (email, password_hash) VALUES ($1, $2)',
-    [email, hash],
+    `INSERT INTO license_records (fingerprint, license_key, customer_name, customer_email, issued_at, expires_at, status, notes, last_seen_at, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,'active',$7,NOW(),NOW())
+     ON CONFLICT (fingerprint) DO UPDATE
+     SET license_key = EXCLUDED.license_key,
+         customer_name = EXCLUDED.customer_name,
+         customer_email = EXCLUDED.customer_email,
+         issued_at = EXCLUDED.issued_at,
+         expires_at = EXCLUDED.expires_at,
+         status = 'active',
+         notes = EXCLUDED.notes,
+         updated_at = NOW()`,
+    [
+      validated.fingerprint,
+      validated.key,
+      validated.entitlement.name,
+      validated.entitlement.email || null,
+      validated.entitlement.issuedAt || null,
+      validated.entitlement.expiresAt || null,
+      notes || validated.entitlement.notes || null,
+    ],
   );
 }
 
@@ -262,8 +347,8 @@ app.get('/admin', authSession, async (_req, res) => {
   res.send(htmlPage('Admin Dashboard', `
     <div class="top"><div><h1>Update Admin</h1><p class="muted">admin.culler.z2hs.au</p></div>${nav()}</div>
     <div class="cards">
-      ${licenseStats.rows.map((row) => `<div class="card"><div class="muted">Licenses · ${row.status}</div><div style="font-size:28px;font-weight:700">${row.count}</div></div>`).join('')}
-      ${releaseStats.rows.map((row) => `<div class="card"><div class="muted">Releases · ${row.platform} / ${row.rollout_state}</div><div style="font-size:28px;font-weight:700">${row.count}</div></div>`).join('')}
+      ${licenseStats.rows.map((row) => `<div class="card"><div class="muted">Licenses - ${row.status}</div><div style="font-size:28px;font-weight:700">${row.count}</div></div>`).join('')}
+      ${releaseStats.rows.map((row) => `<div class="card"><div class="muted">Releases - ${row.platform} / ${row.rollout_state}</div><div style="font-size:28px;font-weight:700">${row.count}</div></div>`).join('')}
     </div>
     <div class="panel">
       <h2>Recent update activity</h2>
@@ -276,11 +361,35 @@ app.get('/admin', authSession, async (_req, res) => {
 
 app.get('/admin/licenses', authSession, async (_req, res) => {
   const result = await pool.query('SELECT * FROM license_records ORDER BY updated_at DESC NULLS LAST, created_at DESC LIMIT 100');
+  const generatorEnabled = canGenerateLicenses();
+
   res.send(htmlPage('Licenses', `
-    <div class="top"><div><h1>Licenses</h1><p class="muted">Import, search, revoke, and track entitlement state.</p></div>${nav()}</div>
+    <div class="top"><div><h1>Licenses</h1><p class="muted">Import, generate, revoke, and track entitlement state.</p></div>${nav()}</div>
     <div class="grid">
       <div class="panel">
-        <h2>Import / add license</h2>
+        <h2>Generate license</h2>
+        ${generatorEnabled
+          ? `<p class="muted">Create a Full access customer key right here in the admin panel. Expiry uses DD-MM-YYYY.</p>
+        <form method="post" action="/admin/licenses/generate">
+          <label>Customer name</label>
+          <input name="name" required />
+          <div style="height:10px"></div>
+          <label>Email</label>
+          <input type="email" name="email" />
+          <div style="height:10px"></div>
+          <label>Expiry</label>
+          <input name="expiry" placeholder="31-12-2027" />
+          <div style="height:10px"></div>
+          <label>Notes</label>
+          <textarea name="notes" rows="2"></textarea>
+          <div style="height:14px"></div>
+          <button type="submit">Generate and store</button>
+        </form>`
+          : `<p class="bad">License generation is disabled on this server because <code>private.pem</code> is not mounted into the app container yet.</p>
+        <p class="muted">You can still import already-generated licenses below.</p>`}
+      </div>
+      <div class="panel">
+        <h2>Import existing license</h2>
         <form method="post" action="/admin/licenses/import">
           <label>License key</label>
           <textarea name="licenseKey" rows="4" required></textarea>
@@ -294,6 +403,7 @@ app.get('/admin/licenses', authSession, async (_req, res) => {
       <div class="panel">
         <h2>Status guide</h2>
         <p class="muted">Active can update, revoked blocks updates immediately, expired is for admin-side mirror of a lapsed subscription, and disabled is a temporary hold.</p>
+        <p class="muted">Generated keys use the same offline format as the desktop app, so they keep working with your shipped EXE as long as the same private key is used.</p>
       </div>
     </div>
     <div class="panel">
@@ -301,7 +411,7 @@ app.get('/admin/licenses', authSession, async (_req, res) => {
       ${result.rows.map((row) => `<tr>
         <td><strong>${row.customer_name}</strong><div class="muted">${row.customer_email || ''}</div></td>
         <td><span class="pill">${row.status}</span></td>
-        <td>${row.expires_at || 'Never'}</td>
+        <td>${formatLicenseDate(row.expires_at)}</td>
         <td>${row.last_seen_at ? new Date(row.last_seen_at).toLocaleString('en-AU') : 'Never'}</td>
         <td>
           ${row.status !== 'revoked' ? `<form class="inline" method="post" action="/admin/licenses/${row.id}/revoke"><button class="secondary" type="submit">Revoke</button></form>` : ''}
@@ -313,33 +423,47 @@ app.get('/admin/licenses', authSession, async (_req, res) => {
   `));
 });
 
+app.post('/admin/licenses/generate', authSession, async (req, res) => {
+  try {
+    const licenseKey = createLicenseKey({
+      name: req.body.name,
+      email: req.body.email,
+      expiry: req.body.expiry,
+      notes: req.body.notes,
+    });
+    const validated = validateLicenseKey(licenseKey, licensePublicKeyPem);
+    if (!validated.valid) {
+      throw new Error(validated.message || 'Generated key did not validate.');
+    }
+
+    await upsertLicenseRecord(validated, req.body.notes);
+
+    return res.send(htmlPage('License Generated', `
+      <div class="top"><div><h1>License generated</h1><p class="muted">Store this key somewhere safe before leaving the page.</p></div>${nav()}</div>
+      <div class="panel">
+        <p><strong>${validated.entitlement.name}</strong>${validated.entitlement.email ? ` <span class="muted">(${validated.entitlement.email})</span>` : ''}</p>
+        <p class="muted">Full access${validated.entitlement.expiresAt ? ` until ${formatLicenseDate(validated.entitlement.expiresAt)}` : ' with no expiry'}.</p>
+        <label>License key</label>
+        <textarea rows="6" readonly>${licenseKey}</textarea>
+        <div style="height:14px"></div>
+        <div class="actions">
+          <a href="/admin/licenses"><button type="button">Back to licenses</button></a>
+        </div>
+      </div>
+    `));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Could not generate a license.';
+    return res.status(400).send(htmlPage('License Error', `<div class="panel"><h1>License generation failed</h1><p class="bad">${message}</p><a href="/admin/licenses">Back</a></div>`));
+  }
+});
+
 app.post('/admin/licenses/import', authSession, async (req, res) => {
   const validated = validateLicenseKey(req.body.licenseKey, licensePublicKeyPem);
   if (!validated.valid) {
     return res.status(400).send(htmlPage('License Error', `<div class="panel"><h1>License import failed</h1><p class="bad">${validated.message}</p><a href="/admin/licenses">Back</a></div>`));
   }
 
-  await pool.query(
-    `INSERT INTO license_records (fingerprint, license_key, customer_name, customer_email, issued_at, expires_at, status, notes, last_seen_at, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,'active',$7,NOW(),NOW())
-     ON CONFLICT (fingerprint) DO UPDATE
-     SET license_key = EXCLUDED.license_key,
-         customer_name = EXCLUDED.customer_name,
-         customer_email = EXCLUDED.customer_email,
-         issued_at = EXCLUDED.issued_at,
-         expires_at = EXCLUDED.expires_at,
-         notes = EXCLUDED.notes,
-         updated_at = NOW()`,
-    [
-      validated.fingerprint,
-      validated.key,
-      validated.entitlement.name,
-      validated.entitlement.email || null,
-      validated.entitlement.issuedAt || null,
-      validated.entitlement.expiresAt || null,
-      req.body.notes || validated.entitlement.notes || null,
-    ],
-  );
+  await upsertLicenseRecord(validated, req.body.notes);
   return res.redirect('/admin/licenses');
 });
 
@@ -451,7 +575,16 @@ app.get('/admin/customers', authSession, async (_req, res) => {
 });
 
 app.post('/admin/api/releases/import', requireAdminApiToken, async (req, res) => {
-  const { version, platform, channel = 'stable', releaseName, releaseNotes, releaseUrl, artifactUrl, rolloutState = 'draft' } = req.body;
+  const {
+    version,
+    platform,
+    channel = 'stable',
+    releaseName,
+    releaseNotes,
+    releaseUrl,
+    artifactUrl,
+    rolloutState = 'draft',
+  } = req.body;
   if (!version || !platform || !releaseName || !artifactUrl) {
     return res.status(400).json({ error: 'version, platform, releaseName, and artifactUrl are required.' });
   }
@@ -471,7 +604,13 @@ app.get('/api/v1/app/update', async (req, res) => {
   const channel = req.query.channel || 'stable';
 
   if (!licenseKey) {
-    await logUpdateEvent('update-denied', { appVersion: version, platform, channel, allowed: false, detail: 'Missing license key header' });
+    await logUpdateEvent('update-denied', {
+      appVersion: version,
+      platform,
+      channel,
+      allowed: false,
+      detail: 'Missing license key header',
+    });
     return res.status(403).json({ allowed: false, message: 'Activate a valid license before checking for updates.' });
   }
 
@@ -490,7 +629,14 @@ app.get('/api/v1/app/update', async (req, res) => {
 
   const release = await latestRelease(platform, channel);
   if (!release) {
-    await logUpdateEvent('update-check', { fingerprint: resolved.fingerprint, appVersion: version, platform, channel, allowed: true, detail: 'No live release' });
+    await logUpdateEvent('update-check', {
+      fingerprint: resolved.fingerprint,
+      appVersion: version,
+      platform,
+      channel,
+      allowed: true,
+      detail: 'No live release',
+    });
     return res.json({
       allowed: true,
       currentVersion: version,
@@ -505,7 +651,14 @@ app.get('/api/v1/app/update', async (req, res) => {
     platform,
     channel,
   });
-  await logUpdateEvent('update-check', { fingerprint: resolved.fingerprint, appVersion: version, platform, channel, allowed: true, detail: `Offered ${release.version}` });
+  await logUpdateEvent('update-check', {
+    fingerprint: resolved.fingerprint,
+    appVersion: version,
+    platform,
+    channel,
+    allowed: true,
+    detail: `Offered ${release.version}`,
+  });
 
   return res.json({
     allowed: true,
@@ -566,14 +719,34 @@ app.get('/api/v1/app/download/:releaseId', async (req, res) => {
     const release = await pool.query('SELECT * FROM releases WHERE id = $1', [releaseId]);
     if (!release.rowCount) return res.status(404).send('Release not found.');
 
-    await logUpdateEvent('update-download', { fingerprint: payload.fingerprint, platform: payload.platform, channel: payload.channel, allowed: true, detail: `Download ${release.rows[0].version}` });
+    await logUpdateEvent('update-download', {
+      fingerprint: payload.fingerprint,
+      platform: payload.platform,
+      channel: payload.channel,
+      allowed: true,
+      detail: `Download ${release.rows[0].version}`,
+    });
     return res.redirect(release.rows[0].artifact_url);
   } catch {
     return res.status(403).send('Download token expired or invalid.');
   }
 });
 
+async function waitForDatabase(maxAttempts = 20, delayMs = 1500) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await pool.query('SELECT 1');
+      return;
+    } catch (error) {
+      if (attempt === maxAttempts) throw error;
+      console.warn(`[update-admin] Database not ready yet (${attempt}/${maxAttempts}). Retrying...`);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+}
+
 async function start() {
+  await waitForDatabase();
   await ensureAdminUser();
   app.listen(port, '0.0.0.0', () => {
     console.log(`[update-admin] Listening on 0.0.0.0:${port}`);

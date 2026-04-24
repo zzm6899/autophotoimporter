@@ -182,4 +182,12 @@ $env:UPDATE_ADMIN_API_TOKEN="your-admin-api-token"
 npm run release:windows -- -Version 1.1.1 -ServerUser root -ServerHost 172.20.20.251
 ```
 
+You can also run the PowerShell script directly:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release-windows.ps1 -Version 1.1.1
+```
+
 That script builds the Windows installer, uploads the EXE / `RELEASES` / `.nupkg` files to the TrueNAS repo, and registers the release with the hosted admin API.
+
+If the hosted admin container has both `public.pem` and `private.pem` mounted, the Licenses page can also generate customer license keys directly in the web UI.

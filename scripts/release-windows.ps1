@@ -11,6 +11,7 @@ param(
   [string]$Channel = "stable",
   [string]$ReleaseName,
   [string]$ReleaseNotes = "",
+  [string]$AdminToken,
   [switch]$SkipBuild
 )
 
@@ -20,9 +21,12 @@ if (-not $ReleaseName) {
   $ReleaseName = "Photo Importer $Version"
 }
 
-$adminToken = $env:UPDATE_ADMIN_API_TOKEN
+$adminToken = $AdminToken
 if (-not $adminToken) {
-  throw "Set UPDATE_ADMIN_API_TOKEN in your environment before running this script."
+  $adminToken = $env:UPDATE_ADMIN_API_TOKEN
+}
+if (-not $adminToken) {
+  throw "Set UPDATE_ADMIN_API_TOKEN in your environment before running this script, or pass -AdminToken."
 }
 
 $root = Split-Path -Parent $PSScriptRoot

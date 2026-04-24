@@ -36,3 +36,15 @@ Typical hosted Windows release:
 $env:UPDATE_ADMIN_API_TOKEN="your-admin-api-token"
 npm run release:windows -- -Version 1.1.1 -ServerUser root -ServerHost 172.20.20.251
 ```
+
+Or call the script directly:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release-windows.ps1 -Version 1.1.1
+```
+
+The release script reads the admin token from `UPDATE_ADMIN_API_TOKEN` by default. You can also pass it explicitly:
+
+```powershell
+.\scripts\release-windows.ps1 -Version 1.1.1 -AdminToken "your-admin-api-token"
+```
