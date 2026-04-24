@@ -11,8 +11,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/juanmnl/importer/releases/latest">
-    <img src="https://img.shields.io/github/v/release/juanmnl/importer?include_prereleases&label=download&color=black" alt="Download" />
+  <a href="https://github.com/zzm6899/importer/releases/latest">
+    <img src="https://img.shields.io/github/v/release/zzm6899/importer?include_prereleases&label=download&color=black" alt="Download" />
   </a>
 </p>
 
@@ -74,7 +74,7 @@ Any file that is read-only at the filesystem level (e.g. you used the camera's i
 ## Build from Source
 
 ```bash
-git clone https://github.com/juanmnl/importer.git
+git clone https://github.com/zzm6899/importer.git
 cd importer
 npm ci
 npm start            # dev mode (whichever OS you run it on)
