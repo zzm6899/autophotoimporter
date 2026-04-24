@@ -268,6 +268,8 @@
   /** @type {Array<{version:string, releaseName:string, publishedAt:string, notes:string, channel:string, rollout:string, platforms:{mac?:{artifactUrl:string}, windows?:{artifactUrl:string}}}>} */
   let releases = [];
 
+  let dataLoaded = false;
+
   // -------------------------------------------------------------------------
   // Tab switching
   // -------------------------------------------------------------------------
@@ -297,6 +299,7 @@
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
       const data = await res.json();
       releases = Array.isArray(data) ? data : (data.releases ?? []);
+      dataLoaded = true;
       renderReleases();
     } catch (err) {
       showError(err.message);
@@ -315,8 +318,12 @@
 
   function renderReleases() {
     const list = document.getElementById('release-list');
-    // History endpoint returns releases already filtered by platform
     const platformReleases = releases;
+
+    if (!dataLoaded) {
+      list.innerHTML = `<div class="state-block"><div class="spinner"></div>Loading releases…</div>`;
+      return;
+    }
 
     if (platformReleases.length === 0) {
       list.innerHTML = `<div class="state-block">No ${currentPlatform === 'mac' ? 'macOS' : 'Windows'} releases found yet.</div>`;
