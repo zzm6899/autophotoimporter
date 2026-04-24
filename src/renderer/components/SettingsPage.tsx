@@ -67,6 +67,8 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     }).format(date);
   };
 
+  const opensInstaller = updateState.status === 'ready' && Boolean(updateState.downloadUrl);
+
   useEffect(() => {
     setLicenseInput(licenseStatus?.activationCode ?? licenseStatus?.key ?? '');
     if (licenseStatus?.valid) setLicenseFeedback(null);
@@ -419,6 +421,12 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                   {updateState.message}
                 </p>
               )}
+              {updateState.status === 'available' && updateState.latestVersion && (
+                <div className="rounded border border-emerald-500/25 bg-emerald-500/8 px-3 py-2 text-[10px] text-emerald-200">
+                  <div className="font-medium text-emerald-100">New installer ready</div>
+                  <div className="mt-1">Photo Importer {updateState.latestVersion} is available. Use the installer button below to replace your current {updateState.currentVersion} build.</div>
+                </div>
+              )}
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => { void checkNow(); }}
@@ -431,15 +439,15 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                     onClick={() => { void downloadUpdate(); }}
                     className="px-3 py-1 text-xs rounded bg-accent text-white hover:bg-accent-hover"
                   >
-                    Update now
+                    Download installer
                   </button>
                 )}
                 {updateState.status === 'ready' && (
                   <button
-                    onClick={() => { void installUpdate(); }}
+                    onClick={() => { void (opensInstaller ? downloadUpdate() : installUpdate()); }}
                     className="px-3 py-1 text-xs rounded bg-accent text-white hover:bg-accent-hover"
                   >
-                    Restart to update
+                    {opensInstaller ? 'Open installer again' : 'Restart to update'}
                   </button>
                 )}
                 {updateState.releaseUrl && (

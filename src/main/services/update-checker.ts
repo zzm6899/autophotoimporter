@@ -139,11 +139,17 @@ export async function fetchUpdateHistory(licenseKey?: string): Promise<UpdateRel
   const platform = currentPlatform();
   const url = `${UPDATE_BASE_URL}/api/v1/app/history?platform=${encodeURIComponent(platform)}&channel=stable&limit=8`;
   const data = await fetchJson<HistoryResponse>(url, licenseKey);
-  return (data.releases ?? []).map((release) => ({
-    version: release.version,
-    releaseName: release.releaseName ?? release.version,
-    notes: release.notes,
-    publishedAt: release.publishedAt,
-    channel: release.channel,
-  }));
+  const unique = new Map<string, UpdateReleaseSummary>();
+  for (const release of data.releases ?? []) {
+    if (!unique.has(release.version)) {
+      unique.set(release.version, {
+        version: release.version,
+        releaseName: release.releaseName ?? release.version,
+        notes: release.notes,
+        publishedAt: release.publishedAt,
+        channel: release.channel,
+      });
+    }
+  }
+  return Array.from(unique.values());
 }

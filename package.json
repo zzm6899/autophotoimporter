@@ -1,7 +1,7 @@
 {
   "name": "photo-importer",
   "productName": "Photo Importer",
-  "version": "1.1.5",
+  "version": "1.1.11",
   "description": "Import photos and videos from cameras and SD cards",
   "main": ".vite/build/main.js",
   "private": true,
@@ -14,7 +14,6 @@
     "license:generate": "node scripts/generate-license.mjs",
     "license:console": "node scripts/license-console.mjs",
     "update:publish": "node scripts/publish-update-release.mjs",
-    "release:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release-windows.ps1",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"

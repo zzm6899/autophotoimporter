@@ -187,19 +187,13 @@ Optional private-GitHub sync for the admin panel:
 - `GITHUB_RELEASE_TOKEN`
 - `GITHUB_API_BASE_URL` (defaults to `https://api.github.com`)
 
-Windows release publishing from your local machine:
+Local/manual release registration:
 
 ```powershell
 $env:UPDATE_ADMIN_API_TOKEN="your-admin-api-token"
-npm run release:windows -- -Version 1.1.1 -ServerUser root -ServerHost 172.20.20.251
+npm run update:publish -- --endpoint https://updates.culler.z2hs.au --platform windows --version 1.1.11 --file .\out\make\squirrel.windows\x64\PhotoImporter-Setup.exe --release-name "Photo Importer 1.1.11" --release-url https://admin.culler.z2hs.au/releases/1.1.11 --notes "Manual release import" --rollout live
 ```
 
-You can also run the PowerShell script directly:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release-windows.ps1 -Version 1.1.1
-```
-
-That script builds the Windows installer, uploads the EXE / `RELEASES` / `.nupkg` files to the TrueNAS repo, and registers the release with the hosted admin API.
+That helper uploads the installer to the hosted admin/update service and registers the release record there. GitHub Actions does the same thing automatically once `UPDATE_ADMIN_ENDPOINT` and `UPDATE_ADMIN_API_TOKEN` are configured as repo secrets.
 
 If the hosted admin container has both `public.pem` and `private.pem` mounted, the Licenses page can also generate customer license keys directly in the web UI.

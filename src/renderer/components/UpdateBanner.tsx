@@ -9,6 +9,7 @@ function formatDate(value?: string) {
 
 export function UpdateBanner() {
   const { visibleState, dismiss, downloadUpdate, installUpdate, openRelease } = useUpdateNotification();
+  const opensInstaller = visibleState.status === 'ready' && Boolean(visibleState.downloadUrl);
 
   if (!['available', 'downloading', 'ready', 'error', 'denied'].includes(visibleState.status)) {
     return null;
@@ -66,10 +67,10 @@ export function UpdateBanner() {
           )}
           {visibleState.status === 'ready' && (
             <button
-              onClick={() => { void installUpdate(); }}
+              onClick={() => { void (opensInstaller ? downloadUpdate() : installUpdate()); }}
               className="flex-1 py-1.5 rounded text-xs font-medium bg-accent hover:bg-accent-hover text-white transition-colors"
             >
-              Restart to update
+              {opensInstaller ? 'Open installer again' : 'Restart to update'}
             </button>
           )}
           {(visibleState.releaseUrl || visibleState.status === 'available' || visibleState.status === 'ready') && (

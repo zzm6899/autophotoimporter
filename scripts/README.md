@@ -7,11 +7,7 @@ Use these entry points:
 - `license-console.mjs`
   Console command runner if you prefer typed commands.
 - `publish-update-release.mjs`
-  Push a built Windows/macOS release into the hosted TrueNAS update admin service.
-- `release-windows.ps1`
-  Build the Windows installer, upload artifacts to the TrueNAS repo at `172.20.20.251`, and register the hosted release.
-- `release-windows.cmd`
-  Simple Windows wrapper for the PowerShell release script.
+  Upload a built Windows/macOS release into the hosted update admin service and register it.
 - `setup-windows.cmd`
   Dependency install and dev/build helper.
 
@@ -29,22 +25,3 @@ Important:
 - If you replace the keypair, build and ship a new EXE.
 - Use `npm run update:publish -- ...` after CI or local release builds to register a hosted update with `admin.culler.z2hs.au`.
 - The hosted update-admin image is published to `ghcr.io/zzm6899/photo-importer-update-admin:latest` by `.github/workflows/publish-update-admin-image.yml`.
-
-Typical hosted Windows release:
-
-```powershell
-$env:UPDATE_ADMIN_API_TOKEN="your-admin-api-token"
-npm run release:windows -- -Version 1.1.1 -ServerUser root -ServerHost 172.20.20.251
-```
-
-Or call the script directly:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release-windows.ps1 -Version 1.1.1
-```
-
-The release script reads the admin token from `UPDATE_ADMIN_API_TOKEN` by default. You can also pass it explicitly:
-
-```powershell
-.\scripts\release-windows.ps1 -Version 1.1.1 -AdminToken "your-admin-api-token"
-```

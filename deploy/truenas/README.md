@@ -72,7 +72,7 @@ node scripts/publish-update-release.mjs \
   --version 1.1.1 \
   --platform windows \
   --release-name "Photo Importer 1.1.1" \
-  --artifact-url https://updates.culler.z2hs.au/artifacts/windows/PhotoImporter-Setup-1.1.1.exe \
+  --file ./out/make/squirrel.windows/x64/PhotoImporter-Setup.exe \
   --release-url https://admin.culler.z2hs.au/releases/1.1.1 \
   --notes "Improved culling and hosted updates" \
   --rollout live

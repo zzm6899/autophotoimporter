@@ -508,6 +508,23 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC.UPDATE_DOWNLOAD, async () => {
     const latest = lastUpdateState ?? await refreshUpdateState();
+    const downloadUrl = latest.downloadUrl || latest.releaseUrl;
+
+    // Prefer the hosted installer/package link. It's more reliable than the
+    // legacy native updater feed and works for both Windows and macOS builds.
+    if (downloadUrl) {
+      await shell.openExternal(downloadUrl);
+      lastUpdateState = {
+        ...latest,
+        status: 'ready',
+        message: process.platform === 'win32'
+          ? 'Installer opened. Finish the update, then relaunch Photo Importer.'
+          : 'Installer opened. Finish the update, then reopen the app.',
+      };
+      sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
+      return { ok: true as const };
+    }
+
     if (latest.feedUrl && canUseNativeUpdater()) {
       try {
         ensureAutoUpdaterConfigured(latest.feedUrl);
@@ -524,21 +541,17 @@ export function registerIpcHandlers(): void {
       }
     }
 
-    const downloadUrl = latest.downloadUrl || latest.releaseUrl;
-    if (!downloadUrl) {
-      return { ok: false as const, message: 'No download is available for this release yet.' };
-    }
-    await shell.openExternal(downloadUrl);
-    lastUpdateState = {
-      ...latest,
-      status: 'ready',
-      message: 'Installer opened. Finish the update, then relaunch the app.',
-    };
-    sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
-    return { ok: true as const };
+    return { ok: false as const, message: 'No download is available for this release yet.' };
   });
 
   ipcMain.handle(IPC.UPDATE_INSTALL, async () => {
+    if (lastUpdateState?.downloadUrl || lastUpdateState?.releaseUrl) {
+      const reopenUrl = lastUpdateState.downloadUrl || lastUpdateState.releaseUrl;
+      if (reopenUrl) {
+        await shell.openExternal(reopenUrl);
+        return { ok: true as const };
+      }
+    }
     if (!canUseNativeUpdater()) {
       return { ok: false as const, message: 'Restart-to-install is only available in packaged Windows builds.' };
     }
