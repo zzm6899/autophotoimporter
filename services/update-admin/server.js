@@ -78,6 +78,15 @@ function signDownloadToken(payload) {
   return jwt.sign(payload, updateSecret, { expiresIn: '15m' });
 }
 
+function shouldUseSecureCookies(req) {
+  const configured = String(process.env.COOKIE_SECURE || 'auto').toLowerCase();
+  if (configured === 'true') return true;
+  if (configured === 'false') return false;
+  if (req.secure) return true;
+  const forwardedProto = req.header('x-forwarded-proto');
+  return typeof forwardedProto === 'string' && forwardedProto.split(',')[0].trim().toLowerCase() === 'https';
+}
+
 function authSession(req, res, next) {
   const token = req.cookies.admin_session;
   if (!token) return res.redirect('/admin/login');
@@ -184,7 +193,16 @@ app.get('/healthz', async (_req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/admin/login', (_req, res) => {
+app.get('/admin/login', (req, res, next) => {
+  const token = req.cookies.admin_session;
+  if (!token) return next();
+  try {
+    jwt.verify(token, sessionSecret);
+    return res.redirect('/admin');
+  } catch {
+    return next();
+  }
+}, (_req, res) => {
   res.send(htmlPage('Admin Login', `
     <div class="panel" style="max-width:420px;margin:48px auto">
       <h1>Photo Importer Admin</h1>
@@ -219,14 +237,18 @@ app.post('/admin/login', async (req, res) => {
   res.cookie('admin_session', signSession({ sub: user.id, email: user.email }), {
     httpOnly: true,
     sameSite: 'lax',
-    secure: process.env.COOKIE_SECURE === 'false' ? false : true,
+    secure: shouldUseSecureCookies(req),
     path: '/',
   });
   return res.redirect('/admin');
 });
 
-app.post('/admin/logout', (_req, res) => {
-  res.clearCookie('admin_session', { path: '/' });
+app.post('/admin/logout', (req, res) => {
+  res.clearCookie('admin_session', {
+    path: '/',
+    sameSite: 'lax',
+    secure: shouldUseSecureCookies(req),
+  });
   res.redirect('/admin/login');
 });
 
