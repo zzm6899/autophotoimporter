@@ -1,11 +1,13 @@
-name: Build & Release Alpha
+name: Build And Release
 
 on:
   push:
-    branches: [main]
+    tags:
+      - 'v*'
+  workflow_dispatch:
 
 concurrency:
-  group: build-${{ github.ref }}
+  group: release-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -18,9 +20,9 @@ jobs:
       matrix:
         include:
           - os: macos-14
-            artifact_glob: 'out/make/**/*.dmg out/make/**/*.zip'
+            label: macos
           - os: windows-latest
-            artifact_glob: 'out/make/**/*.exe out/make/**/*.nupkg out/make/**/*.zip'
+            label: windows
 
     runs-on: ${{ matrix.os }}
 
@@ -41,7 +43,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: build-${{ matrix.os }}
+          name: ${{ matrix.label }}-build
           path: out/make/**/*
           if-no-files-found: error
           retention-days: 7
@@ -49,53 +51,113 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    env:
+      TAG_NAME: ${{ github.ref_name }}
+      VERSION: ${{ github.ref_name }}
+      UPDATE_ADMIN_ENDPOINT: ${{ secrets.UPDATE_ADMIN_ENDPOINT }}
+      UPDATE_ADMIN_API_TOKEN: ${{ secrets.UPDATE_ADMIN_API_TOKEN }}
+      TRUENAS_HOST: ${{ secrets.TRUENAS_HOST }}
+      TRUENAS_USER: ${{ secrets.TRUENAS_USER }}
+      TRUENAS_PATH: ${{ secrets.TRUENAS_PATH }}
+      PUBLIC_ARTIFACTS_BASE_URL: ${{ secrets.PUBLIC_ARTIFACTS_BASE_URL }}
+
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
 
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
 
-      - name: Delete existing alpha release
-        run: gh release delete v1.1.0-alpha --cleanup-tag --yes || true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create alpha release
+      - name: Collect release artifacts
+        shell: bash
         run: |
-          args=()
-          while IFS= read -r f; do
-            args+=("$f")
-          done < <(find artifacts -type f \( -name "*.dmg" -o -name "*.zip" -o -name "*.exe" -o -name "*.nupkg" \))
+          set -euo pipefail
+          mkdir -p release-assets
+          find artifacts -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.exe' -o -name '*.nupkg' -o -name 'RELEASES' \) -print | while read -r file; do
+            cp "$file" release-assets/
+          done
+          ls -la release-assets
 
-          gh release create v1.1.0-alpha \
-            "${args[@]}" \
-            --prerelease \
-            --title "v1.1.0-alpha" \
-            --notes "$(cat <<'EOF'
-          ## Photo Importer — Alpha Release (macOS + Windows)
-
-          > **Rolling build** — automatically updated on every push to `main`.
-
-          ### Install
-
-          **macOS**
-          1. Download the `.dmg` below
-          2. Open it and drag **Photo Importer** to Applications
-          3. On first launch, macOS will block the unsigned app:
-             - Go to **System Settings → Privacy & Security**
-             - Scroll down and click **Open Anyway**
-
-          **Windows**
-          1. Download `PhotoImporter-Setup.exe` below
-          2. SmartScreen may warn — click **More info → Run anyway**
-          3. The installer places the app under `%LocalAppData%\photo-importer` and adds a Start menu entry.
-
-          ### ⚠️ Unsigned App
-
-          This alpha build is not code-signed or notarized. Gatekeeper (macOS) and SmartScreen (Windows) will warn you on first launch. This is expected — follow the instructions above to allow it.
-          EOF
-          )"
+      - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "$TAG_NAME" release-assets/* \
+            --verify-tag \
+            --title "$TAG_NAME" \
+            --notes "Automated release for $TAG_NAME"
+
+      - name: Set up SSH key for TrueNAS publish
+        if: ${{ env.TRUENAS_HOST != '' && env.TRUENAS_USER != '' && env.TRUENAS_PATH != '' && env.PUBLIC_ARTIFACTS_BASE_URL != '' && env.UPDATE_ADMIN_ENDPOINT != '' && env.UPDATE_ADMIN_API_TOKEN != '' }}
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.TRUENAS_SSH_KEY }}
+
+      - name: Mirror public artifacts to TrueNAS and import hosted releases
+        if: ${{ env.TRUENAS_HOST != '' && env.TRUENAS_USER != '' && env.TRUENAS_PATH != '' && env.PUBLIC_ARTIFACTS_BASE_URL != '' && env.UPDATE_ADMIN_ENDPOINT != '' && env.UPDATE_ADMIN_API_TOKEN != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${VERSION#v}"
+          ssh -o StrictHostKeyChecking=accept-new "$TRUENAS_USER@$TRUENAS_HOST" "mkdir -p '$TRUENAS_PATH/artifacts/windows' '$TRUENAS_PATH/artifacts/macos'"
+
+          WINDOWS_EXE="$(find release-assets -maxdepth 1 -type f -name '*.exe' | head -n 1 || true)"
+          WINDOWS_NUPKG="$(find release-assets -maxdepth 1 -type f -name '*.nupkg' | head -n 1 || true)"
+          WINDOWS_RELEASES="$(find release-assets -maxdepth 1 -type f -name 'RELEASES' | head -n 1 || true)"
+          WINDOWS_ZIP="$(find release-assets -maxdepth 1 -type f -name '*win*.zip' | head -n 1 || true)"
+          MAC_DMG="$(find release-assets -maxdepth 1 -type f -name '*.dmg' | head -n 1 || true)"
+          MAC_ZIP="$(find release-assets -maxdepth 1 -type f \( -name '*darwin*.zip' -o -name '*mac*.zip' \) | head -n 1 || true)"
+
+          if [[ -n "$WINDOWS_EXE" ]]; then
+            scp "$WINDOWS_EXE" "$TRUENAS_USER@$TRUENAS_HOST:$TRUENAS_PATH/artifacts/windows/PhotoImporter-Setup-$VERSION.exe"
+          fi
+          if [[ -n "$WINDOWS_NUPKG" ]]; then
+            scp "$WINDOWS_NUPKG" "$TRUENAS_USER@$TRUENAS_HOST:$TRUENAS_PATH/artifacts/windows/"
+          fi
+          if [[ -n "$WINDOWS_RELEASES" ]]; then
+            scp "$WINDOWS_RELEASES" "$TRUENAS_USER@$TRUENAS_HOST:$TRUENAS_PATH/artifacts/windows/RELEASES"
+          fi
+          if [[ -n "$WINDOWS_ZIP" ]]; then
+            scp "$WINDOWS_ZIP" "$TRUENAS_USER@$TRUENAS_HOST:$TRUENAS_PATH/artifacts/windows/"
+          fi
+          if [[ -n "$MAC_DMG" ]]; then
+            MAC_DMG_NAME="$(basename "$MAC_DMG")"
+            scp "$MAC_DMG" "$TRUENAS_USER@$TRUENAS_HOST:$TRUENAS_PATH/artifacts/macos/$MAC_DMG_NAME"
+            node scripts/publish-update-release.mjs \
+              --endpoint "$UPDATE_ADMIN_ENDPOINT" \
+              --token "$UPDATE_ADMIN_API_TOKEN" \
+              --version "$VERSION" \
+              --platform macos \
+              --release-name "Photo Importer $VERSION" \
+              --artifact-url "${PUBLIC_ARTIFACTS_BASE_URL%/}/macos/$MAC_DMG_NAME" \
+              --release-url "${UPDATE_ADMIN_ENDPOINT%/}/releases/$VERSION" \
+              --notes "Automated release for $TAG_NAME" \
+              --channel stable \
+              --rollout live
+          fi
+          if [[ -n "$MAC_ZIP" ]]; then
+            scp "$MAC_ZIP" "$TRUENAS_USER@$TRUENAS_HOST:$TRUENAS_PATH/artifacts/macos/"
+          fi
+          if [[ -n "$WINDOWS_EXE" ]]; then
+            node scripts/publish-update-release.mjs \
+              --endpoint "$UPDATE_ADMIN_ENDPOINT" \
+              --token "$UPDATE_ADMIN_API_TOKEN" \
+              --version "$VERSION" \
+              --platform windows \
+              --release-name "Photo Importer $VERSION" \
+              --artifact-url "${PUBLIC_ARTIFACTS_BASE_URL%/}/windows/PhotoImporter-Setup-$VERSION.exe" \
+              --release-url "${UPDATE_ADMIN_ENDPOINT%/}/releases/$VERSION" \
+              --notes "Automated release for $TAG_NAME" \
+              --channel stable \
+              --rollout live
+          fi

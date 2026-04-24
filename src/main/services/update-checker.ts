@@ -1,5 +1,6 @@
 import { app, net } from 'electron';
 import type { UpdateReleaseSummary, UpdateState } from '../../shared/types';
+import { getDeviceIdentity } from './device-id';
 
 const UPDATE_BASE_URL = 'https://updates.culler.z2hs.au';
 const TIMEOUT_MS = 10_000;
@@ -61,10 +62,13 @@ function currentPlatform() {
 async function fetchJson<T>(url: string, licenseKey?: string): Promise<T> {
   const { controller, clear } = createTimeoutController();
   try {
+    const device = await getDeviceIdentity();
     const response = await net.fetch(url, {
       headers: {
         Accept: 'application/json',
         'User-Agent': 'photo-importer',
+        'X-Device-Id': device.id,
+        'X-Device-Name': device.name,
         ...(licenseKey ? { 'X-License-Key': licenseKey } : {}),
       },
       signal: controller.signal,

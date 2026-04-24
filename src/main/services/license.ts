@@ -1,6 +1,7 @@
 import { createPublicKey, verify } from 'node:crypto';
 import type { LicenseEntitlement, LicenseValidation } from '../../shared/types';
 import { LICENSE_PUBLIC_KEY_PEM } from '../../shared/license-public-key';
+import { getDeviceIdentity } from './device-id';
 
 const LICENSE_PREFIX = 'PI1-';
 const ACTIVATION_PREFIX = 'PIC-';
@@ -14,6 +15,7 @@ type CompactPayload = {
   x?: string;
   t?: string;
   o?: string;
+  d?: number;
 };
 
 type RemoteLicensePayload = {
@@ -23,6 +25,11 @@ type RemoteLicensePayload = {
   message?: string;
   status?: LicenseValidation['status'];
   entitlement?: LicenseEntitlement;
+  deviceId?: string;
+  deviceName?: string;
+  deviceSlotsUsed?: number;
+  deviceSlotsTotal?: number;
+  currentDeviceRegistered?: boolean;
 };
 
 function toBase64UrlBuffer(value: string): Buffer {
@@ -76,6 +83,7 @@ function toEntitlement(payload: CompactPayload | LicenseEntitlement): LicenseEnt
     expiresAt: normalizeDate(payload.x),
     tier: payload.t || 'Full access',
     notes: payload.o,
+    maxDevices: typeof payload.d === 'number' && payload.d > 0 ? payload.d : undefined,
   };
 }
 
@@ -146,7 +154,15 @@ export function validateLicenseKey(key: string): LicenseValidation {
 }
 
 async function fetchLicenseJson(pathname: string, init?: RequestInit): Promise<RemoteLicensePayload> {
-  const response = await fetch(`${LICENSE_SERVICE_BASE_URL}${pathname}`, init);
+  const device = await getDeviceIdentity();
+  const response = await fetch(`${LICENSE_SERVICE_BASE_URL}${pathname}`, {
+    ...init,
+    headers: {
+      'X-Device-Id': device.id,
+      'X-Device-Name': device.name,
+      ...(init?.headers ?? {}),
+    },
+  });
   let payload: RemoteLicensePayload = { allowed: false };
   try {
     payload = await response.json() as RemoteLicensePayload;
@@ -198,8 +214,14 @@ export async function activateLicenseInput(input: string): Promise<LicenseValida
       return normalizeValidation({
         ...local,
         activationCode: payload.activationCode ?? trimmed,
+        entitlement: payload.entitlement ?? local.entitlement,
         message: payload.message || local.message,
         status: payload.status ?? 'active',
+        deviceId: payload.deviceId,
+        deviceName: payload.deviceName,
+        deviceSlotsUsed: payload.deviceSlotsUsed,
+        deviceSlotsTotal: payload.deviceSlotsTotal,
+        currentDeviceRegistered: payload.currentDeviceRegistered,
       });
     } catch {
       return {
@@ -239,6 +261,11 @@ export async function checkHostedLicenseStatus(
         message: payload.message || 'License no longer active.',
         activationCode: payload.activationCode,
         status: payload.status ?? 'unknown',
+        deviceId: payload.deviceId,
+        deviceName: payload.deviceName,
+        deviceSlotsUsed: payload.deviceSlotsUsed,
+        deviceSlotsTotal: payload.deviceSlotsTotal,
+        currentDeviceRegistered: payload.currentDeviceRegistered,
       };
     }
 
@@ -248,6 +275,11 @@ export async function checkHostedLicenseStatus(
       activationCode: payload.activationCode,
       message: payload.message || local.message,
       status: payload.status ?? 'active',
+      deviceId: payload.deviceId,
+      deviceName: payload.deviceName,
+      deviceSlotsUsed: payload.deviceSlotsUsed,
+      deviceSlotsTotal: payload.deviceSlotsTotal,
+      currentDeviceRegistered: payload.currentDeviceRegistered,
     });
   } catch {
     return normalizeValidation(local);

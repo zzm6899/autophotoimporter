@@ -14,12 +14,28 @@ CREATE TABLE IF NOT EXISTS license_records (
   customer_email TEXT,
   issued_at DATE,
   expires_at DATE,
+  max_devices INTEGER,
   status TEXT NOT NULL DEFAULT 'active',
   notes TEXT,
   last_seen_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS license_activations (
+  id SERIAL PRIMARY KEY,
+  license_fingerprint TEXT NOT NULL REFERENCES license_records(fingerprint) ON DELETE CASCADE,
+  device_id TEXT NOT NULL,
+  device_name TEXT,
+  first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (license_fingerprint, device_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_license_activations_license
+  ON license_activations(license_fingerprint, last_seen_at DESC);
 
 CREATE TABLE IF NOT EXISTS releases (
   id SERIAL PRIMARY KEY,

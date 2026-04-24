@@ -46,12 +46,18 @@ const args = parseArgs(process.argv);
 const privateKeyPath = args['private-key'] || defaultPrivateKeyPath;
 
 if (!args.name) {
-  console.error('Usage: node scripts/generate-license.mjs --name "Customer Name" [--email "x@y.com"] [--expiry 31-12-2027] [--tier pro] [--notes "invoice 123"]');
+  console.error('Usage: node scripts/generate-license.mjs --name "Customer Name" [--email "x@y.com"] [--expiry 31-12-2027] [--tier pro] [--max-devices 1] [--notes "invoice 123"]');
   process.exit(1);
 }
 
 if (!existsSync(privateKeyPath)) {
   console.error(`Private key not found at ${privateKeyPath}. Run npm run license:keypair first.`);
+  process.exit(1);
+}
+
+const maxDevices = Number.parseInt(args['max-devices'] || '1', 10);
+if (!Number.isFinite(maxDevices) || maxDevices < 1) {
+  console.error('max-devices must be a whole number greater than 0.');
   process.exit(1);
 }
 
@@ -69,6 +75,7 @@ const entitlement = {
   i: normalizeDate(displayToday()),
   ...(expiry ? { x: expiry } : {}),
   t: args.tier || 'Full access',
+  d: maxDevices,
   ...(args.notes ? { o: args.notes } : {}),
 };
 

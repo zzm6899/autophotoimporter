@@ -119,6 +119,7 @@ export interface LicenseEntitlement {
   expiresAt?: string;
   tier?: string;
   notes?: string;
+  maxDevices?: number;
 }
 
 export interface LicenseValidation {
@@ -128,6 +129,11 @@ export interface LicenseValidation {
   entitlement?: LicenseEntitlement;
   activationCode?: string;
   status?: 'active' | 'revoked' | 'expired' | 'disabled' | 'unknown';
+  deviceId?: string;
+  deviceName?: string;
+  deviceSlotsUsed?: number;
+  deviceSlotsTotal?: number;
+  currentDeviceRegistered?: boolean;
 }
 
 // Folder naming presets for organizing imported files

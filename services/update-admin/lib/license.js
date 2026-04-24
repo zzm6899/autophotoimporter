@@ -39,6 +39,7 @@ function toEntitlement(payload) {
     expiresAt: normalizeDate(payload.x),
     tier: payload.t || 'Full access',
     notes: payload.o,
+    maxDevices: typeof payload.d === 'number' && payload.d > 0 ? payload.d : undefined,
   };
 }
 

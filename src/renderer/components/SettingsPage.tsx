@@ -385,6 +385,12 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                   <div className="bg-surface-alt border border-border rounded px-2 py-1">
                     Expires: <span className="text-text-secondary">{formatDisplayDate(licenseStatus.entitlement.expiresAt)}</span>
                   </div>
+                  <div className="bg-surface-alt border border-border rounded px-2 py-1">
+                    Seats: <span className="text-text-secondary">{licenseStatus.deviceSlotsUsed ?? 0}/{licenseStatus.deviceSlotsTotal ?? licenseStatus.entitlement.maxDevices ?? '∞'}</span>
+                  </div>
+                  <div className="bg-surface-alt border border-border rounded px-2 py-1">
+                    This device: <span className="text-text-secondary">{licenseStatus.deviceName || 'Current machine'}</span>
+                  </div>
                 </div>
               )}
             </div>

@@ -124,6 +124,12 @@ export function LicenseOverlay() {
               <div className="rounded border border-border bg-surface-alt px-3 py-2">
                 Expires: <span className="text-text">{formatDisplayDate(licenseStatus.entitlement.expiresAt)}</span>
               </div>
+              <div className="rounded border border-border bg-surface-alt px-3 py-2">
+                Seats: <span className="text-text">{licenseStatus.deviceSlotsUsed ?? 0}/{licenseStatus.deviceSlotsTotal ?? licenseStatus.entitlement.maxDevices ?? '∞'}</span>
+              </div>
+              <div className="rounded border border-border bg-surface-alt px-3 py-2">
+                Device: <span className="text-text">{licenseStatus.deviceName || 'Current machine'}</span>
+              </div>
             </div>
           )}
         </div>

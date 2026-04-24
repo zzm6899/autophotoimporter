@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Download Culler</title>
-  <meta name="description" content="Download Culler for macOS or Windows. Free photo culling and import app." />
+  <meta name="description" content="Download the latest Culler release for macOS or Windows." />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -87,14 +87,11 @@
       overflow: hidden;
     }
 
-    .version-list { }
     .version-row {
       display: flex; align-items: center; gap: 1rem;
-      padding: 1.25rem 1.5rem;
-      border-bottom: 1px solid var(--border);
+      padding: 1.5rem;
       transition: background 0.15s;
     }
-    .version-row:last-child { border-bottom: none; }
     .version-row:hover { background: var(--surface-raised); }
     .version-badge {
       font-size: 0.75rem; font-weight: 600;
@@ -110,8 +107,17 @@
       display: flex; flex-wrap: wrap; gap: 0.75rem;
     }
     .version-notes {
-      font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      font-size: 0.85rem; color: var(--text-muted); margin-top: 8px;
+      white-space: pre-wrap;
+      line-height: 1.6;
+    }
+    .latest-summary {
+      margin-top: 1rem;
+      padding: 1rem 1.25rem;
+      border-top: 1px solid var(--border);
+      background: rgba(108, 99, 255, 0.06);
+      color: var(--text-muted);
+      font-size: 0.85rem;
     }
     .version-actions { display: flex; gap: 8px; flex-shrink: 0; }
     .btn-dl {
@@ -192,7 +198,7 @@
 <div class="page">
   <div class="page-header">
     <h1>Download Culler</h1>
-    <p>Free to download. One-time license for importing. Works offline.</p>
+    <p>The website now shows the same thing the app checks for: the latest stable release only.</p>
   </div>
 
   <!-- PLATFORM TABS -->
@@ -207,12 +213,12 @@
     </button>
   </div>
 
-  <!-- RELEASES -->
+  <!-- RELEASE -->
   <div class="download-card">
     <div id="release-list">
       <div class="state-block">
         <div class="spinner"></div>
-        Loading releases…
+        Loading latest release…
       </div>
     </div>
   </div>
@@ -289,7 +295,7 @@
     dataLoaded = false;
     renderReleases();
     try {
-      const url = `${API_BASE}/api/v1/app/releases?platform=${encodeURIComponent(currentPlatform === 'mac' ? 'macos' : 'windows')}&channel=stable&limit=10`;
+      const url = `${API_BASE}/api/v1/app/releases?platform=${encodeURIComponent(currentPlatform === 'mac' ? 'macos' : 'windows')}&channel=stable&latest=true&limit=1`;
       const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
       const data = await res.json();
@@ -316,49 +322,46 @@
     const platformReleases = releases;
 
     if (!dataLoaded) {
-      list.innerHTML = `<div class="state-block"><div class="spinner"></div>Loading releases…</div>`;
+      list.innerHTML = `<div class="state-block"><div class="spinner"></div>Loading latest release…</div>`;
       return;
     }
 
-    if (platformReleases.length === 0) {
-      list.innerHTML = `<div class="state-block">No ${currentPlatform === 'mac' ? 'macOS' : 'Windows'} releases found yet.</div>`;
+    const release = platformReleases[0];
+    if (!release) {
+      list.innerHTML = `<div class="state-block">No ${currentPlatform === 'mac' ? 'macOS' : 'Windows'} release is live yet.</div>`;
       return;
     }
 
-    const rows = platformReleases.map((r, i) => {
-      const p = r.platforms?.[currentPlatform] ?? {};
-      const artifactUrl = r.artifactUrl ?? r.downloadUrl ?? '';
-      const isLatest = i === 0;
-      const notes = r.notes ?? r.releaseNotes ?? '';
-      const channel = r.channel ?? 'stable';
-
-      return `
-        <div class="version-row">
-          <div>
-            ${isLatest ? `<span class="version-badge stable">Latest</span>` : ''}
-            ${!isLatest && channel === 'beta' ? `<span class="version-badge beta">Beta</span>` : ''}
+    const artifactUrl = release.artifactUrl ?? release.downloadUrl ?? '';
+    const notes = release.notes ?? release.releaseNotes ?? '';
+    list.innerHTML = `
+      <div class="version-row">
+        <div>
+          <span class="version-badge stable">Latest</span>
+        </div>
+        <div class="version-info">
+          <div class="version-name">${escHtml(release.releaseName || `Culler ${release.version}`)}</div>
+          <div class="version-meta">
+            <span>v${escHtml(release.version)}</span>
+            ${release.publishedAt ? `<span>${formatDate(release.publishedAt)}</span>` : ''}
+            <span>${currentPlatform === 'mac' ? 'macOS' : 'Windows'}</span>
           </div>
-          <div class="version-info">
-            <div class="version-name">${escHtml(r.releaseName || `Culler ${r.version}`)}</div>
-            <div class="version-meta">
-              <span>v${escHtml(r.version)}</span>
-              ${r.publishedAt ? `<span>${formatDate(r.publishedAt)}</span>` : ''}
-            </div>
-            ${notes ? `<div class="version-notes" title="${escHtml(notes)}">${escHtml(notes.split('\n')[0])}</div>` : ''}
-          </div>
-          <div class="version-actions">
-            ${artifactUrl
-              ? `<a href="${escHtml(artifactUrl)}" class="btn-dl primary">
-                   <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path d="M10 2a.75.75 0 01.75.75v8.69l2.97-2.97a.75.75 0 111.06 1.06l-4.25 4.25a.75.75 0 01-1.06 0L5.22 9.53a.75.75 0 011.06-1.06l2.97 2.97V2.75A.75.75 0 0110 2z"/><path d="M3 15.75a.75.75 0 000 1.5h14a.75.75 0 000-1.5H3z"/></svg>
-                   Download
-                 </a>`
-              : `<span class="btn-dl secondary" style="cursor:default;opacity:.5">No artifact</span>`
-            }
-          </div>
-        </div>`;
-    }).join('');
-
-    list.innerHTML = rows;
+          ${notes ? `<div class="version-notes">${escHtml(notes)}</div>` : ''}
+        </div>
+        <div class="version-actions">
+          ${artifactUrl
+            ? `<a href="${escHtml(artifactUrl)}" class="btn-dl primary">
+                 <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path d="M10 2a.75.75 0 01.75.75v8.69l2.97-2.97a.75.75 0 111.06 1.06l-4.25 4.25a.75.75 0 01-1.06 0L5.22 9.53a.75.75 0 011.06-1.06l2.97 2.97V2.75A.75.75 0 0110 2z"/><path d="M3 15.75a.75.75 0 000 1.5h14a.75.75 0 000-1.5H3z"/></svg>
+                 Download
+               </a>`
+            : `<span class="btn-dl secondary" style="cursor:default;opacity:.5">No artifact</span>`
+          }
+          ${release.releaseUrl ? `<a href="${escHtml(release.releaseUrl)}" class="btn-dl secondary">Notes</a>` : ''}
+        </div>
+      </div>
+      <div class="latest-summary">
+        The app updater also checks this hosted latest release feed, so the website and desktop app stay aligned.
+      </div>`;
   }
 
   function showError(msg) {

@@ -20,6 +20,10 @@ const sessionSecret = process.env.ADMIN_SESSION_SECRET || 'change-me-admin-sessi
 const updateSecret = process.env.UPDATE_TOKEN_SECRET || 'change-me-update-token-secret';
 const adminApiToken = process.env.ADMIN_API_TOKEN || '';
 const artifactsRoot = process.env.ARTIFACTS_ROOT || '/srv/artifacts';
+const githubApiBase = process.env.GITHUB_API_BASE_URL || 'https://api.github.com';
+const githubRepoOwner = process.env.GITHUB_RELEASE_OWNER || '';
+const githubRepoName = process.env.GITHUB_RELEASE_REPO || '';
+const githubToken = process.env.GITHUB_RELEASE_TOKEN || '';
 const ACTIVATION_CODE_PREFIX = 'PIC';
 const ACTIVATION_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
@@ -116,6 +120,28 @@ function htmlPage(title, body) {
       .actions a,.actions form.inline{display:block}
       .actions button{width:100%}
     }
+    :root{--bg:#0d0d0f;--surface:rgba(20,20,22,.92);--surface2:#1c1c1f;--surface3:#242429;--border:#2a2a2e;--border2:#33333a;--text:#f0f0f0;--muted:#9d9da6;--faint:#64646d;--blue:#6c63ff;--blue-dk:#6c63ff;--radius:16px}
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;background:radial-gradient(circle at top,#1a1a24 0,var(--bg) 42%),var(--bg)}
+    a{color:var(--text)}
+    a:hover{color:#fff}
+    .shell{max-width:1240px;padding:28px 24px 40px}
+    .nav{gap:4px;background:rgba(20,20,22,.88);border-radius:999px;padding:6px;box-shadow:0 14px 30px rgba(0,0,0,.14)}
+    .nav a:hover,.nav a.active,.nav form.inline button:hover{background:rgba(108,99,255,.14)}
+    .card,.panel{box-shadow:0 18px 42px rgba(0,0,0,.18);backdrop-filter:blur(14px)}
+    .panel{border-radius:16px}
+    input,textarea,select{background:rgba(0,0,0,.28);border-radius:12px;padding:10px 12px}
+    input:focus,textarea:focus,select:focus{border-color:#6c63ff;box-shadow:0 0 0 3px rgba(108,99,255,.15)}
+    textarea[readonly]{background:#111117}
+    button{background:#6c63ff;border-radius:12px;padding:10px 16px;font-weight:600;transition:background .15s,transform .12s}
+    button:hover{background:#7b73ff;transform:translateY(-1px)}
+    button.secondary:hover{background:var(--surface3)}
+    .hero{display:flex;justify-content:space-between;align-items:flex-end;gap:18px;padding:20px 22px;margin-bottom:18px;border:1px solid var(--border2);border-radius:24px;background:linear-gradient(135deg,rgba(108,99,255,.14),rgba(52,211,153,.06) 55%,rgba(20,20,22,.92));box-shadow:0 24px 50px rgba(0,0,0,.2)}
+    .hero-kicker{font-size:.72rem;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+    .hero-copy p{color:var(--muted);margin-top:8px}
+    .stack{display:flex;flex-direction:column;gap:12px}
+    .list{margin:0;padding-left:18px;color:var(--muted)}
+    .list li{margin:4px 0}
+    @media(max-width:900px){.hero{flex-direction:column;align-items:flex-start;border-radius:18px}}
   </style>
 </head>
 <body><div class="shell">${body}</div></body></html>`;
@@ -186,7 +212,15 @@ function generateActivationCode() {
   return `${ACTIVATION_CODE_PREFIX}-${chars.slice(0, 4).join('')}-${chars.slice(4, 8).join('')}-${chars.slice(8, 12).join('')}`;
 }
 
-function createLicenseKey({ name, email, expiry, notes }) {
+function parseMaxDevices(value, fallback = 1) {
+  const parsed = Number.parseInt(String(value ?? fallback), 10);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    throw new Error('Max devices must be a whole number greater than 0.');
+  }
+  return parsed;
+}
+
+function createLicenseKey({ name, email, expiry, notes, maxDevices }) {
   if (!canGenerateLicenses()) {
     throw new Error('License generation is not enabled on this server.');
   }
@@ -203,6 +237,7 @@ function createLicenseKey({ name, email, expiry, notes }) {
     n: name.trim(),
     i: todayLicenseDate(),
     t: 'Full access',
+    d: parseMaxDevices(maxDevices, 1),
   };
   if (email?.trim()) payload.e = email.trim();
   if (normalizedExpiry) payload.x = normalizedExpiry;
@@ -269,7 +304,22 @@ async function ensureAdminUser() {
 
 async function ensureRuntimeSchema() {
   await pool.query('ALTER TABLE license_records ADD COLUMN IF NOT EXISTS activation_code TEXT');
+  await pool.query('ALTER TABLE license_records ADD COLUMN IF NOT EXISTS max_devices INTEGER');
   await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_license_records_activation_code ON license_records(activation_code)');
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS license_activations (
+      id SERIAL PRIMARY KEY,
+      license_fingerprint TEXT NOT NULL REFERENCES license_records(fingerprint) ON DELETE CASCADE,
+      device_id TEXT NOT NULL,
+      device_name TEXT,
+      first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (license_fingerprint, device_id)
+    )
+  `);
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_license_activations_license ON license_activations(license_fingerprint, last_seen_at DESC)');
 }
 
 async function assignActivationCode(fingerprint) {
@@ -291,14 +341,15 @@ async function assignActivationCode(fingerprint) {
 
 async function upsertLicenseRecord(validated, notes) {
   await pool.query(
-    `INSERT INTO license_records (fingerprint, license_key, customer_name, customer_email, issued_at, expires_at, status, notes, last_seen_at, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,'active',$7,NOW(),NOW())
+    `INSERT INTO license_records (fingerprint, license_key, customer_name, customer_email, issued_at, expires_at, max_devices, status, notes, last_seen_at, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'active',$8,NOW(),NOW())
      ON CONFLICT (fingerprint) DO UPDATE
      SET license_key = EXCLUDED.license_key,
          customer_name = EXCLUDED.customer_name,
          customer_email = EXCLUDED.customer_email,
          issued_at = EXCLUDED.issued_at,
          expires_at = EXCLUDED.expires_at,
+         max_devices = EXCLUDED.max_devices,
          status = 'active',
          notes = EXCLUDED.notes,
          updated_at = NOW()`,
@@ -309,24 +360,63 @@ async function upsertLicenseRecord(validated, notes) {
       validated.entitlement.email || null,
       validated.entitlement.issuedAt || null,
       validated.entitlement.expiresAt || null,
+      validated.entitlement.maxDevices || null,
       notes || validated.entitlement.notes || null,
     ],
   );
   return assignActivationCode(validated.fingerprint);
 }
 
-async function resolveLicenseRecord(licenseKey) {
+async function activationSummary(fingerprint, deviceId) {
+  const activations = await pool.query(
+    `SELECT device_id, device_name, first_seen_at, last_seen_at
+     FROM license_activations
+     WHERE license_fingerprint = $1
+     ORDER BY last_seen_at DESC, id DESC`,
+    [fingerprint],
+  );
+  return {
+    count: activations.rowCount,
+    rows: activations.rows,
+    currentDeviceRegistered: deviceId ? activations.rows.some((row) => row.device_id === deviceId) : false,
+  };
+}
+
+async function registerActivation(fingerprint, deviceId, deviceName) {
+  if (!deviceId) return;
+  await pool.query(
+    `INSERT INTO license_activations (license_fingerprint, device_id, device_name, first_seen_at, last_seen_at, updated_at)
+     VALUES ($1,$2,$3,NOW(),NOW(),NOW())
+     ON CONFLICT (license_fingerprint, device_id) DO UPDATE
+     SET device_name = EXCLUDED.device_name,
+         last_seen_at = NOW(),
+         updated_at = NOW()`,
+    [fingerprint, deviceId, deviceName || null],
+  );
+}
+
+function effectiveMaxDevices(validated, record) {
+  return Number(record?.max_devices || validated.entitlement.maxDevices || 0) || null;
+}
+
+function deviceLimitMessage(maxDevices) {
+  return `This license has reached its ${maxDevices}-device limit.`;
+}
+
+async function resolveLicenseRecord(licenseKey, options = {}) {
   const validated = validateLicenseKey(licenseKey, licensePublicKeyPem);
   if (!validated.valid) {
     return { ok: false, status: 403, message: validated.message };
   }
 
   const fingerprint = validated.fingerprint;
+  const deviceId = String(options.deviceId || '').trim();
+  const deviceName = String(options.deviceName || '').trim();
   const row = await pool.query('SELECT * FROM license_records WHERE fingerprint = $1', [fingerprint]);
   if (row.rowCount === 0) {
     await pool.query(
-      `INSERT INTO license_records (fingerprint, license_key, customer_name, customer_email, issued_at, expires_at, status, notes, last_seen_at)
-       VALUES ($1,$2,$3,$4,$5,$6,'active',$7,NOW())
+      `INSERT INTO license_records (fingerprint, license_key, customer_name, customer_email, issued_at, expires_at, max_devices, status, notes, last_seen_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'active',$8,NOW())
        ON CONFLICT (fingerprint) DO NOTHING`,
       [
         fingerprint,
@@ -335,13 +425,14 @@ async function resolveLicenseRecord(licenseKey) {
         validated.entitlement.email || null,
         validated.entitlement.issuedAt || null,
         validated.entitlement.expiresAt || null,
+        validated.entitlement.maxDevices || null,
         validated.entitlement.notes || null,
       ],
     );
-    return { ok: true, validated, fingerprint, record: { status: 'active' } };
   }
 
-  const record = row.rows[0];
+  const recordResult = await pool.query('SELECT * FROM license_records WHERE fingerprint = $1', [fingerprint]);
+  const record = recordResult.rows[0];
   await pool.query('UPDATE license_records SET last_seen_at = NOW(), updated_at = NOW() WHERE fingerprint = $1', [fingerprint]);
   if (record.status === 'revoked' || record.status === 'expired' || record.status === 'disabled') {
     const message = record.status === 'revoked' || record.status === 'disabled'
@@ -357,7 +448,40 @@ async function resolveLicenseRecord(licenseKey) {
     };
   }
 
-  return { ok: true, validated, fingerprint, record };
+  const maxDevices = effectiveMaxDevices(validated, record);
+  const summary = await activationSummary(fingerprint, deviceId);
+  if (maxDevices && deviceId && !summary.currentDeviceRegistered && summary.count >= maxDevices) {
+    return {
+      ok: false,
+      status: 403,
+      message: deviceLimitMessage(maxDevices),
+      fingerprint,
+      validated,
+      record,
+      activation: {
+        count: summary.count,
+        currentDeviceRegistered: false,
+        maxDevices,
+      },
+    };
+  }
+
+  if (deviceId) {
+    await registerActivation(fingerprint, deviceId, deviceName);
+  }
+  const freshSummary = await activationSummary(fingerprint, deviceId);
+  return {
+    ok: true,
+    validated,
+    fingerprint,
+    record,
+    activation: {
+      count: freshSummary.count,
+      currentDeviceRegistered: freshSummary.currentDeviceRegistered,
+      maxDevices,
+      devices: freshSummary.rows,
+    },
+  };
 }
 
 async function latestRelease(platform, channel) {
@@ -380,6 +504,57 @@ async function releaseByVersion(version) {
     [version],
   );
   return result.rows[0] || null;
+}
+
+function hasGitHubReleaseConfig() {
+  return Boolean(githubRepoOwner && githubRepoName && githubToken);
+}
+
+function githubReleaseSummary() {
+  if (!githubRepoOwner || !githubRepoName) return 'Not configured';
+  return `${githubRepoOwner}/${githubRepoName}`;
+}
+
+function githubHeaders() {
+  return {
+    Accept: 'application/vnd.github+json',
+    Authorization: `Bearer ${githubToken}`,
+    'User-Agent': 'photo-importer-update-admin',
+  };
+}
+
+function guessPlatformFromAssetName(name) {
+  const normalized = String(name || '').toLowerCase();
+  if (normalized.endsWith('.dmg') || normalized.includes('darwin') || normalized.includes('mac')) return 'macos';
+  if (normalized.endsWith('.exe') || normalized.endsWith('.nupkg') || normalized.includes('win')) return 'windows';
+  return null;
+}
+
+async function fetchLatestGitHubReleaseMeta() {
+  if (!hasGitHubReleaseConfig()) {
+    throw new Error('GitHub release sync is not configured.');
+  }
+  const response = await fetch(`${githubApiBase.replace(/\/$/, '')}/repos/${githubRepoOwner}/${githubRepoName}/releases/latest`, {
+    headers: githubHeaders(),
+  });
+  if (!response.ok) {
+    throw new Error(`GitHub API returned ${response.status}.`);
+  }
+  const release = await response.json();
+  const assets = Array.isArray(release.assets) ? release.assets : [];
+  return {
+    tagName: release.tag_name,
+    name: release.name,
+    body: release.body,
+    publishedAt: release.published_at,
+    htmlUrl: release.html_url,
+    assets: assets.map((asset) => ({
+      name: asset.name,
+      url: asset.browser_download_url,
+      size: asset.size,
+      platform: guessPlatformFromAssetName(asset.name),
+    })),
+  };
 }
 
 app.get('/healthz', async (_req, res) => {
@@ -496,7 +671,14 @@ app.get('/admin/licenses', authSession, async (_req, res) => {
   const generatorEnabled = canGenerateLicenses();
 
   res.send(htmlPage('Licenses', `
-    <div class="top"><div><h1>Licenses</h1><p class="muted">Import, generate, revoke, and track entitlement state.</p></div>${nav('licenses')}</div>
+    <div class="hero">
+      <div class="hero-copy">
+        <div class="hero-kicker">Licensing</div>
+        <h1>Device-based licenses with adjustable seat counts.</h1>
+        <p>Each license can carry its own device limit. The desktop app registers a stable machine fingerprint, so you can manage seats without depending on raw MAC addresses.</p>
+      </div>
+      ${nav('licenses')}
+    </div>
     <div class="grid">
       <div class="panel">
         <h2>Generate license</h2>
@@ -509,6 +691,8 @@ app.get('/admin/licenses', authSession, async (_req, res) => {
           <input type="email" name="email" placeholder="jane@example.com" />
           <label>Expiry <span style="font-weight:400">(optional)</span></label>
           <input name="expiry" placeholder="31-12-2027" />
+          <label>Max devices</label>
+          <input type="number" name="maxDevices" min="1" step="1" value="1" />
           <label>Notes <span style="font-weight:400">(optional)</span></label>
           <textarea name="notes" rows="2"></textarea>
           <div style="height:16px"></div>
@@ -539,10 +723,11 @@ app.get('/admin/licenses', authSession, async (_req, res) => {
     </div>
     <div class="panel">
       <h2>All licenses</h2>
-      <table><thead><tr><th>Customer</th><th>Status</th><th>Activation code</th><th>Expires</th><th>Last seen</th><th>Actions</th></tr></thead><tbody>
+      <table><thead><tr><th>Customer</th><th>Status</th><th>Seats</th><th>Activation code</th><th>Expires</th><th>Last seen</th><th>Actions</th></tr></thead><tbody>
       ${result.rows.map((row) => `<tr>
         <td><span style="font-weight:600">${row.customer_name}</span>${row.customer_email ? `<div class="muted">${row.customer_email}</div>` : ''}</td>
         <td>${statusPill(row.status)}</td>
+        <td class="muted">${row.max_devices || '&infin;'} device${row.max_devices === 1 ? '' : 's'}</td>
         <td><code>${row.activation_code || '—'}</code></td>
         <td class="muted">${formatLicenseDate(row.expires_at)}</td>
         <td class="muted">${row.last_seen_at ? new Date(row.last_seen_at).toLocaleString('en-AU') : 'Never'}</td>
@@ -566,6 +751,7 @@ app.post('/admin/licenses/generate', authSession, async (req, res) => {
       email: req.body.email,
       expiry: req.body.expiry,
       notes: req.body.notes,
+      maxDevices: req.body.maxDevices,
     });
     const validated = validateLicenseKey(licenseKey, licensePublicKeyPem);
     if (!validated.valid) {
@@ -579,6 +765,7 @@ app.post('/admin/licenses/generate', authSession, async (req, res) => {
       <div class="panel">
         <p><strong>${validated.entitlement.name}</strong>${validated.entitlement.email ? ` <span class="muted">(${validated.entitlement.email})</span>` : ''}</p>
         <p class="muted">Full access${validated.entitlement.expiresAt ? ` until ${formatLicenseDate(validated.entitlement.expiresAt)}` : ' with no expiry'}.</p>
+        <p class="muted">Seat limit: ${validated.entitlement.maxDevices || 1} device${validated.entitlement.maxDevices === 1 ? '' : 's'}.</p>
         <label>Activation code</label>
         <input value="${activationCode}" readonly />
         <div style="height:10px"></div>
@@ -612,6 +799,13 @@ app.get('/admin/licenses/:id', authSession, async (req, res) => {
     return res.status(404).send(htmlPage('License Not Found', `<div class="panel"><h1>License not found</h1><a href="/admin/licenses">Back</a></div>`));
   }
   const record = result.rows[0];
+  const activations = await pool.query(
+    `SELECT device_id, device_name, first_seen_at, last_seen_at
+     FROM license_activations
+     WHERE license_fingerprint = $1
+     ORDER BY last_seen_at DESC, id DESC`,
+    [record.fingerprint],
+  );
   return res.send(htmlPage(`License ${record.customer_name}`, `
     <div class="top"><div><h1>${record.customer_name}</h1><p class="muted">License details and activation info.</p></div>${nav('licenses')}</div>
     <div class="grid">
@@ -622,7 +816,15 @@ app.get('/admin/licenses/:id', authSession, async (req, res) => {
         ${record.customer_email ? `<p class="muted">Email: ${record.customer_email}</p>` : ''}
         <p class="muted">Issued: ${formatLicenseDate(record.issued_at)}</p>
         <p class="muted">Expires: ${formatLicenseDate(record.expires_at)}</p>
+        <p class="muted">Seat limit: ${record.max_devices || '&infin;'} device${record.max_devices === 1 ? '' : 's'}</p>
+        <p class="muted">Devices seen: ${activations.rowCount}</p>
         <p class="muted">Last seen: ${record.last_seen_at ? new Date(record.last_seen_at).toLocaleString('en-AU') : 'Never'}</p>
+        <form method="post" action="/admin/licenses/${record.id}/devices" style="margin-top:16px">
+          <label>Max devices</label>
+          <input type="number" name="maxDevices" min="1" step="1" value="${record.max_devices || 1}" />
+          <div style="height:12px"></div>
+          <button type="submit">Save seat limit</button>
+        </form>
         <div style="margin-top:16px" class="actions">
           ${record.status !== 'revoked' ? `<form class="inline" method="post" action="/admin/licenses/${record.id}/revoke"><button class="secondary sm" type="submit">Revoke</button></form>` : ''}
           ${record.status !== 'active' ? `<form class="inline" method="post" action="/admin/licenses/${record.id}/activate"><button class="secondary sm" type="submit">Re-activate</button></form>` : ''}
@@ -631,6 +833,14 @@ app.get('/admin/licenses/:id', authSession, async (req, res) => {
       <div class="panel">
         <h2>Stored key</h2>
         <textarea rows="8" readonly>${record.license_key}</textarea>
+      </div>
+      <div class="panel">
+        <h2>Registered devices</h2>
+        ${activations.rowCount
+          ? `<table><thead><tr><th>Device</th><th>Device ID</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>
+              ${activations.rows.map((row) => `<tr><td>${row.device_name || 'Unnamed device'}</td><td><code>${row.device_id}</code></td><td class="muted">${new Date(row.first_seen_at).toLocaleString('en-AU')}</td><td class="muted">${new Date(row.last_seen_at).toLocaleString('en-AU')}</td></tr>`).join('')}
+            </tbody></table>`
+          : '<p class="muted">No devices have activated this license yet.</p>'}
       </div>
     </div>
   `));
@@ -646,10 +856,26 @@ app.post('/admin/licenses/:id/activate', authSession, async (req, res) => {
   res.redirect('/admin/licenses');
 });
 
+app.post('/admin/licenses/:id/devices', authSession, async (req, res) => {
+  const maxDevices = parseMaxDevices(req.body.maxDevices, 1);
+  await pool.query('UPDATE license_records SET max_devices = $1, updated_at = NOW() WHERE id = $2', [maxDevices, req.params.id]);
+  res.redirect(`/admin/licenses/${req.params.id}`);
+});
+
 app.get('/admin/releases', authSession, async (_req, res) => {
   const releases = await pool.query('SELECT * FROM releases ORDER BY published_at DESC, id DESC LIMIT 100');
+  const githubRelease = hasGitHubReleaseConfig()
+    ? await fetchLatestGitHubReleaseMeta().catch((error) => ({ error: error instanceof Error ? error.message : 'Could not load GitHub release.' }))
+    : null;
   res.send(htmlPage('Releases', `
-    <div class="top"><div><h1>Releases</h1><p class="muted">Publish from private GitHub into the hosted update feed.</p></div>${nav('releases')}</div>
+    <div class="hero">
+      <div class="hero-copy">
+        <div class="hero-kicker">Hosted Releases</div>
+        <h1>Keep the website, updater, and CI on the same latest release.</h1>
+        <p>The update feed serves the newest live release only. GitHub metadata can be synced from the repo configured in your TrueNAS environment.</p>
+      </div>
+      ${nav('releases')}
+    </div>
     <div class="grid">
       <div class="panel">
         <h2>Add release</h2>
@@ -673,6 +899,14 @@ app.get('/admin/releases', authSession, async (_req, res) => {
       <div class="panel">
         <h2>CI automation</h2>
         <p class="muted" style="margin-bottom:8px">Use the admin API token with <code>scripts/publish-update-release.mjs</code> from CI or your local release machine to import Windows/macOS artifacts after GitHub builds them.</p>
+        ${!hasGitHubReleaseConfig()
+          ? `<p class="muted">GitHub sync is off until you set <code>GITHUB_RELEASE_OWNER</code>, <code>GITHUB_RELEASE_REPO</code>, and <code>GITHUB_RELEASE_TOKEN</code> in TrueNAS.</p>`
+          : githubRelease?.error
+            ? `<p class="bad">${githubRelease.error}</p>`
+            : `<p class="muted">GitHub repo: <code>${githubReleaseSummary()}</code> · latest ${githubRelease?.tagName || 'Unknown'} · ${Array.isArray(githubRelease?.assets) ? githubRelease.assets.length : 0} assets found.</p>
+               <form method="post" action="/admin/releases/sync-github" style="margin-top:12px">
+                 <button type="submit">Import latest GitHub metadata</button>
+               </form>`}
         <p class="muted">New releases are saved as <strong>Draft</strong> by default — go live explicitly when ready.</p>
       </div>
     </div>
@@ -696,6 +930,42 @@ app.get('/admin/releases', authSession, async (_req, res) => {
       </tbody></table>
     </div>
   `));
+});
+
+app.post('/admin/releases/sync-github', authSession, async (_req, res) => {
+  if (!hasGitHubReleaseConfig()) {
+    return res.status(400).send(htmlPage('GitHub Sync Error', `<div class="panel"><h1>GitHub sync is not configured</h1><p class="muted">Set GITHUB_RELEASE_OWNER, GITHUB_RELEASE_REPO, and GITHUB_RELEASE_TOKEN in TrueNAS first.</p><a href="/admin/releases">Back</a></div>`));
+  }
+
+  try {
+    const latest = await fetchLatestGitHubReleaseMeta();
+    const version = String(latest.tagName || '').replace(/^v/i, '');
+    if (!version) {
+      throw new Error('Latest GitHub release has no tag.');
+    }
+
+    const assets = latest.assets.filter((asset) => asset.platform && asset.url);
+    for (const asset of assets) {
+      await pool.query(
+        `INSERT INTO releases (version, platform, channel, release_name, release_notes, release_url, artifact_url, rollout_state, published_at)
+         VALUES ($1,$2,'stable',$3,$4,$5,$6,'draft',$7)
+         ON CONFLICT DO NOTHING`,
+        [
+          version,
+          asset.platform,
+          latest.name || `Photo Importer ${version}`,
+          latest.body || null,
+          latest.htmlUrl || null,
+          asset.url,
+          latest.publishedAt || new Date().toISOString(),
+        ],
+      );
+    }
+    return res.redirect('/admin/releases');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Could not sync the latest GitHub release.';
+    return res.status(400).send(htmlPage('GitHub Sync Error', `<div class="panel"><h1>GitHub sync failed</h1><p class="bad">${message}</p><a href="/admin/releases">Back</a></div>`));
+  }
 });
 
 app.post('/admin/releases', authSession, async (req, res) => {
@@ -847,6 +1117,8 @@ app.post('/admin/api/releases/import', requireAdminApiToken, async (req, res) =>
 
 app.post('/api/v1/license/resolve', async (req, res) => {
   const activationCode = String(req.body.activationCode || '').trim().toUpperCase();
+  const deviceId = req.header('x-device-id');
+  const deviceName = req.header('x-device-name');
   if (!activationCode) {
     return res.status(400).json({ allowed: false, message: 'Enter an activation code.', status: 'unknown' });
   }
@@ -874,6 +1146,26 @@ app.post('/api/v1/license/resolve', async (req, res) => {
     });
   }
 
+  const maxDevices = Number(record.max_devices || 0) || null;
+  const summary = await activationSummary(record.fingerprint, deviceId);
+  if (maxDevices && deviceId && !summary.currentDeviceRegistered && summary.count >= maxDevices) {
+    return res.status(403).json({
+      allowed: false,
+      message: deviceLimitMessage(maxDevices),
+      activationCode,
+      status: 'disabled',
+      deviceId: deviceId || undefined,
+      deviceName: deviceName || undefined,
+      deviceSlotsUsed: summary.count,
+      deviceSlotsTotal: maxDevices,
+      currentDeviceRegistered: false,
+    });
+  }
+
+  if (deviceId) {
+    await registerActivation(record.fingerprint, deviceId, deviceName);
+  }
+  const freshSummary = await activationSummary(record.fingerprint, deviceId);
   await pool.query('UPDATE license_records SET last_seen_at = NOW(), updated_at = NOW() WHERE id = $1', [record.id]);
   return res.json({
     allowed: true,
@@ -891,24 +1183,39 @@ app.post('/api/v1/license/resolve', async (req, res) => {
       expiresAt: record.expires_at || undefined,
       tier: 'Full access',
       notes: record.notes || undefined,
+      maxDevices: maxDevices || undefined,
     },
+    deviceId: deviceId || undefined,
+    deviceName: deviceName || undefined,
+    deviceSlotsUsed: freshSummary.count,
+    deviceSlotsTotal: maxDevices || undefined,
+    currentDeviceRegistered: freshSummary.currentDeviceRegistered,
   });
 });
 
 app.get('/api/v1/license/status', async (req, res) => {
   const licenseKey = req.header('x-license-key');
+  const deviceId = req.header('x-device-id');
+  const deviceName = req.header('x-device-name');
   if (!licenseKey) {
     return res.status(400).json({ allowed: false, message: 'Missing license key.', status: 'unknown' });
   }
 
-  const resolved = await resolveLicenseRecord(licenseKey);
+  const resolved = await resolveLicenseRecord(licenseKey, { deviceId, deviceName });
   if (!resolved.ok) {
     return res.status(resolved.status).json({
       allowed: false,
       message: resolved.message,
       status: resolved.record?.status || 'unknown',
       activationCode: resolved.record?.activation_code,
-      entitlement: resolved.validated?.entitlement,
+      entitlement: resolved.validated?.entitlement
+        ? { ...resolved.validated.entitlement, maxDevices: resolved.activation?.maxDevices || resolved.validated.entitlement.maxDevices }
+        : undefined,
+      deviceId: deviceId || undefined,
+      deviceName: deviceName || undefined,
+      deviceSlotsUsed: resolved.activation?.count,
+      deviceSlotsTotal: resolved.activation?.maxDevices,
+      currentDeviceRegistered: resolved.activation?.currentDeviceRegistered,
     });
   }
 
@@ -919,12 +1226,21 @@ app.get('/api/v1/license/status', async (req, res) => {
       : 'License active.',
     status: resolved.record?.status || 'active',
     activationCode: resolved.record?.activation_code,
-    entitlement: resolved.validated?.entitlement,
+    entitlement: resolved.validated?.entitlement
+      ? { ...resolved.validated.entitlement, maxDevices: resolved.activation?.maxDevices || resolved.validated.entitlement.maxDevices }
+      : undefined,
+    deviceId: deviceId || undefined,
+    deviceName: deviceName || undefined,
+    deviceSlotsUsed: resolved.activation?.count,
+    deviceSlotsTotal: resolved.activation?.maxDevices,
+    currentDeviceRegistered: resolved.activation?.currentDeviceRegistered,
   });
 });
 
 app.get('/api/v1/app/update', async (req, res) => {
   const licenseKey = req.header('x-license-key');
+  const deviceId = req.header('x-device-id');
+  const deviceName = req.header('x-device-name');
   const platform = req.query.platform || 'windows';
   const version = req.query.version || '0.0.0';
   const channel = req.query.channel || 'stable';
@@ -940,7 +1256,7 @@ app.get('/api/v1/app/update', async (req, res) => {
     return res.status(403).json({ allowed: false, message: 'Activate a valid license before checking for updates.' });
   }
 
-  const resolved = await resolveLicenseRecord(licenseKey);
+  const resolved = await resolveLicenseRecord(licenseKey, { deviceId, deviceName });
   if (!resolved.ok) {
     await logUpdateEvent('update-denied', {
       fingerprint: resolved.fingerprint,
@@ -1018,14 +1334,15 @@ app.get('/api/v1/app/releases', async (req, res) => {
   setPublicCors(req, res);
   const platform = req.query.platform || null;
   const channel = req.query.channel || 'stable';
-  const limit = Math.min(Number(req.query.limit || 10), 50);
+  const latestOnly = String(req.query.latest || '').toLowerCase() === 'true';
+  const limit = latestOnly ? 1 : Math.min(Number(req.query.limit || 10), 50);
 
   const rows = await pool.query(
     `SELECT version, release_name, release_notes, release_url, artifact_url, published_at, channel, platform
      FROM releases
      WHERE ($1::text IS NULL OR platform = $1)
        AND channel = $2
-       AND rollout_state != 'hidden'
+       AND rollout_state = 'live'
      ORDER BY published_at DESC, id DESC
      LIMIT $3`,
     [platform, channel, limit],

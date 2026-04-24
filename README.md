@@ -98,7 +98,14 @@ scripts\setup-windows.cmd build    :: install + npm run make (produces PhotoImpo
 scripts\setup-windows.cmd install  :: install deps only
 ```
 
-The GitHub Actions workflow builds both platforms on every push to `main` and publishes them to a rolling `v1.1.0-alpha` prerelease.
+The GitHub Actions workflow now builds release artifacts from version tags. From Windows CMD or PowerShell:
+
+```cmd
+git tag v1.1.6
+git push origin v1.1.6
+```
+
+That tag triggers GitHub Actions to build both macOS and Windows. If the TrueNAS publish secrets are configured, the workflow also mirrors the public artifacts into the hosted update feed automatically.
 
 ## License keys
 
@@ -174,6 +181,13 @@ The hosted admin image is published from the private GitHub repo to:
 Artifacts are served from the repo-root `artifacts/` directory through Caddy at:
 
 - `https://updates.culler.z2hs.au/artifacts/...`
+
+Optional private-GitHub sync for the admin panel:
+
+- `GITHUB_RELEASE_OWNER`
+- `GITHUB_RELEASE_REPO`
+- `GITHUB_RELEASE_TOKEN`
+- `GITHUB_API_BASE_URL` (defaults to `https://api.github.com`)
 
 Windows release publishing from your local machine:
 

@@ -14,7 +14,7 @@ Commands:
   keypair [--force]
       Create the signing keypair and update src/shared/license-public-key.ts
 
-  create --name "Customer" [--email "x@y.com"] [--expiry DD-MM-YYYY] [--tier "Full access"] [--notes "invoice 123"]
+  create --name "Customer" [--email "x@y.com"] [--expiry DD-MM-YYYY] [--tier "Full access"] [--max-devices 1] [--notes "invoice 123"]
       Generate a customer license key
 
   build
@@ -25,7 +25,7 @@ Commands:
 
 Examples:
   node scripts/license-console.mjs keypair
-  node scripts/license-console.mjs create --name "Jane" --expiry 31-12-2027 --tier "Full access"
+  node scripts/license-console.mjs create --name "Jane" --expiry 31-12-2027 --tier "Full access" --max-devices 3
   node scripts/license-console.mjs build
 `.trim());
 }
