@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useAppState } from '../context/ImportContext';
 import { useImport } from '../hooks/useImport';
-import { formatSize } from '../utils/formatters';
+import { formatSize, formatSpeed, formatEta } from '../utils/formatters';
 
 export function ImportProgress() {
   const { phase, importProgress, volumeImportQueue } = useAppState();
@@ -33,7 +33,7 @@ export function ImportProgress() {
 
   if (collapsed) {
     return (
-      <div className="fixed bottom-9 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 bg-surface-alt border border-border rounded-lg px-4 py-2 shadow-xl min-w-[280px] max-w-[min(92vw,34rem)]">
+      <div className="fixed bottom-9 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 bg-surface-alt border border-border rounded-lg px-4 py-2 shadow-xl min-w-[280px] max-w-[min(92vw,38rem)]">
         <span className="text-xs font-medium text-text shrink-0">Importing</span>
         {/* Mini progress bar */}
         <div className="flex-1 h-1.5 bg-surface-raised rounded-full overflow-hidden">
@@ -43,6 +43,16 @@ export function ImportProgress() {
           />
         </div>
         <span className="text-xs font-mono text-text-secondary shrink-0">{percent}%</span>
+        {importProgress?.bytesPerSec != null && (
+          <span className="text-[10px] font-mono text-text-muted shrink-0">
+            {formatSpeed(importProgress.bytesPerSec)}
+          </span>
+        )}
+        {importProgress?.etaSec != null && importProgress.etaSec > 0 && (
+          <span className="text-[10px] text-text-muted shrink-0">
+            ~{formatEta(importProgress.etaSec)}
+          </span>
+        )}
         {queueLabel && (
           <span className="text-[10px] text-text-muted shrink-0">{queueLabel.replace(' — ', '')}</span>
         )}
@@ -117,6 +127,17 @@ export function ImportProgress() {
                   {formatSize(importProgress.bytesTransferred)} / {formatSize(importProgress.totalBytes)}
                 </span>
               </div>
+              {importProgress.bytesPerSec != null && (
+                <div className="flex justify-between text-sm">
+                  <span className="text-text-secondary">Speed</span>
+                  <span className="text-text font-mono">
+                    {formatSpeed(importProgress.bytesPerSec)}
+                    {importProgress.etaSec != null && importProgress.etaSec > 0 && (
+                      <span className="text-text-muted ml-2">~{formatEta(importProgress.etaSec)} left</span>
+                    )}
+                  </span>
+                </div>
+              )}
               {importProgress.skipped > 0 && (
                 <div className="flex justify-between text-sm">
                   <span className="text-text-secondary">Skipped (duplicates)</span>

@@ -41,18 +41,23 @@ export function useUpdateNotification() {
   };
 
   const downloadUpdate = async () => {
-    setUpdateState((prev) => ({ ...prev, status: 'downloading', message: 'Preparing update...' }));
+    setUpdateState((prev) => ({ ...prev, status: 'downloading', message: 'Downloading update…' }));
     const result = await window.electronAPI.downloadUpdate();
     if (!result.ok) {
-      setUpdateState((prev) => ({ ...prev, status: 'error', message: result.message || 'Could not open the installer download.' }));
+      setUpdateState((prev) => ({ ...prev, status: 'error', message: result.message || 'Could not download the update.' }));
     }
+    // On success the main process pushes an UPDATE_STATUS event with status
+    // 'ready', which is picked up by onUpdateStatus above — no state update needed here.
     return result;
   };
 
   const installUpdate = async () => {
+    // On packaged Windows builds this triggers quitAndInstall, so the app may
+    // close before a response arrives — that is fine. On macOS / dev it opens
+    // the installer file and returns synchronously.
     const result = await window.electronAPI.installUpdate();
     if (!result.ok) {
-      setUpdateState((prev) => ({ ...prev, status: 'error', message: result.message || 'Could not install the update.' }));
+      setUpdateState((prev) => ({ ...prev, status: 'error', message: result.message || 'Could not apply the update.' }));
     }
     return result;
   };

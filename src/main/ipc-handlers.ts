@@ -588,14 +588,25 @@ export function registerIpcHandlers(): void {
     // legacy native updater feed and works for both Windows and macOS builds.
     if (downloadUrl) {
       if (downloadedInstallerPath && downloadedInstallerVersion === latest.latestVersion) {
+        // Already downloaded. On packaged Windows just re-show the ready banner
+        // so the user clicks "Restart to update" — no browser/Explorer popup.
+        if (canUseNativeUpdater()) {
+          lastUpdateState = {
+            ...latest,
+            status: 'ready',
+            downloadUrl: undefined,
+            message: 'Update already downloaded. Restart the app to apply it.',
+          };
+          sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
+          return { ok: true as const };
+        }
+        // macOS / dev: open the installer file.
         const reopenResult = await shell.openPath(downloadedInstallerPath);
         if (!reopenResult) {
           lastUpdateState = {
             ...latest,
             status: 'ready',
-            message: process.platform === 'win32'
-              ? 'Installer reopened from inside Photo Importer.'
-              : 'Installer reopened from inside Photo Importer.',
+            message: 'Installer reopened.',
           };
           sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
           return { ok: true as const };
@@ -615,6 +626,22 @@ export function registerIpcHandlers(): void {
         downloadedInstallerPath = localInstaller;
         downloadedInstallerVersion = latest.latestVersion || versionLabel;
 
+        // On packaged Windows builds Squirrel can apply the update silently
+        // via quitAndInstall — no need to pop an .exe in the file manager.
+        // On macOS (or in dev mode) we still open the installer file.
+        if (canUseNativeUpdater()) {
+          ensureAutoUpdaterConfigured(latest.feedUrl ?? '');
+          lastUpdateState = {
+            ...latest,
+            status: 'ready',
+            // Clear downloadUrl so the banner knows NOT to re-open the file.
+            downloadUrl: undefined,
+            message: 'Update downloaded. Restart the app to apply it.',
+          };
+          sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
+          return { ok: true as const };
+        }
+
         const openResult = await shell.openPath(localInstaller);
         if (openResult) {
           throw new Error(openResult);
@@ -623,9 +650,7 @@ export function registerIpcHandlers(): void {
         lastUpdateState = {
           ...latest,
           status: 'ready',
-          message: process.platform === 'win32'
-            ? 'Installer downloaded inside Photo Importer and opened for install.'
-            : 'Installer downloaded inside Photo Importer and opened for install.',
+          message: 'Installer downloaded and opened. Follow the prompts to update.',
         };
         sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
         return { ok: true as const };
@@ -672,18 +697,26 @@ export function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC.UPDATE_INSTALL, async () => {
+    // Packaged Windows builds: use Squirrel's quitAndInstall for a silent,
+    // no-browser-popup restart. This is the primary path after an internal
+    // download on Windows.
+    if (canUseNativeUpdater() && downloadedInstallerPath) {
+      try {
+        (autoUpdater as unknown as { quitAndInstall: () => void }).quitAndInstall();
+        return { ok: true as const };
+      } catch {
+        // Squirrel isn't wired up yet — fall through and open the file instead.
+      }
+    }
+
+    // Non-packaged / macOS: open the downloaded file so the user can run it.
     if (downloadedInstallerPath) {
       const reopenResult = await shell.openPath(downloadedInstallerPath);
       if (!reopenResult) {
         return { ok: true as const };
       }
     }
-    if (lastUpdateState?.downloadUrl || lastUpdateState?.releaseUrl) {
-      return {
-        ok: false as const,
-        message: 'Download the installer first so Photo Importer can open it locally.',
-      };
-    }
+
     if (!canUseNativeUpdater()) {
       return { ok: false as const, message: 'Restart-to-install is only available in packaged Windows builds.' };
     }

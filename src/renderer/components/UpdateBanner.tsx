@@ -9,31 +9,24 @@ function formatDate(value?: string) {
 
 export function UpdateBanner() {
   const { visibleState, dismiss, downloadUpdate, installUpdate, openRelease } = useUpdateNotification();
-  const opensInstaller = visibleState.status === 'ready' && Boolean(visibleState.downloadUrl);
 
   if (!['available', 'downloading', 'ready', 'error', 'denied'].includes(visibleState.status)) {
     return null;
   }
 
-  const title = visibleState.status === 'denied'
-    ? 'Updates locked'
-    : visibleState.status === 'error'
-      ? 'Update check failed'
-      : visibleState.status === 'ready'
-        ? 'Update ready'
-        : visibleState.status === 'downloading'
-          ? 'Preparing update'
-          : 'Update available';
+  const title =
+    visibleState.status === 'denied' ? 'Updates locked' :
+    visibleState.status === 'error' ? 'Update check failed' :
+    visibleState.status === 'ready' ? 'Update ready' :
+    visibleState.status === 'downloading' ? 'Preparing update…' :
+    'Update available';
 
-  const body = visibleState.status === 'denied'
-    ? (visibleState.message || 'This license is not entitled to updates.')
-    : visibleState.status === 'error'
-      ? (visibleState.message || 'The update service could not be reached.')
-      : visibleState.status === 'ready'
-        ? (visibleState.message || 'Update is ready to install. Restart when you are ready.')
-        : visibleState.status === 'downloading'
-          ? (visibleState.message || 'Downloading the latest update...')
-          : `v${visibleState.latestVersion} is available${visibleState.releaseDate ? ` - ${formatDate(visibleState.releaseDate)}` : ''}. Update now or later.`;
+  const body =
+    visibleState.status === 'denied' ? (visibleState.message || 'This license is not entitled to updates.') :
+    visibleState.status === 'error' ? (visibleState.message || 'The update service could not be reached.') :
+    visibleState.status === 'ready' ? (visibleState.message || 'Update downloaded. Close and restart to apply it.') :
+    visibleState.status === 'downloading' ? (visibleState.message || 'Downloading the latest update…') :
+    `v${visibleState.latestVersion} is available${visibleState.releaseDate ? ` · ${formatDate(visibleState.releaseDate)}` : ''}.`;
 
   return (
     <div className="fixed bottom-4 right-4 z-40 max-w-sm w-full animate-in">
@@ -62,18 +55,18 @@ export function UpdateBanner() {
               onClick={() => { void downloadUpdate(); }}
               className="flex-1 py-1.5 rounded text-xs font-medium bg-accent hover:bg-accent-hover text-white transition-colors"
             >
-              Update now
+              Download update
             </button>
           )}
           {visibleState.status === 'ready' && (
             <button
-              onClick={() => { void (opensInstaller ? downloadUpdate() : installUpdate()); }}
+              onClick={() => { void installUpdate(); }}
               className="flex-1 py-1.5 rounded text-xs font-medium bg-accent hover:bg-accent-hover text-white transition-colors"
             >
-              {opensInstaller ? 'Open installer again' : 'Restart to update'}
+              Restart to update
             </button>
           )}
-          {(visibleState.releaseUrl || visibleState.status === 'available' || visibleState.status === 'ready') && (
+          {visibleState.releaseUrl && (visibleState.status === 'available' || visibleState.status === 'ready') && (
             <button
               onClick={openRelease}
               className="flex-1 py-1.5 rounded text-xs font-medium bg-surface-alt hover:bg-border text-text-secondary transition-colors"

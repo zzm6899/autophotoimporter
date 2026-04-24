@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
-import { formatDuration, formatSize } from '../utils/formatters';
+import { formatDuration, formatSize, formatSpeed } from '../utils/formatters';
 import { useImport } from '../hooks/useImport';
 
 export function ImportSummary() {
@@ -73,6 +73,14 @@ export function ImportSummary() {
             <span className="text-text-secondary">Duration</span>
             <span className="text-text font-mono">{formatDuration(importResult.durationMs)}</span>
           </div>
+          {importResult.totalBytes > 0 && importResult.durationMs > 500 && (
+            <div className="flex justify-between text-sm">
+              <span className="text-text-secondary">Avg speed</span>
+              <span className="text-text font-mono">
+                {formatSpeed(Math.round(importResult.totalBytes / (importResult.durationMs / 1000)))}
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Error list */}

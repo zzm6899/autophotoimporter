@@ -67,8 +67,6 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     }).format(date);
   };
 
-  const opensInstaller = updateState.status === 'ready' && Boolean(updateState.downloadUrl);
-
   useEffect(() => {
     setLicenseInput(licenseStatus?.activationCode ?? licenseStatus?.key ?? '');
     if (licenseStatus?.valid) setLicenseFeedback(null);
@@ -444,10 +442,10 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                 )}
                 {updateState.status === 'ready' && (
                   <button
-                    onClick={() => { void (opensInstaller ? downloadUpdate() : installUpdate()); }}
+                    onClick={() => { void installUpdate(); }}
                     className="px-3 py-1 text-xs rounded bg-accent text-white hover:bg-accent-hover"
                   >
-                    {opensInstaller ? 'Open installer again' : 'Restart to update'}
+                    Restart to update
                   </button>
                 )}
                 {updateState.releaseUrl && (

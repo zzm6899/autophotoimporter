@@ -221,6 +221,10 @@ export interface ImportProgress {
   totalBytes: number;
   skipped: number;
   errors: number;
+  /** Bytes per second (rolling 3 s window). Undefined until enough data. */
+  bytesPerSec?: number;
+  /** Estimated seconds remaining. Undefined until bytesPerSec is available. */
+  etaSec?: number;
 }
 
 export interface ImportResult {

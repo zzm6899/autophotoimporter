@@ -430,6 +430,34 @@ export async function importFiles(
 
   let nextIndex = 0;
 
+  // Rolling 3-second window for transfer speed calculation.
+  // Each sample is { t: epochMs, bytes: bytesTransferred at that point }.
+  const SPEED_WINDOW_MS = 3000;
+  const speedSamples: Array<{ t: number; bytes: number }> = [];
+
+  function recordSpeedSample() {
+    const now = Date.now();
+    speedSamples.push({ t: now, bytes: bytesTransferred });
+    // Trim samples older than the window
+    const cutoff = now - SPEED_WINDOW_MS;
+    while (speedSamples.length > 1 && speedSamples[0].t < cutoff) {
+      speedSamples.shift();
+    }
+  }
+
+  function computeSpeed(): { bytesPerSec?: number; etaSec?: number } {
+    if (speedSamples.length < 2) return {};
+    const oldest = speedSamples[0];
+    const newest = speedSamples[speedSamples.length - 1];
+    const elapsedSec = (newest.t - oldest.t) / 1000;
+    if (elapsedSec < 0.1) return {};
+    const bytesPerSec = (newest.bytes - oldest.bytes) / elapsedSec;
+    if (bytesPerSec <= 0) return {};
+    const remaining = totalBytes - bytesTransferred;
+    const etaSec = remaining > 0 ? Math.round(remaining / bytesPerSec) : 0;
+    return { bytesPerSec: Math.round(bytesPerSec), etaSec };
+  }
+
   async function worker(): Promise<void> {
     while (!signal.aborted) {
       const idx = nextIndex++;
@@ -437,6 +465,7 @@ export async function importFiles(
 
       await importOne(files[idx]);
       processedCount++;
+      recordSpeedSample();
 
       onProgress({
         currentFile: files[idx].name,
@@ -446,6 +475,7 @@ export async function importFiles(
         totalBytes,
         skipped,
         errors: errors.length,
+        ...computeSpeed(),
       });
     }
   }
@@ -466,6 +496,7 @@ export async function importFiles(
         await client.ensureDir(remoteDir);
         await client.uploadFrom(upload.localPath, remoteName);
         uploaded++;
+        recordSpeedSample();
         onProgress({
           currentFile: `${upload.fileName} (FTP ${uploaded}/${ftpUploads.length})`,
           currentIndex: processedCount,
@@ -474,6 +505,7 @@ export async function importFiles(
           totalBytes,
           skipped,
           errors: errors.length,
+          ...computeSpeed(),
         });
       }
     } catch (ftpErr: unknown) {

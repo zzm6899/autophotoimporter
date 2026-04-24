@@ -312,7 +312,9 @@ export function reducer(state: State, action: Action): State {
     case 'IMPORT_COMPLETE':
       return { ...state, phase: 'complete', importResult: action.result };
     case 'DISMISS_SUMMARY':
-      return { ...state, phase: 'ready', importResult: null, importProgress: null };
+      // If there are no files in the list (e.g. after auto-import cleared them),
+      // return to idle rather than 'ready' — avoids a blank ready-but-empty state.
+      return { ...state, phase: state.files.length > 0 ? 'ready' : 'idle', importResult: null, importProgress: null };
     case 'SET_THUMBNAIL':
       return {
         ...state,
