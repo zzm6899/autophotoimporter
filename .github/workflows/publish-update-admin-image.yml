@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'services/update-admin/**'
+      - 'deploy/truenas/**'
       - '.github/workflows/publish-update-admin-image.yml'
   workflow_dispatch:
 
