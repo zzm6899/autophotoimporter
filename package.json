@@ -14,6 +14,7 @@
     "license:generate": "node scripts/generate-license.mjs",
     "license:console": "node scripts/license-console.mjs",
     "update:publish": "node scripts/publish-update-release.mjs",
+    "models": "node scripts/download-models.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
@@ -48,6 +49,7 @@
     "basic-ftp": "^5.0.5",
     "electron-squirrel-startup": "^1.0.1",
     "exifr": "^7.1.3",
+    "onnxruntime-node": "^1.21.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4"
   }

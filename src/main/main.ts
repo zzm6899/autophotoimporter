@@ -2,6 +2,7 @@ import { app, BrowserWindow } from 'electron';
 import path from 'node:path';
 import started from 'electron-squirrel-startup';
 import { registerIpcHandlers } from './ipc-handlers';
+import { ensureModelsDownloaded } from './services/model-downloader';
 
 if (started) {
   app.quit();
@@ -42,20 +43,7 @@ const createWindow = () => {
 app.on('ready', () => {
   registerIpcHandlers();
   createWindow();
-});
-
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
-});
-
-app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
-    createWindow();
-  }
-});
-
-export function getMainWindow(): BrowserWindow | null {
-  return mainWindow;
-}
+  // Download ONNX face models in the background if not already present.
+  // Non-blocking — the app is fully usable while this runs. Progress is
+  // broadcast to the renderer via FACE_MODEL_DOWNLOAD_PROGRESS.
+  // Small delay so th

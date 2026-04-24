@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC } from '../shared/types';
 import type { ImportConfig, AppSettings, MediaFile, Volume, ImportProgress, ImportResult, UpdateInfo, UpdateReleaseSummary, UpdateState, FtpConfig, ImportError, LicenseValidation } from '../shared/types';
+import type { FaceBox } from './services/face-engine';
+import type { ModelDownloadProgress } from './services/model-downloader';
 
 export interface FtpProbeResult {
   ok: boolean;
@@ -161,13 +163,6 @@ const api = {
     return () => ipcRenderer.removeListener(IPC.AUTO_IMPORT_COMPLETE, handler);
   },
 
-  // Platform info (renderer uses this to show Ctrl vs ⌘ in shortcuts)
-  platform: process.platform,
-};
-
-// Re-export so non-preload modules can reference the ImportError type on results.
-export type { ImportError };
-
-export type ElectronAPI = typeof api;
-
-contextBridge.exposeInMainWorld('electronAPI', api);
+  // Face analysis (onnxruntime-node ONNX face models)
+  /** Returns true when the ONNX face models are downloaded and usable. */
+  faceModelsAvailable: (): 

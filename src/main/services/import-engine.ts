@@ -497,47 +497,4 @@ export async function importFiles(
         await client.uploadFrom(upload.localPath, remoteName);
         uploaded++;
         recordSpeedSample();
-        onProgress({
-          currentFile: `${upload.fileName} (FTP ${uploaded}/${ftpUploads.length})`,
-          currentIndex: processedCount,
-          totalFiles: files.length,
-          bytesTransferred,
-          totalBytes,
-          skipped,
-          errors: errors.length,
-          ...computeSpeed(),
-        });
-      }
-    } catch (ftpErr: unknown) {
-      const e = ftpErr as Error;
-      errors.push({ file: 'ftp-output', error: e.message || 'FTP upload failed' });
-    } finally {
-      client?.close();
-    }
-  }
-
-  // One-line heads-up if the normalizer couldn't apply brightness because IM
-  // wasn't on PATH. Reported as an error rather than silent so users know
-  // what they installed the feature for isn't firing.
-  if (normalizationMissing > 0) {
-    errors.push({
-      file: 'exposure-normalize',
-      error: `Skipped exposure adjustment on ${normalizationMissing} file(s). Install ImageMagick ('magick' or 'convert' on PATH) to enable.`,
-    });
-  }
-
-  return {
-    imported,
-    skipped,
-    verified,
-    checksumVerified,
-    errors,
-    totalBytes: bytesTransferred,
-    durationMs: Date.now() - startTime,
-  };
-}
-
-export function cancelImport(): void {
-  currentAbortController?.abort();
-  currentAbortController = null;
-}
+        onProg

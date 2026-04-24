@@ -60,20 +60,3 @@ export function formatExposure(file: MediaFile): string | null {
 export function isPortrait(orientation?: number): boolean {
   return orientation !== undefined && orientation >= 5 && orientation <= 8;
 }
-
-/** Format bytes/sec as a human-readable transfer speed (e.g. "42.3 MB/s", "850 KB/s") */
-export function formatSpeed(bytesPerSec: number): string {
-  if (bytesPerSec >= 1e9) return `${(bytesPerSec / 1e9).toFixed(1)} GB/s`;
-  if (bytesPerSec >= 1e6) return `${(bytesPerSec / 1e6).toFixed(1)} MB/s`;
-  if (bytesPerSec >= 1e3) return `${(bytesPerSec / 1e3).toFixed(0)} KB/s`;
-  return `${bytesPerSec} B/s`;
-}
-
-/** Format seconds as a short ETA string (e.g. "< 1s", "45s", "2m 5s") */
-export function formatEta(seconds: number): string {
-  if (seconds < 1) return '< 1s';
-  if (seconds < 60) return `${seconds}s`;
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return s > 0 ? `${m}m ${s}s` : `${m}m`;
-}

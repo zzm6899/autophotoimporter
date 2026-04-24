@@ -12,9 +12,19 @@ const windowsIconPath = path.resolve(__dirname, 'assets/brand/icon.ico');
 
 const config: ForgeConfig = {
   packagerConfig: {
-    asar: true,
+    asar: {
+      // onnxruntime-node ships a native .node binary that cannot live inside
+      // the asar archive. electron-forge's auto-unpack-natives plugin handles
+      // it automatically; this pattern is a belt-and-braces fallback.
+      unpackDir: 'node_modules/onnxruntime-node',
+    },
     name: 'Photo Importer',
     icon: path.resolve(__dirname, 'assets/brand/icon'),
+    extraResource: [
+      // ONNX face models — bundled alongside the app, outside the asar so
+      // onnxruntime can read them directly from the filesystem at runtime.
+      path.resolve(__dirname, 'models'),
+    ],
   },
   rebuildConfig: {},
   makers: [

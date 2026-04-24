@@ -378,14 +378,4 @@
       .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
   }
 
-  // -------------------------------------------------------------------------
-  // Auto-detect platform
-  // -------------------------------------------------------------------------
-  (function detectPlatform() {
-    const ua = navigator.userAgent;
-    const isWin = !ua.includes('Mac') && (ua.includes('Win') || ua.includes('Windows'));
-    switchPlatform(isWin ? 'windows' : 'mac');
-  })();
-</script>
-</body>
-</html>
+  // --------------------------------------------

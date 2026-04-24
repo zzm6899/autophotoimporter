@@ -13,6 +13,7 @@ import { generatePreview } from './services/exif-parser';
 import { checkForUpdate, fetchUpdateHistory } from './services/update-checker';
 import { probeFtp, mirrorFtp } from './services/ftp-source';
 import { activateLicenseInput, checkHostedLicenseStatus, validateLicenseKey } from './services/license';
+import { analyzeFaces, faceModelsAvailable, serializeEmbedding } from './services/face-engine';
 
 const execFileAsync = promisify(execFile);
 
@@ -836,6 +837,58 @@ export function registerIpcHandlers(): void {
     }
   });
 
+  // ---------------------------------------------------------------------------
+  // Face analysis (onnxruntime-node)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Returns true when the ONNX face models are present on disk.
+   * The renderer uses this to show/hide face-related UI affordances.
+   */
+  ipcMain.handle(IPC.FACE_MODELS_AVAILABLE, () => {
+    return faceModelsAvailable();
+  });
+
+  /**
+   * Analyse faces in one or more image files.
+   *
+   * Input:  string | string[]  — absolute path(s) to image files
+   * Output: Array<{
+   *   path: string,
+   *   boxes: FaceBox[],
+   *   embeddings: string[],   // hex-serialised Float32Array per face
+   *   faceCount: number,
+   * }>
+   *
+   * Errors per file are returned as { path, error } rather than throwing, so
+   * one bad file doesn't abort the whole batch.
+   */
+  ipcMain.handle(IPC.FACE_ANALYZE, async (_event, input: string | string[]) => {
+    const paths = Array.isArray(input) ? input : [input];
+    const results = await Promise.all(
+      paths.map(async (filePath) => {
+        try {
+          const { boxes, embeddings } = await analyzeFaces(filePath);
+          return {
+            path: filePath,
+            boxes,
+            embeddings: embeddings.map(serializeEmbedding),
+            faceCount: boxes.length,
+          };
+        } catch (err: unknown) {
+          return {
+            path: filePath,
+            boxes: [],
+            embeddings: [],
+            faceCount: 0,
+            error: (err as Error).message,
+          };
+        }
+      }),
+    );
+    return results;
+  });
+
   setTimeout(() => {
     void refreshUpdateState();
   }, 3000);
@@ -904,64 +957,4 @@ async function runAutoImport(volume: Volume): Promise<void> {
   try {
     scannedFiles = [];
     const pattern = settings.folderPreset === 'custom'
-      ? settings.customPattern
-      : undefined; // main-process default is '{YYYY}-{MM}-{DD}/{filename}'
-    const total = await scanFiles(
-      volume.path,
-      (batch) => {
-        scannedFiles.push(...batch);
-        sendToRenderer(IPC.SCAN_BATCH, batch);
-      },
-      (filePath, thumbnail) => {
-        const file = scannedFiles.find((f) => f.path === filePath);
-        if (file) file.thumbnail = thumbnail;
-        sendToRenderer(IPC.SCAN_THUMBNAIL, filePath, thumbnail);
-      },
-      pattern,
-    );
-    sendToRenderer(IPC.SCAN_COMPLETE, total);
-
-    const importConfig: ImportConfig = {
-      sourcePath: volume.path,
-      destRoot: settings.autoImportDestRoot,
-      skipDuplicates: settings.skipDuplicates,
-      saveFormat: settings.saveFormat,
-      jpegQuality: settings.jpegQuality,
-      separateProtected: settings.separateProtected,
-      protectedFolderName: settings.protectedFolderName,
-      backupDestRoot: settings.backupDestRoot || undefined,
-      autoEject: settings.autoEject,
-      verifyChecksums: settings.verifyChecksums,
-    };
-
-    const filesToImport = filterFilesForImport(scannedFiles, importConfig);
-    sendToRenderer(IPC.IMPORT_PROGRESS, {
-      currentFile: filesToImport.length > 0 ? 'Preparing import...' : 'No files to import',
-      currentIndex: 0,
-      totalFiles: filesToImport.length,
-      bytesTransferred: 0,
-      totalBytes: filesToImport.reduce((sum, f) => sum + f.size, 0),
-      skipped: 0,
-      errors: 0,
-    });
-    const result = await importFiles(filesToImport, importConfig, (progress) => {
-      sendToRenderer(IPC.IMPORT_PROGRESS, progress);
-    });
-
-    if (settings.autoEject && result.imported > 0) {
-      void ejectVolume(volume.path);
-    }
-    sendToRenderer(IPC.AUTO_IMPORT_COMPLETE, result);
-  } catch (err) {
-    console.error('[auto-import] failed:', err);
-    const message = err instanceof Error ? err.message : 'Auto-import failed';
-    sendToRenderer(IPC.AUTO_IMPORT_COMPLETE, {
-      imported: 0,
-      skipped: 0,
-      verified: 0,
-      errors: [{ file: 'auto-import', error: message }],
-      totalBytes: 0,
-      durationMs: 0,
-    } satisfies ImportResult);
-  }
-}
+      ? sett

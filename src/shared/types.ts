@@ -74,6 +74,13 @@ export interface MediaFile {
   faceDetection?: 'native' | 'estimated';
   /** Compact perceptual hash of the primary detected face crop. Used only for local same-face clustering. */
   faceSignature?: string;
+  /**
+   * Hex-serialised 128-d L2-normalised face embedding from MobileFaceNet
+   * (via onnxruntime-node). 1024 hex chars. Use deserializeEmbedding() to
+   * recover the Float32Array, then cosineSimilarity() to compare.
+   * Only populated when the ONNX face models are present on disk.
+   */
+  faceEmbedding?: string;
   /** Local cluster id for similar detected faces. This is not biometric identity; it is a culling aid. */
   faceGroupId?: string;
   faceGroupSize?: number;
@@ -437,23 +444,4 @@ export const IPC = {
   UPDATE_STATUS: 'update:status',
   UPDATE_CHECK_NOW: 'update:check-now',
   UPDATE_DOWNLOAD: 'update:download',
-  UPDATE_INSTALL: 'update:install',
-  UPDATE_FETCH_HISTORY: 'update:fetch-history',
-
-  // FTP source
-  FTP_PROBE: 'ftp:probe',
-  FTP_MIRROR_START: 'ftp:mirror-start',
-  FTP_MIRROR_PROGRESS: 'ftp:mirror-progress',
-  FTP_MIRROR_CANCEL: 'ftp:mirror-cancel',
-
-  // Workflow — manifest export
-  EXPORT_MANIFEST: 'export:manifest',
-  EXPORT_CONTACT_SHEET: 'export:contact-sheet',
-
-  // Auto-import + device events
-  DEVICE_INSERTED: 'device:inserted',
-  AUTO_IMPORT_STARTED: 'auto-import:started',
-  AUTO_IMPORT_COMPLETE: 'auto-import:complete',
-  EJECT_VOLUME: 'volume:eject',
-  DISK_FREE_SPACE: 'disk:free-space',
-} as const;
+  UPDATE_I

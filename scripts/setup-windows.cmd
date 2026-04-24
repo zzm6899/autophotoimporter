@@ -9,6 +9,7 @@ rem    scripts\setup-windows.cmd dev      (install + npm start)
 rem    scripts\setup-windows.cmd build    (install + npm run make)
 rem    scripts\setup-windows.cmd install  (install only)
 rem    scripts\setup-windows.cmd release  (bump version, tag, push)
+rem    scripts\setup-windows.cmd commit   (stage all, commit, push)
 rem ============================================================
 
 pushd "%~dp0.."
@@ -68,6 +69,7 @@ echo   [1] Install dependencies only
 echo   [2] Install + run in dev mode
 echo   [3] Install + build installer
 echo   [4] Release  - bump version, tag, and push (triggers GitHub build)
+echo   [5] Commit   - stage all changes and push to current branch
 echo   [q] Quit
 echo.
 set "CHOICE="
@@ -76,6 +78,7 @@ if /i "%CHOICE%"=="1" set "ACTION=install"
 if /i "%CHOICE%"=="2" set "ACTION=dev"
 if /i "%CHOICE%"=="3" set "ACTION=build"
 if /i "%CHOICE%"=="4" set "ACTION=release"
+if /i "%CHOICE%"=="5" set "ACTION=commit"
 if /i "%CHOICE%"=="q" goto :done
 if "%ACTION%"=="" (
   echo Invalid choice.
@@ -84,8 +87,9 @@ if "%ACTION%"=="" (
 )
 
 :dispatch
-rem Release does not need npm install first, so skip straight to it.
+rem These actions skip npm install.
 if /i "%ACTION%"=="release" goto :do_release
+if /i "%ACTION%"=="commit"  goto :do_commit
 
 :run
 echo.
@@ -107,6 +111,14 @@ call npm install
 if errorlevel 1 goto :install_failed
 
 :install_ok
+echo.
+echo --- Downloading face models (skipped if already present) ---
+call npm run models
+if errorlevel 1 (
+  echo [warn] Model download failed. Face recognition will be unavailable.
+  echo        Re-run "npm run models" once internet is available.
+)
+
 if /i "%ACTION%"=="install" goto :done
 if /i "%ACTION%"=="dev"     goto :do_dev
 if /i "%ACTION%"=="build"   goto :do_build
@@ -129,6 +141,65 @@ echo.
 echo Build artifacts:
 if exist out\make dir /s /b out\make\*.exe out\make\*.zip 2>nul
 goto :done
+
+rem ============================================================
+rem  Commit flow
+rem  - Stages all tracked + untracked changes (git add -A)
+rem  - Prompts for a commit message (required)
+rem  - Commits and pushes to the current branch
+rem ============================================================
+:do_commit
+echo.
+echo --- Commit and push ---
+echo.
+
+if "%GIT_AVAILABLE%"=="0" (
+  echo [ERROR] git is required for the commit action.
+  goto :fail
+)
+
+rem Check there is actually something to commit
+git status --porcelain 2>nul | findstr /r "." >nul
+if errorlevel 1 (
+  echo [warn] Nothing to commit -- working tree is clean.
+  goto :done
+)
+
+rem Show a short status so the user knows what will be staged
+echo Changed files:
+git status --short
+echo.
+
+set "COMMIT_MSG="
+set /p COMMIT_MSG="Commit message: "
+if "!COMMIT_MSG!"=="" (
+  echo [ERROR] Commit message cannot be empty.
+  goto :fail
+)
+
+git add -A
+if errorlevel 1 goto :commit_failed
+
+git commit -m "!COMMIT_MSG!"
+if errorlevel 1 goto :commit_failed
+
+echo.
+echo Pushing to remote...
+git push
+if errorlevel 1 (
+  echo.
+  echo [ERROR] Push failed. Your local commit is intact.
+  echo         Fix the remote issue (e.g. pull first) and run:  git push
+  goto :fail
+)
+
+echo.
+echo [ok] Changes committed and pushed.
+goto :done
+
+:commit_failed
+echo [ERROR] git commit failed. Check the output above.
+goto :fail
 
 rem ============================================================
 rem  Release flow
@@ -171,76 +242,4 @@ echo.
 echo Releasing v!NEW_VER! ...
 
 rem Check for uncommitted changes
-git diff --quiet --exit-code 2>nul
-if errorlevel 1 (
-  echo [warn] You have unstaged changes. They will NOT be included in this commit.
-  echo        Commit or stash them first if you want them in the release.
-  echo.
-  set "CONT="
-  set /p CONT="Continue anyway? [y/N]: "
-  if /i not "!CONT!"=="y" goto :fail
-)
-
-rem Update package.json version using Node (cross-platform, no jq needed)
-node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.version='!NEW_VER!';fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
-if errorlevel 1 (
-  echo [ERROR] Failed to update package.json
-  goto :fail
-)
-echo [ok] package.json updated to !NEW_VER!
-
-rem Stage and commit
-git add package.json
-if errorlevel 1 goto :release_failed
-
-git commit -m "chore: release v!NEW_VER!"
-if errorlevel 1 goto :release_failed
-
-rem Create annotated tag
-git tag -a "v!NEW_VER!" -m "Release v!NEW_VER!"
-if errorlevel 1 goto :release_failed
-
-echo.
-echo [ok] Committed and tagged v!NEW_VER!
-echo.
-echo Pushing to remote (this triggers the GitHub Actions build)...
-git push --follow-tags
-if errorlevel 1 (
-  echo.
-  echo [ERROR] Push failed. Your local commit and tag are intact.
-  echo         Fix the remote issue and run:  git push --follow-tags
-  goto :fail
-)
-
-echo.
-echo [ok] Released v!NEW_VER! -- GitHub Actions will now build the installers.
-echo      Watch progress at: https://github.com/juanmnl/importer/actions
-goto :done
-
-:install_failed
-echo [ERROR] npm install failed.
-goto :fail
-
-:build_failed
-echo [ERROR] Build failed. Check the output above.
-goto :fail
-
-:release_failed
-echo [ERROR] Release step failed. Check git output above.
-goto :fail
-
-:done
-echo.
-echo Done.
-popd
-endlocal
-pause
-exit /b 0
-
-:fail
-echo.
-echo Setup did not complete. See messages above.
-popd
-endlocal
-pause
-exit /b 1
+git diff --quie

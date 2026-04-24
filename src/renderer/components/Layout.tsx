@@ -1,7 +1,8 @@
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import { formatSize } from '../utils/formatters';
 import { LicenseBanner } from './LicenseBanner';
+import type { ModelDownloadProgress } from '../../main/preload';
 
 interface LayoutProps {
   left: ReactNode;
@@ -10,6 +11,19 @@ interface LayoutProps {
 }
 
 export function Layout({ left, center, right }: LayoutProps) {
+  const [modelDl, setModelDl] = useState<ModelDownloadProgress | null>(null);
+
+  useEffect(() => {
+    const unsub = window.electronAPI.onFaceModelDownloadProgress((progress) => {
+      // Clear the indicator a moment after completion
+      setModelDl(progress);
+      if (progress.status === 'done') {
+        setTimeout(() => setModelDl(null), 3000);
+      }
+    });
+    return unsub;
+  }, []);
+
   const {
     theme,
     showLeftPanel,
@@ -134,6 +148,22 @@ export function Layout({ left, center, right }: LayoutProps) {
           {phase === 'scanning' && <span>Scanning...</span>}
           {phase === 'importing' && <span>Importing...</span>}
           {phase === 'complete' && <span>Done</span>}
+          {/* Face model background download indicator */}
+          {modelDl && modelDl.status === 'downloading' && (
+            <span className="flex items-center gap-1 rounded bg-violet-500/15 px-2 py-0.5 text-violet-300" title="Downloading face recognition models in background">
+              <svg className="w-2.5 h-2.5 animate-spin" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+              </svg>
+              Face models {modelDl.percent ?? 0}%
+            </span>
+          )}
+          {modelDl && modelDl.status === 'done' && (
+            <span className="rounded bg-emerald-500/15 px-2 py-0.5 text-emerald-300">Face models ready</span>
+          )}
+          {modelDl && modelDl.status === 'error' && (
+            <span className="rounded bg-red-500/15 px-2 py-0.5 text-red-300" title={modelDl.error}>Face models unavailable</span>
+          )}
         </div>
       </div>
 
@@ -147,35 +177,4 @@ export function Layout({ left, center, right }: LayoutProps) {
           <span className="rounded bg-surface-raised px-2 py-0.5 text-text-muted">{formatSize(totalBytes)}</span>
           {pickedCount > 0 && <span className="rounded bg-yellow-500/15 px-2 py-0.5 text-yellow-300">{pickedCount} picked</span>}
           {queuedPaths.length > 0 && <span className="rounded bg-emerald-500/15 px-2 py-0.5 text-emerald-300">{queuedPaths.length} queued</span>}
-          {rejectedCount > 0 && <span className="rounded bg-red-500/15 px-2 py-0.5 text-red-300">{rejectedCount} rejected</span>}
-          {protectedCount > 0 && <span className="rounded bg-emerald-500/10 px-2 py-0.5 text-emerald-300">{protectedCount} protected</span>}
-        {faceCount > 0 && <span className="rounded bg-violet-500/15 px-2 py-0.5 text-violet-300" title={estimatedFaceCount > 0 ? `${estimatedFaceCount} are estimated fallback detections` : 'Native face detections'}>{faceCount} with faces</span>}
-          {faceGroupCount > 0 && <span className="rounded bg-violet-500/15 px-2 py-0.5 text-violet-300">{faceGroupCount} face groups</span>}
-          {blurCount > 0 && <span className="rounded bg-orange-500/15 px-2 py-0.5 text-orange-300">{blurCount} blur risk</span>}
-          <span className="ml-auto rounded bg-surface-raised px-2 py-0.5 text-text-muted">smart {analyzedCount}/{photoCount}</span>
-        </div>
-      )}
-
-      <div className="flex flex-1 min-h-0 pb-7">
-        {/* Left panel - Source */}
-        {showLeftPanel && (
-          <div className="w-44 shrink-0 border-r border-border bg-surface-alt overflow-y-auto">
-            {left}
-          </div>
-        )}
-
-        {/* Center panel - Thumbnails */}
-        <div className="flex-1 min-w-0 overflow-hidden bg-surface">
-          {center}
-        </div>
-
-        {/* Right panel - Destination + Settings */}
-        {showRightPanel && (
-          <div className="w-52 shrink-0 border-l border-border bg-surface-alt overflow-y-auto">
-            {right}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
+          {rejectedCount > 0 && <span className="rounded bg-red-500/15 px-2 py-0.5 text-red-300">{rejectedCount} rejected</span
