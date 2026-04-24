@@ -11,27 +11,18 @@ function formatDisplayDate(value?: string) {
 }
 
 export function LicenseOverlay() {
-  const { licenseStatus } = useAppState();
+  const { licenseHydrated, licenseStatus, licensePromptOpen } = useAppState();
   const dispatch = useAppDispatch();
   const [licenseInput, setLicenseInput] = useState('');
   const [feedback, setFeedback] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [dismissed, setDismissed] = useState(false);
 
   useEffect(() => {
     if (licenseStatus?.key) setLicenseInput(licenseStatus.key);
     if (licenseStatus?.valid) setFeedback(null);
   }, [licenseStatus?.key, licenseStatus?.valid]);
 
-  useEffect(() => {
-    if (licenseStatus?.valid) {
-      setDismissed(false);
-      return;
-    }
-    setDismissed(false);
-  }, [licenseStatus?.valid, licenseStatus?.key]);
-
-  if (licenseStatus?.valid || dismissed) return null;
+  if (!licenseHydrated || licenseStatus?.valid || !licensePromptOpen) return null;
 
   const activate = async () => {
     setBusy(true);
@@ -40,7 +31,9 @@ export function LicenseOverlay() {
       if (status.valid) {
         dispatch({ type: 'SET_LICENSE_STATUS', status });
         setFeedback(null);
+        dispatch({ type: 'CLOSE_LICENSE_PROMPT' });
       } else {
+        dispatch({ type: 'SET_LICENSE_STATUS', status });
         setFeedback(status.message);
       }
     } finally {
@@ -52,7 +45,7 @@ export function LicenseOverlay() {
     <div
       className="fixed inset-0 z-[80] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
       onClick={(e) => {
-        if (e.target === e.currentTarget && !busy) setDismissed(true);
+        if (e.target === e.currentTarget && !busy) dispatch({ type: 'CLOSE_LICENSE_PROMPT' });
       }}
     >
       <div className="w-full max-w-xl bg-surface border border-border rounded-xl shadow-2xl overflow-hidden">
@@ -64,7 +57,7 @@ export function LicenseOverlay() {
           </p>
           </div>
           <button
-            onClick={() => setDismissed(true)}
+            onClick={() => dispatch({ type: 'CLOSE_LICENSE_PROMPT' })}
             disabled={busy}
             className="shrink-0 p-1 rounded text-text-muted hover:text-text hover:bg-surface-raised transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             title="Close and continue in browse mode"
@@ -105,7 +98,7 @@ export function LicenseOverlay() {
               {busy ? 'Checking...' : 'Activate License'}
             </button>
             <button
-              onClick={() => setDismissed(true)}
+              onClick={() => dispatch({ type: 'CLOSE_LICENSE_PROMPT' })}
               disabled={busy}
               className="px-4 py-2 rounded bg-surface-raised text-text-secondary text-sm hover:bg-border disabled:opacity-40 disabled:cursor-not-allowed"
             >

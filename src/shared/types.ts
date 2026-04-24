@@ -287,6 +287,38 @@ export interface UpdateInfo {
   releaseName: string;
 }
 
+export type UpdateStatus =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'downloading'
+  | 'ready'
+  | 'error'
+  | 'up-to-date'
+  | 'denied';
+
+export interface UpdateReleaseSummary {
+  version: string;
+  releaseName: string;
+  notes?: string;
+  publishedAt?: string;
+  channel?: string;
+}
+
+export interface UpdateState {
+  status: UpdateStatus;
+  currentVersion: string;
+  latestVersion?: string;
+  releaseName?: string;
+  releaseNotes?: string;
+  releaseDate?: string;
+  releaseUrl?: string;
+  downloadUrl?: string;
+  lastCheckedAt?: string;
+  message?: string;
+  history?: UpdateReleaseSummary[];
+}
+
 export const PHOTO_EXTENSIONS = new Set([
   // Common
   '.jpg', '.jpeg', '.png', '.tif', '.tiff', '.heic', '.heif', '.webp', '.avif',
@@ -389,6 +421,10 @@ export const IPC = {
   // Updates
   UPDATE_AVAILABLE: 'update:available',
   UPDATE_OPEN_RELEASE: 'update:open-release',
+  UPDATE_STATUS: 'update:status',
+  UPDATE_CHECK_NOW: 'update:check-now',
+  UPDATE_DOWNLOAD: 'update:download',
+  UPDATE_FETCH_HISTORY: 'update:fetch-history',
 
   // FTP source
   FTP_PROBE: 'ftp:probe',

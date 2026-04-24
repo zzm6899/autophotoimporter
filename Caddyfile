@@ -1,0 +1,12 @@
+admin.culler.z2hs.au {
+	reverse_proxy app:5071
+}
+
+updates.culler.z2hs.au {
+	handle_path /artifacts/* {
+		root * /srv/artifacts
+		file_server
+	}
+
+	reverse_proxy app:5071
+}

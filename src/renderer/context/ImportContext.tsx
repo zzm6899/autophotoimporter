@@ -69,6 +69,9 @@ interface State {
   exposureAnchorPath: string | null;
   exposureMaxStops: number;
   licenseStatus: LicenseValidation | null;
+  licenseHydrated: boolean;
+  licensePromptOpen: boolean;
+  licenseBannerDismissed: boolean;
 }
 
 export type Action =
@@ -162,7 +165,11 @@ export type Action =
   | { type: 'CLEAR_FACE_DATA' }
   | { type: 'SET_VOLUME_IMPORT_QUEUE'; paths: string[] }
   | { type: 'ADVANCE_VOLUME_IMPORT_QUEUE' }
-  | { type: 'SET_LICENSE_STATUS'; status: LicenseValidation | null };
+  | { type: 'HYDRATE_LICENSE_STATUS'; status: LicenseValidation | null }
+  | { type: 'SET_LICENSE_STATUS'; status: LicenseValidation | null }
+  | { type: 'OPEN_LICENSE_PROMPT' }
+  | { type: 'CLOSE_LICENSE_PROMPT' }
+  | { type: 'DISMISS_LICENSE_BANNER' };
 
 const systemDark = typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches;
 
@@ -231,6 +238,9 @@ const initialState: State = {
   exposureAnchorPath: null,
   exposureMaxStops: 2,
   licenseStatus: null,
+  licenseHydrated: false,
+  licensePromptOpen: false,
+  licenseBannerDismissed: false,
 };
 
 function withFileHistory(state: State, files: MediaFile[]): State {
@@ -784,8 +794,30 @@ export function reducer(state: State, action: Action): State {
         filter: 'all',
       };
     }
+    case 'HYDRATE_LICENSE_STATUS': {
+      const valid = !!action.status?.valid;
+      return {
+        ...state,
+        licenseStatus: action.status,
+        licenseHydrated: true,
+        licensePromptOpen: !valid,
+        licenseBannerDismissed: false,
+      };
+    }
     case 'SET_LICENSE_STATUS':
-      return { ...state, licenseStatus: action.status };
+      return {
+        ...state,
+        licenseStatus: action.status,
+        licenseHydrated: true,
+        licensePromptOpen: action.status?.valid ? false : state.licensePromptOpen,
+        licenseBannerDismissed: action.status?.valid ? false : state.licenseBannerDismissed,
+      };
+    case 'OPEN_LICENSE_PROMPT':
+      return { ...state, licensePromptOpen: true, licenseBannerDismissed: false };
+    case 'CLOSE_LICENSE_PROMPT':
+      return { ...state, licensePromptOpen: false };
+    case 'DISMISS_LICENSE_BANNER':
+      return { ...state, licenseBannerDismissed: true };
     default:
       return state;
   }

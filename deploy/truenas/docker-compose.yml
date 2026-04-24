@@ -1,0 +1,60 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: culler-update-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: photo_importer_updates
+      POSTGRES_USER: photo_importer
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../../services/update-admin/db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+
+  app:
+    build:
+      context: ../../services/update-admin
+    container_name: culler-update-app
+    restart: unless-stopped
+    depends_on:
+      - db
+    environment:
+      PORT: 5071
+      DATABASE_URL: postgres://photo_importer:${POSTGRES_PASSWORD}@db:5432/photo_importer_updates
+      LICENSE_PUBLIC_KEY_PATH: /run/secrets/license_public_key.pem
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET}
+      UPDATE_TOKEN_SECRET: ${UPDATE_TOKEN_SECRET}
+      ADMIN_API_TOKEN: ${ADMIN_API_TOKEN}
+      PUBLIC_UPDATES_BASE_URL: https://updates.culler.z2hs.au
+      COOKIE_SECURE: "true"
+    ports:
+      - "5071:5071"
+    secrets:
+      - license_public_key.pem
+
+  proxy:
+    image: caddy:2.8-alpine
+    container_name: culler-update-proxy
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:
+
+secrets:
+  license_public_key.pem:
+    file: ../../scripts/license-keys/public.pem

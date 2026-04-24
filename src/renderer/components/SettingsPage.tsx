@@ -3,6 +3,7 @@ import { useAppState, useAppDispatch } from '../context/ImportContext';
 import type { SaveFormat } from '../../shared/types';
 import { FOLDER_PRESETS } from '../../shared/types';
 import { playCompletionSound } from '../utils/completionSound';
+import { useUpdateNotification } from '../hooks/useUpdateNotification';
 
 interface SettingsPageProps {
   onClose: () => void;
@@ -40,6 +41,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     licenseStatus,
   } = useAppState();
   const dispatch = useAppDispatch();
+  const { updateState, history, checkNow, downloadUpdate, openRelease } = useUpdateNotification();
   const [postImportStatus, setPostImportStatus] = useState<string | null>(null);
   const [licenseInput, setLicenseInput] = useState('');
   const [licenseBusy, setLicenseBusy] = useState(false);
@@ -52,6 +54,17 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
       return `${day}-${month}-${year}`;
     }
     return value;
+  };
+
+  const formatVersionDate = (value?: string) => {
+    if (!value) return 'Unknown';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return new Intl.DateTimeFormat('en-AU', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+    }).format(date);
   };
 
   useEffect(() => {
@@ -334,6 +347,14 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                 >
                   Clear
                 </button>
+                {!licenseStatus?.valid && (
+                  <button
+                    onClick={() => dispatch({ type: 'OPEN_LICENSE_PROMPT' })}
+                    className="px-3 py-1 text-xs rounded bg-surface-raised text-text-secondary hover:bg-border"
+                  >
+                    Open popup
+                  </button>
+                )}
                 {licenseStatus?.valid ? (
                   <span className="text-[10px] text-emerald-300">Active</span>
                 ) : (
@@ -358,6 +379,77 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                   </div>
                   <div className="bg-surface-alt border border-border rounded px-2 py-1">
                     Expires: <span className="text-text-secondary">{formatDisplayDate(licenseStatus.entitlement.expiresAt)}</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
+
+          {/* Version / updates */}
+          <section>
+            <h3 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-2">Version</h3>
+            <div className="space-y-2">
+              <div className="grid grid-cols-2 gap-1 text-[10px] text-text-muted">
+                <div className="bg-surface-alt border border-border rounded px-2 py-1">
+                  Installed: <span className="text-text-secondary">{updateState.currentVersion}</span>
+                </div>
+                <div className="bg-surface-alt border border-border rounded px-2 py-1">
+                  Last checked: <span className="text-text-secondary">{formatVersionDate(updateState.lastCheckedAt)}</span>
+                </div>
+                <div className="bg-surface-alt border border-border rounded px-2 py-1">
+                  Latest: <span className="text-text-secondary">{updateState.latestVersion || 'Checking…'}</span>
+                </div>
+                <div className="bg-surface-alt border border-border rounded px-2 py-1">
+                  Status: <span className="text-text-secondary">{updateState.status}</span>
+                </div>
+              </div>
+              {updateState.message && (
+                <p className={`text-[10px] ${updateState.status === 'error' || updateState.status === 'denied' ? 'text-red-300' : 'text-text-muted'}`}>
+                  {updateState.message}
+                </p>
+              )}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => { void checkNow(); }}
+                  className="px-3 py-1 text-xs rounded bg-surface-raised text-text-secondary hover:bg-border"
+                >
+                  Check now
+                </button>
+                {updateState.status === 'available' && (
+                  <button
+                    onClick={() => { void downloadUpdate(); }}
+                    className="px-3 py-1 text-xs rounded bg-accent text-white hover:bg-accent-hover"
+                  >
+                    Update now
+                  </button>
+                )}
+                {updateState.releaseUrl && (
+                  <button
+                    onClick={openRelease}
+                    className="px-3 py-1 text-xs rounded bg-surface-raised text-text-secondary hover:bg-border"
+                  >
+                    Release notes
+                  </button>
+                )}
+              </div>
+              {history.length > 0 && (
+                <div className="space-y-1">
+                  <p className="text-[10px] text-text-muted">Recent versions</p>
+                  <div className="space-y-1">
+                    {history.map((release) => (
+                      <div key={release.version} className="rounded border border-border bg-surface-alt px-2 py-1 text-[10px] text-text-muted">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-text-secondary">{release.releaseName}</span>
+                          <span>{release.version}</span>
+                        </div>
+                        {release.publishedAt && (
+                          <div className="mt-0.5">{formatVersionDate(release.publishedAt)}</div>
+                        )}
+                        {release.notes && (
+                          <div className="mt-0.5 text-text-faint line-clamp-2">{release.notes}</div>
+                        )}
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}

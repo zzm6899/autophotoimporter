@@ -6,6 +6,12 @@ Use these entry points:
   Windows interactive menu for status, keypair creation, customer license generation, and build.
 - `license-console.mjs`
   Console command runner if you prefer typed commands.
+- `publish-update-release.mjs`
+  Push a built Windows/macOS release into the hosted TrueNAS update admin service.
+- `release-windows.ps1`
+  Build the Windows installer, upload artifacts to the TrueNAS repo at `172.20.20.251`, and register the hosted release.
+- `release-windows.cmd`
+  Simple Windows wrapper for the PowerShell release script.
 - `setup-windows.cmd`
   Dependency install and dev/build helper.
 
@@ -21,3 +27,11 @@ Important:
 - Keep `scripts\license-keys\private.pem` secret.
 - As long as you keep the same `private.pem`, new customer licenses will work with your existing EXE.
 - If you replace the keypair, build and ship a new EXE.
+- Use `npm run update:publish -- ...` after CI or local release builds to register a hosted update with `admin.culler.z2hs.au`.
+
+Typical hosted Windows release:
+
+```powershell
+$env:UPDATE_ADMIN_API_TOKEN="your-admin-api-token"
+npm run release:windows -- -Version 1.1.1 -ServerUser root -ServerHost 172.20.20.251
+```

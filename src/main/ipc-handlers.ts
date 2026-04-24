@@ -4,13 +4,13 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import { IPC } from '../shared/types';
-import type { ImportConfig, ImportResult, AppSettings, MediaFile, FtpConfig, Volume } from '../shared/types';
+import type { ImportConfig, ImportResult, AppSettings, MediaFile, FtpConfig, Volume, UpdateState } from '../shared/types';
 import { listVolumes, startWatching, stopWatching } from './services/volume-watcher';
 import { scanFiles, cancelScan, pauseScan, resumeScan } from './services/file-scanner';
 import { importFiles, cancelImport } from './services/import-engine';
 import { isDuplicate } from './services/duplicate-detector';
 import { generatePreview } from './services/exif-parser';
-import { checkForUpdate } from './services/update-checker';
+import { checkForUpdate, fetchUpdateHistory } from './services/update-checker';
 import { probeFtp, mirrorFtp } from './services/ftp-source';
 import { validateLicenseKey } from './services/license';
 
@@ -21,6 +21,7 @@ let knownVolumePaths = new Set<string>();
 let autoImportQueue: Volume[] = [];
 let autoImportRunning = false;
 let currentAutoImportPath: string | null = null;
+let lastUpdateState: UpdateState | null = null;
 
 function getSettingsPath(): string {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -91,6 +92,28 @@ async function saveSettings(settings: Partial<AppSettings>): Promise<void> {
 async function getLicenseStatus() {
   const settings = await loadSettings();
   return settings.licenseStatus ?? { valid: false, message: 'No license activated.' };
+}
+
+async function getStoredLicenseKey() {
+  const settings = await loadSettings();
+  return settings.licenseKey?.trim() || undefined;
+}
+
+async function refreshUpdateState() {
+  sendToRenderer(IPC.UPDATE_STATUS, {
+    status: 'checking',
+    currentVersion: app.getVersion(),
+    lastCheckedAt: new Date().toISOString(),
+  } satisfies UpdateState);
+
+  const licenseKey = await getStoredLicenseKey();
+  const update = await checkForUpdate(licenseKey);
+  const history = update.status !== 'error'
+    ? await fetchUpdateHistory(licenseKey).catch(() => [])
+    : [];
+  lastUpdateState = { ...update, history };
+  sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
+  return lastUpdateState;
 }
 
 function sendToRenderer(channel: string, ...args: unknown[]): void {
@@ -396,6 +419,31 @@ export function registerIpcHandlers(): void {
     await shell.openExternal(url);
   });
 
+  ipcMain.handle(IPC.UPDATE_CHECK_NOW, async () => {
+    return refreshUpdateState();
+  });
+
+  ipcMain.handle(IPC.UPDATE_FETCH_HISTORY, async () => {
+    const licenseKey = await getStoredLicenseKey();
+    return fetchUpdateHistory(licenseKey);
+  });
+
+  ipcMain.handle(IPC.UPDATE_DOWNLOAD, async () => {
+    const latest = lastUpdateState ?? await refreshUpdateState();
+    const downloadUrl = latest.downloadUrl || latest.releaseUrl;
+    if (!downloadUrl) {
+      return { ok: false as const, message: 'No download is available for this release yet.' };
+    }
+    await shell.openExternal(downloadUrl);
+    lastUpdateState = {
+      ...latest,
+      status: 'ready',
+      message: 'Installer opened. Finish the update, then relaunch the app.',
+    };
+    sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
+    return { ok: true as const };
+  });
+
   // FTP source
   ipcMain.handle(IPC.FTP_PROBE, async (_event, config: FtpConfig) => {
     return probeFtp(config);
@@ -505,11 +553,8 @@ export function registerIpcHandlers(): void {
     }
   });
 
-  setTimeout(async () => {
-    const update = await checkForUpdate();
-    if (update) {
-      sendToRenderer(IPC.UPDATE_AVAILABLE, update);
-    }
+  setTimeout(() => {
+    void refreshUpdateState();
   }, 3000);
 }
 

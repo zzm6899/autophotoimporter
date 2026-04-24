@@ -74,6 +74,9 @@ function makeState(overrides: Record<string, unknown> = {}) {
     exposureAnchorPath: null as string | null,
     exposureMaxStops: 2,
     licenseStatus: null,
+    licenseHydrated: false,
+    licensePromptOpen: false,
+    licenseBannerDismissed: false,
     ...overrides,
   };
 }
@@ -418,6 +421,44 @@ describe('ImportContext reducer', () => {
     it('SET_LICENSE_STATUS', () => {
       const next = reducer(makeState(), { type: 'SET_LICENSE_STATUS', status: { valid: true, message: 'ok' } });
       expect(next.licenseStatus).toEqual({ valid: true, message: 'ok' });
+      expect(next.licensePromptOpen).toBe(false);
+      expect(next.licenseBannerDismissed).toBe(false);
+    });
+  });
+
+  describe('license UI state', () => {
+    it('opens the license prompt on hydration when license is missing', () => {
+      const next = reducer(makeState(), { type: 'HYDRATE_LICENSE_STATUS', status: null });
+      expect(next.licenseHydrated).toBe(true);
+      expect(next.licensePromptOpen).toBe(true);
+      expect(next.licenseBannerDismissed).toBe(false);
+    });
+
+    it('closing the prompt leaves the app in browse mode with the banner available', () => {
+      const state = makeState({ licenseHydrated: true, licensePromptOpen: true });
+      const next = reducer(state, { type: 'CLOSE_LICENSE_PROMPT' });
+      expect(next.licensePromptOpen).toBe(false);
+      expect(next.licenseBannerDismissed).toBe(false);
+    });
+
+    it('dismissing the banner hides it for the current session', () => {
+      const state = makeState({ licenseHydrated: true, licensePromptOpen: false, licenseBannerDismissed: false });
+      const next = reducer(state, { type: 'DISMISS_LICENSE_BANNER' });
+      expect(next.licenseBannerDismissed).toBe(true);
+    });
+
+    it('reopens the prompt from browse mode and clears the dismissed banner state', () => {
+      const state = makeState({ licenseHydrated: true, licensePromptOpen: false, licenseBannerDismissed: true });
+      const next = reducer(state, { type: 'OPEN_LICENSE_PROMPT' });
+      expect(next.licensePromptOpen).toBe(true);
+      expect(next.licenseBannerDismissed).toBe(false);
+    });
+
+    it('activating a valid license closes the prompt and clears the banner dismissal', () => {
+      const state = makeState({ licenseHydrated: true, licensePromptOpen: true, licenseBannerDismissed: true });
+      const next = reducer(state, { type: 'SET_LICENSE_STATUS', status: { valid: true, message: 'ok' } });
+      expect(next.licensePromptOpen).toBe(false);
+      expect(next.licenseBannerDismissed).toBe(false);
     });
   });
 

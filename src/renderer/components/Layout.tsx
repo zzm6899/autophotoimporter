@@ -1,6 +1,7 @@
 import { useEffect, type ReactNode } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import { formatSize } from '../utils/formatters';
+import { LicenseBanner } from './LicenseBanner';
 
 interface LayoutProps {
   left: ReactNode;
@@ -135,6 +136,8 @@ export function Layout({ left, center, right }: LayoutProps) {
           {phase === 'complete' && <span>Done</span>}
         </div>
       </div>
+
+      <LicenseBanner />
 
       {files.length > 0 && (
         <div className="h-8 shrink-0 border-b border-border bg-surface px-2 flex items-center gap-1.5 overflow-x-auto text-[10px]">

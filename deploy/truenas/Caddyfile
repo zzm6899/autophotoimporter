@@ -1,0 +1,7 @@
+admin.culler.z2hs.au {
+	reverse_proxy app:5071
+}
+
+updates.culler.z2hs.au {
+	reverse_proxy app:5071
+}

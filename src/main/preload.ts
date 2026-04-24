@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC } from '../shared/types';
-import type { ImportConfig, AppSettings, MediaFile, Volume, ImportProgress, ImportResult, UpdateInfo, FtpConfig, ImportError, LicenseValidation } from '../shared/types';
+import type { ImportConfig, AppSettings, MediaFile, Volume, ImportProgress, ImportResult, UpdateInfo, UpdateReleaseSummary, UpdateState, FtpConfig, ImportError, LicenseValidation } from '../shared/types';
 
 export interface FtpProbeResult {
   ok: boolean;
@@ -100,6 +100,17 @@ const api = {
     ipcRenderer.on(IPC.UPDATE_AVAILABLE, handler);
     return () => ipcRenderer.removeListener(IPC.UPDATE_AVAILABLE, handler);
   },
+  onUpdateStatus: (cb: (state: UpdateState) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, state: UpdateState) => cb(state);
+    ipcRenderer.on(IPC.UPDATE_STATUS, handler);
+    return () => ipcRenderer.removeListener(IPC.UPDATE_STATUS, handler);
+  },
+  checkForUpdates: (): Promise<UpdateState> =>
+    ipcRenderer.invoke(IPC.UPDATE_CHECK_NOW),
+  fetchUpdateHistory: (): Promise<UpdateReleaseSummary[]> =>
+    ipcRenderer.invoke(IPC.UPDATE_FETCH_HISTORY),
+  downloadUpdate: (): Promise<{ ok: boolean; message?: string }> =>
+    ipcRenderer.invoke(IPC.UPDATE_DOWNLOAD),
   openReleaseUrl: (url: string): Promise<void> =>
     ipcRenderer.invoke(IPC.UPDATE_OPEN_RELEASE, url),
 

@@ -1,0 +1,17 @@
+{
+  "name": "photo-importer-update-admin",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Hosted update service and admin panel for Photo Importer",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cookie-parser": "^1.4.7",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.13.1"
+  }
+}

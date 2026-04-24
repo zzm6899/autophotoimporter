@@ -1,21 +1,49 @@
 import { useUpdateNotification } from '../hooks/useUpdateNotification';
 
-export function UpdateBanner() {
-  const { update, dismiss, openRelease } = useUpdateNotification();
+function formatDate(value?: string) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString('en-AU');
+}
 
-  if (!update) return null;
+export function UpdateBanner() {
+  const { visibleState, dismiss, downloadUpdate, openRelease } = useUpdateNotification();
+
+  if (!['available', 'downloading', 'ready', 'error', 'denied'].includes(visibleState.status)) {
+    return null;
+  }
+
+  const title = visibleState.status === 'denied'
+    ? 'Updates locked'
+    : visibleState.status === 'error'
+      ? 'Update check failed'
+      : visibleState.status === 'ready'
+        ? 'Update download opened'
+        : visibleState.status === 'downloading'
+          ? 'Preparing update'
+          : 'Update available';
+
+  const body = visibleState.status === 'denied'
+    ? (visibleState.message || 'This license is not entitled to updates.')
+    : visibleState.status === 'error'
+      ? (visibleState.message || 'The update service could not be reached.')
+      : visibleState.status === 'ready'
+        ? (visibleState.message || 'Finish the installer, then relaunch the app.')
+        : visibleState.status === 'downloading'
+          ? (visibleState.message || 'Opening the latest installer...')
+          : `v${visibleState.latestVersion} is available${visibleState.releaseDate ? ` · ${formatDate(visibleState.releaseDate)}` : ''}. Update now or later.`;
 
   return (
-    <div className="fixed bottom-4 right-4 z-40 max-w-xs w-full animate-in">
+    <div className="fixed bottom-4 right-4 z-40 max-w-sm w-full animate-in">
       <div className="bg-surface-raised border border-border rounded-lg shadow-lg p-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <p className="text-sm font-medium text-text">
-              Update available
-            </p>
-            <p className="text-xs text-text-secondary mt-1">
-              v{update.latestVersion} is out — you have v{update.currentVersion}
-            </p>
+            <p className="text-sm font-medium text-text">{title}</p>
+            <p className="text-xs text-text-secondary mt-1">{body}</p>
+            {visibleState.releaseName && visibleState.status === 'available' && (
+              <p className="text-[11px] text-text-muted mt-2">{visibleState.releaseName}</p>
+            )}
           </div>
           <button
             onClick={dismiss}
@@ -27,12 +55,32 @@ export function UpdateBanner() {
             </svg>
           </button>
         </div>
-        <button
-          onClick={openRelease}
-          className="mt-3 w-full py-1.5 rounded text-xs font-medium bg-accent hover:bg-accent-hover text-white transition-colors"
-        >
-          View release
-        </button>
+        <div className="mt-3 flex items-center gap-2">
+          {visibleState.status === 'available' && (
+            <button
+              onClick={() => { void downloadUpdate(); }}
+              className="flex-1 py-1.5 rounded text-xs font-medium bg-accent hover:bg-accent-hover text-white transition-colors"
+            >
+              Update now
+            </button>
+          )}
+          {(visibleState.releaseUrl || visibleState.status === 'available') && (
+            <button
+              onClick={openRelease}
+              className="flex-1 py-1.5 rounded text-xs font-medium bg-surface-alt hover:bg-border text-text-secondary transition-colors"
+            >
+              View release
+            </button>
+          )}
+          {visibleState.status !== 'downloading' && (
+            <button
+              onClick={dismiss}
+              className="flex-1 py-1.5 rounded text-xs font-medium bg-surface-alt hover:bg-border text-text-secondary transition-colors"
+            >
+              Later
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

@@ -146,3 +146,32 @@ Without a valid license, the app stays in browse/review mode and importing is bl
 [MIT](./LICENSE)
 "# autophotoimporter" 
 "# autophotoimporter" 
+# Hosted Updates
+
+For the TrueNAS-hosted update/admin stack:
+
+1. Clone this repo onto the TrueNAS server.
+2. Copy `.env.truenas.example` to `.env` and fill in real secrets.
+3. Start from repo root:
+
+```bash
+docker compose up -d --build
+```
+
+Public endpoints:
+
+- `https://admin.culler.z2hs.au`
+- `https://updates.culler.z2hs.au`
+
+Artifacts are served from the repo-root `artifacts/` directory through Caddy at:
+
+- `https://updates.culler.z2hs.au/artifacts/...`
+
+Windows release publishing from your local machine:
+
+```powershell
+$env:UPDATE_ADMIN_API_TOKEN="your-admin-api-token"
+npm run release:windows -- -Version 1.1.1 -ServerUser root -ServerHost 172.20.20.251
+```
+
+That script builds the Windows installer, uploads the EXE / `RELEASES` / `.nupkg` files to the TrueNAS repo, and registers the release with the hosted admin API.

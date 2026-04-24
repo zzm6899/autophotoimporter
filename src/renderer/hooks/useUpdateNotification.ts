@@ -1,27 +1,67 @@
-import { useState, useEffect } from 'react';
-import type { UpdateInfo } from '../../shared/types';
+import { useEffect, useState } from 'react';
+import type { UpdateReleaseSummary, UpdateState } from '../../shared/types';
+
+const INITIAL_STATE: UpdateState = {
+  status: 'idle',
+  currentVersion: 'unknown',
+};
 
 export function useUpdateNotification() {
-  const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  const [updateState, setUpdateState] = useState<UpdateState>(INITIAL_STATE);
   const [dismissed, setDismissed] = useState(false);
+  const [history, setHistory] = useState<UpdateReleaseSummary[]>([]);
 
   useEffect(() => {
-    const unsub = window.electronAPI.onUpdateAvailable((info) => {
-      setUpdate(info);
+    const unsub = window.electronAPI.onUpdateStatus((state) => {
+      setUpdateState((prev) => ({ ...prev, ...state }));
+      if (state.history) setHistory(state.history);
+      if (state.status === 'available' || state.status === 'ready') setDismissed(false);
     });
+
+    void window.electronAPI.checkForUpdates().then((state) => {
+      setUpdateState(state);
+      if (state.history) setHistory(state.history);
+    }).catch(() => undefined);
+
+    void window.electronAPI.fetchUpdateHistory().then((releases) => {
+      setHistory(releases);
+    }).catch(() => undefined);
+
     return () => { unsub(); };
   }, []);
 
   const dismiss = () => setDismissed(true);
+
+  const checkNow = async () => {
+    setDismissed(false);
+    const state = await window.electronAPI.checkForUpdates();
+    setUpdateState(state);
+    if (state.history) setHistory(state.history);
+    return state;
+  };
+
+  const downloadUpdate = async () => {
+    setUpdateState((prev) => ({ ...prev, status: 'downloading', message: 'Opening installer download...' }));
+    const result = await window.electronAPI.downloadUpdate();
+    if (!result.ok) {
+      setUpdateState((prev) => ({ ...prev, status: 'error', message: result.message || 'Could not open the installer download.' }));
+    }
+    return result;
+  };
+
   const openRelease = () => {
-    if (update) {
-      window.electronAPI.openReleaseUrl(update.releaseUrl);
+    if (updateState.releaseUrl) {
+      void window.electronAPI.openReleaseUrl(updateState.releaseUrl);
     }
   };
 
   return {
-    update: dismissed ? null : update,
+    updateState,
+    history,
     dismiss,
+    checkNow,
+    downloadUpdate,
     openRelease,
+    visibleState: dismissed ? { ...updateState, status: 'idle' as const } : updateState,
   };
 }

@@ -80,11 +80,10 @@ export function useSettings() {
       if (Array.isArray(settings.selectionSets)) {
         dispatch({ type: 'SET_SELECTION_SETS', sets: settings.selectionSets });
       }
-      if (settings.licenseStatus) {
-        dispatch({ type: 'SET_LICENSE_STATUS', status: settings.licenseStatus });
-      }
+      dispatch({ type: 'HYDRATE_LICENSE_STATUS', status: settings.licenseStatus ?? null });
     }).catch((err) => {
       console.error('[useSettings] getSettings failed:', err);
+      dispatch({ type: 'HYDRATE_LICENSE_STATUS', status: null });
     });
   }, [dispatch]);
 }

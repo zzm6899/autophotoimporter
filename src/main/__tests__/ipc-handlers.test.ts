@@ -54,7 +54,8 @@ vi.mock('../services/ftp-source', () => ({
 }));
 
 vi.mock('../services/update-checker', () => ({
-  checkForUpdate: vi.fn().mockResolvedValue(null),
+  checkForUpdate: vi.fn().mockResolvedValue({ status: 'up-to-date', currentVersion: '1.1.0', latestVersion: '1.1.0' }),
+  fetchUpdateHistory: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('../services/license', () => ({

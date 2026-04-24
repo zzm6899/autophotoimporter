@@ -13,6 +13,8 @@
     "license:keypair": "node scripts/setup-license-keys.mjs",
     "license:generate": "node scripts/generate-license.mjs",
     "license:console": "node scripts/license-console.mjs",
+    "update:publish": "node scripts/publish-update-release.mjs",
+    "release:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release-windows.ps1",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
