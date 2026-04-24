@@ -32,6 +32,7 @@ app.use(express.urlencoded({ extended: false }));
 app.use(express.json({ limit: '2mb' }));
 app.use(cookieParser());
 app.use('/artifacts', express.static(artifactsRoot));
+app.use(express.static(path.resolve(__dirname, '../../web')));
 
 function htmlPage(title, body) {
   return `<!doctype html>
