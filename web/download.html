@@ -257,9 +257,7 @@
   // -------------------------------------------------------------------------
   // Config — point at your real admin API
   // -------------------------------------------------------------------------
-  const API_BASE = 'https://admin.culler.z2hs.au';
-  const ARTIFACTS_BASE_MAC = 'https://updates.culler.z2hs.au/artifacts/mac';
-  const ARTIFACTS_BASE_WIN = 'https://updates.culler.z2hs.au/artifacts/windows';
+  const API_BASE = 'https://updates.culler.z2hs.au';
 
   // -------------------------------------------------------------------------
   // State
@@ -293,9 +291,9 @@
   // -------------------------------------------------------------------------
   async function loadReleases() {
     try {
-      const res = await fetch(`${API_BASE}/releases?platform=${currentPlatform}&channel=stable`, {
-        headers: { 'Accept': 'application/json' }
-      });
+      // Public endpoint — no auth needed
+      const url = `${API_BASE}/api/v1/app/releases?platform=${encodeURIComponent(currentPlatform === 'mac' ? 'macos' : 'windows')}&channel=stable&limit=10`;
+      const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
       const data = await res.json();
       releases = Array.isArray(data) ? data : (data.releases ?? []);
@@ -317,10 +315,8 @@
 
   function renderReleases() {
     const list = document.getElementById('release-list');
-    const platformReleases = releases.filter(r => {
-      const p = r.platforms?.[currentPlatform];
-      return p && (p.artifactUrl || r.artifactUrl);
-    });
+    // History endpoint returns releases already filtered by platform
+    const platformReleases = releases;
 
     if (platformReleases.length === 0) {
       list.innerHTML = `<div class="state-block">No ${currentPlatform === 'mac' ? 'macOS' : 'Windows'} releases found yet.</div>`;
@@ -329,7 +325,7 @@
 
     const rows = platformReleases.map((r, i) => {
       const p = r.platforms?.[currentPlatform] ?? {};
-      const artifactUrl = p.artifactUrl ?? r.artifactUrl ?? '';
+      const artifactUrl = r.artifactUrl ?? r.downloadUrl ?? '';
       const isLatest = i === 0;
       const notes = r.notes ?? r.releaseNotes ?? '';
       const channel = r.channel ?? 'stable';

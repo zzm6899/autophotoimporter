@@ -623,6 +623,7 @@ app.get('/admin/releases', authSession, async (_req, res) => {
         <td><span class="pill">${row.rollout_state}</span></td>
         <td>${new Date(row.published_at).toLocaleString('en-AU')}</td>
         <td>
+          <a href="/admin/releases/${row.id}/edit"><button class="secondary" type="button">Edit</button></a>
           ${row.rollout_state !== 'live' ? `<form class="inline" method="post" action="/admin/releases/${row.id}/live"><button class="secondary" type="submit">Go live</button></form>` : ''}
           ${row.rollout_state !== 'hidden' ? `<form class="inline" method="post" action="/admin/releases/${row.id}/hide"><button class="secondary" type="submit">Hide</button></form>` : ''}
         </td>
@@ -659,6 +660,76 @@ app.post('/admin/releases/:id/live', authSession, async (req, res) => {
 
 app.post('/admin/releases/:id/hide', authSession, async (req, res) => {
   await pool.query(`UPDATE releases SET rollout_state = 'hidden' WHERE id = $1`, [req.params.id]);
+  res.redirect('/admin/releases');
+});
+
+app.get('/admin/releases/:id/edit', authSession, async (req, res) => {
+  const result = await pool.query('SELECT * FROM releases WHERE id = $1', [req.params.id]);
+  if (!result.rowCount) {
+    return res.status(404).send(htmlPage('Not Found', `<div class="panel"><h1>Release not found</h1><a href="/admin/releases">Back</a></div>`));
+  }
+  const row = result.rows[0];
+  return res.send(htmlPage(`Edit ${row.release_name}`, `
+    <div class="top"><div><h1>Edit release</h1><p class="muted">${row.version} &middot; ${row.platform} &middot; ${row.channel}</p></div>${nav()}</div>
+    <div class="panel" style="max-width:680px">
+      <form method="post" action="/admin/releases/${row.id}/edit">
+        <label>Release name</label>
+        <input name="releaseName" value="${row.release_name}" required />
+        <div style="height:10px"></div>
+        <label>Channel</label>
+        <select name="channel">
+          <option value="stable" ${row.channel === 'stable' ? 'selected' : ''}>stable</option>
+          <option value="beta" ${row.channel === 'beta' ? 'selected' : ''}>beta</option>
+        </select>
+        <div style="height:10px"></div>
+        <label>Rollout</label>
+        <select name="rolloutState">
+          <option value="live" ${row.rollout_state === 'live' ? 'selected' : ''}>live</option>
+          <option value="draft" ${row.rollout_state === 'draft' ? 'selected' : ''}>draft</option>
+          <option value="hidden" ${row.rollout_state === 'hidden' ? 'selected' : ''}>hidden</option>
+        </select>
+        <div style="height:10px"></div>
+        <label>Artifact URL</label>
+        <input name="artifactUrl" value="${row.artifact_url}" required />
+        <div style="height:10px"></div>
+        <label>Release notes</label>
+        <textarea name="releaseNotes" rows="8">${row.release_notes || ''}</textarea>
+        <div style="height:14px"></div>
+        <div class="actions">
+          <button type="submit">Save changes</button>
+          <a href="/admin/releases"><button class="secondary" type="button">Cancel</button></a>
+        </div>
+      </form>
+    </div>
+    <div class="panel" style="max-width:680px;margin-top:16px;border-color:#7f1d1d">
+      <h2 style="color:#fca5a5">Danger zone</h2>
+      <p class="muted">Deleting a release removes it from the database. Artifact files on the server are <strong>not deleted</strong> — remove them via SSH to free storage.</p>
+      <form method="post" action="/admin/releases/${row.id}/delete" onsubmit="return confirm('Delete ${row.release_name} (${row.version})? This cannot be undone.')">
+        <button type="submit" style="background:#7f1d1d">Delete this release</button>
+      </form>
+    </div>
+  `));
+});
+
+app.post('/admin/releases/:id/edit', authSession, async (req, res) => {
+  await pool.query(
+    `UPDATE releases
+     SET release_name = $1, channel = $2, rollout_state = $3, artifact_url = $4, release_notes = $5
+     WHERE id = $6`,
+    [
+      req.body.releaseName,
+      req.body.channel || 'stable',
+      req.body.rolloutState || 'draft',
+      req.body.artifactUrl,
+      req.body.releaseNotes || null,
+      req.params.id,
+    ],
+  );
+  res.redirect('/admin/releases');
+});
+
+app.post('/admin/releases/:id/delete', authSession, async (req, res) => {
+  await pool.query('DELETE FROM releases WHERE id = $1', [req.params.id]);
   res.redirect('/admin/releases');
 });
 
@@ -855,6 +926,37 @@ app.get('/api/v1/app/update', async (req, res) => {
     releaseUrl: release.release_url,
     downloadUrl: `${process.env.PUBLIC_UPDATES_BASE_URL || 'https://updates.culler.z2hs.au'}/api/v1/app/download/${release.id}?token=${encodeURIComponent(token)}`,
     feedUrl: platform === 'windows' ? `${process.env.PUBLIC_UPDATES_BASE_URL || 'https://updates.culler.z2hs.au'}/artifacts/windows` : undefined,
+  });
+});
+
+// Public endpoint — no license key required. Used by the download page.
+app.get('/api/v1/app/releases', async (req, res) => {
+  const platform = req.query.platform || null;
+  const channel = req.query.channel || 'stable';
+  const limit = Math.min(Number(req.query.limit || 10), 50);
+
+  const rows = await pool.query(
+    `SELECT version, release_name, release_notes, release_url, artifact_url, published_at, channel, platform
+     FROM releases
+     WHERE ($1::text IS NULL OR platform = $1)
+       AND channel = $2
+       AND rollout_state = 'live'
+     ORDER BY published_at DESC, id DESC
+     LIMIT $3`,
+    [platform, channel, limit],
+  );
+
+  return res.json({
+    releases: rows.rows.map((row) => ({
+      version: row.version,
+      releaseName: row.release_name,
+      notes: row.release_notes,
+      releaseUrl: row.release_url,
+      artifactUrl: row.artifact_url,
+      publishedAt: row.published_at,
+      channel: row.channel,
+      platform: row.platform,
+    })),
   });
 });
 
