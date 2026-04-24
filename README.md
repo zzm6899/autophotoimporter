@@ -36,8 +36,6 @@
 
 ## Download
 
-Grab the latest alpha from [**Releases**](https://github.com/juanmnl/importer/releases/latest).
-
 **macOS** — download the `.dmg`. macOS will block the first launch; go to **System Settings → Privacy & Security** and click **Open Anyway**.
 
 **Windows** — download `PhotoImporter-Setup.exe`. SmartScreen may warn on first run — click **More info → Run anyway**. Portable `.zip` builds are also attached to each release if you'd rather avoid the installer.
