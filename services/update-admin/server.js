@@ -166,6 +166,25 @@ function statusPill(status) {
   return `<span class="pill${cls}">${status}</span>`;
 }
 
+function publicUpdatesBaseUrl() {
+  return String(process.env.PUBLIC_UPDATES_BASE_URL || 'https://updates.culler.z2hs.au').replace(/\/$/, '');
+}
+
+function sanitizeArtifactFilename(name) {
+  const base = path.basename(String(name || '').trim());
+  const safe = base.replace(/[^A-Za-z0-9._-]/g, '-').replace(/-+/g, '-');
+  if (!safe || safe === '.' || safe === '..') {
+    throw new Error('A valid filename is required.');
+  }
+  return safe;
+}
+
+function normalizeReleasePlatform(platform) {
+  const value = String(platform || '').trim().toLowerCase();
+  if (value === 'windows' || value === 'macos') return value;
+  throw new Error('Platform must be windows or macos.');
+}
+
 function signSession(payload) {
   return jwt.sign(payload, sessionSecret, { expiresIn: '12h' });
 }
@@ -970,7 +989,7 @@ app.post('/admin/releases/sync-github', authSession, async (_req, res) => {
 
 app.post('/admin/releases', authSession, async (req, res) => {
   const version = req.body.version;
-  const releaseUrl = req.body.releaseUrl || `${process.env.PUBLIC_UPDATES_BASE_URL || 'https://updates.culler.z2hs.au'}`.replace('updates.', 'admin.') + `/releases/${version}`;
+  const releaseUrl = req.body.releaseUrl || publicUpdatesBaseUrl().replace('updates.', 'admin.') + `/releases/${version}`;
   await pool.query(
     `INSERT INTO releases (version, platform, channel, release_name, release_notes, release_url, artifact_url, rollout_state, published_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())`,
@@ -1105,7 +1124,7 @@ app.post('/admin/api/releases/import', requireAdminApiToken, async (req, res) =>
   if (!version || !platform || !releaseName || !artifactUrl) {
     return res.status(400).json({ error: 'version, platform, releaseName, and artifactUrl are required.' });
   }
-  const resolvedReleaseUrl = releaseUrl || `${process.env.PUBLIC_UPDATES_BASE_URL || 'https://updates.culler.z2hs.au'}`.replace('updates.', 'admin.') + `/releases/${version}`;
+  const resolvedReleaseUrl = releaseUrl || publicUpdatesBaseUrl().replace('updates.', 'admin.') + `/releases/${version}`;
   const result = await pool.query(
     `INSERT INTO releases (version, platform, channel, release_name, release_notes, release_url, artifact_url, rollout_state, published_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
@@ -1113,6 +1132,33 @@ app.post('/admin/api/releases/import', requireAdminApiToken, async (req, res) =>
     [version, platform, channel, releaseName, releaseNotes || null, resolvedReleaseUrl, artifactUrl, rolloutState],
   );
   return res.json({ ok: true, id: result.rows[0].id });
+});
+
+app.post('/admin/api/artifacts/upload', requireAdminApiToken, express.raw({ type: '*/*', limit: '2gb' }), async (req, res) => {
+  try {
+    const platform = normalizeReleasePlatform(req.query.platform);
+    const filename = sanitizeArtifactFilename(req.query.filename);
+    const body = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || '');
+
+    if (!body.length) {
+      return res.status(400).json({ error: 'Artifact body is empty.' });
+    }
+
+    const platformDir = path.join(artifactsRoot, platform);
+    const targetPath = path.join(platformDir, filename);
+    await fs.promises.mkdir(platformDir, { recursive: true });
+    await fs.promises.writeFile(targetPath, body);
+
+    return res.json({
+      ok: true,
+      filename,
+      platform,
+      artifactUrl: `${publicUpdatesBaseUrl()}/artifacts/${platform}/${encodeURIComponent(filename)}`,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Could not upload artifact.';
+    return res.status(400).json({ error: message });
+  }
 });
 
 app.post('/api/v1/license/resolve', async (req, res) => {
@@ -1310,8 +1356,8 @@ app.get('/api/v1/app/update', async (req, res) => {
     releaseNotes: release.release_notes,
     releaseDate: release.published_at,
     releaseUrl: release.release_url,
-    downloadUrl: `${process.env.PUBLIC_UPDATES_BASE_URL || 'https://updates.culler.z2hs.au'}/api/v1/app/download/${release.id}?token=${encodeURIComponent(token)}`,
-    feedUrl: platform === 'windows' ? `${process.env.PUBLIC_UPDATES_BASE_URL || 'https://updates.culler.z2hs.au'}/artifacts/windows` : undefined,
+    downloadUrl: `${publicUpdatesBaseUrl()}/api/v1/app/download/${release.id}?token=${encodeURIComponent(token)}`,
+    feedUrl: platform === 'windows' ? `${publicUpdatesBaseUrl()}/artifacts/windows` : undefined,
   });
 });
 

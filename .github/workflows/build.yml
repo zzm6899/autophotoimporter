@@ -56,10 +56,6 @@ jobs:
       VERSION: ${{ github.ref_name }}
       UPDATE_ADMIN_ENDPOINT: ${{ secrets.UPDATE_ADMIN_ENDPOINT }}
       UPDATE_ADMIN_API_TOKEN: ${{ secrets.UPDATE_ADMIN_API_TOKEN }}
-      TRUENAS_HOST: ${{ secrets.TRUENAS_HOST }}
-      TRUENAS_USER: ${{ secrets.TRUENAS_USER }}
-      TRUENAS_PATH: ${{ secrets.TRUENAS_PATH }}
-      PUBLIC_ARTIFACTS_BASE_URL: ${{ secrets.PUBLIC_ARTIFACTS_BASE_URL }}
 
     steps:
       - uses: actions/checkout@v4
@@ -97,19 +93,12 @@ jobs:
             --title "$TAG_NAME" \
             --notes "Automated release for $TAG_NAME"
 
-      - name: Set up SSH key for TrueNAS publish
-        if: ${{ env.TRUENAS_HOST != '' && env.TRUENAS_USER != '' && env.TRUENAS_PATH != '' && env.PUBLIC_ARTIFACTS_BASE_URL != '' && env.UPDATE_ADMIN_ENDPOINT != '' && env.UPDATE_ADMIN_API_TOKEN != '' }}
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.TRUENAS_SSH_KEY }}
-
-      - name: Mirror public artifacts to TrueNAS and import hosted releases
-        if: ${{ env.TRUENAS_HOST != '' && env.TRUENAS_USER != '' && env.TRUENAS_PATH != '' && env.PUBLIC_ARTIFACTS_BASE_URL != '' && env.UPDATE_ADMIN_ENDPOINT != '' && env.UPDATE_ADMIN_API_TOKEN != '' }}
+      - name: Upload hosted artifacts to update admin
+        if: ${{ env.UPDATE_ADMIN_ENDPOINT != '' && env.UPDATE_ADMIN_API_TOKEN != '' }}
         shell: bash
         run: |
           set -euo pipefail
           VERSION="${VERSION#v}"
-          ssh -o StrictHostKeyChecking=accept-new "$TRUENAS_USER@$TRUENAS_HOST" "mkdir -p '$TRUENAS_PATH/artifacts/windows' '$TRUENAS_PATH/artifacts/macos'"
 
           WINDOWS_EXE="$(find release-assets -maxdepth 1 -type f -name '*.exe' | head -n 1 || true)"
           WINDOWS_NUPKG="$(find release-assets -maxdepth 1 -type f -name '*.nupkg' | head -n 1 || true)"
@@ -118,35 +107,50 @@ jobs:
           MAC_DMG="$(find release-assets -maxdepth 1 -type f -name '*.dmg' | head -n 1 || true)"
           MAC_ZIP="$(find release-assets -maxdepth 1 -type f \( -name '*darwin*.zip' -o -name '*mac*.zip' \) | head -n 1 || true)"
 
-          if [[ -n "$WINDOWS_EXE" ]]; then
-            scp "$WINDOWS_EXE" "$TRUENAS_USER@$TRUENAS_HOST:$TRUENAS_PATH/artifacts/windows/PhotoImporter-Setup-$VERSION.exe"
-          fi
           if [[ -n "$WINDOWS_NUPKG" ]]; then
-            scp "$WINDOWS_NUPKG" "$TRUENAS_USER@$TRUENAS_HOST:$TRUENAS_PATH/artifacts/windows/"
+            node scripts/publish-update-release.mjs \
+              --endpoint "$UPDATE_ADMIN_ENDPOINT" \
+              --token "$UPDATE_ADMIN_API_TOKEN" \
+              --platform windows \
+              --file "$WINDOWS_NUPKG" \
+              --upload-only
           fi
           if [[ -n "$WINDOWS_RELEASES" ]]; then
-            scp "$WINDOWS_RELEASES" "$TRUENAS_USER@$TRUENAS_HOST:$TRUENAS_PATH/artifacts/windows/RELEASES"
+            node scripts/publish-update-release.mjs \
+              --endpoint "$UPDATE_ADMIN_ENDPOINT" \
+              --token "$UPDATE_ADMIN_API_TOKEN" \
+              --platform windows \
+              --file "$WINDOWS_RELEASES" \
+              --upload-only
           fi
           if [[ -n "$WINDOWS_ZIP" ]]; then
-            scp "$WINDOWS_ZIP" "$TRUENAS_USER@$TRUENAS_HOST:$TRUENAS_PATH/artifacts/windows/"
+            node scripts/publish-update-release.mjs \
+              --endpoint "$UPDATE_ADMIN_ENDPOINT" \
+              --token "$UPDATE_ADMIN_API_TOKEN" \
+              --platform windows \
+              --file "$WINDOWS_ZIP" \
+              --upload-only
+          fi
+          if [[ -n "$MAC_ZIP" ]]; then
+            node scripts/publish-update-release.mjs \
+              --endpoint "$UPDATE_ADMIN_ENDPOINT" \
+              --token "$UPDATE_ADMIN_API_TOKEN" \
+              --platform macos \
+              --file "$MAC_ZIP" \
+              --upload-only
           fi
           if [[ -n "$MAC_DMG" ]]; then
-            MAC_DMG_NAME="$(basename "$MAC_DMG")"
-            scp "$MAC_DMG" "$TRUENAS_USER@$TRUENAS_HOST:$TRUENAS_PATH/artifacts/macos/$MAC_DMG_NAME"
             node scripts/publish-update-release.mjs \
               --endpoint "$UPDATE_ADMIN_ENDPOINT" \
               --token "$UPDATE_ADMIN_API_TOKEN" \
               --version "$VERSION" \
               --platform macos \
               --release-name "Photo Importer $VERSION" \
-              --artifact-url "${PUBLIC_ARTIFACTS_BASE_URL%/}/macos/$MAC_DMG_NAME" \
+              --file "$MAC_DMG" \
               --release-url "${UPDATE_ADMIN_ENDPOINT%/}/releases/$VERSION" \
               --notes "Automated release for $TAG_NAME" \
               --channel stable \
               --rollout live
-          fi
-          if [[ -n "$MAC_ZIP" ]]; then
-            scp "$MAC_ZIP" "$TRUENAS_USER@$TRUENAS_HOST:$TRUENAS_PATH/artifacts/macos/"
           fi
           if [[ -n "$WINDOWS_EXE" ]]; then
             node scripts/publish-update-release.mjs \
@@ -155,7 +159,7 @@ jobs:
               --version "$VERSION" \
               --platform windows \
               --release-name "Photo Importer $VERSION" \
-              --artifact-url "${PUBLIC_ARTIFACTS_BASE_URL%/}/windows/PhotoImporter-Setup-$VERSION.exe" \
+              --file "$WINDOWS_EXE" \
               --release-url "${UPDATE_ADMIN_ENDPOINT%/}/releases/$VERSION" \
               --notes "Automated release for $TAG_NAME" \
               --channel stable \

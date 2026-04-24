@@ -280,6 +280,10 @@ const runOnMac = process.platform === 'darwin' ? describe : describe.skip;
 
 runOnMac('generatePreview (macOS sips)', () => {
   beforeEach(() => {
+    mockStat.mockReset();
+    mockExecFile.mockReset();
+    mockReadFile.mockReset();
+    mockExifrThumbnail.mockReset();
     mockExecFile.mockResolvedValue({ stdout: '', stderr: '' } as any);
     mockReadFile.mockResolvedValue(Buffer.from('jpeg-data'));
   });
@@ -317,10 +321,16 @@ runOnMac('generatePreview (macOS sips)', () => {
 });
 
 runOnMac('generateThumbnail (macOS sips)', () => {
-  it('returns base64 data URI from sips output', async () => {
+  beforeEach(() => {
+    mockStat.mockReset();
+    mockExecFile.mockReset();
+    mockReadFile.mockReset();
+    mockExifrThumbnail.mockReset();
     mockExecFile.mockResolvedValue({ stdout: '', stderr: '' } as any);
     mockReadFile.mockResolvedValue(Buffer.from('thumb-data'));
+  });
 
+  it('returns base64 data URI from sips output', async () => {
     const result = await generateThumbnail('/photo.tiff', 'photo.tiff');
     expect(result).toContain('data:image/jpeg;base64,');
     expect(mockExecFile).toHaveBeenCalledWith(
