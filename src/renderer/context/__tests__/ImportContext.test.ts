@@ -132,10 +132,18 @@ describe('ImportContext reducer', () => {
       expect(next.importResult).toBe(result);
     });
 
-    it('complete → ready on DISMISS_SUMMARY', () => {
-      const state = makeState({ phase: 'complete', importResult: {} as ImportResult });
+    it('complete → ready on DISMISS_SUMMARY when files exist', () => {
+      const state = makeState({ phase: 'complete', importResult: {} as ImportResult, files: [makeFile({ path: '/a.jpg' })] });
       const next = reducer(state, { type: 'DISMISS_SUMMARY' });
       expect(next.phase).toBe('ready');
+      expect(next.importResult).toBeNull();
+      expect(next.importProgress).toBeNull();
+    });
+
+    it('complete → idle on DISMISS_SUMMARY when no files (e.g. after auto-import)', () => {
+      const state = makeState({ phase: 'complete', importResult: {} as ImportResult, files: [] });
+      const next = reducer(state, { type: 'DISMISS_SUMMARY' });
+      expect(next.phase).toBe('idle');
       expect(next.importResult).toBeNull();
       expect(next.importProgress).toBeNull();
     });
