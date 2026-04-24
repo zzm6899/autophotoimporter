@@ -6,7 +6,7 @@ rem  Photo Importer - Windows setup script
 rem  Usage:  double-click, or from a cmd prompt:
 rem    scripts\setup-windows.cmd                (interactive menu)
 rem    scripts\setup-windows.cmd dev            (install + npm start)
-rem    scripts\setup-windows.cmd build          (install + npm run build)
+rem    scripts\setup-windows.cmd build          (install + npm run make)
 rem    scripts\setup-windows.cmd install        (install only)
 rem    scripts\setup-windows.cmd release        (bump version, tag, push)
 rem    scripts\setup-windows.cmd commit         (stage all, commit, push)
@@ -71,7 +71,7 @@ echo   [2] Install + run in dev mode
 echo   [3] Install + build installer
 echo   [4] Release        - bump version, tag, and push (triggers GitHub build)
 echo   [5] Commit         - stage all changes and push to current branch
-echo   [6] Publish models - upload ONNX face models to GitHub release
+echo   [6] Publish models - upload ONNX culling models to GitHub release
 echo   [q] Quit
 echo.
 set "CHOICE="
@@ -116,7 +116,7 @@ if errorlevel 1 goto :install_failed
 
 :install_ok
 echo.
-echo --- Downloading face models (skipped if already present) ---
+echo --- Downloading ONNX culling models (skipped if already present) ---
 call npm run models
 if errorlevel 1 (
   echo [warn] Model download failed. Face recognition will be unavailable.
@@ -256,16 +256,16 @@ if errorlevel 1 (
   if /i not "!CONT!"=="y" goto :fail
 )
 
-rem Update package.json version using Node (cross-platform, no jq needed)
-node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.version='!NEW_VER!';fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+rem Update package.json + package-lock.json using npm so both stay in sync
+call npm version !NEW_VER! --no-git-tag-version
 if errorlevel 1 (
-  echo [ERROR] Failed to update package.json
+  echo [ERROR] Failed to update package version metadata
   goto :fail
 )
-echo [ok] package.json updated to !NEW_VER!
+echo [ok] package.json and package-lock.json updated to !NEW_VER!
 
 rem Stage and commit
-git add package.json
+git add package.json package-lock.json
 if errorlevel 1 goto :release_failed
 
 git commit -m "chore: release v!NEW_VER!"
@@ -289,7 +289,7 @@ if errorlevel 1 (
 
 echo.
 echo [ok] Released v!NEW_VER! -- GitHub Actions will now build the installers.
-echo      Watch progress at: https://github.com/juanmnl/importer/actions
+echo      Watch progress at: https://github.com/zzm6899/autophotoimporter/actions
 goto :done
 
 rem ============================================================
@@ -300,13 +300,13 @@ rem  - Downloads model files and uploads them as release assets
 rem ============================================================
 :do_publish_models
 echo.
-echo --- Publish face models to GitHub ---
+echo --- Publish ONNX models to GitHub ---
 echo.
-echo This uploads the ONNX face models to your GitHub release so
+echo This uploads the ONNX culling models to your GitHub release so
 echo end-users can download them automatically on first launch.
 echo.
-echo You need a GitHub Personal Access Token with "repo" scope.
-echo Get one at: https://github.com/settings/tokens
+echo You need a GitHub token with Contents: write access to the target repo.
+echo Get one at: https://github.com/settings/personal-access-tokens/new
 echo.
 
 set "GH_TOKEN_INPUT=%GH_TOKEN%"
