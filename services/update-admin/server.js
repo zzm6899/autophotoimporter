@@ -97,7 +97,25 @@ function htmlPage(title, body) {
     .ok{color:#86efac}
     .bad{color:#fca5a5}
     .warn{color:#fdba74}
-    @media(max-width:900px){.row{flex-direction:column}.shell{padding:12px}}
+    @media(max-width:900px){
+      .row{flex-direction:column}
+      .shell{padding:12px 10px}
+      .top{flex-direction:column;gap:10px}
+      h1{font-size:1.15rem}
+      .panel{padding:14px}
+      .grid{grid-template-columns:1fr}
+      .cards{grid-template-columns:repeat(2,1fr)}
+      table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch;white-space:nowrap}
+      .nav{gap:2px}
+      .nav a{padding:5px 9px;font-size:.75rem}
+      input,textarea,select{font-size:.875rem}
+    }
+    @media(max-width:480px){
+      .cards{grid-template-columns:1fr}
+      .actions{flex-direction:column;align-items:stretch}
+      .actions a,.actions form.inline{display:block}
+      .actions button{width:100%}
+    }
   </style>
 </head>
 <body><div class="shell">${body}</div></body></html>`;

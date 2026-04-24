@@ -279,21 +279,16 @@
     document.getElementById('tab-win').classList.toggle('active', platform === 'windows');
     document.getElementById('req-mac').style.display = platform === 'mac' ? '' : 'none';
     document.getElementById('req-win').style.display = platform === 'windows' ? '' : 'none';
-    renderReleases();
-
-    // Auto-detect platform suggestion
-    const ua = navigator.userAgent;
-    if (platform === 'mac' && !ua.includes('Mac')) {
-      // fine, user switched manually
-    }
+    loadReleases();
   };
 
   // -------------------------------------------------------------------------
   // Fetch releases
   // -------------------------------------------------------------------------
   async function loadReleases() {
+    dataLoaded = false;
+    renderReleases();
     try {
-      // Public endpoint — no auth needed
       const url = `${API_BASE}/api/v1/app/releases?platform=${encodeURIComponent(currentPlatform === 'mac' ? 'macos' : 'windows')}&channel=stable&limit=10`;
       const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
@@ -385,12 +380,9 @@
   // -------------------------------------------------------------------------
   (function detectPlatform() {
     const ua = navigator.userAgent;
-    if (!ua.includes('Mac') && (ua.includes('Win') || ua.includes('Windows'))) {
-      switchPlatform('windows');
-    }
+    const isWin = !ua.includes('Mac') && (ua.includes('Win') || ua.includes('Windows'));
+    switchPlatform(isWin ? 'windows' : 'mac');
   })();
-
-  loadReleases();
 </script>
 </body>
 </html>
