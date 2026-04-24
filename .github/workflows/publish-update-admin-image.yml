@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'services/update-admin/**'
+      - 'web/**'
       - 'deploy/truenas/**'
       - '.github/workflows/publish-update-admin-image.yml'
   workflow_dispatch:
@@ -46,7 +47,7 @@ jobs:
       - name: Build and push update-admin image
         uses: docker/build-push-action@v6
         with:
-          context: ./services/update-admin
+          context: .
           file: ./services/update-admin/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}

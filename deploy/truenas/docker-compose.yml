@@ -15,7 +15,8 @@ services:
 
   app:
     build:
-      context: ../../services/update-admin
+      context: ../..
+      dockerfile: services/update-admin/Dockerfile
     container_name: culler-update-app
     restart: unless-stopped
     depends_on:
