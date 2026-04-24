@@ -544,7 +544,6 @@ export function ThumbnailGrid() {
   const dispatch = useAppDispatch();
   const gridRef = useRef<HTMLDivElement>(null);
   const splitGridRef = useRef<HTMLDivElement>(null);
-  const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
   const [searchText, setSearchText] = useState('');
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showBestOfSelection, setShowBestOfSelection] = useState(false);
@@ -678,37 +677,29 @@ export function ThumbnailGrid() {
     };
   }, [files]);
 
-  // Clear selection when source changes or view mode changes to single
   useEffect(() => {
-    setSelectedIndices(new Set());
-  }, [selectedSource, viewMode]);
+    dispatch({ type: 'SET_SELECTED_PATHS', paths: [] });
+  }, [dispatch, selectedSource]);
 
-  // Preserve click-selection by file path when search/filter/sort changes so a
-  // selection never jumps to unrelated thumbnails after the grid is re-ordered.
-  useEffect(() => {
-    if (selectedPaths.length === 0) {
-      if (selectedIndices.size > 0) setSelectedIndices(new Set());
-      return;
-    }
+  const selectedIndices = useMemo(() => {
+    if (selectedPaths.length === 0) return new Set<number>();
     const pathSet = new Set(selectedPaths);
     const next = new Set<number>();
     sortedFiles.forEach((file, index) => {
       if (pathSet.has(file.path)) next.add(index);
     });
-    if (!setsEqual(selectedIndices, next)) {
-      setSelectedIndices(next);
-    }
-  }, [selectedIndices, selectedPaths, setsEqual, sortedFiles]);
+    return next;
+  }, [selectedPaths, sortedFiles]);
 
-  // Mirror the grid's click-selection into the store so other components
-  // (DestinationPanel's "Import X Files" button, useImport) can respect
-  // it. Without this, clicking 40 of 10k photos has no effect on import.
-  useEffect(() => {
-    const paths = Array.from(selectedIndices)
+  const setSelectedIndices = useCallback((next: Set<number>) => {
+    const paths = Array.from(next)
       .filter((i) => i >= 0 && i < sortedFiles.length)
       .map((i) => sortedFiles[i].path);
+    if (paths.length === selectedPaths.length && paths.every((pathValue, index) => pathValue === selectedPaths[index])) {
+      return;
+    }
     dispatch({ type: 'SET_SELECTED_PATHS', paths });
-  }, [selectedIndices, sortedFiles, dispatch]);
+  }, [dispatch, selectedPaths, sortedFiles]);
 
   useEffect(() => {
     if (sharpnessInFlightRef.current) return;
@@ -874,7 +865,9 @@ export function ThumbnailGrid() {
   // Sync during render so event handlers never observe a stale Set.
   // Required for React.memo on ThumbnailCard to bail out across renders.
   const selectedIndicesRef = useRef(selectedIndices);
-  selectedIndicesRef.current = selectedIndices;
+  useEffect(() => {
+    selectedIndicesRef.current = selectedIndices;
+  }, [selectedIndices]);
 
   const handleCardClick = useCallback((index: number, e: React.MouseEvent) => {
     const sel = selectedIndicesRef.current;
