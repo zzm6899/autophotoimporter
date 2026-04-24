@@ -473,78 +473,6 @@ async function analyzeSubject(src: string): Promise<{
   ctx.drawImage(img, 0, 0, width, height);
   const data = ctx.getImageData(0, 0, width, height).data;
 
-  const detectedFaces: Array<{ x: number; y: number; width: number; height: number; eyeScore?: number; sharpness: number; signature: string; area: number }> = [];
-  const FaceDetectorCtor = (globalThis as unknown as {
-    FaceDetector?: new (options?: { fastMode?: boolean; maxDetectedFaces?: number }) => {
-      detect: (source: CanvasImageSource) => Promise<Array<{ boundingBox: DOMRectReadOnly | { x: number; y: number; width: number; height: number } }>>;
-    };
-  }).FaceDetector;
-  let usedFaceFallback = false;
-  if (FaceDetectorCtor) {
-    try {
-      const detector = new FaceDetectorCtor({ fastMode: true, maxDetectedFaces: 12 });
-      const faces = await detector.detect(canvas);
-      for (const face of faces) {
-        const box = face.boundingBox;
-        const x = Math.max(0, Math.min(width - 2, box.x));
-        const y = Math.max(0, Math.min(height - 2, box.y));
-        const w = Math.max(2, Math.min(width - x, box.width));
-        const h = Math.max(2, Math.min(height - y, box.height));
-        const expanded = {
-          x: Math.max(0, x - w * 0.18),
-          y: Math.max(0, y - h * 0.12),
-          w: Math.min(width - x, w * 1.36),
-          h: Math.min(height - y, h * 1.28),
-        };
-        const sharpness = regionSharpness(data, width, height, expanded);
-        const upperSharpness = regionSharpness(data, width, height, {
-          x: expanded.x + expanded.w * 0.12,
-          y: expanded.y + expanded.h * 0.18,
-          w: expanded.w * 0.76,
-          h: expanded.h * 0.28,
-        });
-        const eyeScore = upperSharpness >= 70 ? 2 : upperSharpness >= 32 ? 1 : 0;
-        const signature = faceCropSignature(ctx, width, height, { x, y, w, h });
-        detectedFaces.push({
-          x: x / width,
-          y: y / height,
-          width: w / width,
-          height: h / height,
-          eyeScore,
-          sharpness,
-          signature,
-          area: w * h,
-        });
-      }
-    } catch {
-      // Browser face detection is best-effort; fall back to subject focus below.
-    }
-  }
-  if (detectedFaces.length === 0) {
-    const fallbackFaces = detectFaceLikeRegions(data, width, height);
-    usedFaceFallback = fallbackFaces.length > 0;
-    for (const face of fallbackFaces) {
-      const sharpness = regionSharpness(data, width, height, face);
-      const upperSharpness = regionSharpness(data, width, height, {
-        x: face.x + face.w * 0.12,
-        y: face.y + face.h * 0.16,
-        w: face.w * 0.76,
-        h: face.h * 0.30,
-      });
-      const eyeScore = upperSharpness >= 80 ? 2 : upperSharpness >= 38 ? 1 : 0;
-      detectedFaces.push({
-        x: face.x / width,
-        y: face.y / height,
-        width: face.w / width,
-        height: face.h / height,
-        eyeScore,
-        sharpness,
-        signature: '',
-        area: face.w * face.h,
-      });
-    }
-  }
-
   // Broad center-region sharpness as baseline (works even with helmets/masks)
   const center = regionSharpness(data, width, height, {
     x: width * 0.2, y: height * 0.1, w: width * 0.6, h: height * 0.8,
@@ -561,67 +489,18 @@ async function analyzeSubject(src: string): Promise<{
     return { ...box, sharpness: sharp };
   });
 
-  if (detectedFaces.length < 2) {
-    const headFaces = estimateHeadRegionsFromSubjects(scored, data, width, height);
-    for (const face of headFaces) {
-      const overlapsExisting = detectedFaces.some((existing) => {
-        const ex = existing.x * width;
-        const ey = existing.y * height;
-        const ew = existing.width * width;
-        const eh = existing.height * height;
-        const ix = Math.max(face.x, ex);
-        const iy = Math.max(face.y, ey);
-        const iw = Math.min(face.x + face.w, ex + ew) - ix;
-        const ih = Math.min(face.y + face.h, ey + eh) - iy;
-        if (iw <= 0 || ih <= 0) return false;
-        const inter = iw * ih;
-        const uni = face.w * face.h + ew * eh - inter;
-        return inter / uni > 0.25;
-      });
-      if (overlapsExisting) continue;
-      const sharpness = regionSharpness(data, width, height, face);
-      const upperSharpness = regionSharpness(data, width, height, {
-        x: face.x + face.w * 0.12,
-        y: face.y + face.h * 0.18,
-        w: face.w * 0.76,
-        h: face.h * 0.30,
-      });
-      detectedFaces.push({
-        x: face.x / width,
-        y: face.y / height,
-        width: face.w / width,
-        height: face.h / height,
-        eyeScore: upperSharpness >= 80 ? 2 : upperSharpness >= 38 ? 1 : 0,
-        sharpness,
-        signature: '',
-        area: face.w * face.h,
-      });
-      usedFaceFallback = true;
-      if (detectedFaces.length >= 4) break;
-    }
-  }
-
-  // Best subject sharpness wins (vs overall center/face score)
-  const bestSharp = Math.max(center, ...scored.map((s) => s.sharpness), ...detectedFaces.map((f) => f.sharpness));
-  const bestEye = detectedFaces.reduce((best, f) => Math.max(best, f.eyeScore ?? 0), 0);
-  const primaryFace = detectedFaces.slice().sort((a, b) =>
-    (b.eyeScore ?? 0) - (a.eyeScore ?? 0) ||
-    b.sharpness - a.sharpness ||
-    b.area - a.area,
-  )[0];
+  const bestSharp = Math.max(center, ...scored.map((s) => s.sharpness));
 
   return {
     subjectSharpnessScore: bestSharp,
-    faceCount: detectedFaces.length,
-    faceBoxes: detectedFaces.map(({ sharpness: _sharpness, signature: _signature, area: _area, ...box }) => box),
-    faceDetection: detectedFaces.length > 0 ? (usedFaceFallback ? 'estimated' : 'native') : undefined,
-    faceSignature: usedFaceFallback ? undefined : primaryFace?.signature,
+    faceCount: 0,
+    faceBoxes: [],
+    faceDetection: undefined,
+    faceSignature: undefined,
     subjectReasons: [
-      detectedFaces.length > 0
-        ? `${detectedFaces.length} face${detectedFaces.length === 1 ? '' : 's'}${usedFaceFallback ? ' estimated' : ''}${bestEye >= 2 ? ', eyes sharp' : ''}`
-        : scored.length > 0
-          ? (scored.length > 1 ? `${scored.length} subject zones` : 'subject focus')
-          : 'center subject',
+      scored.length > 0
+        ? (scored.length > 1 ? `${scored.length} subject zones` : 'subject focus')
+        : 'center subject',
     ],
   };
 }
@@ -685,6 +564,13 @@ export function ThumbnailGrid() {
   const reviewBatchCounterRef = useRef(0);
   const collapsedSet = useMemo(() => new Set(collapsedBursts), [collapsedBursts]);
   const queuedSet = useMemo(() => new Set(queuedPaths), [queuedPaths]);
+  const totalPhotoCount = useMemo(() => files.filter((f) => f.type === 'photo').length, [files]);
+  const readyThumbnailCount = useMemo(
+    () => files.filter((f) => f.type === 'photo' && !!f.thumbnail).length,
+    [files],
+  );
+  const reviewWaitingForThumbnails =
+    phase === 'scanning' || (totalPhotoCount > 0 && readyThumbnailCount < totalPhotoCount);
 
   const setsEqual = useCallback((a: Set<number>, b: Set<number>) => {
     if (a.size !== b.size) return false;
@@ -827,6 +713,7 @@ export function ThumbnailGrid() {
   useEffect(() => {
     if (sharpnessInFlightRef.current) return;
     if (reviewPaused) return;
+    if (reviewWaitingForThumbnails) return;
     // Allow analysis in all view modes — use a smaller batch in single/split
     // so face detection doesn't compete with the detail preview load.
     const batchSize = (viewMode === 'single' || viewMode === 'split') ? 2 : 8;
@@ -930,7 +817,7 @@ export function ThumbnailGrid() {
       }
       sharpnessInFlightRef.current = false;
     };
-  }, [files, dispatch, reviewPaused, viewMode, focusedIndex, sortedFiles]);
+  }, [files, dispatch, reviewPaused, reviewWaitingForThumbnails, viewMode, focusedIndex, sortedFiles]);
 
   useEffect(() => {
     setBackgroundPreviewPaused(backgroundLoadingPaused);
@@ -2013,13 +1900,22 @@ export function ThumbnailGrid() {
         Blur Check
       </button>
       <button
-        onClick={() => setReviewPaused((v) => !v)}
+        onClick={() => {
+          if (reviewWaitingForThumbnails) return;
+          setReviewPaused((v) => !v);
+        }}
         className={`px-2 py-1 text-[10px] rounded-md transition-colors shrink-0 ${
-          reviewPaused ? 'bg-yellow-500/15 text-yellow-300' : 'bg-surface-raised text-text-muted hover:text-text'
+          reviewWaitingForThumbnails || reviewPaused
+            ? 'bg-yellow-500/15 text-yellow-300'
+            : 'bg-surface-raised text-text-muted hover:text-text'
         }`}
-        title={`Pause or resume local review analysis. It computes blur risk, subject focus, face count, visual similarity, and keeper score. Done ${reviewStats.analyzed}/${reviewStats.total}.`}
+        title={reviewWaitingForThumbnails
+          ? `Review will start after thumbnails finish loading. Ready ${readyThumbnailCount}/${totalPhotoCount}.`
+          : `Pause or resume local review analysis. It computes blur risk, subject focus, face boxes, visual similarity, and keeper score. Done ${reviewStats.analyzed}/${reviewStats.total}.`}
       >
-        {reviewPaused ? 'Resume Review' : 'Pause Review'} {reviewStats.analyzed}/{reviewStats.total}
+        {reviewWaitingForThumbnails
+          ? `Waiting Thumbs ${readyThumbnailCount}/${totalPhotoCount}`
+          : `${reviewPaused ? 'Resume Review' : 'Pause Review'} ${reviewStats.analyzed}/${reviewStats.total}`}
       </button>
       <button
         onClick={() => {
@@ -2031,9 +1927,9 @@ export function ThumbnailGrid() {
             ? 'bg-violet-500/10 text-violet-300 hover:bg-violet-500/20'
             : 'bg-surface-raised text-text-muted hover:text-violet-300'
         }`}
-        title={`Re-run face and subject detection on all ${reviewStats.total} photos. Uses Chromium FaceDetector when available, then a local thumbnail fallback. Faces found so far: ${reviewStats.faces}.`}
+        title={`Re-run the fast review pass on all ${reviewStats.total} photos. Uses ONNX boxes plus lightweight subject scoring. Faces found so far: ${reviewStats.faces}.`}
       >
-        Re-scan AI {reviewStats.faces}
+        Re-scan Boxes {reviewStats.faces}
       </button>
       <button
         onClick={() => setBackgroundLoadingPaused((v) => !v)}

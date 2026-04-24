@@ -7,6 +7,14 @@ import { parseExifDate, generateThumbnail, extractEmbeddedThumbnail, EXIFR_SUPPO
 const BATCH_SIZE = 50;
 const FAST_THUMB_CONCURRENCY = 20;  // exifr embedded thumbs — just file reads, no CPU
 const SLOW_THUMB_CONCURRENCY = 8;   // sips — spawns process, decodes RAW
+const RAW_PRIORITY_EXTENSIONS = new Set([
+  '.cr2', '.cr3', '.crw',
+  '.nef', '.nrw',
+  '.arw', '.srf', '.sr2',
+  '.raf', '.orf', '.rw2', '.pef', '.srw', '.rwl',
+  '.3fr', '.fff', '.gpr', '.mrw', '.erf',
+  '.dng',
+]);
 
 let currentAbortController: AbortController | null = null;
 let paused = false;
@@ -113,7 +121,13 @@ function generateThumbnailsInBackground(
   const run = async () => {
     // Phase 2A: Fast thumbnails — extract embedded JPEG from EXIF (exifr-supported formats)
     const photos = allFiles.filter((f) => f.type === 'photo');
-    const fastFiles = photos.filter((f) => EXIFR_SUPPORTED.has(f.extension));
+    const fastFiles = photos
+      .filter((f) => EXIFR_SUPPORTED.has(f.extension))
+      .sort((a, b) => {
+        const aRaw = RAW_PRIORITY_EXTENSIONS.has(a.extension) ? 1 : 0;
+        const bRaw = RAW_PRIORITY_EXTENSIONS.has(b.extension) ? 1 : 0;
+        return bRaw - aRaw;
+      });
     const slowFiles: MediaFile[] = [];
 
     for (let i = 0; i < fastFiles.length; i += FAST_THUMB_CONCURRENCY) {

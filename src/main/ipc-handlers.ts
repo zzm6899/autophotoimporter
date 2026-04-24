@@ -1,6 +1,6 @@
 import { ipcMain, dialog, shell, app, BrowserWindow, autoUpdater } from 'electron';
 import { readFile, writeFile, mkdir, open, rm, rename, statfs } from 'node:fs/promises';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import { IPC } from '../shared/types';
@@ -27,6 +27,7 @@ let configuredFeedUrl: string | null = null;
 let autoUpdaterReady = false;
 let downloadedInstallerPath: string | null = null;
 let downloadedInstallerVersion: string | null = null;
+let downloadedUpdateKind: 'installer' | 'native' | null = null;
 
 function getSettingsPath(): string {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -124,9 +125,6 @@ async function refreshUpdateState() {
     ? await fetchUpdateHistory(licenseKey).catch(() => [])
     : [];
   lastUpdateState = { ...update, history };
-  if (lastUpdateState.feedUrl) {
-    ensureAutoUpdaterConfigured(lastUpdateState.feedUrl);
-  }
   sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
   return lastUpdateState;
 }
@@ -271,6 +269,23 @@ async function downloadInstallerAsset(downloadUrl: string, versionLabel: string)
   await rm(targetPath, { force: true });
   await rename(tempPath, targetPath);
   return targetPath;
+}
+
+async function launchDownloadedInstaller(installerPath: string) {
+  if (process.platform === 'win32') {
+    const child = spawn(installerPath, [], {
+      detached: true,
+      windowsHide: false,
+    });
+    child.unref();
+    app.quit();
+    return;
+  }
+
+  const openResult = await shell.openPath(installerPath);
+  if (openResult) {
+    throw new Error(openResult);
+  }
 }
 
 // Attempt to eject the given volume. Best-effort — returns ok=false if the
@@ -589,29 +604,13 @@ export function registerIpcHandlers(): void {
     // legacy native updater feed and works for both Windows and macOS builds.
     if (downloadUrl) {
       if (downloadedInstallerPath && downloadedInstallerVersion === latest.latestVersion) {
-        // Already downloaded. On packaged Windows just re-show the ready banner
-        // so the user clicks "Restart to update" — no browser/Explorer popup.
-        if (canUseNativeUpdater()) {
-          lastUpdateState = {
-            ...latest,
-            status: 'ready',
-            downloadUrl: undefined,
-            message: 'Update already downloaded. Restart the app to apply it.',
-          };
-          sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
-          return { ok: true as const };
-        }
-        // macOS / dev: open the installer file.
-        const reopenResult = await shell.openPath(downloadedInstallerPath);
-        if (!reopenResult) {
-          lastUpdateState = {
-            ...latest,
-            status: 'ready',
-            message: 'Installer reopened.',
-          };
-          sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
-          return { ok: true as const };
-        }
+        lastUpdateState = {
+          ...latest,
+          status: 'ready',
+          message: 'Installer already downloaded. Install update when you are ready.',
+        };
+        sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
+        return { ok: true as const };
       }
 
       lastUpdateState = {
@@ -626,32 +625,12 @@ export function registerIpcHandlers(): void {
         const localInstaller = await downloadInstallerAsset(downloadUrl, versionLabel);
         downloadedInstallerPath = localInstaller;
         downloadedInstallerVersion = latest.latestVersion || versionLabel;
-
-        // On packaged Windows builds Squirrel can apply the update silently
-        // via quitAndInstall — no need to pop an .exe in the file manager.
-        // On macOS (or in dev mode) we still open the installer file.
-        if (canUseNativeUpdater()) {
-          ensureAutoUpdaterConfigured(latest.feedUrl ?? '');
-          lastUpdateState = {
-            ...latest,
-            status: 'ready',
-            // Clear downloadUrl so the banner knows NOT to re-open the file.
-            downloadUrl: undefined,
-            message: 'Update downloaded. Restart the app to apply it.',
-          };
-          sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
-          return { ok: true as const };
-        }
-
-        const openResult = await shell.openPath(localInstaller);
-        if (openResult) {
-          throw new Error(openResult);
-        }
+        downloadedUpdateKind = 'installer';
 
         lastUpdateState = {
           ...latest,
           status: 'ready',
-          message: 'Installer downloaded and opened. Follow the prompts to update.',
+          message: 'Installer downloaded. Install update to finish switching versions.',
         };
         sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
         return { ok: true as const };
@@ -681,6 +660,9 @@ export function registerIpcHandlers(): void {
     if (latest.feedUrl && canUseNativeUpdater()) {
       try {
         ensureAutoUpdaterConfigured(latest.feedUrl);
+        downloadedUpdateKind = 'native';
+        downloadedInstallerPath = null;
+        downloadedInstallerVersion = latest.latestVersion ?? null;
         lastUpdateState = {
           ...latest,
           status: 'downloading',
@@ -698,28 +680,32 @@ export function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC.UPDATE_INSTALL, async () => {
-    // Packaged Windows builds: use Squirrel's quitAndInstall for a silent,
-    // no-browser-popup restart. This is the primary path after an internal
-    // download on Windows.
-    if (canUseNativeUpdater() && downloadedInstallerPath) {
+    if (downloadedInstallerPath && downloadedUpdateKind === 'installer') {
       try {
-        (autoUpdater as unknown as { quitAndInstall: () => void }).quitAndInstall();
+        await launchDownloadedInstaller(downloadedInstallerPath);
         return { ok: true as const };
-      } catch {
-        // Squirrel isn't wired up yet — fall through and open the file instead.
+      } catch (error) {
+        return {
+          ok: false as const,
+          message: error instanceof Error ? error.message : 'Could not launch the installer.',
+        };
       }
     }
 
-    // Non-packaged / macOS: open the downloaded file so the user can run it.
-    if (downloadedInstallerPath) {
-      const reopenResult = await shell.openPath(downloadedInstallerPath);
-      if (!reopenResult) {
+    if (canUseNativeUpdater() && downloadedUpdateKind === 'native') {
+      try {
+        (autoUpdater as unknown as { quitAndInstall: () => void }).quitAndInstall();
         return { ok: true as const };
+      } catch (error) {
+        return {
+          ok: false as const,
+          message: error instanceof Error ? error.message : 'Could not apply the downloaded update.',
+        };
       }
     }
 
     if (!canUseNativeUpdater()) {
-      return { ok: false as const, message: 'Restart-to-install is only available in packaged Windows builds.' };
+      return { ok: false as const, message: 'No downloaded installer is ready yet.' };
     }
     if (lastUpdateState?.status !== 'ready') {
       return { ok: false as const, message: 'No downloaded update is ready to install yet.' };

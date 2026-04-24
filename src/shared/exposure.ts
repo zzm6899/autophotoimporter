@@ -55,9 +55,13 @@ export function stopsToMultiplier(stops: number): number {
  */
 export function stopsToSafeMultiplier(stops: number): number {
   if (!Number.isFinite(stops) || Math.abs(stops) < 0.001) return 1;
-  const strength = stops > 0 ? 0.68 : 0.82;
-  const multiplier = Math.pow(2, stops * strength);
-  return Math.max(0.38, Math.min(2.35, multiplier));
+  const direction = stops >= 0 ? 1 : -1;
+  const magnitude = Math.abs(stops);
+  const compressedStops = direction > 0
+    ? magnitude / (1 + magnitude * 0.58)
+    : magnitude / (1 + magnitude * 0.34);
+  const multiplier = Math.pow(2, compressedStops * direction);
+  return Math.max(0.44, Math.min(1.95, multiplier));
 }
 
 /**

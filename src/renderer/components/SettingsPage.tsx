@@ -41,7 +41,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     licenseStatus,
   } = useAppState();
   const dispatch = useAppDispatch();
-  const { updateState, history, checkNow, downloadUpdate, installUpdate, openRelease } = useUpdateNotification();
+  const { updateState, checkNow, downloadUpdate, installUpdate, openRelease } = useUpdateNotification();
   const [postImportStatus, setPostImportStatus] = useState<string | null>(null);
   const [licenseInput, setLicenseInput] = useState('');
   const [licenseBusy, setLicenseBusy] = useState(false);
@@ -445,7 +445,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                     onClick={() => { void installUpdate(); }}
                     className="px-3 py-1 text-xs rounded bg-accent text-white hover:bg-accent-hover"
                   >
-                    Restart to update
+                    Install update
                   </button>
                 )}
                 {updateState.releaseUrl && (
@@ -457,27 +457,6 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                   </button>
                 )}
               </div>
-              {history.length > 0 && (
-                <div className="space-y-1">
-                  <p className="text-[10px] text-text-muted">Recent versions</p>
-                  <div className="space-y-1">
-                    {history.map((release) => (
-                      <div key={release.version} className="rounded border border-border bg-surface-alt px-2 py-1 text-[10px] text-text-muted">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-text-secondary">{release.releaseName}</span>
-                          <span>{release.version}</span>
-                        </div>
-                        {release.publishedAt && (
-                          <div className="mt-0.5">{formatVersionDate(release.publishedAt)}</div>
-                        )}
-                        {release.notes && (
-                          <div className="mt-0.5 text-text-faint line-clamp-2">{release.notes}</div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
             </div>
           </section>
 
