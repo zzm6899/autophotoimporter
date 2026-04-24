@@ -1,5 +1,5 @@
 import { ipcMain, dialog, shell, app, BrowserWindow, autoUpdater } from 'electron';
-import { readFile, writeFile, mkdir, statfs } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, open, rm, rename, statfs } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
@@ -24,6 +24,8 @@ let currentAutoImportPath: string | null = null;
 let lastUpdateState: UpdateState | null = null;
 let configuredFeedUrl: string | null = null;
 let autoUpdaterReady = false;
+let downloadedInstallerPath: string | null = null;
+let downloadedInstallerVersion: string | null = null;
 
 function getSettingsPath(): string {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -196,6 +198,78 @@ function sendToRenderer(channel: string, ...args: unknown[]): void {
   for (const win of windows) {
     win.webContents.send(channel, ...args);
   }
+}
+
+function sanitizeDownloadName(value: string) {
+  return value.replace(/[<>:"/\\|?*\x00-\x1f]+/g, '-').trim() || 'Photo-Importer-Update';
+}
+
+function installerExtensionForPlatform(downloadUrl: string) {
+  const ext = path.extname(new URL(downloadUrl).pathname || '').toLowerCase();
+  if (ext) return ext;
+  if (process.platform === 'darwin') return '.dmg';
+  if (process.platform === 'win32') return '.exe';
+  return '.zip';
+}
+
+function parseContentDispositionFilename(header: string | null) {
+  if (!header) return null;
+  const utfMatch = header.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+  if (utfMatch?.[1]) return decodeURIComponent(utfMatch[1].trim().replace(/^"|"$/g, ''));
+  const plainMatch = header.match(/filename\s*=\s*("?)([^";]+)\1/i);
+  if (plainMatch?.[2]) return plainMatch[2].trim();
+  return null;
+}
+
+async function downloadInstallerAsset(downloadUrl: string, versionLabel: string) {
+  const response = await fetch(downloadUrl);
+  if (!response.ok || !response.body) {
+    throw new Error(`Download failed with status ${response.status}`);
+  }
+
+  const updatesDir = path.join(app.getPath('userData'), 'updates');
+  await mkdir(updatesDir, { recursive: true });
+
+  const fileNameFromHeader = parseContentDispositionFilename(response.headers.get('content-disposition'));
+  const fallbackName = `Photo-Importer-${versionLabel}${installerExtensionForPlatform(downloadUrl)}`;
+  const fileName = sanitizeDownloadName(fileNameFromHeader || path.basename(new URL(downloadUrl).pathname) || fallbackName);
+  const targetPath = path.join(updatesDir, fileName);
+  const tempPath = `${targetPath}.partial`;
+  const totalBytes = Number(response.headers.get('content-length') || 0);
+
+  await rm(tempPath, { force: true });
+
+  const file = await open(tempPath, 'w');
+  let writtenBytes = 0;
+
+  try {
+    const reader = response.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      await file.write(value);
+      writtenBytes += value.byteLength;
+
+      const progress = totalBytes > 0 ? Math.min(99, Math.round((writtenBytes / totalBytes) * 100)) : null;
+      sendToRenderer(IPC.UPDATE_STATUS, {
+        ...(lastUpdateState ?? { currentVersion: app.getVersion() }),
+        status: 'downloading',
+        message: progress == null
+          ? 'Downloading installer inside Photo Importer...'
+          : `Downloading installer inside Photo Importer... ${progress}%`,
+      } satisfies UpdateState);
+    }
+  } catch (error) {
+    await file.close();
+    await rm(tempPath, { force: true });
+    throw error;
+  }
+
+  await file.close();
+  await rm(targetPath, { force: true });
+  await rename(tempPath, targetPath);
+  return targetPath;
 }
 
 // Attempt to eject the given volume. Best-effort — returns ok=false if the
@@ -508,21 +582,74 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC.UPDATE_DOWNLOAD, async () => {
     const latest = lastUpdateState ?? await refreshUpdateState();
-    const downloadUrl = latest.downloadUrl || latest.releaseUrl;
+    const downloadUrl = latest.downloadUrl;
 
     // Prefer the hosted installer/package link. It's more reliable than the
     // legacy native updater feed and works for both Windows and macOS builds.
     if (downloadUrl) {
-      await shell.openExternal(downloadUrl);
+      if (downloadedInstallerPath && downloadedInstallerVersion === latest.latestVersion) {
+        const reopenResult = await shell.openPath(downloadedInstallerPath);
+        if (!reopenResult) {
+          lastUpdateState = {
+            ...latest,
+            status: 'ready',
+            message: process.platform === 'win32'
+              ? 'Installer reopened from inside Photo Importer.'
+              : 'Installer reopened from inside Photo Importer.',
+          };
+          sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
+          return { ok: true as const };
+        }
+      }
+
       lastUpdateState = {
         ...latest,
-        status: 'ready',
-        message: process.platform === 'win32'
-          ? 'Installer opened. Finish the update, then relaunch Photo Importer.'
-          : 'Installer opened. Finish the update, then reopen the app.',
+        status: 'downloading',
+        message: 'Downloading installer inside Photo Importer...',
       };
       sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
-      return { ok: true as const };
+
+      try {
+        const versionLabel = latest.latestVersion || latest.releaseName || app.getVersion();
+        const localInstaller = await downloadInstallerAsset(downloadUrl, versionLabel);
+        downloadedInstallerPath = localInstaller;
+        downloadedInstallerVersion = latest.latestVersion || versionLabel;
+
+        const openResult = await shell.openPath(localInstaller);
+        if (openResult) {
+          throw new Error(openResult);
+        }
+
+        lastUpdateState = {
+          ...latest,
+          status: 'ready',
+          message: process.platform === 'win32'
+            ? 'Installer downloaded inside Photo Importer and opened for install.'
+            : 'Installer downloaded inside Photo Importer and opened for install.',
+        };
+        sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
+        return { ok: true as const };
+      } catch (error) {
+        lastUpdateState = {
+          ...latest,
+          status: 'error',
+          message: error instanceof Error
+            ? error.message
+            : 'Could not download the installer inside Photo Importer.',
+        };
+        sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
+        return {
+          ok: false as const,
+          message: lastUpdateState.message,
+        };
+      }
+    }
+
+    if (latest.releaseUrl) {
+      return {
+        ok: false as const,
+        message: 'This release only has notes right now. Add a hosted installer package to download inside the app.',
+      };
     }
 
     if (latest.feedUrl && canUseNativeUpdater()) {
@@ -545,12 +672,17 @@ export function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC.UPDATE_INSTALL, async () => {
-    if (lastUpdateState?.downloadUrl || lastUpdateState?.releaseUrl) {
-      const reopenUrl = lastUpdateState.downloadUrl || lastUpdateState.releaseUrl;
-      if (reopenUrl) {
-        await shell.openExternal(reopenUrl);
+    if (downloadedInstallerPath) {
+      const reopenResult = await shell.openPath(downloadedInstallerPath);
+      if (!reopenResult) {
         return { ok: true as const };
       }
+    }
+    if (lastUpdateState?.downloadUrl || lastUpdateState?.releaseUrl) {
+      return {
+        ok: false as const,
+        message: 'Download the installer first so Photo Importer can open it locally.',
+      };
     }
     if (!canUseNativeUpdater()) {
       return { ok: false as const, message: 'Restart-to-install is only available in packaged Windows builds.' };

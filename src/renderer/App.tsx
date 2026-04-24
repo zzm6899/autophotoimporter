@@ -16,6 +16,7 @@ import { AutoImportPrompt } from './components/AutoImportPrompt';
 import { HelpBar } from './components/HelpBar';
 import { TutorialOverlay } from './components/TutorialOverlay';
 import { LicenseOverlay } from './components/LicenseOverlay';
+import { LicenseBanner } from './components/LicenseBanner';
 import { playCompletionSound } from './utils/completionSound';
 
 function AppInner() {
@@ -102,6 +103,7 @@ function AppInner() {
 
   return (
     <>
+      <LicenseBanner />
       <Layout
         left={<SourcePanel />}
         center={<ThumbnailGrid />}
