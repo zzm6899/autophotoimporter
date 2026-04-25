@@ -169,8 +169,6 @@ export function Layout({ left, center, right }: LayoutProps) {
         </div>
       </div>
 
-      <LicenseBanner />
-
       {files.length > 0 && (
         <div className="h-8 shrink-0 border-b border-border bg-surface px-2 flex items-center gap-1.5 overflow-x-auto text-[10px]">
           <span className="rounded bg-surface-raised px-2 py-0.5 text-text-secondary">

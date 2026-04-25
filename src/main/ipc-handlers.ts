@@ -681,6 +681,16 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC.UPDATE_INSTALL, async () => {
     if (downloadedInstallerPath && downloadedUpdateKind === 'installer') {
+      // Verify the file still exists — it may have been cleared since download
+      const { existsSync } = await import('node:fs');
+      if (!existsSync(downloadedInstallerPath)) {
+        downloadedInstallerPath = null;
+        downloadedInstallerVersion = null;
+        downloadedUpdateKind = null;
+        lastUpdateState = { ...(lastUpdateState ?? { currentVersion: app.getVersion() }), status: 'available' };
+        sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
+        return { ok: false as const, message: 'Installer file was removed. Please download the update again.' };
+      }
       try {
         await launchDownloadedInstaller(downloadedInstallerPath);
         return { ok: true as const };
