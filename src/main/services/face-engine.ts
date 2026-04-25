@@ -153,10 +153,15 @@ export async function disposeFaceEngine(): Promise<void> {
 // by using Electron's nativeImage for fast thumbnail decoding.
 // nativeImage is only available in the main process.
 import { nativeImage } from 'electron';
+import exifr from 'exifr';
 
 /**
  * Decode image → raw RGBA pixels at a target size.
  * Returns { data: Uint8Array (RGBA), width, height }.
+ *
+ * For RAW formats (NEF, CR2, ARW, etc.) nativeImage returns empty.
+ * We fall back to exifr.thumbnail() which extracts the embedded JPEG
+ * preview that all modern cameras embed in their RAW files.
  */
 async function decodeImage(
   imagePath: string,
@@ -164,14 +169,18 @@ async function decodeImage(
   targetH: number,
 ): Promise<{ data: Buffer; width: number; height: number }> {
   // nativeImage can read JPEG, PNG, HEIC, WEBP, BMP, GIF (first frame).
-  // For RAW formats it will return empty — we fall back to reading the
-  // embedded JPEG preview (which is what exifr does too).
   let img = nativeImage.createFromPath(imagePath);
 
   if (img.isEmpty()) {
-    // Try reading the first few KB as a JPEG (most RAWs embed a JPEG preview)
-    // This is a best-effort fallback; for now we just skip RAWs.
-    throw new Error(`Cannot decode image for face analysis: ${imagePath}`);
+    // RAW file — extract the embedded JPEG preview using exifr
+    const thumbData = await exifr.thumbnail(imagePath).catch(() => null);
+    if (!thumbData || thumbData.length === 0) {
+      throw new Error(`Cannot decode image for face analysis: ${imagePath}`);
+    }
+    img = nativeImage.createFromBuffer(Buffer.from(thumbData));
+    if (img.isEmpty()) {
+      throw new Error(`Cannot decode embedded preview for face analysis: ${imagePath}`);
+    }
   }
 
   // Resize to target dimensions preserving aspect ratio with letterboxing

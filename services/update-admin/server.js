@@ -46,6 +46,20 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL || 'postgres://photo_importer:photo_importer@db:5432/photo_importer_updates',
 });
 
+// --- Date formatting helpers ---
+function fmtTime(val) {
+  if (!val) return 'Never';
+  const iso = new Date(val).toISOString();
+  // Emit a <time> tag; browser JS converts to local time on load
+  return `<time data-ts="${iso}" title="${iso}">${new Date(val).toUTCString()}</time>`;
+}
+function fmtDate(val) {
+  if (!val) return '—';
+  const iso = new Date(val).toISOString();
+  return `<time data-ts="${iso}" title="${iso}">${new Date(val).toISOString().slice(0,10)}</time>`;
+}
+// ---
+
 // --- Storage helpers ---
 function formatBytes(bytes) {
   if (bytes === 0) return '0 B';
@@ -114,6 +128,18 @@ function htmlPage(title, body) {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${title} — Culler Admin</title>
+  <script>
+    // Convert all <time data-ts="..."> elements to local browser time on load
+    document.addEventListener('DOMContentLoaded', () => {
+      document.querySelectorAll('time[data-ts]').forEach(el => {
+        const d = new Date(el.dataset.ts);
+        if (!isNaN(d)) el.textContent = d.toLocaleString(undefined, {
+          year:'numeric', month:'short', day:'numeric',
+          hour:'2-digit', minute:'2-digit'
+        });
+      });
+    });
+  </script>
   <style>
     :root{--bg:#090e1a;--surface:#0f1829;--surface2:#172033;--border:#1e2d45;--border2:#2a3f5f;--text:#e8edf5;--muted:#7a90b0;--faint:#3d5068;--blue:#3b82f6;--blue-dk:#2563eb;--radius:12px}
     *,*::before,*::after{box-sizing:border-box}
@@ -721,7 +747,7 @@ app.get('/releases/:version', async (req, res) => {
   return res.send(htmlPage(`${release.release_name} (${release.version})`, `
     <div class="panel" style="max-width:760px;margin:48px auto">
       <h1>${release.release_name}</h1>
-      <p class="muted">Version ${release.version} - ${release.platform} - ${release.channel} - ${new Date(release.published_at).toLocaleDateString('en-AU')}</p>
+      <p class="muted">Version ${release.version} - ${release.platform} - ${release.channel} - ${fmtDate(release.published_at)}</p>
       ${release.release_notes ? `<pre style="white-space:pre-wrap;background:#020617;border:1px solid #334155;border-radius:12px;padding:14px;margin-top:16px">${release.release_notes}</pre>` : '<p class="muted">No release notes were provided for this version.</p>'}
       <div class="actions" style="margin-top:16px">
         <a href="${release.artifact_url}"><button type="button">Download installer</button></a>
@@ -831,7 +857,7 @@ app.get('/admin', authSession, async (_req, res) => {
           <td>${row.customer_name}</td>
           <td><span class="pill pill-${row.status}">${row.status}</span></td>
           <td>${row.device_count}</td>
-          <td class="muted">${row.last_seen_at ? new Date(row.last_seen_at).toLocaleString('en-AU') : 'Never'}</td>
+          <td class="muted">${row.last_seen_at ? fmtTime(row.last_seen_at) : 'Never'}</td>
         </tr>`).join('')}
         </tbody></table>
       </div>
@@ -840,13 +866,13 @@ app.get('/admin', authSession, async (_req, res) => {
       <div class="panel">
         <h2>Recent update activity</h2>
         <table><thead><tr><th>Event</th><th>Detail</th><th>Time</th></tr></thead><tbody>
-        ${recentEvents.rows.map((row) => `<tr><td>${row.event_type}</td><td class="muted">${row.detail || '—'}</td><td class="muted">${new Date(row.created_at).toLocaleString('en-AU')}</td></tr>`).join('')}
+        ${recentEvents.rows.map((row) => `<tr><td>${row.event_type}</td><td class="muted">${row.detail || '—'}</td><td class="muted">${fmtTime(row.created_at)}</td></tr>`).join('')}
         </tbody></table>
       </div>
       ${errorEvents.rows.length > 0 ? `<div class="panel">
         <h2>⚠ Blocked / failed events</h2>
         <table><thead><tr><th>Event</th><th>Detail</th><th>Time</th></tr></thead><tbody>
-        ${errorEvents.rows.map((row) => `<tr><td class="bad">${row.event_type}</td><td class="muted">${row.detail || '—'}</td><td class="muted">${new Date(row.created_at).toLocaleString('en-AU')}</td></tr>`).join('')}
+        ${errorEvents.rows.map((row) => `<tr><td class="bad">${row.event_type}</td><td class="muted">${row.detail || '—'}</td><td class="muted">${fmtTime(row.created_at)}</td></tr>`).join('')}
         </tbody></table>
       </div>` : ''}
     </div>
@@ -917,7 +943,7 @@ app.get('/admin/licenses', authSession, async (_req, res) => {
         <td class="muted">${row.max_devices || '&infin;'} device${row.max_devices === 1 ? '' : 's'}</td>
         <td><code>${row.activation_code || '—'}</code></td>
         <td class="muted">${formatLicenseDate(row.expires_at)}</td>
-        <td class="muted">${row.last_seen_at ? new Date(row.last_seen_at).toLocaleString('en-AU') : 'Never'}</td>
+        <td class="muted">${row.last_seen_at ? fmtTime(row.last_seen_at) : 'Never'}</td>
         <td>
           <div class="actions">
             <a href="/admin/licenses/${row.id}"><button class="secondary sm" type="button">View</button></a>
@@ -1005,7 +1031,7 @@ app.get('/admin/licenses/:id', authSession, async (req, res) => {
         <p class="muted">Expires: ${formatLicenseDate(record.expires_at)}</p>
         <p class="muted">Seat limit: ${record.max_devices || '&infin;'} device${record.max_devices === 1 ? '' : 's'}</p>
         <p class="muted">Devices seen: ${activations.rowCount}</p>
-        <p class="muted">Last seen: ${record.last_seen_at ? new Date(record.last_seen_at).toLocaleString('en-AU') : 'Never'}</p>
+        <p class="muted">Last seen: ${record.last_seen_at ? fmtTime(record.last_seen_at) : 'Never'}</p>
         <form method="post" action="/admin/licenses/${record.id}/devices" style="margin-top:16px">
           <label>Max devices</label>
           <input type="number" name="maxDevices" min="1" step="1" value="${record.max_devices || 1}" />
@@ -1025,7 +1051,7 @@ app.get('/admin/licenses/:id', authSession, async (req, res) => {
         <h2>Registered devices</h2>
         ${activations.rowCount
           ? `<table><thead><tr><th>Device</th><th>Device ID</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>
-              ${activations.rows.map((row) => `<tr><td>${row.device_name || 'Unnamed device'}</td><td><code>${row.device_id}</code></td><td class="muted">${new Date(row.first_seen_at).toLocaleString('en-AU')}</td><td class="muted">${new Date(row.last_seen_at).toLocaleString('en-AU')}</td></tr>`).join('')}
+              ${activations.rows.map((row) => `<tr><td>${row.device_name || 'Unnamed device'}</td><td><code>${row.device_id}</code></td><td class="muted">${fmtTime(row.first_seen_at)}</td><td class="muted">${fmtTime(row.last_seen_at)}</td></tr>`).join('')}
             </tbody></table>`
           : '<p class="muted">No devices have activated this license yet.</p>'}
       </div>
@@ -1105,7 +1131,7 @@ app.get('/admin/releases', authSession, async (_req, res) => {
         <td class="muted">${row.platform}</td>
         <td class="muted">${row.channel}</td>
         <td>${statusPill(row.rollout_state)}</td>
-        <td class="muted">${new Date(row.published_at).toLocaleString('en-AU')}</td>
+        <td class="muted">${fmtTime(row.published_at)}</td>
         <td>
           <div class="actions">
             <a href="/admin/releases/${row.id}/edit"><button class="secondary sm" type="button">Edit</button></a>
@@ -1270,7 +1296,7 @@ app.get('/admin/customers', authSession, async (_req, res) => {
       <table><thead><tr><th>Fingerprint</th><th>Last activity</th><th>Detail</th></tr></thead><tbody>
       ${rows.rows.map((row) => `<tr>
         <td><code style="font-size:.75rem">${row.fingerprint || 'Unknown'}</code></td>
-        <td class="muted">${row.last_event ? new Date(row.last_event).toLocaleString('en-AU') : 'Never'}</td>
+        <td class="muted">${row.last_event ? fmtTime(row.last_event) : 'Never'}</td>
         <td class="muted">${row.detail || '—'}</td>
       </tr>`).join('')}
       </tbody></table>
@@ -1459,28 +1485,23 @@ app.get('/api/v1/app/update', async (req, res) => {
   const version = req.query.version || '0.0.0';
   const channel = req.query.channel || 'stable';
 
-  if (!licenseKey) {
-    await logUpdateEvent('update-denied', {
-      appVersion: version,
-      platform,
-      channel,
-      allowed: false,
-      detail: 'Missing license key header',
-    });
-    return res.status(403).json({ allowed: false, message: 'Activate a valid license before checking for updates.' });
-  }
-
-  const resolved = await resolveLicenseRecord(licenseKey, { deviceId, deviceName });
-  if (!resolved.ok) {
-    await logUpdateEvent('update-denied', {
-      fingerprint: resolved.fingerprint,
-      appVersion: version,
-      platform,
-      channel,
-      allowed: false,
-      detail: resolved.message,
-    });
-    return res.status(resolved.status).json({ allowed: false, message: resolved.message });
+  // Resolve license if provided — but allow update checks even without one.
+  // Unlicensed installs get update info but no download token.
+  let resolved = null;
+  if (licenseKey) {
+    const attempt = await resolveLicenseRecord(licenseKey, { deviceId, deviceName });
+    if (attempt.ok) {
+      resolved = attempt;
+    } else {
+      await logUpdateEvent('update-check', {
+        fingerprint: attempt.fingerprint,
+        appVersion: version,
+        platform,
+        channel,
+        allowed: true,
+        detail: `Unlicensed check: ${attempt.message}`,
+      });
+    }
   }
 
   const release = await latestRelease(platform, channel);
@@ -1501,19 +1522,20 @@ app.get('/api/v1/app/update', async (req, res) => {
     });
   }
 
-  const token = signDownloadToken({
+  // Only issue a download token for licensed installs
+  const token = resolved ? signDownloadToken({
     fingerprint: resolved.fingerprint,
     releaseId: release.id,
     platform,
     channel,
-  });
+  }) : null;
   await logUpdateEvent('update-check', {
-    fingerprint: resolved.fingerprint,
+    fingerprint: resolved?.fingerprint,
     appVersion: version,
     platform,
     channel,
     allowed: true,
-    detail: `Offered ${release.version}`,
+    detail: `Offered ${release.version}${resolved ? '' : ' (unlicensed)'}`,
   });
 
   return res.json({
@@ -1524,8 +1546,10 @@ app.get('/api/v1/app/update', async (req, res) => {
     releaseNotes: release.release_notes,
     releaseDate: release.published_at,
     releaseUrl: release.release_url,
-    downloadUrl: `${publicUpdatesBaseUrl()}/api/v1/app/download/${release.id}?token=${encodeURIComponent(token)}`,
-    feedUrl: platform === 'windows' ? `${publicUpdatesBaseUrl()}/artifacts/windows` : undefined,
+    ...(token ? {
+      downloadUrl: `${publicUpdatesBaseUrl()}/api/v1/app/download/${release.id}?token=${encodeURIComponent(token)}`,
+      feedUrl: platform === 'windows' ? `${publicUpdatesBaseUrl()}/artifacts/windows` : undefined,
+    } : {}),
   });
 });
 

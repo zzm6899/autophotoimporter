@@ -81,7 +81,42 @@ export function useFaceAnalysis(): UseFaceAnalysisReturn {
     if (!available) return;
 
     // Filter to photo files only (skip videos — onnxruntime can't decode them)
-    const photoExts = new Set(['.jpg', '.jpeg', '.png', '.heic', '.heif', '.webp', '.avif', '.tiff', '.tif']);
+    // All RAW formats use embedded JPEG preview extraction in face-engine.ts
+    const photoExts = new Set([
+      '.jpg', '.jpeg', '.png', '.heic', '.heif', '.webp', '.avif', '.tiff', '.tif',
+      // Canon
+      '.cr2', '.cr3', '.crw',
+      // Nikon
+      '.nef', '.nrw',
+      // Sony
+      '.arw', '.srf', '.sr2',
+      // Fujifilm
+      '.raf',
+      // Olympus / OM System
+      '.orf',
+      // Panasonic
+      '.rw2',
+      // Pentax
+      '.pef',
+      // Samsung
+      '.srw',
+      // Leica
+      '.rwl',
+      // Sigma
+      '.x3f',
+      // Hasselblad
+      '.3fr', '.fff',
+      // Phase One
+      '.iiq',
+      // Adobe / Generic
+      '.dng',
+      // GoPro
+      '.gpr',
+      // Minolta
+      '.mrw',
+      // Epson
+      '.erf',
+    ]);
     const photoPaths = paths.filter((p) => {
       const ext = p.slice(p.lastIndexOf('.')).toLowerCase();
       return photoExts.has(ext);

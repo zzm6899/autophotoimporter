@@ -13,20 +13,38 @@ import { computeEV100 } from '../../shared/exposure';
 const execFileAsync = promisify(execFile);
 
 export const EXIFR_SUPPORTED = new Set([
-  '.jpg', '.jpeg', '.heic', '.heif', '.tif', '.tiff',
+  '.jpg', '.jpeg', '.heic', '.heif', '.tif', '.tiff', '.png', '.webp', '.avif',
+  // Canon
   '.cr2', '.cr3', '.crw',
+  // Nikon
   '.nef', '.nrw',
+  // Sony
   '.arw', '.srf', '.sr2',
+  // Fujifilm
   '.raf',
+  // Olympus / OM System
   '.orf',
+  // Panasonic
   '.rw2',
+  // Pentax
   '.pef',
+  // Samsung
   '.srw',
+  // Leica
   '.rwl',
+  // Sigma
+  '.x3f',
+  // Hasselblad
   '.3fr', '.fff',
+  // Phase One
+  '.iiq',
+  // Adobe / Generic
   '.dng',
+  // GoPro
   '.gpr',
+  // Minolta (legacy)
   '.mrw',
+  // Epson
   '.erf',
 ]);
 
