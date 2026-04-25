@@ -9,6 +9,23 @@ import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { AutoUnpackNativesPlugin } from '@electron-forge/plugin-auto-unpack-natives';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
 
+/**
+ * Copy a directory recursively (like cp -r src dst).
+ * dst is created if it doesn't exist.
+ */
+function copyDirSync(src: string, dst: string): void {
+  fs.mkdirSync(dst, { recursive: true });
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const s = path.join(src, entry.name);
+    const d = path.join(dst, entry.name);
+    if (entry.isDirectory()) {
+      copyDirSync(s, d);
+    } else {
+      fs.copyFileSync(s, d);
+    }
+  }
+}
+
 const windowsIconPath = path.resolve(__dirname, 'assets/brand/icon.ico');
 
 const config: ForgeConfig = {
@@ -23,6 +40,27 @@ const config: ForgeConfig = {
       // the asar archive. Copied here as an extraResource so it lands in
       // resources/onnxruntime-node/ and can be required via process.resourcesPath.
       path.resolve(__dirname, 'node_modules', 'onnxruntime-node'),
+    ],
+    // After copying extraResources, inject onnxruntime-common (and global-agent)
+    // into onnxruntime-node/node_modules/ so bare require() calls inside
+    // onnxruntime-node/dist/index.js resolve correctly from the resources path.
+    afterCopy: [
+      async (buildPath: string, _electronVersion: string, _platform: string, _arch: string, done: () => void) => {
+        try {
+          const ortNodeModules = path.join(buildPath, '..', 'onnxruntime-node', 'node_modules');
+          const projectNodeModules = path.resolve(__dirname, 'node_modules');
+          for (const pkg of ['onnxruntime-common', 'global-agent', 'semver']) {
+            const src = path.join(projectNodeModules, pkg);
+            const dst = path.join(ortNodeModules, pkg);
+            if (fs.existsSync(src) && !fs.existsSync(dst)) {
+              copyDirSync(src, dst);
+            }
+          }
+          done();
+        } catch (e) {
+          done();
+        }
+      },
     ],
   },
   rebuildConfig: {},
