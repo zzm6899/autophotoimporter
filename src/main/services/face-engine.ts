@@ -48,27 +48,18 @@ function getOrt(): OrtModule {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { app: electronApp } = require('electron') as typeof import('electron');
     if (electronApp.isPackaged) {
-      // Primary: app.asar.unpacked alongside the asar file
-      const appDir = path.dirname(electronApp.getAppPath()); // …/resources
-      const unpackedDir = path.join(appDir, 'app.asar.unpacked', 'node_modules', 'onnxruntime-node');
-      const unpackedIndex = path.join(unpackedDir, 'dist', 'index.js');
-
-      if (existsSync(unpackedIndex)) {
+      // onnxruntime-node is copied as an extraResource into resources/onnxruntime-node/
+      // This is the only reliable way to ship a native addon with Vite + electron-forge,
+      // since Vite externalizes the module so asar unpackDir never fires.
+      const ortPath = path.join(process.resourcesPath, 'onnxruntime-node', 'dist', 'index.js');
+      if (existsSync(ortPath)) {
         // eslint-disable-next-line @typescript-eslint/no-var-requires
-        ort = require(unpackedIndex) as OrtModule;
+        ort = require(ortPath) as OrtModule;
       } else {
-        // Fallback: some forge versions place unpacked modules relative to resourcesPath
-        const altPath = path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'onnxruntime-node', 'dist', 'index.js');
-        if (existsSync(altPath)) {
-          // eslint-disable-next-line @typescript-eslint/no-var-requires
-          ort = require(altPath) as OrtModule;
-        } else {
-          throw new Error(
-            `onnxruntime-node not found in app.asar.unpacked.\n` +
-            `Tried:\n  ${unpackedIndex}\n  ${altPath}\n` +
-            `Ensure @electron-forge/plugin-auto-unpack-natives is in forge.config.ts plugins.`,
-          );
-        }
+        throw new Error(
+          `onnxruntime-node not found at expected resource path.\n` +
+          `Tried: ${ortPath}`,
+        );
       }
     } else {
       // Dev mode — normal resolution works fine

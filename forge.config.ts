@@ -13,18 +13,16 @@ const windowsIconPath = path.resolve(__dirname, 'assets/brand/icon.ico');
 
 const config: ForgeConfig = {
   packagerConfig: {
-    asar: {
-      // onnxruntime-node ships a native .node binary that cannot live inside
-      // the asar archive. Must be unpacked so Node can load the .node binary
-      // at runtime via the external require() emitted by Vite.
-      unpackDir: '{node_modules/onnxruntime-node,node_modules/onnxruntime-node/**}',
-    },
+    asar: true,
     name: 'Photo Importer',
     icon: path.resolve(__dirname, 'assets/brand/icon'),
     extraResource: [
-      // ONNX face models — bundled alongside the app, outside the asar so
-      // onnxruntime can read them directly from the filesystem at runtime.
+      // ONNX face models — loaded at runtime from process.resourcesPath/models
       path.resolve(__dirname, 'models'),
+      // onnxruntime-node ships a native .node binary that cannot live inside
+      // the asar archive. Copied here as an extraResource so it lands in
+      // resources/onnxruntime-node/ and can be required via process.resourcesPath.
+      path.resolve(__dirname, 'node_modules', 'onnxruntime-node'),
     ],
   },
   rebuildConfig: {},
