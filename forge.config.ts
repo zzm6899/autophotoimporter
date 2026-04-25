@@ -49,7 +49,7 @@ const config: ForgeConfig = {
     new MakerSquirrel({
       name: 'photo-importer',
       setupExe: 'PhotoImporter-Setup.exe',
-      iconUrl: 'https://raw.githubusercontent.com/juanmnl/importer/main/assets/brand/icon.ico',
+      iconUrl: 'https://raw.githubusercontent.com/zzm6899/importer/main/assets/brand/icon.ico',
       ...(fs.existsSync(windowsIconPath) ? { setupIcon: windowsIconPath } : {}),
       noMsi: true,
     }),

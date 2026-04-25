@@ -1,7 +1,7 @@
 {
   "name": "photo-importer",
   "productName": "Photo Importer",
-  "version": "1.1.26",
+  "version": "1.1.27",
   "description": "Import photos and videos from cameras and SD cards",
   "main": ".vite/build/main.js",
   "private": true,
@@ -22,8 +22,8 @@
   },
   "keywords": [],
   "author": {
-    "name": "juanmnl",
-    "email": "juanmnlcornejo@gmail.com"
+    "name": "Zac M",
+    "email": "help@z2hs.au"
   },
   "license": "MIT",
   "devDependencies": {
