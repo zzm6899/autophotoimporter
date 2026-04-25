@@ -1671,6 +1671,10 @@ app.get('/api/v1/app/download/:releaseId', async (req, res) => {
       allowed: true,
       detail: `Download ${release.rows[0].version}`,
     });
+    // Set Content-Disposition so the client can parse the real filename
+    // before following the redirect (path.basename of the token URL is just the release ID).
+    const artifactFilename = decodeURIComponent(path.basename(release.rows[0].artifact_url));
+    res.setHeader('Content-Disposition', `attachment; filename="${artifactFilename}"`);
     return res.redirect(release.rows[0].artifact_url);
   } catch {
     return res.status(403).send('Download token expired or invalid.');

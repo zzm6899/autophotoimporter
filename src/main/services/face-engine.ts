@@ -41,23 +41,35 @@ let ort: OrtModule | null = null;
 
 function getOrt(): OrtModule {
   if (!ort) {
-    // In a packaged app, onnxruntime-node is unpacked to app.asar.unpacked.
-    // We must require it using the absolute unpacked path so Node can find
-    // the native .node binary — a bare require('onnxruntime-node') resolves
-    // relative to the asar bundle and fails at runtime.
+    // In a packaged app, onnxruntime-node is unpacked to app.asar.unpacked by
+    // @electron-forge/plugin-auto-unpack-natives. We must require it via the
+    // absolute filesystem path so Node can dlopen the native .node binary —
+    // a bare require('onnxruntime-node') resolves into the asar bundle and fails.
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { app: electronApp } = require('electron') as typeof import('electron');
     if (electronApp.isPackaged) {
-      const unpackedPath = path.join(
-        path.dirname(electronApp.getAppPath()),
-        'app.asar.unpacked',
-        'node_modules',
-        'onnxruntime-node',
-        'dist',
-        'index.js',
-      );
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      ort = require(unpackedPath) as OrtModule;
+      // Primary: app.asar.unpacked alongside the asar file
+      const appDir = path.dirname(electronApp.getAppPath()); // …/resources
+      const unpackedDir = path.join(appDir, 'app.asar.unpacked', 'node_modules', 'onnxruntime-node');
+      const unpackedIndex = path.join(unpackedDir, 'dist', 'index.js');
+
+      if (existsSync(unpackedIndex)) {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        ort = require(unpackedIndex) as OrtModule;
+      } else {
+        // Fallback: some forge versions place unpacked modules relative to resourcesPath
+        const altPath = path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'onnxruntime-node', 'dist', 'index.js');
+        if (existsSync(altPath)) {
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          ort = require(altPath) as OrtModule;
+        } else {
+          throw new Error(
+            `onnxruntime-node not found in app.asar.unpacked.\n` +
+            `Tried:\n  ${unpackedIndex}\n  ${altPath}\n` +
+            `Ensure @electron-forge/plugin-auto-unpack-natives is in forge.config.ts plugins.`,
+          );
+        }
+      }
     } else {
       // Dev mode — normal resolution works fine
       // eslint-disable-next-line @typescript-eslint/no-var-requires

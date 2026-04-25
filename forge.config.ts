@@ -6,6 +6,7 @@ import { MakerZIP } from '@electron-forge/maker-zip';
 import { MakerSquirrel } from '@electron-forge/maker-squirrel';
 import { VitePlugin } from '@electron-forge/plugin-vite';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
+import { AutoUnpackNativesPlugin } from '@electron-forge/plugin-auto-unpack-natives';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
 
 const windowsIconPath = path.resolve(__dirname, 'assets/brand/icon.ico');
@@ -75,6 +76,9 @@ const config: ForgeConfig = {
         },
       ],
     }),
+    // Automatically detects and unpacks native .node addons (like onnxruntime-node)
+    // from the asar archive into app.asar.unpacked so Node can dlopen them.
+    new AutoUnpackNativesPlugin({}),
     new FusesPlugin({
       version: FuseVersion.V1,
       [FuseV1Options.RunAsNode]: false,
