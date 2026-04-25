@@ -46,6 +46,60 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL || 'postgres://photo_importer:photo_importer@db:5432/photo_importer_updates',
 });
 
+// --- Storage helpers ---
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
+}
+
+function getDirSize(dirPath) {
+  try {
+    let total = 0;
+    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const full = path.join(dirPath, entry.name);
+      if (entry.isFile()) total += fs.statSync(full).size;
+      else if (entry.isDirectory()) total += getDirSize(full);
+    }
+    return total;
+  } catch { return 0; }
+}
+
+function getArtifactFiles(dirPath) {
+  try {
+    return fs.readdirSync(dirPath, { withFileTypes: true })
+      .filter(e => e.isFile())
+      .map(e => {
+        const full = path.join(dirPath, e.name);
+        const stat = fs.statSync(full);
+        return { name: e.name, size: stat.size, mtime: stat.mtime };
+      })
+      .sort((a, b) => b.mtime - a.mtime);
+  } catch { return []; }
+}
+
+function getDiskStats(dirPath) {
+  try {
+    const { execSync } = require('node:child_process');
+    const out = execSync(`df -k "${dirPath}" 2>/dev/null | tail -1`).toString().trim();
+    const parts = out.split(/\s+/);
+    // df -k: Filesystem, 1K-blocks, Used, Available, Use%, Mounted
+    if (parts.length >= 5) {
+      return {
+        total: parseInt(parts[1]) * 1024,
+        used: parseInt(parts[2]) * 1024,
+        available: parseInt(parts[3]) * 1024,
+        pct: parts[4],
+      };
+    }
+  } catch {}
+  return null;
+}
+// ---
+
 app.set('trust proxy', true);
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json({ limit: '2mb' }));
@@ -736,23 +790,65 @@ app.post('/admin/logout', (req, res) => {
 });
 
 app.get('/admin', authSession, async (_req, res) => {
-  const [licenseStats, releaseStats, recentEvents] = await Promise.all([
+  const [licenseStats, releaseStats, recentEvents, errorEvents, topLicenses, deviceCount] = await Promise.all([
     pool.query(`SELECT status, COUNT(*)::int AS count FROM license_records GROUP BY status ORDER BY status`),
     pool.query(`SELECT platform, rollout_state, COUNT(*)::int AS count FROM releases GROUP BY platform, rollout_state ORDER BY platform, rollout_state`),
-    pool.query(`SELECT event_type, detail, created_at FROM update_events ORDER BY created_at DESC LIMIT 10`),
+    pool.query(`SELECT event_type, detail, created_at, fingerprint FROM update_events ORDER BY created_at DESC LIMIT 15`),
+    pool.query(`SELECT event_type, detail, created_at FROM update_events WHERE allowed = false ORDER BY created_at DESC LIMIT 5`),
+    pool.query(`SELECT lr.fingerprint, lr.customer_name, lr.status, lr.last_seen_at, COUNT(la.id)::int AS device_count
+      FROM license_records lr
+      LEFT JOIN license_activations la ON la.license_fingerprint = lr.fingerprint
+      GROUP BY lr.fingerprint, lr.customer_name, lr.status, lr.last_seen_at
+      ORDER BY lr.last_seen_at DESC NULLS LAST LIMIT 5`),
+    pool.query(`SELECT COUNT(*)::int AS count FROM license_activations`),
   ]);
+
+  const artifactSize = getDirSize(artifactsRoot);
+  const disk = getDiskStats(artifactsRoot);
+  const diskPct = disk ? Math.round((disk.used / disk.total) * 100) : null;
+  const diskBar = disk ? `<div style="margin-top:8px;background:var(--border2);border-radius:4px;height:6px;overflow:hidden"><div style="width:${diskPct}%;background:${diskPct > 85 ? '#f87171' : diskPct > 65 ? '#fdba74' : '#34d399'};height:100%;border-radius:4px"></div></div><p class="muted" style="margin-top:4px;font-size:.72rem">${formatBytes(disk.used)} used of ${formatBytes(disk.total)} (${disk.pct})</p>` : '';
 
   res.send(htmlPage('Admin Dashboard', `
     <div class="top"><div><h1>Update Admin</h1><p class="muted">admin.culler.z2hs.au</p></div>${nav('dashboard')}</div>
     <div class="cards">
       ${licenseStats.rows.map((row) => `<div class="card"><div class="card-label">Licenses · ${row.status}</div><div class="card-value">${row.count}</div></div>`).join('')}
       ${releaseStats.rows.map((row) => `<div class="card"><div class="card-label">Releases · ${row.platform} / ${row.rollout_state}</div><div class="card-value">${row.count}</div></div>`).join('')}
+      <div class="card"><div class="card-label">Total devices</div><div class="card-value">${deviceCount.rows[0].count}</div></div>
     </div>
-    <div class="panel">
-      <h2>Recent update activity</h2>
-      <table><thead><tr><th>Event</th><th>Detail</th><th>Time</th></tr></thead><tbody>
-      ${recentEvents.rows.map((row) => `<tr><td>${row.event_type}</td><td class="muted">${row.detail || '—'}</td><td class="muted">${new Date(row.created_at).toLocaleString('en-AU')}</td></tr>`).join('')}
-      </tbody></table>
+    <div class="grid">
+      <div class="panel">
+        <h2>Storage</h2>
+        <div class="cards" style="grid-template-columns:1fr 1fr;gap:8px;margin-bottom:0">
+          <div class="card"><div class="card-label">Artifacts</div><div class="card-value" style="font-size:1.3rem">${formatBytes(artifactSize)}</div></div>
+          ${disk ? `<div class="card"><div class="card-label">Disk free</div><div class="card-value" style="font-size:1.3rem;color:${diskPct > 85 ? '#f87171' : diskPct > 65 ? '#fdba74' : 'inherit'}">${formatBytes(disk.available)}</div></div>` : ''}
+        </div>
+        ${diskBar}
+      </div>
+      <div class="panel">
+        <h2>Recently active licenses</h2>
+        <table><thead><tr><th>Customer</th><th>Status</th><th>Devices</th><th>Last seen</th></tr></thead><tbody>
+        ${topLicenses.rows.map((row) => `<tr>
+          <td>${row.customer_name}</td>
+          <td><span class="pill pill-${row.status}">${row.status}</span></td>
+          <td>${row.device_count}</td>
+          <td class="muted">${row.last_seen_at ? new Date(row.last_seen_at).toLocaleString('en-AU') : 'Never'}</td>
+        </tr>`).join('')}
+        </tbody></table>
+      </div>
+    </div>
+    <div class="grid">
+      <div class="panel">
+        <h2>Recent update activity</h2>
+        <table><thead><tr><th>Event</th><th>Detail</th><th>Time</th></tr></thead><tbody>
+        ${recentEvents.rows.map((row) => `<tr><td>${row.event_type}</td><td class="muted">${row.detail || '—'}</td><td class="muted">${new Date(row.created_at).toLocaleString('en-AU')}</td></tr>`).join('')}
+        </tbody></table>
+      </div>
+      ${errorEvents.rows.length > 0 ? `<div class="panel">
+        <h2>⚠ Blocked / failed events</h2>
+        <table><thead><tr><th>Event</th><th>Detail</th><th>Time</th></tr></thead><tbody>
+        ${errorEvents.rows.map((row) => `<tr><td class="bad">${row.event_type}</td><td class="muted">${row.detail || '—'}</td><td class="muted">${new Date(row.created_at).toLocaleString('en-AU')}</td></tr>`).join('')}
+        </tbody></table>
+      </div>` : ''}
     </div>
   `));
 });
