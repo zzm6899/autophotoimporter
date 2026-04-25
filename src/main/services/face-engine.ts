@@ -53,6 +53,8 @@ function getOrt(): OrtModule {
         'app.asar.unpacked',
         'node_modules',
         'onnxruntime-node',
+        'dist',
+        'index.js',
       );
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       ort = require(unpackedPath) as OrtModule;
