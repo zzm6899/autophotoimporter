@@ -332,7 +332,7 @@ async function resizeEmbeddedJpegToDataUri(
 // the small ~160x120 IFD1 thumbnail, which is useless at loupe size. To get
 // the usable full-size preview (~1620x1080 for NEF) we scan the raw bytes for
 // JPEG SOI/EOI markers and keep the largest embedded JPEG.
-async function extractLargestEmbeddedJpeg(filePath: string): Promise<Buffer | undefined> {
+export async function extractLargestEmbeddedJpeg(filePath: string): Promise<Buffer | undefined> {
   let buf: Buffer;
   try {
     const fullStat = await stat(filePath);

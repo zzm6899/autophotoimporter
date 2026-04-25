@@ -183,6 +183,7 @@ export async function disposeFaceEngine(): Promise<void> {
 // nativeImage is only available in the main process.
 import { nativeImage } from 'electron';
 import exifr from 'exifr';
+import { extractLargestEmbeddedJpeg } from './exif-parser';
 
 /**
  * Load a nativeImage from a path, with RAW fallback via exifr.thumbnail().
@@ -191,18 +192,25 @@ import exifr from 'exifr';
  */
 async function loadNativeImage(imagePath: string): Promise<Electron.NativeImage> {
   let img = nativeImage.createFromPath(imagePath);
-  if (img.isEmpty()) {
-    // RAW file — extract the embedded JPEG preview using exifr
-    const thumbData = await exifr.thumbnail(imagePath).catch(() => null);
-    if (!thumbData || thumbData.length === 0) {
-      throw new Error(`Cannot decode image for face analysis: ${imagePath}`);
-    }
+  if (!img.isEmpty()) return img;
+
+  // RAW file — try exifr.thumbnail() first (fast IFD1 parse), then fall back
+  // to the full JPEG byte-scanner which finds the largest embedded preview.
+  // Some NEF/ARW files have no IFD1 thumbnail but always have a large preview.
+  const thumbData = await exifr.thumbnail(imagePath).catch(() => null);
+  if (thumbData && thumbData.length > 0) {
     img = nativeImage.createFromBuffer(Buffer.from(thumbData));
-    if (img.isEmpty()) {
-      throw new Error(`Cannot decode embedded preview for face analysis: ${imagePath}`);
-    }
+    if (!img.isEmpty()) return img;
   }
-  return img;
+
+  // Deep fallback: scan first 8MB of the RAW file for the largest JPEG block
+  const jpegBuf = await extractLargestEmbeddedJpeg(imagePath).catch(() => null);
+  if (jpegBuf && jpegBuf.length > 0) {
+    img = nativeImage.createFromBuffer(jpegBuf);
+    if (!img.isEmpty()) return img;
+  }
+
+  throw new Error(`Cannot decode image for face analysis: ${imagePath}`);
 }
 
 /**

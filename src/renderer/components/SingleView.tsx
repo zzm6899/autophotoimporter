@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { MediaFile } from '../../shared/types';
 import { buildExposure, formatFileSize } from '../utils/formatters';
-import { useAppState, useAppDispatch } from '../context/ImportContext';
+import { useAppState, useAppDispatch, useMergedFiles } from '../context/ImportContext';
 import { formatEVDelta, stopsToSafeMultiplier, clampStops, estimateClippingPercent } from '../../shared/exposure';
 import { Histogram } from './Histogram';
 import { decodeImage, getCachedPreview } from '../utils/previewCache';
@@ -56,7 +56,8 @@ export function SingleView({ file, index, total }: SingleViewProps) {
   const [loadError, setLoadError] = useState(false);
   const isPicked = file.pick === 'selected';
   const isRejected = file.pick === 'rejected';
-  const { files, exposureAnchorPath, normalizeExposure, saveFormat, exposureMaxStops } = useAppState();
+  const { exposureAnchorPath, normalizeExposure, saveFormat, exposureMaxStops } = useAppState();
+  const files = useMergedFiles();
   const dispatch = useAppDispatch();
   const anchor = exposureAnchorPath ? files.find((f) => f.path === exposureAnchorPath) : null;
   const isAnchor = anchor?.path === file.path;

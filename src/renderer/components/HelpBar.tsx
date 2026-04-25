@@ -1,4 +1,4 @@
-import { useAppDispatch, useAppState } from '../context/ImportContext';
+import { useAppDispatch, useAppState, useMergedFiles } from '../context/ImportContext';
 import { useFileScanner } from '../hooks/useFileScanner';
 
 const isMac = typeof window !== 'undefined' && window.electronAPI?.platform === 'darwin';
@@ -15,9 +15,10 @@ function getContextTip(phase: string, fileCount: number, picked: number, queued:
 
 export function HelpBar() {
   const {
-    files, phase, scanPaused, filter, viewMode, selectedPaths, queuedPaths,
+    phase, scanPaused, filter, viewMode, selectedPaths, queuedPaths,
     focusedIndex, importProgress,
   } = useAppState();
+  const files = useMergedFiles();
   const dispatch = useAppDispatch();
   const { pauseScan, resumeScan } = useFileScanner();
 

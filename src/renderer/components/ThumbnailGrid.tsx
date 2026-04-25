@@ -1,6 +1,6 @@
 import { useMemo, useEffect, useCallback, useRef, useState } from 'react';
 // Main grid / single / split view orchestrator.
-import { useAppState, useAppDispatch } from '../context/ImportContext';
+import { useAppState, useAppDispatch, useMergedFiles } from '../context/ImportContext';
 import { useFileScanner } from '../hooks/useFileScanner';
 import { useImport } from '../hooks/useImport';
 import type { MediaFile } from '../../shared/types';
@@ -538,7 +538,10 @@ async function visualHash(src: string): Promise<string> {
 }
 
 export function ThumbnailGrid() {
-  const { files, phase, selectedSource, scanError, focusedIndex, viewMode, showLeftPanel, showRightPanel, filter, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused } = useAppState();
+  const { phase, selectedSource, scanError, focusedIndex, viewMode, showLeftPanel, showRightPanel, filter, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused } = useAppState();
+  // useMergedFiles() overlays face/review scores without re-running the full
+  // reducer map — O(n) only when scores.size > 0, otherwise returns the same array.
+  const files = useMergedFiles();
   const { startScan, pauseScan, resumeScan } = useFileScanner();
   const { startImport } = useImport();
   const dispatch = useAppDispatch();
@@ -707,7 +710,9 @@ export function ThumbnailGrid() {
     if (reviewWaitingForThumbnails) return;
     // Allow analysis in all view modes — use a smaller batch in single/split
     // so face detection doesn't compete with the detail preview load.
-    const batchSize = (viewMode === 'single' || viewMode === 'split') ? 2 : 8;
+    // Always process one at a time — ONNX inference blocks the main process
+    // for 1-4s per image. Larger batches cause the UI to freeze completely.
+    const batchSize = 1;
     // Keep batch small so scoring doesn't freeze the UI on slow machines.
     const focusedPath = focusedIndex >= 0 && focusedIndex < sortedFiles.length ? sortedFiles[focusedIndex].path : null;
     const visibleRank = new Map<string, number>();

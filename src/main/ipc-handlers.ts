@@ -221,6 +221,16 @@ function parseContentDispositionFilename(header: string | null) {
 }
 
 async function downloadInstallerAsset(downloadUrl: string, versionLabel: string) {
+  // First request: no-redirect so we can capture the Content-Disposition header
+  // from our server before it redirects to GitHub (which won't send it).
+  let fileNameFromHeader: string | null = null;
+  try {
+    const headResp = await fetch(downloadUrl, { redirect: 'manual' });
+    fileNameFromHeader = parseContentDispositionFilename(headResp.headers.get('content-disposition'));
+  } catch {
+    // ignore — fall through to redirect-following fetch below
+  }
+
   const response = await fetch(downloadUrl);
   if (!response.ok || !response.body) {
     throw new Error(`Download failed with status ${response.status}`);
@@ -229,7 +239,9 @@ async function downloadInstallerAsset(downloadUrl: string, versionLabel: string)
   const updatesDir = path.join(app.getPath('userData'), 'updates');
   await mkdir(updatesDir, { recursive: true });
 
-  const fileNameFromHeader = parseContentDispositionFilename(response.headers.get('content-disposition'));
+  if (!fileNameFromHeader) {
+    fileNameFromHeader = parseContentDispositionFilename(response.headers.get('content-disposition'));
+  }
   const fallbackName = `Photo-Importer-${versionLabel}${installerExtensionForPlatform(downloadUrl)}`;
   const fileName = sanitizeDownloadName(fileNameFromHeader || path.basename(new URL(downloadUrl).pathname) || fallbackName);
   const targetPath = path.join(updatesDir, fileName);
@@ -863,31 +875,37 @@ export function registerIpcHandlers(): void {
    */
   ipcMain.handle(IPC.FACE_ANALYZE, async (_event, input: string | string[]) => {
     const paths = Array.isArray(input) ? input : [input];
-    const results = await Promise.all(
-      paths.map(async (filePath) => {
-        try {
-          const { boxes, personBoxes, embeddings } = await analyzeFaces(filePath);
-          return {
-            path: filePath,
-            boxes,
-            personBoxes,
-            embeddings: embeddings.map(serializeEmbedding),
-            faceCount: boxes.length,
-            personCount: personBoxes.length,
-          };
-        } catch (err: unknown) {
-          return {
-            path: filePath,
-            boxes: [],
-            personBoxes: [],
-            embeddings: [],
-            faceCount: 0,
-            personCount: 0,
-            error: (err as Error).message,
-          };
-        }
-      }),
-    );
+    // Run sequentially — ONNX inference is CPU-bound and running multiple
+    // sessions in parallel blocks the main process event loop entirely,
+    // making the UI unresponsive. Sequential lets the event loop breathe
+    // between each image (~1-4s per image).
+    const results: object[] = [];
+    for (const filePath of paths) {
+      try {
+        const { boxes, personBoxes, embeddings } = await analyzeFaces(filePath);
+        results.push({
+          path: filePath,
+          boxes,
+          personBoxes,
+          embeddings: embeddings.map(serializeEmbedding),
+          faceCount: boxes.length,
+          personCount: personBoxes.length,
+        });
+      } catch (err: unknown) {
+        results.push({
+          path: filePath,
+          boxes: [],
+          personBoxes: [],
+          embeddings: [],
+          faceCount: 0,
+          personCount: 0,
+          error: (err as Error).message,
+        });
+      }
+      // Yield to the event loop between each image so IPC messages
+      // (navigation, source selection, UI interactions) can be processed.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
     return results;
   });
 

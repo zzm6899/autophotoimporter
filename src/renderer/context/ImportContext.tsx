@@ -1,4 +1,4 @@
-import { createContext, useContext, useReducer, type Dispatch, type ReactNode } from 'react';
+import { createContext, useContext, useReducer, useRef, useMemo, useCallback, useState, type Dispatch, type ReactNode } from 'react';
 import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, SourceKind, FtpConfig, RatingFilter, SelectionSet, LicenseValidation } from '../../shared/types';
 import { FOLDER_PRESETS } from '../../shared/types';
 import { groupBursts } from '../../shared/burst';
@@ -550,21 +550,9 @@ export function reducer(state: State, action: Action): State {
         ),
       };
     case 'SET_REVIEW_SCORES':
-      return {
-        ...state,
-        files: state.files.map((f) => {
-          const patch = action.scores[f.path];
-          if (!patch) return f;
-          const merged = { ...f, ...patch };
-          const review = scoreReview(merged);
-          return {
-            ...merged,
-            blurRisk: patch.blurRisk ?? review.blurRisk,
-            reviewScore: patch.reviewScore ?? review.score,
-            reviewReasons: patch.reviewReasons ?? review.reasons,
-          };
-        }),
-      };
+      // Handled outside the reducer via reviewScoresRef in ImportProvider.
+      // Keeping this case avoids TypeScript exhaustiveness errors.
+      return state;
     case 'CLEAR_FACE_DATA':
       // Wipe faceBoxes + subjectSharpnessScore so the background reviewer
       // re-runs analyzeSubject for every photo using the current FaceDetector.
@@ -828,12 +816,52 @@ export function reducer(state: State, action: Action): State {
 const StateContext = createContext<State>(initialState);
 const DispatchContext = createContext<Dispatch<Action>>(() => {});
 
+// ---------------------------------------------------------------------------
+// Review scores overlay — kept outside the reducer so SET_REVIEW_SCORES
+// dispatches don't trigger a full state.files.map() on every face completion.
+// Components that need merged files call useMergedFiles() instead of
+// reading state.files directly.
+// ---------------------------------------------------------------------------
+type ReviewPatch = Partial<MediaFile> & { reviewScore?: number; blurRisk?: MediaFile['blurRisk']; reviewReasons?: string[] };
+const ReviewScoresContext = createContext<Map<string, ReviewPatch>>(new Map());
+const ReviewScoresVersionContext = createContext<number>(0);
+
 export function ImportProvider({ children }: { children: ReactNode }) {
-  const [state, dispatch] = useReducer(reducer, initialState);
+  const [state, rawDispatch] = useReducer(reducer, initialState);
+
+  // Mutable map of review score overlays — never triggers a re-render itself.
+  const reviewScoresRef = useRef<Map<string, ReviewPatch>>(new Map());
+  // Version counter: bumped on every SET_REVIEW_SCORES so consumers re-render.
+  const [reviewVersion, setReviewVersion] = useState(0);
+
+  // Intercept SET_REVIEW_SCORES before it hits the reducer.
+  const dispatch = useCallback<Dispatch<Action>>((action) => {
+    if (action.type === 'SET_REVIEW_SCORES') {
+      const scores = action.scores;
+      if (Object.keys(scores).length === 0) return;
+      let dirty = false;
+      for (const [p, patch] of Object.entries(scores)) {
+        if (patch) { reviewScoresRef.current.set(p, patch); dirty = true; }
+      }
+      if (dirty) setReviewVersion((v) => v + 1);
+      return;
+    }
+    // On source change wipe the overlay so stale scores don't bleed through.
+    if (action.type === 'SELECT_SOURCE' || action.type === 'SET_FILES') {
+      reviewScoresRef.current.clear();
+      setReviewVersion((v) => v + 1);
+    }
+    rawDispatch(action);
+  }, []);
+
   return (
     <StateContext.Provider value={state}>
       <DispatchContext.Provider value={dispatch}>
-        {children}
+        <ReviewScoresContext.Provider value={reviewScoresRef.current}>
+          <ReviewScoresVersionContext.Provider value={reviewVersion}>
+            {children}
+          </ReviewScoresVersionContext.Provider>
+        </ReviewScoresContext.Provider>
       </DispatchContext.Provider>
     </StateContext.Provider>
   );
@@ -845,4 +873,33 @@ export function useAppState() {
 
 export function useAppDispatch() {
   return useContext(DispatchContext);
+}
+
+/**
+ * Returns state.files with review score overlays merged in.
+ * Re-renders when either the files array or review scores change.
+ * Use this instead of useAppState().files anywhere face scores are needed.
+ */
+export function useMergedFiles(): MediaFile[] {
+  const { files } = useContext(StateContext);
+  const scores = useContext(ReviewScoresContext);
+  const version = useContext(ReviewScoresVersionContext);
+
+  return useMemo(() => {
+    if (scores.size === 0) return files;
+    return files.map((f) => {
+      const patch = scores.get(f.path);
+      if (!patch) return f;
+      const merged = { ...f, ...patch };
+      // Only recompute review score if not already provided in the patch
+      if (patch.reviewScore === undefined) {
+        const review = scoreReview(merged);
+        merged.blurRisk = patch.blurRisk ?? review.blurRisk;
+        merged.reviewScore = review.score;
+        merged.reviewReasons = review.reasons;
+      }
+      return merged;
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [files, version]);
 }
