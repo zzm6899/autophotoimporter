@@ -1471,4 +1471,35 @@ app.get('/api/v1/app/download/:releaseId', async (req, res) => {
 async function waitForDatabase(maxAttempts = 30, delayMs = 1500) {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      // First check connectivity, then check that init.sql has finished r
+      // First check connectivity, then check that init.sql has finished running
+      // by verifying the base tables exist. Postgres accepts connections before
+      // running initdb scripts, so SELECT 1 alone is not sufficient.
+      await pool.query('SELECT 1');
+      const result = await pool.query(
+        `SELECT COUNT(*) FROM information_schema.tables
+         WHERE table_schema = 'public' AND table_name = 'license_records'`
+      );
+      if (parseInt(result.rows[0].count, 10) > 0) return;
+      console.warn(`[update-admin] Database connected but schema not ready yet (${attempt}/${maxAttempts}). Retrying...`);
+    } catch (error) {
+      if (attempt === maxAttempts) throw error;
+      console.warn(`[update-admin] Database not ready yet (${attempt}/${maxAttempts}). Retrying...`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+  throw new Error('Database schema did not become ready in time');
+}
+
+async function start() {
+  await waitForDatabase();
+  await ensureRuntimeSchema();
+  await ensureAdminUser();
+  app.listen(port, '0.0.0.0', () => {
+    console.log(`[update-admin] Listening on 0.0.0.0:${port}`);
+  });
+}
+
+start().catch((err) => {
+  console.error('[update-admin] Failed to start:', err);
+  process.exit(1);
+});
