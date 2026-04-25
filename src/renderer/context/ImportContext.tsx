@@ -549,10 +549,30 @@ export function reducer(state: State, action: Action): State {
             : f,
         ),
       };
-    case 'SET_REVIEW_SCORES':
-      // Handled outside the reducer via reviewScoresRef in ImportProvider.
-      // Keeping this case avoids TypeScript exhaustiveness errors.
-      return state;
+    case 'SET_REVIEW_SCORES': {
+      // In the live app this action is intercepted by ImportProvider before
+      // reaching the reducer (see the dispatch override in ImportProvider),
+      // so this path only runs in tests that call the reducer directly.
+      const patchPaths = Object.keys(action.scores);
+      if (patchPaths.length === 0) return state;
+      const patchSet = new Set(patchPaths);
+      let changed = false;
+      const files = state.files.map((f) => {
+        if (!patchSet.has(f.path)) return f;
+        const patch = action.scores[f.path];
+        if (!patch) return f;
+        changed = true;
+        const merged = { ...f, ...patch };
+        const review = scoreReview(merged);
+        return {
+          ...merged,
+          blurRisk: patch.blurRisk ?? review.blurRisk,
+          reviewScore: patch.reviewScore ?? review.score,
+          reviewReasons: patch.reviewReasons ?? review.reasons,
+        };
+      });
+      return changed ? { ...state, files } : state;
+    }
     case 'CLEAR_FACE_DATA':
       // Wipe faceBoxes + subjectSharpnessScore so the background reviewer
       // re-runs analyzeSubject for every photo using the current FaceDetector.
