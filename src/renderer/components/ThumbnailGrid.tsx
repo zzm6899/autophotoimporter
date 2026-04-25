@@ -916,20 +916,49 @@ export function ThumbnailGrid() {
     dispatch({ type: 'TOGGLE_BURST_COLLAPSE', burstId });
   }, [dispatch]);
 
+  // Trigger ONNX face scan for any unscanned photos about to appear in a panel.
+  const scanUnscannedPanelFiles = useCallback((paths: string[]) => {
+    const unscanned = files
+      .filter((f) => paths.includes(f.path) && f.type === 'photo' && f.faceBoxes === undefined);
+    if (unscanned.length === 0) return;
+    void (async () => {
+      for (const f of unscanned) {
+        try {
+          const results = await window.electronAPI.analyzeFaces(f.path);
+          const result = results[0];
+          if (!result) continue;
+          dispatch({
+            type: 'SET_REVIEW_SCORES',
+            scores: {
+              [f.path]: {
+                faceCount: result.boxes.length,
+                faceBoxes: result.boxes.map((b) => ({ x: b.x, y: b.y, width: b.width, height: b.height, score: b.score })),
+                faceDetection: result.boxes.length > 0 ? 'native' : undefined,
+                faceEmbedding: result.embeddings?.[0] || f.faceEmbedding,
+                personCount: result.personBoxes.length,
+                personBoxes: result.personBoxes.map((b) => ({ x: b.x, y: b.y, width: b.width, height: b.height, score: b.score })),
+              },
+            },
+          });
+        } catch { /* ignore */ }
+      }
+    })();
+  }, [files, dispatch]);
+
   const openBestOfSelection = useCallback(() => {
     const focused = focusedIndex >= 0 && focusedIndex < sortedFiles.length ? sortedFiles[focusedIndex] : null;
+    let panelPaths: string[] = [];
     if (focused?.burstId) {
       const burstFiles = files
         .filter((f) => f.burstId === focused.burstId)
         .sort((a, b) => (a.burstIndex ?? 0) - (b.burstIndex ?? 0));
-      const burstPaths = new Set(burstFiles.map((f) => f.path));
+      panelPaths = burstFiles.map((f) => f.path);
+      const burstPaths = new Set(panelPaths);
       const visibleIndices = new Set<number>();
-      sortedFiles.forEach((f, i) => {
-        if (burstPaths.has(f.path)) visibleIndices.add(i);
-      });
+      sortedFiles.forEach((f, i) => { if (burstPaths.has(f.path)) visibleIndices.add(i); });
       setSelectedIndices(visibleIndices);
       setBestScope({
-        paths: burstFiles.map((f) => f.path),
+        paths: panelPaths,
         title: 'Best of Burst',
         subtitle: `Burst ${focused.burstIndex ?? 1}/${focused.burstSize ?? burstFiles.length}`,
       });
@@ -937,36 +966,27 @@ export function ThumbnailGrid() {
       const faceFiles = files
         .filter((f) => f.faceGroupId === focused.faceGroupId)
         .sort((a, b) => (a.dateTaken ? Date.parse(a.dateTaken) : 0) - (b.dateTaken ? Date.parse(b.dateTaken) : 0));
-      const facePaths = new Set(faceFiles.map((f) => f.path));
+      panelPaths = faceFiles.map((f) => f.path);
+      const facePaths = new Set(panelPaths);
       const visibleIndices = new Set<number>();
-      sortedFiles.forEach((f, i) => {
-        if (facePaths.has(f.path)) visibleIndices.add(i);
-      });
+      sortedFiles.forEach((f, i) => { if (facePaths.has(f.path)) visibleIndices.add(i); });
       setSelectedIndices(visibleIndices);
-      setBestScope({
-        paths: faceFiles.map((f) => f.path),
-        title: 'Best Face Group',
-        subtitle: `${faceFiles.length} similar face shots`,
-      });
+      setBestScope({ paths: panelPaths, title: 'Best Face Group', subtitle: `${faceFiles.length} similar face shots` });
     } else if (selectedIndices.size >= 2) {
-      setBestScope({
-        paths: Array.from(selectedIndices)
-          .filter((i) => i >= 0 && i < sortedFiles.length)
-          .map((i) => sortedFiles[i].path),
-        title: 'Best of Selection',
-      });
+      panelPaths = Array.from(selectedIndices)
+        .filter((i) => i >= 0 && i < sortedFiles.length)
+        .map((i) => sortedFiles[i].path);
+      setBestScope({ paths: panelPaths, title: 'Best of Selection' });
     } else if (sortedFiles.length > 0) {
       const start = Math.max(0, focusedIndex);
       const windowFiles = sortedFiles.slice(start, Math.min(sortedFiles.length, start + 8));
+      panelPaths = windowFiles.map((f) => f.path);
       setSelectedIndices(new Set(windowFiles.map((_, offset) => start + offset)));
-      setBestScope({
-        paths: windowFiles.map((f) => f.path),
-        title: 'Best Nearby',
-        subtitle: 'No burst found',
-      });
+      setBestScope({ paths: panelPaths, title: 'Best Nearby', subtitle: 'No burst found' });
     }
+    if (panelPaths.length > 0) scanUnscannedPanelFiles(panelPaths);
     setShowBestOfSelection(true);
-  }, [files, focusedIndex, selectedIndices, sortedFiles]);
+  }, [files, focusedIndex, selectedIndices, sortedFiles, scanUnscannedPanelFiles]);
 
   const BATCH_PAGE_SIZE = 120;
 
@@ -993,8 +1013,9 @@ export function ThumbnailGrid() {
         ? `Page ${currentPage}/${totalPages} · ${candidates.length} photos`
         : `${candidates.length} visible photos ranked together`,
     });
+    scanUnscannedPanelFiles(paths);
     setShowBestOfSelection(true);
-  }, [sortedFiles]);
+  }, [sortedFiles, scanUnscannedPanelFiles]);
 
   const openAdjacentBatch = useCallback((direction: 1 | -1) => {
     const eligible = sortedFiles.filter((f) => f.type === 'photo' && f.pick !== 'rejected');
@@ -1034,13 +1055,15 @@ export function ThumbnailGrid() {
       if (burstPaths.has(f.path)) visibleIndices.add(i);
     });
     setSelectedIndices(visibleIndices);
+    const burstPathList = burstFiles.map((f) => f.path);
     setBestScope({
-      paths: burstFiles.map((f) => f.path),
+      paths: burstPathList,
       title: 'Best of Burst',
       subtitle: `Burst ${nextIndex + 1}/${burstIdsInOrder.length}`,
     });
+    scanUnscannedPanelFiles(burstPathList);
     setShowBestOfSelection(true);
-  }, [bestScope?.paths, files, focusedIndex, setFocused, sortedFiles]);
+  }, [bestScope?.paths, files, focusedIndex, setFocused, sortedFiles, scanUnscannedPanelFiles]);
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
@@ -1833,9 +1856,8 @@ export function ThumbnailGrid() {
 
   const nextActionToolbar = files.length > 0 ? (
     <div className="shrink-0 px-3 py-1.5 flex items-center gap-1.5 border-b border-border bg-surface-alt/60 overflow-x-auto">
-      {/* Workflow steps — guide beginners left to right */}
-      <span className="text-[9px] font-medium text-text-faint uppercase tracking-wider shrink-0 pr-1">Steps:</span>
 
+      {/* ── Step 1: Review ── */}
       <button
         onClick={() => {
           dispatch({ type: 'SET_FILTER', filter: 'unmarked' });
@@ -1843,24 +1865,26 @@ export function ThumbnailGrid() {
           if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0);
         }}
         className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-surface-raised text-text-secondary hover:text-text hover:bg-border transition-colors shrink-0"
-        title="Review unmarked files one by one in the large viewer. Use P to pick, X to reject, arrows to move."
+        title="Open single-photo view filtered to unmarked files. Use P to pick, X to reject, ← → to navigate."
       >
         1. Review
       </button>
 
+      {/* ── Step 2: Queue best keepers ── */}
       <button
         onClick={() => dispatch({ type: 'QUEUE_BEST' })}
         className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-surface-raised text-text-secondary hover:text-yellow-300 hover:bg-yellow-500/10 transition-colors shrink-0"
-        title={`Create a fresh best-of-batch queue. Picks one winner per burst/similar group, then the strongest ungrouped keepers. AI review ${reviewStats.analyzed}/${reviewStats.total}.`}
+        title={`Queue the best keeper from each burst/group, plus top standalone shots. Uses AI face + blur + sharpness scores. AI done: ${reviewStats.analyzed}/${reviewStats.total}.`}
       >
-        2. Queue Batch Best
+        2. Queue Best
       </button>
 
+      {/* ── Step 3: Import or queue all ── */}
       {queuedPaths.length > 0 ? (
         <button
           onClick={startImport}
           className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 transition-colors shrink-0"
-          title="Import the queued files using the destination/output settings on the right panel."
+          title="Import all queued files to the destination folder set in the right panel."
         >
           3. Import ({queuedPaths.length})
         </button>
@@ -1868,28 +1892,95 @@ export function ThumbnailGrid() {
         <button
           onClick={() => queuePaths(sortedFiles.map((f) => f.path))}
           className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-surface-raised text-text-secondary hover:text-emerald-300 hover:bg-emerald-500/10 transition-colors shrink-0"
-          title={`Add every currently visible file to the queue. Visible thumbnails ready: ${visibleThumbStats.ready}/${visibleThumbStats.total}.`}
+          title={`Queue every visible file for import. Thumbnails ready: ${visibleThumbStats.ready}/${visibleThumbStats.total}.`}
         >
           3. Queue All
         </button>
       )}
 
-      <div className="w-px h-4 bg-border shrink-0 mx-1" />
+      <div className="w-px h-4 bg-border shrink-0 mx-0.5" />
+
+      {/* ── Best of Burst / Batch ── always visible ── */}
+      <button
+        onClick={openBestOfSelection}
+        className="px-2 py-1 text-[10px] rounded-md bg-yellow-500/10 text-yellow-300 hover:bg-yellow-500/20 transition-colors shrink-0"
+        title="Compare shots in the focused burst side-by-side and pick the best one. Shortcut: Shift+B."
+      >
+        Best of Burst
+      </button>
+      <button
+        onClick={() => openBestOfBatch(0)}
+        className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-yellow-300 transition-colors shrink-0"
+        title={`Rank all visible photos together and show the top candidates. AI: ${reviewStats.analyzed}/${reviewStats.total}, faces: ${reviewStats.faces}.`}
+      >
+        Best of Batch
+      </button>
+
+      <div className="w-px h-4 bg-border shrink-0 mx-0.5" />
+
+      {/* ── AI scan controls ── */}
+      {/* Pause/Resume AI review + preview loading — combined into one toggle */}
+      <button
+        onClick={() => {
+          if (reviewWaitingForThumbnails) return;
+          const pausing = !reviewPaused;
+          setReviewPaused(pausing);
+          setBackgroundLoadingPaused(pausing);
+        }}
+        className={`px-2 py-1 text-[10px] rounded-md transition-colors shrink-0 ${
+          reviewWaitingForThumbnails
+            ? 'bg-blue-500/10 text-blue-300'
+            : reviewPaused
+              ? 'bg-yellow-500/15 text-yellow-300 hover:bg-yellow-500/25'
+              : 'bg-surface-raised text-text-muted hover:text-text'
+        }`}
+        title={reviewWaitingForThumbnails
+          ? `AI review starts after thumbnails finish loading. Ready: ${readyThumbnailCount}/${totalPhotoCount}.`
+          : reviewPaused
+            ? `Resume AI analysis and preview loading. Done ${reviewStats.analyzed}/${reviewStats.total}.`
+            : `Pause AI analysis and preview loading. Done ${reviewStats.analyzed}/${reviewStats.total}.`}
+      >
+        {reviewWaitingForThumbnails
+          ? `Loading ${readyThumbnailCount}/${totalPhotoCount}`
+          : reviewPaused
+            ? `▶ Resume AI ${reviewStats.analyzed}/${reviewStats.total}`
+            : `⏸ Pause AI ${reviewStats.analyzed}/${reviewStats.total}`}
+      </button>
+
+      {/* Re-scan AI: clears face data + resumes analysis. Shows blur count when done. */}
+      <button
+        onClick={() => {
+          dispatch({ type: 'CLEAR_FACE_DATA' });
+          setReviewPaused(false);
+          setBackgroundLoadingPaused(false);
+        }}
+        className={`px-2 py-1 text-[10px] rounded-md transition-colors shrink-0 ${
+          reviewStats.faces > 0
+            ? 'bg-violet-500/10 text-violet-300 hover:bg-violet-500/20'
+            : 'bg-surface-raised text-text-muted hover:text-violet-300'
+        }`}
+        title={`Clear all AI face/blur/sharpness data and re-run analysis from scratch. Faces found: ${reviewStats.faces}, blur risk: ${reviewStats.blur}.`}
+      >
+        Re-scan AI {reviewStats.faces > 0 ? `· ${reviewStats.faces} faces` : ''}{reviewStats.blur > 0 ? ` · ${reviewStats.blur} blur` : ''}
+      </button>
+
+      <div className="w-px h-4 bg-border shrink-0 mx-0.5" />
 
       <button
         onClick={() => setShowAdvancedTools((v) => !v)}
         className={`px-2 py-1 text-[10px] rounded-md transition-colors shrink-0 ${
           showAdvancedTools ? 'bg-blue-500/15 text-blue-300' : 'bg-surface-raised text-text-muted hover:text-text'
         }`}
-        title="Show or hide extra culling, face, blur, cache, and duplicate tools."
+        title="Show extra tools: blur filter, auto-cull, duplicates, safe cull, cache stats."
       >
-        {showAdvancedTools ? 'Hide tools' : 'More tools'}
+        {showAdvancedTools ? '− Less' : '+ More'}
       </button>
+
       {queuedPaths.length > 0 && (
         <button
           onClick={() => dispatch({ type: 'QUEUE_CLEAR' })}
           className="px-2 py-1 text-[10px] rounded-md text-text-faint hover:text-red-300 transition-colors shrink-0"
-          title={`Remove all ${queuedPaths.length} queued files. Does not clear pick/reject flags.`}
+          title={`Remove all ${queuedPaths.length} queued files from the queue. Does not clear pick/reject flags.`}
         >
           Clear Queue
         </button>
@@ -1897,120 +1988,64 @@ export function ThumbnailGrid() {
 
       {showAdvancedTools && (
         <>
-      <button
-        onClick={() => openBestOfBatch(0)}
-        className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-yellow-300 transition-colors shrink-0"
-        title={`Rank the current visible batch together. Review analyzed ${reviewStats.analyzed}/${reviewStats.total}; faces found in ${reviewStats.faces}.`}
-      >
-        Best of Batch
-      </button>
-      <button
-        onClick={openBestOfSelection}
-        className="px-2 py-1 text-[10px] rounded-md bg-yellow-500/10 text-yellow-300 hover:bg-yellow-500/20 transition-colors shrink-0"
-        title="Rank the focused burst first. Priority: protected/rating, then faces, subject sharpness, blur risk, whole-image sharpness, and smart score. Shortcut: Shift+B."
-      >
-        Best of Burst
-      </button>
-      <button
-        onClick={() => {
-          setReviewPaused(false);
-          dispatch({ type: 'SET_FILTER', filter: 'blur-risk' });
-        }}
-        className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-red-300 transition-colors shrink-0"
-        title={`Show photos marked medium/high blur risk. ${reviewStats.blur} found so far; analysis ${reviewStats.analyzed}/${reviewStats.total}.`}
-      >
-        Blur Check
-      </button>
-      <button
-        onClick={() => {
-          if (reviewWaitingForThumbnails) return;
-          setReviewPaused((v) => !v);
-        }}
-        className={`px-2 py-1 text-[10px] rounded-md transition-colors shrink-0 ${
-          reviewWaitingForThumbnails || reviewPaused
-            ? 'bg-yellow-500/15 text-yellow-300'
-            : 'bg-surface-raised text-text-muted hover:text-text'
-        }`}
-        title={reviewWaitingForThumbnails
-          ? `Review will start after thumbnails finish loading. Ready ${readyThumbnailCount}/${totalPhotoCount}.`
-          : `Pause or resume local review analysis. It computes blur risk, subject focus, face boxes, visual similarity, and keeper score. Done ${reviewStats.analyzed}/${reviewStats.total}.`}
-      >
-        {reviewWaitingForThumbnails
-          ? `Waiting Thumbs ${readyThumbnailCount}/${totalPhotoCount}`
-          : `${reviewPaused ? 'Resume Review' : 'Pause Review'} ${reviewStats.analyzed}/${reviewStats.total}`}
-      </button>
-      <button
-        onClick={() => {
-          dispatch({ type: 'CLEAR_FACE_DATA' });
-          setReviewPaused(false);
-        }}
-        className={`px-2 py-1 text-[10px] rounded-md transition-colors shrink-0 ${
-          reviewStats.faces > 0
-            ? 'bg-violet-500/10 text-violet-300 hover:bg-violet-500/20'
-            : 'bg-surface-raised text-text-muted hover:text-violet-300'
-        }`}
-        title={`Re-run the fast review pass on all ${reviewStats.total} photos. Uses ONNX boxes plus lightweight subject scoring. Faces found so far: ${reviewStats.faces}.`}
-      >
-        Re-scan Boxes {reviewStats.faces}
-      </button>
-      <button
-        onClick={() => setBackgroundLoadingPaused((v) => !v)}
-        className={`px-2 py-1 text-[10px] rounded-md transition-colors shrink-0 ${
-          backgroundLoadingPaused ? 'bg-yellow-500/15 text-yellow-300' : 'bg-surface-raised text-text-muted hover:text-text'
-        }`}
-        title={`Pause or resume background preview preloading. The current full photo still loads. Visible thumbnails ready ${visibleThumbStats.ready}/${visibleThumbStats.total}.`}
-      >
-        {backgroundLoadingPaused ? 'Start Loading' : 'Stop Loading'} {visibleThumbStats.ready}/{visibleThumbStats.total}
-      </button>
-      <span
-        className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-faint shrink-0"
-        title={`Preview cache: ${cacheStats.cached} cached, ${cacheStats.decoded} decoded, ${cacheStats.inflight} in flight, ${cacheStats.queued} queued.`}
-      >
-        Cache {cacheStats.cached}/{cacheStats.active + cacheStats.queued}
-      </span>
-      {files.some((f) => f.blurRisk === 'high') && (
-        <button
-          onClick={() => dispatch({
-            type: 'SET_PICK_BATCH',
-            filePaths: files.filter((f) => f.blurRisk === 'high' && f.pick !== 'selected').map((f) => f.path),
-            pick: 'rejected',
-          })}
-          className="px-2 py-1 text-[10px] rounded-md bg-red-500/10 text-red-300 hover:bg-red-500/20 transition-colors shrink-0"
-          title={`Reject high blur-risk photos that are not already picked. Current blur-risk count: ${reviewStats.blur}.`}
-        >
-          Reject Blur
-        </button>
-      )}
-      {files.some((f) => (f.burstId && f.burstSize && f.burstSize > 1) || (f.visualGroupId && f.visualGroupSize && f.visualGroupSize > 1)) && (
-        <button
-          onClick={() => dispatch({ type: 'AUTO_CULL_SAFE' })}
-          className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-red-300 transition-colors shrink-0"
-          title="Conservative auto-cull: never rejects protected, starred, or picked files; only rejects clearly worse blur/similar/burst alternatives when a stronger keeper exists. Undo with Ctrl+Z."
-        >
-          Safe Cull
-        </button>
-      )}
-      {duplicateCount > 0 && (
-        <button
-          onClick={() => {
-            dispatch({ type: 'SET_FILTER', filter: 'near-duplicates' });
-            dispatch({ type: 'SET_VIEW_MODE', mode: 'compare' });
-          }}
-          className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-blue-300 transition-colors shrink-0"
-          title="Compare visually similar or duplicate photos side-by-side so you can keep one and reject the rest."
-        >
-          Dupes
-        </button>
-      )}
-      {burstGrouping && burstIds.size > 0 && (
-        <button
-          onClick={() => dispatch({ type: 'PICK_BEST_IN_GROUPS' })}
-          className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-yellow-300 transition-colors shrink-0"
-          title="For every burst/similar group, pick the top-ranked file and reject the rest. Priority: protected/rating, then faces/subject sharpness, blur risk, whole-image sharpness, and smart score."
-        >
-          Pick Burst Keepers
-        </button>
-      )}
+          <div className="w-px h-4 bg-border shrink-0 mx-0.5" />
+          {/* Blur filter */}
+          <button
+            onClick={() => dispatch({ type: 'SET_FILTER', filter: 'blur-risk' })}
+            className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-red-300 transition-colors shrink-0"
+            title={`Filter to photos with medium/high blur risk. ${reviewStats.blur} found.`}
+          >
+            Blur {reviewStats.blur > 0 ? reviewStats.blur : ''}
+          </button>
+          {files.some((f) => f.blurRisk === 'high') && (
+            <button
+              onClick={() => dispatch({
+                type: 'SET_PICK_BATCH',
+                filePaths: files.filter((f) => f.blurRisk === 'high' && f.pick !== 'selected').map((f) => f.path),
+                pick: 'rejected',
+              })}
+              className="px-2 py-1 text-[10px] rounded-md bg-red-500/10 text-red-300 hover:bg-red-500/20 transition-colors shrink-0"
+              title={`Reject all high blur-risk photos that aren't already picked. ${reviewStats.blur} at risk.`}
+            >
+              Reject Blur
+            </button>
+          )}
+          {files.some((f) => (f.burstId && f.burstSize && f.burstSize > 1) || (f.visualGroupId && f.visualGroupSize && f.visualGroupSize > 1)) && (
+            <button
+              onClick={() => dispatch({ type: 'AUTO_CULL_SAFE' })}
+              className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-red-300 transition-colors shrink-0"
+              title="Auto-reject clearly worse shots in bursts/similar groups when a strong keeper exists. Never touches protected, starred, or already-picked files. Undo: Ctrl+Z."
+            >
+              Safe Cull
+            </button>
+          )}
+          {burstGrouping && burstIds.size > 0 && (
+            <button
+              onClick={() => dispatch({ type: 'PICK_BEST_IN_GROUPS' })}
+              className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-yellow-300 transition-colors shrink-0"
+              title="Pick the top-scored shot in each burst/group and reject the rest."
+            >
+              Pick Burst Best
+            </button>
+          )}
+          {duplicateCount > 0 && (
+            <button
+              onClick={() => {
+                dispatch({ type: 'SET_FILTER', filter: 'near-duplicates' });
+                dispatch({ type: 'SET_VIEW_MODE', mode: 'compare' });
+              }}
+              className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-blue-300 transition-colors shrink-0"
+              title="Compare near-duplicate photos side-by-side to keep one and reject the rest."
+            >
+              Dupes ({duplicateCount})
+            </button>
+          )}
+          <span
+            className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-faint shrink-0 cursor-default"
+            title={`Preview cache: ${cacheStats.cached} cached, ${cacheStats.decoded} decoded, ${cacheStats.inflight} in-flight, ${cacheStats.queued} queued.`}
+          >
+            Cache {cacheStats.cached}
+          </span>
         </>
       )}
     </div>
