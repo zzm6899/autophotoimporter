@@ -41,8 +41,26 @@ let ort: OrtModule | null = null;
 
 function getOrt(): OrtModule {
   if (!ort) {
+    // In a packaged app, onnxruntime-node is unpacked to app.asar.unpacked.
+    // We must require it using the absolute unpacked path so Node can find
+    // the native .node binary — a bare require('onnxruntime-node') resolves
+    // relative to the asar bundle and fails at runtime.
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    ort = require('onnxruntime-node') as OrtModule;
+    const { app: electronApp } = require('electron') as typeof import('electron');
+    if (electronApp.isPackaged) {
+      const unpackedPath = path.join(
+        path.dirname(electronApp.getAppPath()),
+        'app.asar.unpacked',
+        'node_modules',
+        'onnxruntime-node',
+      );
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      ort = require(unpackedPath) as OrtModule;
+    } else {
+      // Dev mode — normal resolution works fine
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      ort = require('onnxruntime-node') as OrtModule;
+    }
   }
   return ort;
 }

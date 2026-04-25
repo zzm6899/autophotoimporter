@@ -1251,7 +1251,7 @@ app.get('/admin/releases/:id/edit', authSession, async (req, res) => {
     </div>
     <div class="panel" style="max-width:680px;margin-top:16px;border-color:#4a0e0e">
       <h2 style="color:#fca5a5">Danger zone</h2>
-      <p class="muted" style="margin-bottom:14px">Deleting a release removes it from the database. Artifact files on the server are <strong>not deleted</strong> — remove them via SSH to free storage.</p>
+      <p class="muted" style="margin-bottom:14px">Deleting a release removes it from the database and deletes the artifact file from the server if it is hosted here.</p>
       <form method="post" action="/admin/releases/${row.id}/delete" onsubmit="return confirm('Delete ${row.release_name} (${row.version})? This cannot be undone.')">
         <button class="danger" type="submit">Delete this release</button>
       </form>
@@ -1277,6 +1277,23 @@ app.post('/admin/releases/:id/edit', authSession, async (req, res) => {
 });
 
 app.post('/admin/releases/:id/delete', authSession, async (req, res) => {
+  const release = await pool.query('SELECT * FROM releases WHERE id = $1', [req.params.id]);
+  if (release.rowCount) {
+    const row = release.rows[0];
+    // Try to delete the local artifact file if it's hosted on this server
+    try {
+      const artifactUrl = row.artifact_url || '';
+      const baseUrl = publicUpdatesBaseUrl();
+      if (artifactUrl.startsWith(baseUrl + '/artifacts/')) {
+        const relPath = artifactUrl.slice((baseUrl + '/artifacts/').length);
+        const localPath = path.join(artifactsRoot, decodeURIComponent(relPath));
+        // Safety check: must be inside artifactsRoot
+        if (localPath.startsWith(path.resolve(artifactsRoot))) {
+          await fs.promises.unlink(localPath).catch(() => {});
+        }
+      }
+    } catch {}
+  }
   await pool.query('DELETE FROM releases WHERE id = $1', [req.params.id]);
   res.redirect('/admin/releases');
 });
