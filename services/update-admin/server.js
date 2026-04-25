@@ -10,12 +10,27 @@ const { validateLicenseKey } = require('./lib/license');
 
 const app = express();
 const port = Number(process.env.PORT || 5071);
-const publicKeyPath = process.env.LICENSE_PUBLIC_KEY_PATH || path.resolve(__dirname, '../../scripts/license-keys/public.pem');
-const privateKeyPath = process.env.LICENSE_PRIVATE_KEY_PATH || '';
-const licensePublicKeyPem = fs.readFileSync(publicKeyPath, 'utf8');
-const licensePrivateKeyPem = privateKeyPath && fs.existsSync(privateKeyPath)
-  ? fs.readFileSync(privateKeyPath, 'utf8')
-  : '';
+
+// Keys can be supplied as env vars (LICENSE_PUBLIC_KEY / LICENSE_PRIVATE_KEY)
+// or as file paths (LICENSE_PUBLIC_KEY_PATH / LICENSE_PRIVATE_KEY_PATH).
+// Env var content takes priority over file paths.
+function loadKey(envContent, envPath, fallbackPath) {
+  if (envContent) return envContent.replace(/\\n/g, '\n');
+  const p = envPath || fallbackPath || '';
+  if (p && fs.existsSync(p)) return fs.readFileSync(p, 'utf8');
+  return '';
+}
+const licensePublicKeyPem = loadKey(
+  process.env.LICENSE_PUBLIC_KEY,
+  process.env.LICENSE_PUBLIC_KEY_PATH,
+  path.resolve(__dirname, '../../scripts/license-keys/public.pem'),
+);
+const licensePrivateKeyPem = loadKey(
+  process.env.LICENSE_PRIVATE_KEY,
+  process.env.LICENSE_PRIVATE_KEY_PATH,
+  '',
+);
+if (!licensePublicKeyPem) throw new Error('LICENSE_PUBLIC_KEY or LICENSE_PUBLIC_KEY_PATH must be set');
 const sessionSecret = process.env.ADMIN_SESSION_SECRET || 'change-me-admin-session-secret';
 const updateSecret = process.env.UPDATE_TOKEN_SECRET || 'change-me-update-token-secret';
 const adminApiToken = process.env.ADMIN_API_TOKEN || '';
@@ -322,6 +337,34 @@ async function ensureAdminUser() {
 }
 
 async function ensureRuntimeSchema() {
+  // Single source of truth for schema - works on fresh and existing volumes.
+  // init.sql only runs on brand-new volumes so we can never rely on it alone.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS admin_users (
+      id SERIAL PRIMARY KEY,
+      email TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS license_records (
+      id SERIAL PRIMARY KEY,
+      fingerprint TEXT NOT NULL UNIQUE,
+      license_key TEXT NOT NULL,
+      activation_code TEXT,
+      customer_name TEXT NOT NULL,
+      customer_email TEXT,
+      issued_at DATE,
+      expires_at DATE,
+      max_devices INTEGER,
+      status TEXT NOT NULL DEFAULT 'active',
+      notes TEXT,
+      last_seen_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
   await pool.query('ALTER TABLE license_records ADD COLUMN IF NOT EXISTS activation_code TEXT');
   await pool.query('ALTER TABLE license_records ADD COLUMN IF NOT EXISTS max_devices INTEGER');
   await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_license_records_activation_code ON license_records(activation_code)');
@@ -339,6 +382,35 @@ async function ensureRuntimeSchema() {
     )
   `);
   await pool.query('CREATE INDEX IF NOT EXISTS idx_license_activations_license ON license_activations(license_fingerprint, last_seen_at DESC)');
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS releases (
+      id SERIAL PRIMARY KEY,
+      version TEXT NOT NULL,
+      platform TEXT NOT NULL,
+      channel TEXT NOT NULL DEFAULT 'stable',
+      release_name TEXT NOT NULL,
+      release_notes TEXT,
+      release_url TEXT,
+      artifact_url TEXT NOT NULL,
+      published_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      rollout_state TEXT NOT NULL DEFAULT 'draft',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_releases_platform_channel_state ON releases(platform, channel, rollout_state, published_at DESC)');
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS update_events (
+      id SERIAL PRIMARY KEY,
+      fingerprint TEXT,
+      event_type TEXT NOT NULL,
+      app_version TEXT,
+      platform TEXT,
+      channel TEXT,
+      allowed BOOLEAN,
+      detail TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
 }
 
 async function assignActivationCode(fingerprint) {
@@ -1468,26 +1540,17 @@ app.get('/api/v1/app/download/:releaseId', async (req, res) => {
   }
 });
 
-async function waitForDatabase(maxAttempts = 30, delayMs = 1500) {
+async function waitForDatabase(maxAttempts = 20, delayMs = 1500) {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      // First check connectivity, then check that init.sql has finished running
-      // by verifying the base tables exist. Postgres accepts connections before
-      // running initdb scripts, so SELECT 1 alone is not sufficient.
       await pool.query('SELECT 1');
-      const result = await pool.query(
-        `SELECT COUNT(*) FROM information_schema.tables
-         WHERE table_schema = 'public' AND table_name = 'license_records'`
-      );
-      if (parseInt(result.rows[0].count, 10) > 0) return;
-      console.warn(`[update-admin] Database connected but schema not ready yet (${attempt}/${maxAttempts}). Retrying...`);
+      return;
     } catch (error) {
       if (attempt === maxAttempts) throw error;
       console.warn(`[update-admin] Database not ready yet (${attempt}/${maxAttempts}). Retrying...`);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
-    await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
-  throw new Error('Database schema did not become ready in time');
 }
 
 async function start() {
