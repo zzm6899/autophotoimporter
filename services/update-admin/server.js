@@ -461,6 +461,7 @@ async function ensureRuntimeSchema() {
       UNIQUE (license_fingerprint, device_id)
     )
   `);
+  await pool.query('ALTER TABLE license_activations ADD COLUMN IF NOT EXISTS expires_at DATE');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_license_activations_license ON license_activations(license_fingerprint, last_seen_at DESC)');
   await pool.query(`
     CREATE TABLE IF NOT EXISTS releases (
@@ -540,9 +541,10 @@ async function upsertLicenseRecord(validated, notes) {
 
 async function activationSummary(fingerprint, deviceId) {
   const activations = await pool.query(
-    `SELECT device_id, device_name, first_seen_at, last_seen_at
+    `SELECT id, device_id, device_name, first_seen_at, last_seen_at, expires_at
      FROM license_activations
      WHERE license_fingerprint = $1
+       AND (expires_at IS NULL OR expires_at >= CURRENT_DATE)
      ORDER BY last_seen_at DESC, id DESC`,
     [fingerprint],
   );
@@ -1013,7 +1015,7 @@ app.get('/admin/licenses/:id', authSession, async (req, res) => {
   }
   const record = result.rows[0];
   const activations = await pool.query(
-    `SELECT device_id, device_name, first_seen_at, last_seen_at
+    `SELECT id, device_id, device_name, first_seen_at, last_seen_at, expires_at
      FROM license_activations
      WHERE license_fingerprint = $1
      ORDER BY last_seen_at DESC, id DESC`,
@@ -1050,8 +1052,24 @@ app.get('/admin/licenses/:id', authSession, async (req, res) => {
       <div class="panel">
         <h2>Registered devices</h2>
         ${activations.rowCount
-          ? `<table><thead><tr><th>Device</th><th>Device ID</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>
-              ${activations.rows.map((row) => `<tr><td>${row.device_name || 'Unnamed device'}</td><td><code>${row.device_id}</code></td><td class="muted">${fmtTime(row.first_seen_at)}</td><td class="muted">${fmtTime(row.last_seen_at)}</td></tr>`).join('')}
+          ? `<table><thead><tr><th>Device</th><th>Device ID</th><th>First seen</th><th>Last seen</th><th>Device expiry</th><th>Actions</th></tr></thead><tbody>
+              ${activations.rows.map((row) => `<tr>
+                <td>${row.device_name || 'Unnamed device'}</td>
+                <td><code>${row.device_id}</code></td>
+                <td class="muted">${fmtTime(row.first_seen_at)}</td>
+                <td class="muted">${fmtTime(row.last_seen_at)}</td>
+                <td>
+                  <form class="inline" method="post" action="/admin/licenses/${record.id}/devices/${row.id}/expiry" style="display:flex;gap:6px;align-items:center">
+                    <input type="date" name="expiresAt" value="${row.expires_at ? new Date(row.expires_at).toISOString().slice(0,10) : ''}" style="width:140px;padding:5px 8px;font-size:.75rem" />
+                    <button class="secondary sm" type="submit" title="Save expiry">Save</button>
+                  </form>
+                </td>
+                <td>
+                  <form class="inline" method="post" action="/admin/licenses/${record.id}/devices/${row.id}/remove" onsubmit="return confirm('Remove this device from the license? It will need to re-register.')">
+                    <button class="danger sm" type="submit">Remove</button>
+                  </form>
+                </td>
+              </tr>`).join('')}
             </tbody></table>`
           : '<p class="muted">No devices have activated this license yet.</p>'}
       </div>
@@ -1072,6 +1090,20 @@ app.post('/admin/licenses/:id/activate', authSession, async (req, res) => {
 app.post('/admin/licenses/:id/devices', authSession, async (req, res) => {
   const maxDevices = parseMaxDevices(req.body.maxDevices, 1);
   await pool.query('UPDATE license_records SET max_devices = $1, updated_at = NOW() WHERE id = $2', [maxDevices, req.params.id]);
+  res.redirect(`/admin/licenses/${req.params.id}`);
+});
+
+app.post('/admin/licenses/:id/devices/:deviceRowId/expiry', authSession, async (req, res) => {
+  const expiresAt = req.body.expiresAt ? req.body.expiresAt : null;
+  await pool.query(
+    'UPDATE license_activations SET expires_at = $1, updated_at = NOW() WHERE id = $2',
+    [expiresAt, req.params.deviceRowId],
+  );
+  res.redirect(`/admin/licenses/${req.params.id}`);
+});
+
+app.post('/admin/licenses/:id/devices/:deviceRowId/remove', authSession, async (req, res) => {
+  await pool.query('DELETE FROM license_activations WHERE id = $1', [req.params.deviceRowId]);
   res.redirect(`/admin/licenses/${req.params.id}`);
 });
 
@@ -1132,11 +1164,12 @@ app.get('/admin/releases', authSession, async (_req, res) => {
         <td class="muted">${row.channel}</td>
         <td>${statusPill(row.rollout_state)}</td>
         <td class="muted">${fmtTime(row.published_at)}</td>
-        <td>
-          <div class="actions">
+        <td style="white-space:nowrap;width:1%">
+          <div class="actions" style="flex-wrap:nowrap;gap:6px">
             <a href="/admin/releases/${row.id}/edit"><button class="secondary sm" type="button">Edit</button></a>
             ${row.rollout_state !== 'live' ? `<form class="inline" method="post" action="/admin/releases/${row.id}/live"><button class="secondary sm" type="submit">Go live</button></form>` : ''}
             ${row.rollout_state === 'live' ? `<form class="inline" method="post" action="/admin/releases/${row.id}/hide"><button class="secondary sm" type="submit">Hide</button></form>` : ''}
+            <form class="inline" method="post" action="/admin/releases/${row.id}/delete" onsubmit="return confirm('Delete ${row.release_name} (${row.version})? This cannot be undone.')"><button class="danger sm" type="submit">Delete</button></form>
           </div>
         </td>
       </tr>`).join('')}
@@ -1644,7 +1677,6 @@ app.get('/api/v1/app/history', async (req, res) => {
   return res.json({
     releases: rows.rows.map((row) => ({
       version: row.version,
-      releaseName: row.release_name,
       notes: row.release_notes,
       publishedAt: row.published_at,
       channel: row.channel,
