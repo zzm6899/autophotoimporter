@@ -38,6 +38,8 @@ interface ThumbnailCardProps {
   compact?: boolean;
   frameNumber?: number;
   burstCollapsed?: boolean;
+  /** When true (or undefined for non-burst files) the BEST badge is shown. False suppresses it for non-best burst shots. */
+  isBurstBest?: boolean;
   onClickCard: (index: number, e: React.MouseEvent) => void;
   onDoubleClickCard: (index: number) => void;
   onBurstToggle: (burstId: string) => void;
@@ -89,6 +91,7 @@ function ThumbnailCardInner({
   compact = false,
   frameNumber,
   burstCollapsed = false,
+  isBurstBest = true,
   onClickCard,
   onDoubleClickCard,
   onBurstToggle,
@@ -215,8 +218,8 @@ function ThumbnailCardInner({
                   PERSON
                 </span>
               )}
-              {(file.reviewScore ?? 0) >= 70 && (
-                <span className="bg-yellow-500/90 text-[9px] text-black px-1 py-0.5 rounded font-medium" title={file.reviewReasons?.join(', ') || 'High review score'}>
+              {(file.reviewScore ?? 0) >= 70 && isBurstBest && (
+                <span className="bg-yellow-500/90 text-[9px] text-black px-1 py-0.5 rounded font-medium" title={file.reviewReasons?.join(', ') || 'Best shot in burst'}>
                   BEST
                 </span>
               )}
@@ -336,6 +339,7 @@ export const ThumbnailCard = memo(ThumbnailCardInner, (prev, next) => {
     prev.exposurePreviewStops === next.exposurePreviewStops &&
     prev.compact === next.compact &&
     prev.frameNumber === next.frameNumber &&
-    prev.burstCollapsed === next.burstCollapsed
+    prev.burstCollapsed === next.burstCollapsed &&
+    prev.isBurstBest === next.isBurstBest
   );
 });

@@ -874,8 +874,15 @@ export function ImportProvider({ children }: { children: ReactNode }) {
     // Wipe the overlay on source change or face rescan so stale scores
     // don't prevent re-analysis. CLEAR_FACE_DATA clears faceBoxes in the
     // reducer but the overlay would re-merge them on top — clear it too.
-    if (action.type === 'SELECT_SOURCE' || action.type === 'SET_FILES' || action.type === 'CLEAR_FACE_DATA') {
+    if (
+      action.type === 'SELECT_SOURCE' ||
+      action.type === 'SET_FILES' ||
+      action.type === 'CLEAR_FACE_DATA'
+    ) {
       reviewScoresRef.current.clear();
+      setReviewVersion((v) => v + 1);
+    }
+    if (action.type === 'CLEAR_PICKS') {
       setReviewVersion((v) => v + 1);
     }
     // QUEUE_BEST runs inside the reducer against state.files which has NO

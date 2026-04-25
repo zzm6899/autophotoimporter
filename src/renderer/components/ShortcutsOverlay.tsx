@@ -5,16 +5,18 @@ interface ShortcutsOverlayProps {
 const shortcuts = [
   ['Arrows', 'Navigate photos'],
   ['Shift+◀▶', 'Previous / next burst'],
+  ['Ctrl+Shift+◀▶', 'Previous / next batch page (panel open)'],
   ['P / X / U', 'Pick, reject, clear'],
   ['0-5', 'Set star rating'],
   ['Q', 'Queue focused or selected photos'],
   ['Enter', 'Open focused photo in detail view'],
   ['Ctrl+A', 'Select all visible results'],
   ['B / G', 'Select or collapse burst'],
+  ['Shift+A', 'Select all photos in focused burst/group'],
   ['Shift+B', 'Best of focused burst'],
   ['A', 'Normalize selection to focused anchor'],
   ['[ / ] / \\', 'Manual exposure down, up, reset'],
-  ['Copy/Paste EV', 'Toolbar syncs manual exposure offsets'],
+  ['Ctrl+C / V', 'Copy/paste EV adjustment'],
   ['Space', 'Hold original in detail preview'],
   ['Ctrl+Wheel', 'Zoom compare view together'],
   ['C', 'Cull mode'],
@@ -29,7 +31,7 @@ const tools = [
   ['Reject Blur', 'Rejects high blur-risk files that are not already picked.'],
   ['Safe Cull', 'Conservatively rejects only clearly worse burst/similar alternatives; protected, starred, and picked files are never rejected.'],
   ['Pick Best', 'For each burst/similar group, picks the best-ranked image and rejects the rest.'],
-  ['Queue Best', 'Adds high-scoring keeper candidates to the import queue without changing pick/reject flags.'],
+  ['Queue Keepers', 'Queues almost everything worth keeping: all non-rejected photos except clearly bad ones.'],
 ];
 
 export function ShortcutsOverlay({ onClose }: ShortcutsOverlayProps) {

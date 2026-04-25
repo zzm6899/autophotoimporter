@@ -560,6 +560,7 @@ export function ThumbnailGrid() {
   const [showAdvancedTools, setShowAdvancedTools] = useState(false);
   const [cacheStats, setCacheStats] = useState(getPreviewCacheStats());
   const [toolbarPos, setToolbarPos] = useState<{ x: number; y: number } | null>(null);
+  const [reviewLoopTick, setReviewLoopTick] = useState(0);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const toolbarDragState = useRef<{ startMouseX: number; startMouseY: number; startLeft: number; startTop: number } | null>(null);
   const lastClickedRef = useRef<number>(-1);
@@ -743,7 +744,8 @@ export function ThumbnailGrid() {
       const onnxByPath = new Map(onnxResults.map((result) => [result.path, result]));
 
       return Promise.all(candidates.map(async (f) => {
-        const thumbnail = f.thumbnail as string;
+        try {
+          const thumbnail = f.thumbnail as string;
         const onnx = onnxByPath.get(f.path);
         const [sharpnessScore, hash, subject] = await Promise.all([
           typeof f.sharpnessScore === 'number' ? Promise.resolve(f.sharpnessScore) : scoreSharpness(thumbnail),
@@ -784,7 +786,7 @@ export function ThumbnailGrid() {
           ? onnxFaceBoxes
           : (subject.faceBoxes ?? []);  // empty array = analyzed, no faces found
 
-        return [f.path, {
+          return [f.path, {
           sharpnessScore,
           visualHash: hash,
           ...subject,
@@ -795,7 +797,22 @@ export function ThumbnailGrid() {
           personCount: onnxPersonBoxes.length,
           personBoxes: onnxPersonBoxes,
           subjectReasons: [...new Set(mergedReasons)],
-        }] as [string, Partial<MediaFile>];
+          }] as [string, Partial<MediaFile>];
+        } catch {
+          const failureTag = `analysis-failed:${f.path}`;
+          return [f.path, {
+            sharpnessScore: f.sharpnessScore ?? 0,
+            subjectSharpnessScore: f.subjectSharpnessScore ?? 0,
+            visualHash: f.visualHash ?? failureTag,
+            faceCount: f.faceCount ?? 0,
+            faceBoxes: f.faceBoxes ?? [],
+            faceDetection: f.faceDetection,
+            faceSignature: f.faceSignature ?? ((f.faceCount ?? 0) > 0 ? failureTag : undefined),
+            personCount: f.personCount ?? 0,
+            personBoxes: f.personBoxes ?? [],
+            subjectReasons: [...new Set([...(f.subjectReasons ?? []), 'analysis failed'])],
+          }] as [string, Partial<MediaFile>];
+        }
       }));
     })()
       .then((entries) => {
@@ -809,6 +826,7 @@ export function ThumbnailGrid() {
       .catch(() => undefined)
       .finally(() => {
         sharpnessInFlightRef.current = false;
+        setReviewLoopTick((value) => value + 1);
       });
     const hasIdle = typeof window.requestIdleCallback === 'function';
     const idle: number = hasIdle
@@ -822,7 +840,7 @@ export function ThumbnailGrid() {
       }
       sharpnessInFlightRef.current = false;
     };
-  }, [files, dispatch, reviewPaused, reviewWaitingForThumbnails, viewMode, focusedIndex, sortedFiles]);
+  }, [files, dispatch, reviewPaused, reviewWaitingForThumbnails, viewMode, focusedIndex, sortedFiles, reviewLoopTick]);
 
   useEffect(() => {
     setBackgroundPreviewPaused(backgroundLoadingPaused);
@@ -1106,10 +1124,37 @@ export function ThumbnailGrid() {
         return;
       }
 
+      // Ctrl+C: copy EV adjustment from focused file
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'c') {
+        const source = focusedFile ?? selectedFiles[0];
+        if (source) {
+          e.preventDefault();
+          setExposureClipboard(source.exposureAdjustmentStops ?? 0);
+          return;
+        }
+      }
+
+      // Ctrl+V: paste EV adjustment to selected/focused
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'v') {
+        if (exposureClipboard !== null) {
+          e.preventDefault();
+          const targets = selectedIndices.size > 0
+            ? Array.from(selectedIndices).filter((i) => i >= 0 && i < sortedFiles.length).map((i) => sortedFiles[i].path)
+            : focusedIndex >= 0 ? [sortedFiles[focusedIndex].path] : [];
+          if (targets.length > 0) {
+            dispatch({ type: 'SET_EXPOSURE_ADJUSTMENT', filePaths: targets, stops: exposureClipboard });
+            return;
+          }
+        }
+      }
+
       switch (e.key) {
         case 'ArrowRight':
           e.preventDefault();
-          if (e.shiftKey) {
+          if (e.shiftKey && (e.metaKey || e.ctrlKey)) {
+            // Ctrl/Cmd+Shift+→: next batch page (when batch panel is open)
+            if (showBestOfSelection) openAdjacentBatch(1);
+          } else if (e.shiftKey) {
             openAdjacentBurst(1);
           } else {
             setSelectedIndices(new Set());
@@ -1118,7 +1163,10 @@ export function ThumbnailGrid() {
           break;
         case 'ArrowLeft':
           e.preventDefault();
-          if (e.shiftKey) {
+          if (e.shiftKey && (e.metaKey || e.ctrlKey)) {
+            // Ctrl/Cmd+Shift+←: prev batch page (when batch panel is open)
+            if (showBestOfSelection) openAdjacentBatch(-1);
+          } else if (e.shiftKey) {
             openAdjacentBurst(-1);
           } else {
             setSelectedIndices(new Set());
@@ -1259,6 +1307,24 @@ export function ThumbnailGrid() {
         case 'A': {
           if (e.metaKey || e.ctrlKey) break;
           e.preventDefault();
+          // Shift+A: select all photos in the focused file's burst/visual group
+          if (e.shiftKey) {
+            if (focusedIndex >= 0 && focusedIndex < sortedFiles.length) {
+              const focused = sortedFiles[focusedIndex];
+              const next = new Set<number>();
+              if (focused.burstId) {
+                sortedFiles.forEach((f, i) => { if (f.burstId === focused.burstId) next.add(i); });
+              } else if (focused.visualGroupId) {
+                sortedFiles.forEach((f, i) => { if (f.visualGroupId === focused.visualGroupId) next.add(i); });
+              } else if (focused.faceGroupId) {
+                sortedFiles.forEach((f, i) => { if (f.faceGroupId === focused.faceGroupId) next.add(i); });
+              } else {
+                next.add(focusedIndex);
+              }
+              setSelectedIndices(next);
+            }
+            break;
+          }
           const targets = selectedIndices.size > 0
             ? Array.from(selectedIndices)
                 .filter((i) => i >= 0 && i < sortedFiles.length)
@@ -1311,7 +1377,7 @@ export function ThumbnailGrid() {
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [focusedIndex, sortedFiles, viewMode, getColumnsCount, setFocused, pickFile, dispatch, selectedIndices, cullMode, files, openBestOfSelection, queuePaths, showBestOfSelection, showShortcuts]);
+  }, [focusedIndex, sortedFiles, viewMode, getColumnsCount, setFocused, pickFile, dispatch, selectedIndices, cullMode, files, openBestOfSelection, openAdjacentBatch, openAdjacentBurst, queuePaths, showBestOfSelection, showShortcuts]);
 
   useEffect(() => {
     const open = () => setShowShortcuts(true);
@@ -1870,13 +1936,28 @@ export function ThumbnailGrid() {
         1. Review
       </button>
 
-      {/* ── Step 2: Queue best keepers ── */}
+      {/* ── Step 2: Queue keepers (all non-rejected, non-blur photos) ── */}
+      <button
+        onClick={() => {
+          // Queue everything that's not rejected and not high-blur-risk
+          const keeperPaths = sortedFiles
+            .filter((f) => f.pick !== 'rejected' && f.blurRisk !== 'high' && !f.duplicate)
+            .map((f) => f.path);
+          dispatch({ type: 'QUEUE_ADD_PATHS', paths: keeperPaths });
+          if (keeperPaths.length > 0) dispatch({ type: 'SET_FILTER', filter: 'queue' });
+        }}
+        className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-surface-raised text-text-secondary hover:text-yellow-300 hover:bg-yellow-500/10 transition-colors shrink-0"
+        title="Queue all non-rejected, non-blur-risk photos for import. Keeps most images. Excludes only rejected and high-blur shots."
+      >
+        2. Queue Keepers
+      </button>
+      {/* ── Optional: Queue only the single best per burst ── */}
       <button
         onClick={() => dispatch({ type: 'QUEUE_BEST' })}
-        className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-surface-raised text-text-secondary hover:text-yellow-300 hover:bg-yellow-500/10 transition-colors shrink-0"
-        title={`Queue the best keeper from each burst/group, plus top standalone shots. Uses AI face + blur + sharpness scores. AI done: ${reviewStats.analyzed}/${reviewStats.total}.`}
+        className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-yellow-300 transition-colors shrink-0"
+        title={`Queue only the top-ranked shot from each burst/group. Strict cull — keeps ~8% of photos. AI done: ${reviewStats.analyzed}/${reviewStats.total}.`}
       >
-        2. Queue Best
+        Queue Best Only
       </button>
 
       {/* ── Step 3: Import or queue all ── */}
@@ -2144,10 +2225,13 @@ export function ThumbnailGrid() {
                   className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-yellow-400 hover:bg-yellow-400/10 rounded transition-colors"
                 >Pick All</button>
                 <button
-                  onClick={() => dispatch({ type: 'CLEAR_PICKS' })}
-                  title="Clear all pick/reject flags"
-                  className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-text hover:bg-surface-raised rounded transition-colors"
-                >Clear</button>
+                  onClick={() => {
+                    dispatch({ type: 'CLEAR_PICKS' });
+                    if (filter === 'picked' || filter === 'rejected') dispatch({ type: 'SET_FILTER', filter: 'all' });
+                  }}
+                  title="Clear all pick/reject flags from every visible file"
+                  className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-red-300 hover:bg-red-500/10 rounded transition-colors"
+                >Clear All</button>
               </>
             )}
           </div>
@@ -2342,6 +2426,7 @@ export function ThumbnailGrid() {
                     queued={queuedSet.has(file.path)}
                     forceLoad={forceVisibleThumbnails(i, file.path)}
                     exposurePreviewStops={getThumbnailExposureStops(file)}
+                    isBurstBest={false}
                     compact
                     frameNumber={i + 1}
                     burstCollapsed={!!file.burstId && collapsedSet.has(file.burstId)}
@@ -2451,6 +2536,7 @@ export function ThumbnailGrid() {
                                 queued={queuedSet.has(file.path)}
                                 forceLoad={forceVisibleThumbnails(i, file.path)}
                                 exposurePreviewStops={getThumbnailExposureStops(file)}
+                                isBurstBest={false}
                                 burstCollapsed={!!file.burstId && collapsedSet.has(file.burstId)}
                                 onBurstToggle={handleBurstToggle}
                                 onClickCard={handleCardClick}
@@ -2480,6 +2566,7 @@ export function ThumbnailGrid() {
                       queued={queuedSet.has(file.path)}
                       forceLoad={forceVisibleThumbnails(i, file.path)}
                       exposurePreviewStops={getThumbnailExposureStops(file)}
+                      isBurstBest={false}
                       burstCollapsed={!!file.burstId && collapsedSet.has(file.burstId)}
                       onBurstToggle={handleBurstToggle}
                       onClickCard={handleCardClick}
