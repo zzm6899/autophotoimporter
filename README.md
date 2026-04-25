@@ -71,6 +71,59 @@ For cameras and NAS devices that expose an FTP server (Canon EOS / Nikon WT / So
 
 Any file that is read-only at the filesystem level (e.g. you used the camera's in-body "Protect" button, or your card is physically write-locked) is surfaced at the top of the grid with a green **PROTECTED** badge. Pair with the **Protected** filter for a clean keepers-only view.
 
+## GPU Acceleration (Face Recognition)
+
+Face recognition is powered by ONNX Runtime and automatically uses **GPU acceleration** when available, significantly speeding up face detection and embedding across large photo batches.
+
+### How it works
+
+1. On startup, Photo Importer detects your platform and GPU hardware
+2. It attempts to load ONNX models using GPU providers in this order:
+   - **Windows**: DirectML (GPU-agnostic) → CUDA (NVIDIA) → CPU fallback
+   - **macOS**: CoreML (Apple Silicon) → CUDA (external GPU) → CPU fallback
+   - **Linux**: CUDA (NVIDIA) → CPU fallback
+
+3. If GPU initialization fails, it transparently falls back to CPU inference
+4. Once initialized, you can check GPU status via Developer Tools (inspect `window.electronAPI.isGpuAvailable()`)
+
+### Performance improvement
+
+- **Modern GPU** (NVIDIA RTX 4070, Apple M3, etc.): **0.1–0.5s per photo** (30–50× faster than CPU)
+- **Old GPU / CPU only** (Intel i7-11th gen): **20–30s per photo**
+- **Modern CPU** (AMD Ryzen 7900X3D): **1s per photo**
+
+GPU acceleration is most beneficial on:
+- **Batches of 100+ photos** — initialization overhead is amortized
+- **RAW + JPEG pairs** — GPU processes face embeddings in parallel much faster than CPU
+- **Burst sequences** — multi-face detection across high-speed bursts runs in seconds instead of minutes
+
+### Installation / configuration
+
+**GPU support requires onnxruntime with GPU bindings.** By default, `onnxruntime-node` ships with CPU support only.
+
+#### NVIDIA CUDA (Windows / Linux / macOS)
+
+To enable CUDA support:
+
+1. Install [CUDA Toolkit](https://developer.nvidia.com/cuda-downloads) (v12.x recommended)
+2. Install [cuDNN](https://developer.nvidia.com/cudnn) (v9.x for CUDA 12)
+3. Verify by checking `$env:CUDA_PATH` (Windows) or `which nvcc` (Linux/macOS)
+4. When you rebuild/run the app, it will auto-detect and use CUDA
+
+#### DirectML (Windows only)
+
+DirectML is built into Windows 11 / Windows Server 2022 and works with any GPU (AMD, Intel, NVIDIA). No additional setup required — just run the app on Windows 10/11 and GPU acceleration activates automatically.
+
+#### CoreML (macOS Apple Silicon only)
+
+No setup needed — CoreML is native on M-series Macs and automatically used.
+
+### Troubleshooting GPU issues
+
+- **"GPU acceleration unavailable, falling back to CPU"** — Your system doesn't have a compatible GPU runtime, or CUDA/cuDNN is not properly installed. Check the console logs.
+- **App is slow (face analysis takes 20+ sec/photo)** — Likely CPU-only. Verify GPU detection: open DevTools (F12) and run `window.electronAPI.isGpuAvailable()`. Returns `true` = GPU active, `false` = CPU only, `null` = not yet run.
+- **CUDA errors on Linux/macOS** — Verify `nvidia-smi` shows your GPU. If not, CUDA is not installed or detected.
+
 ## Build from Source
 
 ```bash

@@ -284,6 +284,11 @@ export interface AppSettings {
   // Exposure normalization
   normalizeExposure: boolean;
   exposureMaxStops: number;
+  // Performance optimizations
+  gpuFaceAcceleration?: boolean;  // Enable GPU for face detection (default: true if available)
+  rawPreviewCache?: boolean;       // Cache RAW preview extractions (default: true)
+  cpuOptimization?: boolean;       // Use lighter models/settings for older CPUs (default: false)
+  rawPreviewQuality?: number;      // 0-100 for RAW preview JPEG quality (default: 70)
   jobPresets: JobPreset[];
   selectionSets: SelectionSet[];
   licenseKey?: string;
@@ -464,6 +469,7 @@ export const IPC = {
   // Face analysis (onnxruntime-node)
   FACE_ANALYZE: 'face:analyze',
   FACE_MODELS_AVAILABLE: 'face:models-available',
+  FACE_GPU_AVAILABLE: 'face:gpu-available',
   FACE_MODEL_DOWNLOAD_PROGRESS: 'face:model-download-progress',
 
   // Cache management

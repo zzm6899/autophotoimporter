@@ -13,7 +13,8 @@ import { generatePreview } from './services/exif-parser';
 import { checkForUpdate, fetchUpdateHistory } from './services/update-checker';
 import { probeFtp, mirrorFtp } from './services/ftp-source';
 import { activateLicenseInput, checkHostedLicenseStatus, validateLicenseKey } from './services/license';
-import { analyzeFaces, faceModelsAvailable, serializeEmbedding } from './services/face-engine';
+import { analyzeFaces, faceModelsAvailable, serializeEmbedding, isGpuAvailable, configureGpuAcceleration, configureCpuOptimization } from './services/face-engine';
+import { setRawPreviewQuality } from './services/exif-parser';
 
 const execFileAsync = promisify(execFile);
 
@@ -65,6 +66,11 @@ const DEFAULT_SETTINGS: AppSettings = {
   burstWindowSec: 2,
   normalizeExposure: false,
   exposureMaxStops: 2,
+  // Performance optimizations
+  gpuFaceAcceleration: true,    // Enable GPU by default if available
+  rawPreviewCache: true,        // Cache RAW previews by default
+  cpuOptimization: false,       // Disabled by default (only enable for older CPUs)
+  rawPreviewQuality: 70,        // 70% JPEG quality for RAW previews
   jobPresets: [],
   selectionSets: [],
   licenseKey: '',
@@ -79,6 +85,12 @@ async function loadSettings(): Promise<AppSettings> {
     const licenseStatus = merged.licenseKey
       ? validateLicenseKey(merged.licenseKey)
       : { valid: false, message: 'No license activated.', status: 'unknown' as const };
+    
+    // Apply performance settings immediately
+    configureGpuAcceleration(merged.gpuFaceAcceleration ?? true);
+    configureCpuOptimization(merged.cpuOptimization ?? false);
+    setRawPreviewQuality(merged.rawPreviewQuality ?? 70);
+    
     return { ...merged, licenseStatus };
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -93,6 +105,11 @@ async function saveSettings(settings: Partial<AppSettings>): Promise<void> {
   const dir = path.dirname(getSettingsPath());
   await mkdir(dir, { recursive: true });
   await writeFile(getSettingsPath(), JSON.stringify(merged, null, 2));
+  
+  // Reapply settings to running services
+  configureGpuAcceleration(merged.gpuFaceAcceleration ?? true);
+  configureCpuOptimization(merged.cpuOptimization ?? false);
+  setRawPreviewQuality(merged.rawPreviewQuality ?? 70);
 }
 
 async function getLicenseStatus() {
@@ -855,6 +872,14 @@ export function registerIpcHandlers(): void {
    */
   ipcMain.handle(IPC.FACE_MODELS_AVAILABLE, () => {
     return faceModelsAvailable();
+  });
+
+  /**
+   * Returns GPU availability status (null = not yet determined, true/false after first analysis).
+   * The renderer can show this in UI or logging for diagnostics.
+   */
+  ipcMain.handle(IPC.FACE_GPU_AVAILABLE, () => {
+    return isGpuAvailable();
   });
 
   /**

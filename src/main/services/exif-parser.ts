@@ -63,6 +63,9 @@ const MAX_RAW_SCAN_BYTES = 8 * 1024 * 1024;
 const MAX_DIRECT_THUMB_BYTES = 512 * 1024;
 const MAX_DIRECT_PREVIEW_BYTES = 6 * 1024 * 1024;
 
+// Settings-driven overrides (will be set at runtime by ipc-handlers)
+let rawPreviewQuality = PREVIEW_QUALITY;  // Can be overridden by user settings
+
 let thumbDir: string | null = null;
 
 async function getThumbDir(): Promise<string> {
@@ -71,6 +74,10 @@ async function getThumbDir(): Promise<string> {
     await mkdir(thumbDir, { recursive: true });
   }
   return thumbDir;
+}
+
+export function setRawPreviewQuality(quality: number): void {
+  rawPreviewQuality = Math.max(30, Math.min(100, quality));
 }
 
 async function isFileProtected(filePath: string): Promise<boolean> {
@@ -524,7 +531,7 @@ export async function generatePreview(filePath: string): Promise<string | undefi
       }
 
       try {
-        await platformResize(filePath, outPath, PREVIEW_WIDTH, PREVIEW_QUALITY, 30000);
+        await platformResize(filePath, outPath, PREVIEW_WIDTH, rawPreviewQuality, 30000);
         return readJpegDataUri(outPath);
       } catch {
         return embeddedFallback(filePath, ext, outPath);

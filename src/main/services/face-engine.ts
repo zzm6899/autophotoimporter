@@ -129,33 +129,104 @@ function modelPath(fileName: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Session lifecycle
+// Session lifecycle & configuration
 // ---------------------------------------------------------------------------
 
 let detectorSession: any | null = null;
 let embedderSession: any | null = null;
 let personSession: any | null = null;
 let sessionLoadPromise: Promise<void> | null = null;
+let gpuAvailable: boolean | null = null;
+
+// Settings-driven configuration
+let gpuFaceAccelerationEnabled = true;  // Can be disabled by user
+let cpuOptimizationMode = false;        // Lighter models for older CPUs
+
+export function configureGpuAcceleration(enabled: boolean): void {
+  gpuFaceAccelerationEnabled = enabled;
+}
+
+export function configureCpuOptimization(enabled: boolean): void {
+  cpuOptimizationMode = enabled;
+}
+
+/**
+ * Determine optimal execution providers based on platform & GPU availability.
+ * Tries GPU first (CUDA, TensorRT, CoreML, DirectML) then falls back to CPU.
+ * Caches result so we don't repeatedly probe unavailable GPUs.
+ */
+function getExecutionProviders(): string[] {
+  // Already probed — use cached result
+  if (gpuAvailable !== null) {
+    return gpuAvailable ? ['cuda', 'tensorrt', 'webgpu', 'dml', 'coreml', 'cpu'] : ['cpu'];
+  }
+
+  // If GPU acceleration is disabled in settings, skip to CPU
+  if (!gpuFaceAccelerationEnabled) {
+    return ['cpu'];
+  }
+
+  // Platform-specific GPU provider recommendations
+  const platform = process.platform;
+  let providers: string[] = [];
+
+  if (platform === 'win32') {
+    // Windows: try DirectML (GPU-agnostic) first, then CUDA for NVIDIA
+    providers = ['dml', 'cuda', 'tensorrt', 'cpu'];
+  } else if (platform === 'darwin') {
+    // macOS: CoreML for Apple Silicon, then CUDA for Intel with external GPU
+    providers = ['coreml', 'cuda', 'tensorrt', 'cpu'];
+  } else if (platform === 'linux') {
+    // Linux: CUDA for NVIDIA, then CPU
+    providers = ['cuda', 'tensorrt', 'cpu'];
+  } else {
+    providers = ['cpu'];
+  }
+
+  return providers;
+}
 
 async function loadSessions(): Promise<void> {
   if (sessionLoadPromise) return sessionLoadPromise;
   sessionLoadPromise = (async () => {
     try {
       const runtime = getOrt();
+      const providers = getExecutionProviders();
       const opts = {
-        executionProviders: ['cpu'],
-        graphOptimizationLevel: 'all',
+        executionProviders: providers,
+        graphOptimizationLevel: cpuOptimizationMode ? 'basic' : 'all',  // Lighter optimization for older CPUs
       };
+
       const [detPath, embPath] = [
         modelPath('version-RFB-640.onnx'),
         modelPath('w600k_mbf.onnx'),
       ];
       const personPath = modelPath('ssd_mobilenet_v1_12.onnx');
-      [detectorSession, embedderSession, personSession] = await Promise.all([
-        runtime.InferenceSession.create(detPath, opts),
-        runtime.InferenceSession.create(embPath, opts),
-        runtime.InferenceSession.create(personPath, opts),
-      ]);
+
+      // Log configuration for diagnostics
+      if (cpuOptimizationMode) {
+        console.log('[face-engine] CPU optimization mode enabled — using basic graph optimization');
+      }
+
+      try {
+        [detectorSession, embedderSession, personSession] = await Promise.all([
+          runtime.InferenceSession.create(detPath, opts),
+          runtime.InferenceSession.create(embPath, opts),
+          runtime.InferenceSession.create(personPath, opts),
+        ]);
+        // Successfully created sessions with GPU providers
+        gpuAvailable = providers.some((p) => p !== 'cpu');
+      } catch (gpuError) {
+        // GPU provider failed — fall back to CPU only
+        console.warn('GPU acceleration unavailable, falling back to CPU:', gpuError);
+        gpuAvailable = false;
+        const cpuOpts = { ...opts, executionProviders: ['cpu'] };
+        [detectorSession, embedderSession, personSession] = await Promise.all([
+          runtime.InferenceSession.create(detPath, cpuOpts),
+          runtime.InferenceSession.create(embPath, cpuOpts),
+          runtime.InferenceSession.create(personPath, cpuOpts),
+        ]);
+      }
     } catch (e) {
       // Reset so the next call retries rather than returning the cached rejection
       sessionLoadPromise = null;
@@ -171,7 +242,16 @@ export async function disposeFaceEngine(): Promise<void> {
   embedderSession = null;
   personSession = null;
   sessionLoadPromise = null;
+  gpuAvailable = null;
   await Promise.allSettled([d?.release(), e?.release(), p?.release()]);
+}
+
+/**
+ * Check if GPU acceleration is available (after first face analysis).
+ * Returns null if not yet determined, true if GPU is active, false if CPU-only.
+ */
+export function isGpuAvailable(): boolean | null {
+  return gpuAvailable;
 }
 
 // ---------------------------------------------------------------------------

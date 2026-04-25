@@ -168,6 +168,14 @@ const api = {
   faceModelsAvailable: (): Promise<boolean> =>
     ipcRenderer.invoke(IPC.FACE_MODELS_AVAILABLE),
   /**
+   * Returns GPU acceleration status:
+   *   null = not yet determined (no face analysis run yet)
+   *   true = GPU available and active
+   *   false = GPU not available, using CPU only
+   */
+  isGpuAvailable: (): Promise<boolean | null> =>
+    ipcRenderer.invoke(IPC.FACE_GPU_AVAILABLE),
+  /**
    * Analyse faces in one or more images.
    * Returns one result object per input path:
    *   { path, boxes, embeddings (hex strings), faceCount, error? }
