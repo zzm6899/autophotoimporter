@@ -13,7 +13,7 @@ import { computeEV100 } from '../../shared/exposure';
 const execFileAsync = promisify(execFile);
 
 export const EXIFR_SUPPORTED = new Set([
-  '.jpg', '.jpeg', '.heic', '.heif', '.tif', '.tiff', '.png', '.webp', '.avif',
+  '.jpg', '.jpeg', '.heic', '.heif', '.tif', '.tiff',
   // Canon
   '.cr2', '.cr3', '.crw',
   // Nikon
