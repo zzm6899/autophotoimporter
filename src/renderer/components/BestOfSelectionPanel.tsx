@@ -433,11 +433,21 @@ export function BestOfSelectionPanel({
           </button>
           {isBurst && (
             <>
-              <button onClick={onPrevBurst} className="px-2 py-1 text-[11px] rounded bg-surface-raised text-text-secondary hover:bg-border">
-                Prev Burst
+              <button
+                onClick={onPrevBurst}
+                disabled={!onPrevBurst}
+                className="flex items-center gap-1 px-2 py-1 text-[11px] rounded bg-surface-raised text-text-secondary hover:bg-border disabled:opacity-30 disabled:cursor-not-allowed"
+                title="Previous burst (←)"
+              >
+                ← Prev
               </button>
-              <button onClick={onNextBurst} className="px-2 py-1 text-[11px] rounded bg-surface-raised text-text-secondary hover:bg-border">
-                Next Burst
+              <button
+                onClick={onNextBurst}
+                disabled={!onNextBurst}
+                className="flex items-center gap-1 px-2 py-1 text-[11px] rounded bg-surface-raised text-text-secondary hover:bg-border disabled:opacity-30 disabled:cursor-not-allowed"
+                title="Next burst (→)"
+              >
+                Next →
               </button>
             </>
           )}

@@ -775,12 +775,20 @@ export function ThumbnailGrid() {
           ...(onnxPersonBoxes.length > 0 ? ['person detected'] : []),
         ];
 
+        // Always set faceBoxes to an array (even empty) so the filter condition
+        // `f.faceBoxes === undefined` correctly marks this file as "analyzed".
+        // Never leave it undefined — that would keep the file in the candidate
+        // queue and cause it to be re-analyzed on every subsequent batch.
+        const resolvedFaceBoxes = onnxFaceBoxes.length > 0
+          ? onnxFaceBoxes
+          : (subject.faceBoxes ?? []);  // empty array = analyzed, no faces found
+
         return [f.path, {
           sharpnessScore,
           visualHash: hash,
           ...subject,
-          faceCount: onnxFaceBoxes.length > 0 ? onnxFaceBoxes.length : subject.faceCount,
-          faceBoxes: onnxFaceBoxes.length > 0 ? onnxFaceBoxes : subject.faceBoxes,
+          faceCount: resolvedFaceBoxes.length > 0 ? resolvedFaceBoxes.length : (subject.faceCount ?? 0),
+          faceBoxes: resolvedFaceBoxes,
           faceDetection: onnxFaceBoxes.length > 0 ? 'native' : subject.faceDetection,
           faceEmbedding: onnx?.embeddings?.[0] || f.faceEmbedding,
           personCount: onnxPersonBoxes.length,

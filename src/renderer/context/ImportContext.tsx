@@ -866,8 +866,10 @@ export function ImportProvider({ children }: { children: ReactNode }) {
       if (dirty) setReviewVersion((v) => v + 1);
       return;
     }
-    // On source change wipe the overlay so stale scores don't bleed through.
-    if (action.type === 'SELECT_SOURCE' || action.type === 'SET_FILES') {
+    // Wipe the overlay on source change or face rescan so stale scores
+    // don't prevent re-analysis. CLEAR_FACE_DATA clears faceBoxes in the
+    // reducer but the overlay would re-merge them on top — clear it too.
+    if (action.type === 'SELECT_SOURCE' || action.type === 'SET_FILES' || action.type === 'CLEAR_FACE_DATA') {
       reviewScoresRef.current.clear();
       setReviewVersion((v) => v + 1);
     }
