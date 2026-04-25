@@ -47,7 +47,9 @@ interface UseFaceAnalysisReturn {
   cancel: () => void;
 }
 
-const BATCH_SIZE = 4; // files sent to main process per IPC call
+const BATCH_SIZE = 1; // one at a time — face analysis is CPU-heavy (~1–4s each) and
+                      // running multiple in parallel blocks the main process event loop,
+                      // causing the UI to freeze. Sequential keeps the app responsive.
 
 export function useFaceAnalysis(): UseFaceAnalysisReturn {
   const [modelsAvailable, setModelsAvailable] = useState<boolean | null>(null);

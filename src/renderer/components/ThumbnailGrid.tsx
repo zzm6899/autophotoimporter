@@ -760,7 +760,7 @@ export function ThumbnailGrid() {
 
         const onnxFaceBoxes = (onnx?.boxes ?? [])
           .filter((box) => box.width > 0 && box.height > 0)
-          .map((box) => ({ x: box.x, y: box.y, width: box.width, height: box.height }));
+          .map((box) => ({ x: box.x, y: box.y, width: box.width, height: box.height, score: box.score }));
         const onnxPersonBoxes = (onnx?.personBoxes ?? [])
           .filter((box) => box.width > 0 && box.height > 0)
           .map((box) => ({ x: box.x, y: box.y, width: box.width, height: box.height, score: box.score }));

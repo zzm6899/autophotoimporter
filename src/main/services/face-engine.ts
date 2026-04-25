@@ -140,21 +140,27 @@ let sessionLoadPromise: Promise<void> | null = null;
 async function loadSessions(): Promise<void> {
   if (sessionLoadPromise) return sessionLoadPromise;
   sessionLoadPromise = (async () => {
-    const runtime = getOrt();
-    const opts = {
-      executionProviders: ['cpu'],
-      graphOptimizationLevel: 'all',
-    };
-    const [detPath, embPath] = [
-      modelPath('version-RFB-640.onnx'),
-      modelPath('w600k_mbf.onnx'),
-    ];
-    const personPath = modelPath('ssd_mobilenet_v1_12.onnx');
-    [detectorSession, embedderSession, personSession] = await Promise.all([
-      runtime.InferenceSession.create(detPath, opts),
-      runtime.InferenceSession.create(embPath, opts),
-      runtime.InferenceSession.create(personPath, opts),
-    ]);
+    try {
+      const runtime = getOrt();
+      const opts = {
+        executionProviders: ['cpu'],
+        graphOptimizationLevel: 'all',
+      };
+      const [detPath, embPath] = [
+        modelPath('version-RFB-640.onnx'),
+        modelPath('w600k_mbf.onnx'),
+      ];
+      const personPath = modelPath('ssd_mobilenet_v1_12.onnx');
+      [detectorSession, embedderSession, personSession] = await Promise.all([
+        runtime.InferenceSession.create(detPath, opts),
+        runtime.InferenceSession.create(embPath, opts),
+        runtime.InferenceSession.create(personPath, opts),
+      ]);
+    } catch (e) {
+      // Reset so the next call retries rather than returning the cached rejection
+      sessionLoadPromise = null;
+      throw e;
+    }
   })();
   return sessionLoadPromise;
 }
@@ -179,21 +185,12 @@ import { nativeImage } from 'electron';
 import exifr from 'exifr';
 
 /**
- * Decode image → raw RGBA pixels at a target size.
- * Returns { data: Uint8Array (RGBA), width, height }.
- *
- * For RAW formats (NEF, CR2, ARW, etc.) nativeImage returns empty.
- * We fall back to exifr.thumbnail() which extracts the embedded JPEG
- * preview that all modern cameras embed in their RAW files.
+ * Load a nativeImage from a path, with RAW fallback via exifr.thumbnail().
+ * Returns a decoded nativeImage ready for resizing/cropping.
+ * Result is NOT cached — callers that need to reuse it should keep the reference.
  */
-async function decodeImage(
-  imagePath: string,
-  targetW: number,
-  targetH: number,
-): Promise<{ data: Buffer; width: number; height: number }> {
-  // nativeImage can read JPEG, PNG, HEIC, WEBP, BMP, GIF (first frame).
+async function loadNativeImage(imagePath: string): Promise<Electron.NativeImage> {
   let img = nativeImage.createFromPath(imagePath);
-
   if (img.isEmpty()) {
     // RAW file — extract the embedded JPEG preview using exifr
     const thumbData = await exifr.thumbnail(imagePath).catch(() => null);
@@ -205,14 +202,35 @@ async function decodeImage(
       throw new Error(`Cannot decode embedded preview for face analysis: ${imagePath}`);
     }
   }
+  return img;
+}
 
-  // Resize to target dimensions preserving aspect ratio with letterboxing
-  img = img.resize({ width: targetW, height: targetH });
-
-  const bitmap = img.getBitmap() as unknown as Buffer;  // raw BGRA on macOS/Win, RGBA elsewhere
-  const size = img.getSize();
-
+/**
+ * Decode image → raw RGBA pixels at a target size.
+ * Accepts an already-loaded nativeImage to avoid re-decoding RAW thumbnails.
+ */
+function resizeToPixels(
+  img: Electron.NativeImage,
+  targetW: number,
+  targetH: number,
+): { data: Buffer; width: number; height: number } {
+  const resized = img.resize({ width: targetW, height: targetH });
+  const bitmap = resized.getBitmap() as unknown as Buffer;
+  const size = resized.getSize();
   return { data: bitmap, width: size.width, height: size.height };
+}
+
+/**
+ * Decode image → raw RGBA pixels at a target size.
+ * For RAW formats falls back to exifr.thumbnail().
+ */
+async function decodeImage(
+  imagePath: string,
+  targetW: number,
+  targetH: number,
+): Promise<{ data: Buffer; width: number; height: number }> {
+  const img = await loadNativeImage(imagePath);
+  return resizeToPixels(img, targetW, targetH);
 }
 
 /**
@@ -305,10 +323,11 @@ function nms(boxes: RawBox[]): RawBox[] {
   return kept;
 }
 
-async function detectFaces(imagePath: string): Promise<FaceBox[]> {
+async function detectFaces(imagePath: string, cachedImg?: Electron.NativeImage): Promise<FaceBox[]> {
   if (!detectorSession) throw new Error('Face engine not loaded');
 
-  const { data, width, height } = await decodeImage(imagePath, DETECTOR_W, DETECTOR_H);
+  const img = cachedImg ?? await loadNativeImage(imagePath);
+  const { data, width, height } = resizeToPixels(img, DETECTOR_W, DETECTOR_H);
   const floats = pixelsToCHW(data, width, height, DET_MEAN, DET_STD);
   const tensor = new (getOrt().Tensor)('float32', floats, [1, 3, height, width]);
 
@@ -348,13 +367,10 @@ async function detectFaces(imagePath: string): Promise<FaceBox[]> {
   }));
 }
 
-async function detectPersons(imagePath: string): Promise<FaceBox[]> {
+async function detectPersons(imagePath: string, cachedImg?: Electron.NativeImage): Promise<FaceBox[]> {
   if (!personSession) throw new Error('Person detector not loaded');
 
-  let img = nativeImage.createFromPath(imagePath);
-  if (img.isEmpty()) {
-    throw new Error(`Cannot decode image for person analysis: ${imagePath}`);
-  }
+  let img = cachedImg ?? await loadNativeImage(imagePath);
 
   const original = img.getSize();
   const scale = Math.min(1, 640 / Math.max(original.width, original.height));
@@ -414,11 +430,11 @@ const EMBED_H = 112;
 const EMB_MEAN = [0.5, 0.5, 0.5];
 const EMB_STD  = [0.5, 0.5, 0.5];
 
-async function embedFace(imagePath: string, box: FaceBox): Promise<Float32Array> {
+async function embedFace(imagePath: string, box: FaceBox, cachedImg?: Electron.NativeImage): Promise<Float32Array> {
   if (!embedderSession) throw new Error('Face engine not loaded');
 
   // Read full image, crop to face box, resize to 112×112
-  let img = nativeImage.createFromPath(imagePath);
+  let img = cachedImg ?? await loadNativeImage(imagePath);
   const { width: imgW, height: imgH } = img.getSize();
 
   // Convert normalised box → pixel coords (clamped)
@@ -465,9 +481,14 @@ async function embedFace(imagePath: string, box: FaceBox): Promise<Float32Array>
 export async function analyzeFaces(imagePath: string): Promise<FaceAnalysisResult> {
   await loadSessions();
 
+  // Decode the image once — for RAW files this extracts the embedded JPEG preview.
+  // We reuse the same nativeImage for detection, person detection, and embedding
+  // so we don't re-read (and re-decode) the file multiple times.
+  const img = await loadNativeImage(imagePath);
+
   const [boxes, personBoxes] = await Promise.all([
-    detectFaces(imagePath).catch(() => [] as FaceBox[]),
-    detectPersons(imagePath).catch(() => [] as FaceBox[]),
+    detectFaces(imagePath, img).catch(() => [] as FaceBox[]),
+    detectPersons(imagePath, img).catch(() => [] as FaceBox[]),
   ]);
 
   if (boxes.length === 0) return { boxes, personBoxes, embeddings: [] };
@@ -476,7 +497,7 @@ export async function analyzeFaces(imagePath: string): Promise<FaceAnalysisResul
   const facesToEmbed = boxes.slice(0, 4);
   const embeddings = await Promise.all(
     facesToEmbed.map((box) =>
-      embedFace(imagePath, box).catch(() => new Float32Array(512)),
+      embedFace(imagePath, box, img).catch(() => new Float32Array(512)),
     ),
   );
 

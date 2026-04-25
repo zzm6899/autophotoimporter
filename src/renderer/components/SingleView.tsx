@@ -171,6 +171,9 @@ export function SingleView({ file, index, total }: SingleViewProps) {
     if (file.faceBoxes !== undefined && file.personBoxes !== undefined) return;
 
     let cancelled = false;
+    // Defer face analysis by 300ms so the image renders first before we
+    // hand the main process to ONNX inference (which takes 1-4s per image).
+    const timer = setTimeout(() => {
     void window.electronAPI.analyzeFaces(file.path).then((results) => {
       if (cancelled) return;
       const result = results[0];
@@ -180,7 +183,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
         scores: {
           [file.path]: {
             faceCount: result.boxes.length,
-            faceBoxes: result.boxes.map((box) => ({ x: box.x, y: box.y, width: box.width, height: box.height })),
+            faceBoxes: result.boxes.map((box) => ({ x: box.x, y: box.y, width: box.width, height: box.height, score: box.score })),
             faceDetection: result.boxes.length > 0 ? 'native' : undefined,
             faceEmbedding: result.embeddings?.[0] || file.faceEmbedding,
             personCount: result.personBoxes.length,
@@ -194,9 +197,11 @@ export function SingleView({ file, index, total }: SingleViewProps) {
         },
       });
     }).catch(() => undefined);
+    }, 300);
 
     return () => {
       cancelled = true;
+      clearTimeout(timer);
     };
   }, [dispatch, file.faceBoxes, file.faceEmbedding, file.path, file.personBoxes, file.subjectReasons, file.type]);
 

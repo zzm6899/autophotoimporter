@@ -69,7 +69,7 @@ export interface MediaFile {
   /** Number of faces found by local browser face detection, when available. */
   faceCount?: number;
   /** Normalized face boxes from local browser face detection. eyeScore=2 means both eyes detected (open). */
-  faceBoxes?: Array<{ x: number; y: number; width: number; height: number; eyeScore?: number }>;
+  faceBoxes?: Array<{ x: number; y: number; width: number; height: number; eyeScore?: number; score?: number }>;
   /** Whether faces came from Chromium's detector or the conservative thumbnail fallback. */
   faceDetection?: 'native' | 'estimated';
   /** Number of person/body detections from the ONNX review pipeline. */

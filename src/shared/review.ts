@@ -28,11 +28,17 @@ export function faceQuality(file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'f
   const faceArea = boxes.reduce((sum, box) => sum + box.width * box.height, 0);
   const sharp = Math.min(60, (file.subjectSharpnessScore ?? 0) / 3);
   const faceConfidence = file.faceDetection === 'estimated' ? 0.4 : 1;
+  // ONNX detection confidence: average score across all face boxes (0..1).
+  // Boosts photos where faces were detected with high certainty — helps
+  // best-of-batch pick the shot where faces are clearest.
+  const onnxConfidence = boxes.length > 0
+    ? boxes.reduce((sum, box) => sum + (box.score ?? 0.85), 0) / boxes.length
+    : 1;
   return Math.round(
     (Math.min(faceCount, 4) * 18 +
     bestEye * 18 +
     eyeSum * 7 +
-    Math.min(18, faceArea * 120)) * faceConfidence +
+    Math.min(18, faceArea * 120)) * faceConfidence * Math.max(0.5, onnxConfidence) +
     sharp,
   );
 }
