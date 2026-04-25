@@ -169,42 +169,89 @@ export function SingleView({ file, index, total }: SingleViewProps) {
 
   useEffect(() => {
     if (file.type !== 'photo') return;
-    if (file.faceBoxes !== undefined && file.personBoxes !== undefined) return;
 
     let cancelled = false;
-    // Defer face analysis by 300ms so the image renders first before we
-    // hand the main process to ONNX inference (which takes 1-4s per image).
-    const timer = setTimeout(() => {
-    void window.electronAPI.analyzeFaces(file.path).then((results) => {
-      if (cancelled) return;
-      const result = results[0];
-      if (!result || result.path !== file.path) return;
-      dispatch({
-        type: 'SET_REVIEW_SCORES',
-        scores: {
-          [file.path]: {
-            faceCount: result.boxes.length,
-            faceBoxes: result.boxes.map((box) => ({ x: box.x, y: box.y, width: box.width, height: box.height, score: box.score })),
-            faceDetection: result.boxes.length > 0 ? 'native' : undefined,
-            faceEmbedding: result.embeddings?.[0] || file.faceEmbedding,
-            personCount: result.personBoxes.length,
-            personBoxes: result.personBoxes.map((box) => ({ x: box.x, y: box.y, width: box.width, height: box.height, score: box.score })),
-            subjectReasons: [
-              ...(file.subjectReasons ?? []),
-              ...(result.boxes.length > 0 ? ['single-photo face scan'] : []),
-              ...(result.personBoxes.length > 0 ? ['single-photo person scan'] : []),
-            ],
-          },
-        },
-      });
-    }).catch(() => undefined);
+
+    // Build scan list: this photo (if unscanned) + any unscanned burst mates.
+    // Defer 300ms so the image renders before handing the main process to ONNX.
+    const timer = setTimeout(async () => {
+      // Collect burst mates that haven't been analyzed yet.
+      const burstMates = file.burstId
+        ? files.filter(
+            (f) =>
+              f.burstId === file.burstId &&
+              f.type === 'photo' &&
+              f.path !== file.path &&
+              (f.faceBoxes === undefined || f.personBoxes === undefined),
+          )
+        : [];
+
+      // Scan this photo first (highest priority).
+      if (file.faceBoxes === undefined || file.personBoxes === undefined) {
+        try {
+          const results = await window.electronAPI.analyzeFaces(file.path);
+          if (cancelled) return;
+          const result = results[0];
+          if (result && result.path === file.path) {
+            dispatch({
+              type: 'SET_REVIEW_SCORES',
+              scores: {
+                [file.path]: {
+                  faceCount: result.boxes.length,
+                  faceBoxes: result.boxes.map((box) => ({ x: box.x, y: box.y, width: box.width, height: box.height, score: box.score })),
+                  faceDetection: result.boxes.length > 0 ? 'native' : undefined,
+                  faceEmbedding: result.embeddings?.[0] || file.faceEmbedding,
+                  personCount: result.personBoxes.length,
+                  personBoxes: result.personBoxes.map((box) => ({ x: box.x, y: box.y, width: box.width, height: box.height, score: box.score })),
+                  subjectReasons: [
+                    ...(file.subjectReasons ?? []),
+                    ...(result.boxes.length > 0 ? ['single-photo face scan'] : []),
+                    ...(result.personBoxes.length > 0 ? ['single-photo person scan'] : []),
+                  ],
+                },
+              },
+            });
+          }
+        } catch { /* ignore */ }
+      }
+
+      // Then scan unscanned burst mates sequentially in the background.
+      for (const mate of burstMates) {
+        if (cancelled) break;
+        try {
+          const results = await window.electronAPI.analyzeFaces(mate.path);
+          if (cancelled) break;
+          const result = results[0];
+          if (result && result.path === mate.path) {
+            dispatch({
+              type: 'SET_REVIEW_SCORES',
+              scores: {
+                [mate.path]: {
+                  faceCount: result.boxes.length,
+                  faceBoxes: result.boxes.map((box) => ({ x: box.x, y: box.y, width: box.width, height: box.height, score: box.score })),
+                  faceDetection: result.boxes.length > 0 ? 'native' : undefined,
+                  faceEmbedding: result.embeddings?.[0] || mate.faceEmbedding,
+                  personCount: result.personBoxes.length,
+                  personBoxes: result.personBoxes.map((box) => ({ x: box.x, y: box.y, width: box.width, height: box.height, score: box.score })),
+                  subjectReasons: [
+                    ...(mate.subjectReasons ?? []),
+                    ...(result.boxes.length > 0 ? ['burst face scan'] : []),
+                    ...(result.personBoxes.length > 0 ? ['burst person scan'] : []),
+                  ],
+                },
+              },
+            });
+          }
+        } catch { /* ignore */ }
+      }
     }, 300);
 
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [dispatch, file.faceBoxes, file.faceEmbedding, file.path, file.personBoxes, file.subjectReasons, file.type]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [file.path, file.type]);
 
   /*
     Keep the thumbnail visible while the full preview is being generated and

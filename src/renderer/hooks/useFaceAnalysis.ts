@@ -131,6 +131,22 @@ export function useFaceAnalysis(): UseFaceAnalysisReturn {
     setTotalCount(photoPaths.length);
     setResults(new Map());
 
+    // Accumulate results locally and flush to React state every N images.
+    // Flushing on every single result triggers a full useMergedFiles() merge
+    // (O(files)) which degrades to O(n²) total work on large directories.
+    const FLUSH_EVERY = 5;
+    const accumulated: FaceResult[] = [];
+
+    const flush = () => {
+      if (accumulated.length === 0) return;
+      const snapshot = accumulated.splice(0);
+      setResults((prev) => {
+        const next = new Map(prev);
+        for (const r of snapshot) next.set(r.path, r);
+        return next;
+      });
+    };
+
     let done = 0;
     try {
       for (let i = 0; i < photoPaths.length; i += BATCH_SIZE) {
@@ -139,23 +155,22 @@ export function useFaceAnalysis(): UseFaceAnalysisReturn {
         const batch = photoPaths.slice(i, i + BATCH_SIZE);
         const batchResults = await window.electronAPI.analyzeFaces(batch);
 
-        setResults((prev) => {
-          const next = new Map(prev);
-          for (const r of batchResults) {
-            next.set(r.path, {
-              path: r.path,
-              faceCount: r.faceCount,
-              boxes: r.boxes,
-              embeddings: r.embeddings,
-              error: r.error,
-            });
-          }
-          return next;
-        });
+        for (const r of batchResults) {
+          accumulated.push({
+            path: r.path,
+            faceCount: r.faceCount,
+            boxes: r.boxes,
+            embeddings: r.embeddings,
+            error: r.error,
+          });
+        }
 
         done += batch.length;
         setProcessedCount(done);
+
+        if (accumulated.length >= FLUSH_EVERY) flush();
       }
+      flush(); // final flush
     } finally {
       setAnalyzing(false);
     }

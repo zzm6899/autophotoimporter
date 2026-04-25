@@ -183,6 +183,10 @@ const api = {
   }>> =>
     ipcRenderer.invoke(IPC.FACE_ANALYZE, paths),
 
+  /** Clear the on-disk thumbnail/preview cache. */
+  clearCache: (): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke(IPC.CACHE_CLEAR),
+
   /** Subscribe to background face-model download progress events. */
   onFaceModelDownloadProgress: (cb: (progress: ModelDownloadProgress) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, progress: ModelDownloadProgress) => cb(progress);

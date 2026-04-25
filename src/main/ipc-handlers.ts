@@ -873,40 +873,62 @@ export function registerIpcHandlers(): void {
    * Errors per file are returned as { path, error } rather than throwing, so
    * one bad file doesn't abort the whole batch.
    */
-  ipcMain.handle(IPC.FACE_ANALYZE, async (_event, input: string | string[]) => {
+  // Global mutex — only one ONNX inference runs at a time across all IPC
+  // callers (grid loop, SingleView, burst scan). Without this, concurrent
+  // analyzeFaces() calls from the renderer queue up inside ipcMain.handle and
+  // run back-to-back with no yield, making the UI unresponsive for minutes.
+  let faceAnalyzeMutex = Promise.resolve();
+
+  ipcMain.handle(IPC.FACE_ANALYZE, (_event, input: string | string[]) => {
     const paths = Array.isArray(input) ? input : [input];
-    // Run sequentially — ONNX inference is CPU-bound and running multiple
-    // sessions in parallel blocks the main process event loop entirely,
-    // making the UI unresponsive. Sequential lets the event loop breathe
-    // between each image (~1-4s per image).
-    const results: object[] = [];
-    for (const filePath of paths) {
-      try {
-        const { boxes, personBoxes, embeddings } = await analyzeFaces(filePath);
-        results.push({
-          path: filePath,
-          boxes,
-          personBoxes,
-          embeddings: embeddings.map(serializeEmbedding),
-          faceCount: boxes.length,
-          personCount: personBoxes.length,
-        });
-      } catch (err: unknown) {
-        results.push({
-          path: filePath,
-          boxes: [],
-          personBoxes: [],
-          embeddings: [],
-          faceCount: 0,
-          personCount: 0,
-          error: (err as Error).message,
-        });
+    // Each IPC call appends a task to the mutex chain and returns its own result.
+    const task = async (): Promise<object[]> => {
+      const results: object[] = [];
+      for (const filePath of paths) {
+        try {
+          const { boxes, personBoxes, embeddings } = await analyzeFaces(filePath);
+          results.push({
+            path: filePath,
+            boxes,
+            personBoxes,
+            embeddings: embeddings.map(serializeEmbedding),
+            faceCount: boxes.length,
+            personCount: personBoxes.length,
+          });
+        } catch (err: unknown) {
+          results.push({
+            path: filePath,
+            boxes: [],
+            personBoxes: [],
+            embeddings: [],
+            faceCount: 0,
+            personCount: 0,
+            error: (err as Error).message,
+          });
+        }
+        // Yield between images so IPC messages (navigation, source change) can
+        // be processed between each 1-4s ONNX inference.
+        await new Promise<void>((resolve) => setImmediate(resolve));
       }
-      // Yield to the event loop between each image so IPC messages
-      // (navigation, source selection, UI interactions) can be processed.
-      await new Promise<void>((resolve) => setImmediate(resolve));
+      return results;
+    };
+    // Chain: wait for all previous calls to finish, then run this one.
+    const result = faceAnalyzeMutex.then(() => task());
+    // Advance the mutex to the tail (ignoring errors so the chain never breaks).
+    faceAnalyzeMutex = result.then(() => undefined, () => undefined);
+    return result;
+  });
+
+  // Clear the on-disk thumbnail/preview cache (temp folder).
+  ipcMain.handle(IPC.CACHE_CLEAR, async () => {
+    try {
+      const tmpDir = path.join(app.getPath('temp'), 'photo-importer-thumbs');
+      await rm(tmpDir, { recursive: true, force: true });
+      await mkdir(tmpDir, { recursive: true });
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
     }
-    return results;
   });
 
   setTimeout(() => {

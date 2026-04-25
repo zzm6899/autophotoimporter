@@ -466,6 +466,9 @@ export const IPC = {
   FACE_MODELS_AVAILABLE: 'face:models-available',
   FACE_MODEL_DOWNLOAD_PROGRESS: 'face:model-download-progress',
 
+  // Cache management
+  CACHE_CLEAR: 'cache:clear',
+
   // Auto-import + device events
   DEVICE_INSERTED: 'device:inserted',
   AUTO_IMPORT_STARTED: 'auto-import:started',

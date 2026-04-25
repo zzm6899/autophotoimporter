@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useAppDispatch, useAppState, useMergedFiles } from '../context/ImportContext';
 import { useFileScanner } from '../hooks/useFileScanner';
 
@@ -21,6 +22,7 @@ export function HelpBar() {
   const files = useMergedFiles();
   const dispatch = useAppDispatch();
   const { pauseScan, resumeScan } = useFileScanner();
+  const [clearing, setClearing] = useState(false);
 
   const picked = files.filter((f) => f.pick === 'selected').length;
   const rejected = files.filter((f) => f.pick === 'rejected').length;
@@ -167,6 +169,17 @@ export function HelpBar() {
               </button>
             </>
           )}
+          <button
+            className="rounded bg-surface-raised px-2 py-0.5 text-text-secondary transition-colors hover:bg-border disabled:opacity-50"
+            title="Clear thumbnail/preview disk cache — frees space and forces previews to regenerate"
+            disabled={clearing}
+            onClick={async () => {
+              setClearing(true);
+              try { await window.electronAPI.clearCache(); } finally { setClearing(false); }
+            }}
+          >
+            {clearing ? 'Clearing…' : 'Clear Cache'}
+          </button>
           <button
             className="rounded bg-surface-raised px-2 py-0.5 text-text-secondary transition-colors hover:bg-border"
             title={viewMode === 'settings' ? 'Back to grid' : 'Open settings'}

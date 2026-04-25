@@ -11,6 +11,9 @@ interface BestOfSelectionPanelProps {
   isBurst?: boolean;
   onPrevBurst?: () => void;
   onNextBurst?: () => void;
+  isBatch?: boolean;
+  onPrevBatch?: () => void;
+  onNextBatch?: () => void;
   onClose: () => void;
   onPickFile?: (file: MediaFile, pick: 'selected' | 'rejected' | undefined) => void;
   onPickBest: (file: MediaFile) => void;
@@ -361,6 +364,9 @@ export function BestOfSelectionPanel({
   isBurst = false,
   onPrevBurst,
   onNextBurst,
+  isBatch = false,
+  onPrevBatch,
+  onNextBatch,
   onClose,
   onPickFile,
   onPickBest,
@@ -435,19 +441,35 @@ export function BestOfSelectionPanel({
             <>
               <button
                 onClick={onPrevBurst}
-                disabled={!onPrevBurst}
-                className="flex items-center gap-1 px-2 py-1 text-[11px] rounded bg-surface-raised text-text-secondary hover:bg-border disabled:opacity-30 disabled:cursor-not-allowed"
-                title="Previous burst (←)"
+                className="flex items-center gap-1 px-2 py-1 text-[11px] rounded bg-surface-raised text-text-secondary hover:bg-border"
+                title="Previous burst · Shift+←"
               >
-                ← Prev
+                ← Prev burst
               </button>
               <button
                 onClick={onNextBurst}
-                disabled={!onNextBurst}
-                className="flex items-center gap-1 px-2 py-1 text-[11px] rounded bg-surface-raised text-text-secondary hover:bg-border disabled:opacity-30 disabled:cursor-not-allowed"
-                title="Next burst (→)"
+                className="flex items-center gap-1 px-2 py-1 text-[11px] rounded bg-surface-raised text-text-secondary hover:bg-border"
+                title="Next burst · Shift+→"
               >
-                Next →
+                Next burst →
+              </button>
+            </>
+          )}
+          {isBatch && (
+            <>
+              <button
+                onClick={onPrevBatch}
+                className="flex items-center gap-1 px-2 py-1 text-[11px] rounded bg-surface-raised text-text-secondary hover:bg-border"
+                title="Previous page of batch"
+              >
+                ← Prev page
+              </button>
+              <button
+                onClick={onNextBatch}
+                className="flex items-center gap-1 px-2 py-1 text-[11px] rounded bg-surface-raised text-text-secondary hover:bg-border"
+                title="Next page of batch"
+              >
+                Next page →
               </button>
             </>
           )}

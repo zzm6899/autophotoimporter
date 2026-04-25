@@ -551,6 +551,7 @@ export function ThumbnailGrid() {
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showBestOfSelection, setShowBestOfSelection] = useState(false);
   const [bestScope, setBestScope] = useState<{ paths: string[]; title: string; subtitle?: string } | null>(null);
+  const [batchOffset, setBatchOffset] = useState(0); // for Best of Batch page navigation
   const [reviewPaused, setReviewPaused] = useState(false);
   const [backgroundLoadingPaused, setBackgroundLoadingPaused] = useState(false);
   const [exposureClipboard, setExposureClipboard] = useState<number | null>(null);
@@ -967,10 +968,13 @@ export function ThumbnailGrid() {
     setShowBestOfSelection(true);
   }, [files, focusedIndex, selectedIndices, sortedFiles]);
 
-  const openBestOfBatch = useCallback(() => {
-    const candidates = sortedFiles
-      .filter((f) => f.type === 'photo' && f.pick !== 'rejected')
-      .slice(0, 120);
+  const BATCH_PAGE_SIZE = 120;
+
+  const openBestOfBatch = useCallback((offset = 0) => {
+    const eligible = sortedFiles.filter((f) => f.type === 'photo' && f.pick !== 'rejected');
+    if (eligible.length === 0) return;
+    const clampedOffset = Math.max(0, Math.min(offset, eligible.length - 1));
+    const candidates = eligible.slice(clampedOffset, clampedOffset + BATCH_PAGE_SIZE);
     if (candidates.length === 0) return;
     const paths = candidates.map((f) => f.path);
     const pathSet = new Set(paths);
@@ -979,13 +983,25 @@ export function ThumbnailGrid() {
       if (pathSet.has(f.path)) visibleIndices.add(i);
     });
     setSelectedIndices(visibleIndices);
+    setBatchOffset(clampedOffset);
+    const totalPages = Math.ceil(eligible.length / BATCH_PAGE_SIZE);
+    const currentPage = Math.floor(clampedOffset / BATCH_PAGE_SIZE) + 1;
     setBestScope({
       paths,
       title: 'Best of Batch',
-      subtitle: `${candidates.length} visible photos ranked together`,
+      subtitle: totalPages > 1
+        ? `Page ${currentPage}/${totalPages} · ${candidates.length} photos`
+        : `${candidates.length} visible photos ranked together`,
     });
     setShowBestOfSelection(true);
   }, [sortedFiles]);
+
+  const openAdjacentBatch = useCallback((direction: 1 | -1) => {
+    const eligible = sortedFiles.filter((f) => f.type === 'photo' && f.pick !== 'rejected');
+    const newOffset = batchOffset + direction * BATCH_PAGE_SIZE;
+    const clamped = Math.max(0, Math.min(newOffset, eligible.length - 1));
+    openBestOfBatch(clamped);
+  }, [batchOffset, openBestOfBatch, sortedFiles]);
 
   const openAdjacentBurst = useCallback((direction: 1 | -1) => {
     if (files.length === 0) return;
@@ -1882,7 +1898,7 @@ export function ThumbnailGrid() {
       {showAdvancedTools && (
         <>
       <button
-        onClick={openBestOfBatch}
+        onClick={() => openBestOfBatch(0)}
         className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-yellow-300 transition-colors shrink-0"
         title={`Rank the current visible batch together. Review analyzed ${reviewStats.analyzed}/${reviewStats.total}; faces found in ${reviewStats.faces}.`}
       >
@@ -2011,6 +2027,9 @@ export function ThumbnailGrid() {
           isBurst={bestScope?.title === 'Best of Burst'}
           onPrevBurst={() => openAdjacentBurst(-1)}
           onNextBurst={() => openAdjacentBurst(1)}
+          isBatch={bestScope?.title === 'Best of Batch'}
+          onPrevBatch={() => openAdjacentBatch(-1)}
+          onNextBatch={() => openAdjacentBatch(1)}
           onClose={() => {
             setShowBestOfSelection(false);
             setBestScope(null);
