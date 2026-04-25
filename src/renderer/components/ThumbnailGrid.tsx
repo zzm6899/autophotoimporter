@@ -573,8 +573,7 @@ export function ThumbnailGrid() {
     () => files.filter((f) => f.type === 'photo' && !!f.thumbnail).length,
     [files],
   );
-  const reviewWaitingForThumbnails =
-    phase === 'scanning' || (totalPhotoCount > 0 && readyThumbnailCount < totalPhotoCount);
+  const reviewWaitingForThumbnails = totalPhotoCount > 0 && readyThumbnailCount === 0;
 
   const setsEqual = useCallback((a: Set<number>, b: Set<number>) => {
     if (a.size !== b.size) return false;
@@ -709,7 +708,6 @@ export function ThumbnailGrid() {
   useEffect(() => {
     if (sharpnessInFlightRef.current) return;
     if (reviewPaused) return;
-    if (reviewWaitingForThumbnails) return;
     // Allow analysis in all view modes — use a smaller batch in single/split
     // so face detection doesn't compete with the detail preview load.
     // Always process one at a time — ONNX inference blocks the main process
@@ -724,7 +722,7 @@ export function ThumbnailGrid() {
         typeof f.sharpnessScore !== 'number' ||
         !f.visualHash ||
         typeof f.subjectSharpnessScore !== 'number' ||
-        (f.faceDetection === 'native' && (f.faceCount ?? 0) > 0 && !f.faceSignature) ||
+        (f.faceDetection === 'native' && (f.faceCount ?? 0) > 0 && !f.faceEmbedding) ||
         f.faceBoxes === undefined  // re-run face detection if it hasn't been stored yet
       ))
       .sort((a, b) => {
@@ -845,6 +843,18 @@ export function ThumbnailGrid() {
   useEffect(() => {
     setBackgroundPreviewPaused(backgroundLoadingPaused);
   }, [backgroundLoadingPaused]);
+
+  const resumeAiReview = useCallback(() => {
+    setReviewPaused(false);
+    setBackgroundLoadingPaused(false);
+    setReviewLoopTick((value) => value + 1);
+  }, []);
+
+  useEffect(() => {
+    const resume = () => resumeAiReview();
+    window.addEventListener('photo-importer:resume-ai', resume);
+    return () => window.removeEventListener('photo-importer:resume-ai', resume);
+  }, [resumeAiReview]);
 
   useEffect(() => {
     const id = window.setInterval(() => setCacheStats(getPreviewCacheStats()), 750);
@@ -1936,28 +1946,13 @@ export function ThumbnailGrid() {
         1. Review
       </button>
 
-      {/* ── Step 2: Queue keepers (all non-rejected, non-blur photos) ── */}
-      <button
-        onClick={() => {
-          // Queue everything that's not rejected and not high-blur-risk
-          const keeperPaths = sortedFiles
-            .filter((f) => f.pick !== 'rejected' && f.blurRisk !== 'high' && !f.duplicate)
-            .map((f) => f.path);
-          dispatch({ type: 'QUEUE_ADD_PATHS', paths: keeperPaths });
-          if (keeperPaths.length > 0) dispatch({ type: 'SET_FILTER', filter: 'queue' });
-        }}
-        className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-surface-raised text-text-secondary hover:text-yellow-300 hover:bg-yellow-500/10 transition-colors shrink-0"
-        title="Queue all non-rejected, non-blur-risk photos for import. Keeps most images. Excludes only rejected and high-blur shots."
-      >
-        2. Queue Keepers
-      </button>
-      {/* ── Optional: Queue only the single best per burst ── */}
+      {/* ── Step 2: Queue keepers (best shot per burst/group) ── */}
       <button
         onClick={() => dispatch({ type: 'QUEUE_BEST' })}
-        className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-yellow-300 transition-colors shrink-0"
-        title={`Queue only the top-ranked shot from each burst/group. Strict cull — keeps ~8% of photos. AI done: ${reviewStats.analyzed}/${reviewStats.total}.`}
+        className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-surface-raised text-text-secondary hover:text-yellow-300 hover:bg-yellow-500/10 transition-colors shrink-0"
+        title={`Queue the best shot from each burst/group, plus strong standalone keepers. AI done: ${reviewStats.analyzed}/${reviewStats.total}.`}
       >
-        Queue Best Only
+        2. Queue Keepers
       </button>
 
       {/* ── Step 3: Import or queue all ── */}
@@ -2016,13 +2011,13 @@ export function ThumbnailGrid() {
               : 'bg-surface-raised text-text-muted hover:text-text'
         }`}
         title={reviewWaitingForThumbnails
-          ? `AI review starts after thumbnails finish loading. Ready: ${readyThumbnailCount}/${totalPhotoCount}.`
+          ? `AI review starts once the first thumbnails are ready. Ready: ${readyThumbnailCount}/${totalPhotoCount}.`
           : reviewPaused
             ? `Resume AI analysis and preview loading. Done ${reviewStats.analyzed}/${reviewStats.total}.`
             : `Pause AI analysis and preview loading. Done ${reviewStats.analyzed}/${reviewStats.total}.`}
       >
         {reviewWaitingForThumbnails
-          ? `Loading ${readyThumbnailCount}/${totalPhotoCount}`
+          ? `Waiting for thumbs ${readyThumbnailCount}/${totalPhotoCount}`
           : reviewPaused
             ? `▶ Resume AI ${reviewStats.analyzed}/${reviewStats.total}`
             : `⏸ Pause AI ${reviewStats.analyzed}/${reviewStats.total}`}
@@ -2031,16 +2026,14 @@ export function ThumbnailGrid() {
       {/* Re-scan AI: clears face data + resumes analysis. Shows blur count when done. */}
       <button
         onClick={() => {
-          dispatch({ type: 'CLEAR_FACE_DATA' });
-          setReviewPaused(false);
-          setBackgroundLoadingPaused(false);
+          resumeAiReview();
         }}
         className={`px-2 py-1 text-[10px] rounded-md transition-colors shrink-0 ${
           reviewStats.faces > 0
             ? 'bg-violet-500/10 text-violet-300 hover:bg-violet-500/20'
             : 'bg-surface-raised text-text-muted hover:text-violet-300'
         }`}
-        title={`Clear all AI face/blur/sharpness data and re-run analysis from scratch. Faces found: ${reviewStats.faces}, blur risk: ${reviewStats.blur}.`}
+        title={`Continue AI review from where it left off, skipping photos that already have face data. Faces found: ${reviewStats.faces}, blur risk: ${reviewStats.blur}.`}
       >
         Re-scan AI {reviewStats.faces > 0 ? `· ${reviewStats.faces} faces` : ''}{reviewStats.blur > 0 ? ` · ${reviewStats.blur} blur` : ''}
       </button>

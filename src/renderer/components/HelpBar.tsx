@@ -26,12 +26,20 @@ export function HelpBar() {
 
   const picked = files.filter((f) => f.pick === 'selected').length;
   const rejected = files.filter((f) => f.pick === 'rejected').length;
-  const analyzed = files.filter((f) => typeof f.reviewScore === 'number' || typeof f.subjectSharpnessScore === 'number').length;
+  const photoFiles = files.filter((f) => f.type === 'photo');
+  const analyzed = photoFiles.filter((f) => typeof f.reviewScore === 'number' || typeof f.subjectSharpnessScore === 'number').length;
   const nativeFaceFiles = files.filter((f) => (f.faceCount ?? 0) > 0 && f.faceDetection === 'native').length;
   const estimatedFaceFiles = files.filter((f) => (f.faceCount ?? 0) > 0 && f.faceDetection === 'estimated').length;
   const blurRisk = files.filter((f) => f.blurRisk === 'high' || f.blurRisk === 'medium').length;
   const faceFiles = files.filter((f) => (f.faceCount ?? 0) > 0).length;
   const faceGroups = new Set(files.map((f) => f.faceGroupId).filter(Boolean)).size;
+  const thumbnailReady = files.filter((f) => !!f.thumbnail).length;
+  const totalThumbnails = files.length;
+  const totalPhotos = photoFiles.length;
+  const thumbnailPct = totalThumbnails > 0 ? Math.round((thumbnailReady / totalThumbnails) * 100) : 0;
+  const reviewPct = totalPhotos > 0 ? Math.round((analyzed / totalPhotos) * 100) : 0;
+  const showThumbnailProgress = totalThumbnails > 0 && thumbnailReady < totalThumbnails;
+  const showReviewProgress = totalPhotos > 0 && analyzed < totalPhotos;
   const focusedLabel = focusedIndex >= 0 && focusedIndex < files.length
     ? `${focusedIndex + 1} / ${files.length}`
     : `${files.length} photo${files.length !== 1 ? 's' : ''}`;
@@ -52,6 +60,34 @@ export function HelpBar() {
             className="h-full bg-emerald-500 transition-all duration-300"
             style={{ width: `${importPct}%` }}
           />
+        </div>
+      )}
+      {!isImporting && (showThumbnailProgress || showReviewProgress) && (
+        <div className="border-b border-border/60 bg-surface/70 px-3 py-1">
+          <div className="flex items-center gap-3 text-[9px] text-text-faint">
+            {showThumbnailProgress && (
+              <div className="min-w-0 flex-1">
+                <div className="mb-0.5 flex items-center justify-between">
+                  <span>Thumbnails {thumbnailReady}/{totalThumbnails}</span>
+                  <span>{thumbnailPct}%</span>
+                </div>
+                <div className="h-1.5 overflow-hidden rounded-full bg-surface-raised">
+                  <div className="h-full bg-sky-500 transition-all duration-300" style={{ width: `${thumbnailPct}%` }} />
+                </div>
+              </div>
+            )}
+            {showReviewProgress && (
+              <div className="min-w-0 flex-1">
+                <div className="mb-0.5 flex items-center justify-between">
+                  <span>AI review {analyzed}/{totalPhotos}</span>
+                  <span>{reviewPct}%</span>
+                </div>
+                <div className="h-1.5 overflow-hidden rounded-full bg-surface-raised">
+                  <div className="h-full bg-violet-500 transition-all duration-300" style={{ width: `${reviewPct}%` }} />
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -107,7 +143,7 @@ export function HelpBar() {
             className="shrink-0 text-text-faint"
             title="Smart review progress: files analyzed for blur risk, subject or facial focus, and keeper score."
           >
-            AI review {analyzed}/{files.length}
+            AI review {analyzed}/{totalPhotos}
             {estimatedFaceFiles > 0 ? ` (${nativeFaceFiles} native, ${estimatedFaceFiles} est.)` : ''}
             {faceFiles > 0 ? ` | faces ${faceFiles}` : ''}
             {faceGroups > 0 ? ` | groups ${faceGroups}` : ''}
@@ -140,9 +176,9 @@ export function HelpBar() {
                 Faces{faceFiles > 0 ? ` ${faceFiles}` : ''}
               </button>
               <button
-                onClick={() => dispatch({ type: 'CLEAR_FACE_DATA' })}
+                onClick={() => window.dispatchEvent(new Event('photo-importer:resume-ai'))}
                 className="rounded bg-surface-raised px-2 py-0.5 text-text-secondary transition-colors hover:bg-border"
-                title="Re-run local face, eye, subject, blur, and keeper analysis."
+                title="Continue AI review from where it left off, skipping photos that already have face data."
               >
                 Re-scan AI
               </button>
@@ -156,17 +192,17 @@ export function HelpBar() {
               <button
                 onClick={() => dispatch({ type: 'SET_FILTER', filter: 'best' })}
                 className="rounded bg-surface-raised px-2 py-0.5 text-text-secondary transition-colors hover:bg-border"
-                title="Show top-scored keeper candidates using rating, protected status, subject focus, blur risk, and review score."
-              >
-                Best
-              </button>
-              <button
-                onClick={() => dispatch({ type: 'QUEUE_BEST' })}
-                className="rounded bg-surface-raised px-2 py-0.5 text-text-secondary transition-colors hover:bg-border"
-                title="Create a fresh queue of batch-best keepers: one winner per burst or similar group plus strong ungrouped shots."
-              >
-                Queue Batch Best
-              </button>
+            title="Show top-scored keeper candidates using rating, protected status, subject focus, blur risk, and review score."
+          >
+            Best
+          </button>
+          <button
+            onClick={() => dispatch({ type: 'QUEUE_BEST' })}
+            className="rounded bg-surface-raised px-2 py-0.5 text-text-secondary transition-colors hover:bg-border"
+            title="Queue the best shot from each burst/group, plus strong standalone keepers."
+          >
+            Queue Keepers
+          </button>
             </>
           )}
           <button
@@ -175,7 +211,11 @@ export function HelpBar() {
             disabled={clearing}
             onClick={async () => {
               setClearing(true);
-              try { await window.electronAPI.clearCache(); } finally { setClearing(false); }
+              try {
+                await window.electronAPI.clearCache();
+                dispatch({ type: 'CLEAR_FACE_DATA' });
+                window.dispatchEvent(new Event('photo-importer:resume-ai'));
+              } finally { setClearing(false); }
             }}
           >
             {clearing ? 'Clearing…' : 'Clear Cache'}

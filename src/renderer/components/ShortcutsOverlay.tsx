@@ -31,7 +31,7 @@ const tools = [
   ['Reject Blur', 'Rejects high blur-risk files that are not already picked.'],
   ['Safe Cull', 'Conservatively rejects only clearly worse burst/similar alternatives; protected, starred, and picked files are never rejected.'],
   ['Pick Best', 'For each burst/similar group, picks the best-ranked image and rejects the rest.'],
-  ['Queue Keepers', 'Queues almost everything worth keeping: all non-rejected photos except clearly bad ones.'],
+  ['Queue Keepers', 'Queues the top keeper from each burst/group plus strong standalone shots.'],
 ];
 
 export function ShortcutsOverlay({ onClose }: ShortcutsOverlayProps) {
