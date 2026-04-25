@@ -14,9 +14,9 @@ const config: ForgeConfig = {
   packagerConfig: {
     asar: {
       // onnxruntime-node ships a native .node binary that cannot live inside
-      // the asar archive. electron-forge's auto-unpack-natives plugin handles
-      // it automatically; this pattern is a belt-and-braces fallback.
-      unpackDir: 'node_modules/onnxruntime-node',
+      // the asar archive. Must be unpacked so Node can load the .node binary
+      // at runtime via the external require() emitted by Vite.
+      unpackDir: '{node_modules/onnxruntime-node,node_modules/onnxruntime-node/**}',
     },
     name: 'Photo Importer',
     icon: path.resolve(__dirname, 'assets/brand/icon'),
