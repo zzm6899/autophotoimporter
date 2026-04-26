@@ -1,10 +1,14 @@
 const previewCache = new Map<string, string | undefined>();
 const previewInflight = new Map<string, Promise<string | undefined>>();
 const decodedCache = new Set<string>();
-const MAX_PREVIEWS = 24;
-const MAX_DECODED = 36;
-const MAX_ACTIVE_REQUESTS = 2;
-const MAX_QUEUED_REQUESTS = 24;
+// Keep enough thumbnails so the review loop always has candidates with f.thumbnail set.
+// At 24 the cache evicted photos before analysis could reach them → "stuck at 24".
+const MAX_PREVIEWS = 500;
+const MAX_DECODED = 600;
+// Allow more concurrent preview loads so thumbnails arrive faster and the
+// review loop has a steady supply of candidates. Was 2 → limited to ~2 thumbnails/s.
+const MAX_ACTIVE_REQUESTS = 6;
+const MAX_QUEUED_REQUESTS = 500;
 let activeRequests = 0;
 let backgroundPaused = false;
 const queuedRequests: Array<{ priority: 'high' | 'normal' | 'low'; run: () => void }> = [];

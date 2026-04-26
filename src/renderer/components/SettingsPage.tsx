@@ -200,7 +200,15 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
 
   const handleClearFaceCache = async () => {
     setFaceCacheClearing(true);
-    try { await window.electronAPI.clearFaceCache(); } finally { setFaceCacheClearing(false); }
+    try {
+      await window.electronAPI.clearFaceCache();
+      // Reset face data in the renderer overlay so files re-enter the candidate
+      // list and get re-analyzed from scratch against the now-empty cache.
+      dispatch({ type: 'CLEAR_FACE_DATA' });
+      window.dispatchEvent(new Event('photo-importer:resume-ai'));
+    } finally {
+      setFaceCacheClearing(false);
+    }
   };
 
   const handleMaxStops = (stops: number) => {

@@ -121,16 +121,28 @@ async function acquireFaceSemaphore(gen: number): Promise<void> {
     faceActiveCount++;
     return;
   }
+  // Wait to be woken by releaseFaceSemaphore. The release already increments
+  // faceActiveCount on our behalf before calling resolve() — do NOT increment
+  // again here, or the count leaks above slots and the queue deadlocks.
   await new Promise<void>((resolve) => faceSemaphoreQueue.push(resolve));
-  // Check generation AFTER waking up — if a new scan started while we waited,
-  // don't consume a slot; throw so the caller returns an empty result.
-  if (gen !== faceQueueGeneration) throw new Error(STALE_FACE_JOB);
-  faceActiveCount++;
+  // Check generation AFTER waking. If a new scan started while we waited,
+  // release the slot that was pre-claimed for us and throw so the caller bails.
+  if (gen !== faceQueueGeneration) {
+    faceActiveCount--;
+    // Wake the next waiter if one is queued (we're giving the slot back).
+    if (faceSemaphoreQueue.length > 0 && faceActiveCount < faceSemaphoreSlots) {
+      faceActiveCount++;
+      faceSemaphoreQueue.shift()?.();
+    }
+    throw new Error(STALE_FACE_JOB);
+  }
 }
 
 function releaseFaceSemaphore(): void {
   faceActiveCount--;
   if (faceSemaphoreQueue.length > 0 && faceActiveCount < faceSemaphoreSlots) {
+    // Pre-claim the slot for the next waiter before waking it, so the waiter
+    // does not need to increment faceActiveCount itself.
     faceActiveCount++;
     faceSemaphoreQueue.shift()?.();
   }

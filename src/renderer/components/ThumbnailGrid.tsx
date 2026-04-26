@@ -566,6 +566,17 @@ export function ThumbnailGrid() {
   const lastClickedRef = useRef<number>(-1);
   const sharpnessInFlightRef = useRef(false);
   const reviewBatchCounterRef = useRef(0);
+  // Stable refs so the review loop effect doesn't need files/sortedFiles as deps.
+  // Without these, every SET_REVIEW_SCORES dispatch (one per analyzed image) triggers
+  // a new files reference → effect cleanup + re-run mid-flight → concurrent ONNX batches
+  // race each other, ref resets cancel in-flight work, and the loop stalls after 1 image.
+  const filesRef = useRef(files);
+  const sortedFilesRef = useRef<typeof files>([]);
+  const reviewPausedRef = useRef(false);
+  const reviewWaitingRef = useRef(false);
+  const fastKeeperModeRef = useRef(fastKeeperMode);
+  const faceConcurrencyRef = useRef(faceConcurrency);
+  const gpuFaceAccelerationRef = useRef(gpuFaceAcceleration);
   const collapsedSet = useMemo(() => new Set(collapsedBursts), [collapsedBursts]);
   const queuedSet = useMemo(() => new Set(queuedPaths), [queuedPaths]);
   const totalPhotoCount = useMemo(() => files.filter((f) => f.type === 'photo').length, [files]);
@@ -705,24 +716,67 @@ export function ThumbnailGrid() {
     dispatch({ type: 'SET_SELECTED_PATHS', paths });
   }, [dispatch, selectedPaths, sortedFiles]);
 
+  // Keep stable refs in sync so the review loop can read current values without
+  // having them as deps (which would restart the loop on every score update).
+  useEffect(() => { filesRef.current = files; });
+  useEffect(() => { sortedFilesRef.current = sortedFiles; });
+  useEffect(() => { reviewPausedRef.current = reviewPaused; }, [reviewPaused]);
+  useEffect(() => { reviewWaitingRef.current = reviewWaitingForThumbnails; }, [reviewWaitingForThumbnails]);
+  useEffect(() => { fastKeeperModeRef.current = fastKeeperMode; }, [fastKeeperMode]);
+  useEffect(() => { faceConcurrencyRef.current = faceConcurrency; }, [faceConcurrency]);
+  useEffect(() => { gpuFaceAccelerationRef.current = gpuFaceAcceleration; }, [gpuFaceAcceleration]);
+
+  // Also kick the review loop when new thumbnails arrive (so it picks up files
+  // that were waiting on thumbnails) — but throttled to avoid per-thumbnail spam.
+  const thumbnailKickRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
+    if (readyThumbnailCount === 0) return;
+    if (thumbnailKickRef.current) return; // already scheduled
+    thumbnailKickRef.current = setTimeout(() => {
+      thumbnailKickRef.current = null;
+      console.log(`[review-loop] thumbnail kick fired, inflight=${sharpnessInFlightRef.current}, readyThumbs=${readyThumbnailCount}`);
+      if (!sharpnessInFlightRef.current) {
+        setReviewLoopTick((v) => v + 1);
+      }
+    }, 500);
+    return () => {
+      if (thumbnailKickRef.current) { clearTimeout(thumbnailKickRef.current); thumbnailKickRef.current = null; }
+    };
+  }, [readyThumbnailCount]);
+
+  useEffect(() => {
+    console.log(`[review-loop] effect tick=${reviewLoopTick} inflight=${sharpnessInFlightRef.current} paused=${reviewPausedRef.current} waiting=${reviewWaitingRef.current} files=${filesRef.current.length}`);
     if (sharpnessInFlightRef.current) return;
-    if (reviewPaused) return;
-    // Allow analysis in all view modes — use a smaller batch in single/split
-    // so face detection doesn't compete with the detail preview load.
-    // With DML/GPU active, inference is fast (~50ms/image) — batch more to
-    // keep the GPU fed. CPU inference is slower so stay conservative.
-    const batchSize = gpuFaceAcceleration ? Math.max(4, faceConcurrency * 4) : 2;
-    const focusedPath = focusedIndex >= 0 && focusedIndex < sortedFiles.length ? sortedFiles[focusedIndex].path : null;
+    if (reviewPausedRef.current) return;
+    // Don't start analysis until at least one thumbnail is ready — the candidate
+    // filter requires f.thumbnail to be truthy. If we bail with 0 candidates here
+    // the sharpnessInFlightRef is NOT set, so the loop will re-fire correctly once
+    // thumbnails land (via the thumbnail kick above).
+    if (reviewWaitingRef.current) return;
+    // Read all volatile values from refs — avoids having files/sortedFiles/etc
+    // as effect deps, which would cancel + restart the loop on every score update
+    // (one per analyzed image) causing concurrent ONNX batches and stalling after 1.
+    const currentFiles = filesRef.current;
+    const currentSortedFiles = sortedFilesRef.current;
+    const currentFastKeeperMode = fastKeeperModeRef.current;
+    const currentFaceConcurrency = faceConcurrencyRef.current;
+    const currentGpuAccel = gpuFaceAccelerationRef.current;
+    // With the streaming per-file IPC approach, batchSize controls how many
+    // files are queued into the main-process semaphore at once. Larger = more
+    // pipelining (canvas work overlaps with ONNX), but also more memory for
+    // in-flight canvas ImageData. 16 is a good balance: keeps ONNX busy across
+    // the ~50–200ms round-trip without overwhelming the renderer.
+    const batchSize = currentFastKeeperMode ? 8 : Math.max(16, currentFaceConcurrency * 16);
+    const focusedPath = focusedIndex >= 0 && focusedIndex < currentSortedFiles.length ? currentSortedFiles[focusedIndex].path : null;
     const visibleRank = new Map<string, number>();
-    sortedFiles.slice(0, 240).forEach((f, index) => visibleRank.set(f.path, index));
-    const candidates = files
+    currentSortedFiles.slice(0, 240).forEach((f, index) => visibleRank.set(f.path, index));
+    const candidates = currentFiles
       .filter((f) => f.type === 'photo' && f.thumbnail && (
         typeof f.sharpnessScore !== 'number' ||
         !f.visualHash ||
-        (!fastKeeperMode && typeof f.subjectSharpnessScore !== 'number') ||
-        (!fastKeeperMode && f.faceDetection === 'native' && (f.faceCount ?? 0) > 0 && !f.faceEmbedding) ||
-        (!fastKeeperMode && f.faceBoxes === undefined)  // re-run face detection if it hasn't been stored yet
+        (!currentFastKeeperMode && typeof f.subjectSharpnessScore !== 'number') ||
+        (!currentFastKeeperMode && f.faceDetection === 'native' && (f.faceCount ?? 0) > 0 && !f.faceEmbedding) ||
+        (!currentFastKeeperMode && f.faceBoxes === undefined)  // re-run face detection if it hasn't been stored yet
       ))
       .sort((a, b) => {
         const af = focusedPath && a.path === focusedPath ? -1000 : 0;
@@ -735,112 +789,154 @@ export function ThumbnailGrid() {
       })
       .slice(0, batchSize);
     if (candidates.length === 0) return;
-    sharpnessInFlightRef.current = true;
-    const run = () => void (async () => {
-      const onnxResults = fastKeeperMode ? [] : await Promise.race([
-        window.electronAPI.analyzeFaces(candidates.map((f) => f.path)),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('face timeout')), 35_000)),
-      ]).catch(() => [] as Awaited<ReturnType<typeof window.electronAPI.analyzeFaces>>);
-      const onnxByPath = new Map(onnxResults.map((result) => [result.path, result]));
-
-      return Promise.all(candidates.map(async (f) => {
+    console.log(`[review-loop] tick=${reviewLoopTick} candidates=${candidates.length} batchSize=${batchSize}`);
+    const run = () => {
+      // Mark in-flight NOW, inside the scheduler callback, so that if the
+      // effect cleanup fires before this runs (e.g. a tick bump while the
+      // idle is pending) the cleanup can safely reset the ref to false and
+      // the stuck-forever deadlock is avoided.
+      sharpnessInFlightRef.current = true;
+      console.log(`[review-loop] run() started, batch of ${candidates.length}`);
+      // ── Per-file pipeline ──────────────────────────────────────────────────
+      // Send ONE IPC call per file instead of batching all N into one call.
+      // Previously: renderer awaited ONE IPC call with N paths → main process ran
+      // them sequentially (semaphore=1) → renderer blocked until all N were done.
+      // Now: N IPC calls fire concurrently → main process still serialises through
+      // the semaphore (only 1 ONNX inference at a time) but results stream back
+      // one at a time → renderer dispatches each result immediately → UI updates
+      // incrementally and the loop sees progress in real time.
+      //
+      // Canvas work (sharpness, hash, analyzeSubject) runs in the renderer
+      // concurrently with the IPC round-trip, overlapping CPU work efficiently.
+      void (async () => {
+      const entries = await Promise.all(candidates.map(async (f): Promise<[string, Partial<MediaFile>]> => {
+        const thumbnail = f.thumbnail as string;
+        const failureTag = `analysis-failed:${f.path}`;
         try {
-          const thumbnail = f.thumbnail as string;
-        const onnx = onnxByPath.get(f.path);
-        const [sharpnessScore, hash, subject] = await Promise.all([
-          typeof f.sharpnessScore === 'number' ? Promise.resolve(f.sharpnessScore) : scoreSharpness(thumbnail),
-          f.visualHash ? Promise.resolve(f.visualHash) : visualHash(thumbnail),
-          // Re-run analyzeSubject if faceBoxes is undefined (never analyzed, or
-          // analyzed before FaceDetector was enabled and data was cleared).
-          // Even if subjectSharpnessScore is already set we still re-analyze so
-          // that face boxes get populated now that FaceDetector is available.
-          (typeof f.subjectSharpnessScore === 'number' && f.faceBoxes !== undefined)
-            ? Promise.resolve({
-                subjectSharpnessScore: f.subjectSharpnessScore,
-                faceCount: f.faceCount ?? 0,
-                faceBoxes: f.faceBoxes,
-                faceDetection: f.faceDetection,
-                faceSignature: f.faceSignature,
-                subjectReasons: f.subjectReasons ?? [],
-              })
-            : analyzeSubject(thumbnail),
-        ]);
+          // Kick off ONNX IPC and canvas analysis in parallel.
+          // ONNX is serialised in the main process via the semaphore — concurrent
+          // IPC calls queue there and return one at a time, but we overlap the
+          // renderer-side canvas work with whatever is ahead in the queue.
+          const [onnxArr, sharpnessScore, hash, subject] = await Promise.all([
+            currentFastKeeperMode
+              ? Promise.resolve([] as Awaited<ReturnType<typeof window.electronAPI.analyzeFaces>>)
+              : window.electronAPI.analyzeFaces(f.path).catch(
+                  () => [] as Awaited<ReturnType<typeof window.electronAPI.analyzeFaces>>,
+                ),
+            typeof f.sharpnessScore === 'number'
+              ? Promise.resolve(f.sharpnessScore)
+              : scoreSharpness(thumbnail),
+            f.visualHash
+              ? Promise.resolve(f.visualHash)
+              : visualHash(thumbnail),
+            (typeof f.subjectSharpnessScore === 'number' && f.faceBoxes !== undefined)
+              ? Promise.resolve({
+                  subjectSharpnessScore: f.subjectSharpnessScore,
+                  faceCount: f.faceCount ?? 0,
+                  faceBoxes: f.faceBoxes,
+                  faceDetection: f.faceDetection,
+                  faceSignature: f.faceSignature,
+                  subjectReasons: f.subjectReasons ?? [],
+                })
+              : analyzeSubject(thumbnail),
+          ]);
 
-        const onnxFaceBoxes = (onnx?.boxes ?? [])
-          .filter((box) => box.width > 0 && box.height > 0)
-          .map((box) => ({ x: box.x, y: box.y, width: box.width, height: box.height, score: box.score }));
-        const onnxPersonBoxes = (onnx?.personBoxes ?? [])
-          .filter((box) => box.width > 0 && box.height > 0)
-          .map((box) => ({ x: box.x, y: box.y, width: box.width, height: box.height, score: box.score }));
-        const mergedReasons = [
-          ...(subject.subjectReasons ?? []),
-          ...(onnxFaceBoxes.length > 0 ? ['onnx faces'] : []),
-          ...(onnxPersonBoxes.length > 0 ? ['person detected'] : []),
-        ];
+          const onnx = onnxArr[0]; // single-path call always returns 1 result
+          const onnxFaceBoxes = (onnx?.boxes ?? [])
+            .filter((box) => box.width > 0 && box.height > 0)
+            .map((box) => ({ x: box.x, y: box.y, width: box.width, height: box.height, score: box.score }));
+          const onnxPersonBoxes = (onnx?.personBoxes ?? [])
+            .filter((box) => box.width > 0 && box.height > 0)
+            .map((box) => ({ x: box.x, y: box.y, width: box.width, height: box.height, score: box.score }));
+          const mergedReasons = [
+            ...(subject.subjectReasons ?? []),
+            ...(onnxFaceBoxes.length > 0 ? ['onnx faces'] : []),
+            ...(onnxPersonBoxes.length > 0 ? ['person detected'] : []),
+          ];
 
-        // Always set faceBoxes to an array (even empty) so the filter condition
-        // `f.faceBoxes === undefined` correctly marks this file as "analyzed".
-        // Never leave it undefined — that would keep the file in the candidate
-        // queue and cause it to be re-analyzed on every subsequent batch.
-        const resolvedFaceBoxes = onnxFaceBoxes.length > 0
-          ? onnxFaceBoxes
-          : (subject.faceBoxes ?? []);  // empty array = analyzed, no faces found
+          const resolvedFaceBoxes = onnxFaceBoxes.length > 0
+            ? onnxFaceBoxes
+            : (subject.faceBoxes ?? []);
 
-          return [f.path, {
-          sharpnessScore,
-          visualHash: hash,
-          ...subject,
-          faceCount: resolvedFaceBoxes.length > 0 ? resolvedFaceBoxes.length : (subject.faceCount ?? 0),
-          faceBoxes: resolvedFaceBoxes,
-          faceDetection: onnxFaceBoxes.length > 0 ? 'native' : subject.faceDetection,
-          faceEmbedding: onnx?.embeddings?.[0] || f.faceEmbedding,
-          personCount: onnxPersonBoxes.length,
-          personBoxes: onnxPersonBoxes,
-          subjectReasons: [...new Set(mergedReasons)],
-          }] as [string, Partial<MediaFile>];
-        } catch {
-          const failureTag = `analysis-failed:${f.path}`;
-          return [f.path, {
+          // Dispatch this single result immediately so the UI updates in real time
+          // rather than waiting for every file in the batch to complete.
+          const patch: Partial<MediaFile> = {
+            sharpnessScore,
+            visualHash: hash,
+            ...subject,
+            faceCount: resolvedFaceBoxes.length > 0 ? resolvedFaceBoxes.length : (subject.faceCount ?? 0),
+            faceBoxes: resolvedFaceBoxes,
+            faceDetection: onnxFaceBoxes.length > 0 ? 'native' : subject.faceDetection,
+            faceEmbedding: onnx?.embeddings?.[0] || f.faceEmbedding,
+            personCount: onnxPersonBoxes.length,
+            personBoxes: onnxPersonBoxes,
+            subjectReasons: [...new Set(mergedReasons)],
+          };
+          dispatch({ type: 'SET_REVIEW_SCORES', scores: { [f.path]: patch } });
+          return [f.path, patch];
+        } catch (err) {
+          console.error(`[review-loop] file error: ${f.path}`, err);
+          // On failure dispatch what we have so the file exits the candidate pool
+          // (sharpnessScore becomes a number → no longer selected as unanalyzed).
+          // Keep faceBoxes as-is (undefined → retryable on next Re-scan AI).
+          const patch: Partial<MediaFile> = {
             sharpnessScore: f.sharpnessScore ?? 0,
             subjectSharpnessScore: f.subjectSharpnessScore ?? 0,
             visualHash: f.visualHash ?? failureTag,
             faceCount: f.faceCount ?? 0,
-            faceBoxes: f.faceBoxes ?? [],
+            faceBoxes: f.faceBoxes,       // keep undefined → retryable via Re-scan AI
             faceDetection: f.faceDetection,
             faceSignature: f.faceSignature ?? ((f.faceCount ?? 0) > 0 ? failureTag : undefined),
             personCount: f.personCount ?? 0,
-            personBoxes: f.personBoxes ?? [],
+            personBoxes: f.personBoxes,
             subjectReasons: [...new Set([...(f.subjectReasons ?? []), 'analysis failed'])],
-          }] as [string, Partial<MediaFile>];
+          };
+          dispatch({ type: 'SET_REVIEW_SCORES', scores: { [f.path]: patch } });
+          return [f.path, patch];
         }
       }));
+
+      return entries;
     })()
       .then((entries) => {
-        dispatch({ type: 'SET_REVIEW_SCORES', scores: Object.fromEntries(entries) });
+        // Individual dispatches already fired above; this final batch dispatch
+        // is a no-op for already-dispatched entries but ensures nothing is missed.
         reviewBatchCounterRef.current += 1;
         if (reviewBatchCounterRef.current % 5 === 0 || entries.length < batchSize) {
           dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10 });
           dispatch({ type: 'GROUP_VISUAL_DUPLICATES', threshold: 8 });
         }
       })
-      .catch(() => undefined)
+      .catch((err) => { console.error('[review-loop] batch error:', err); })
       .finally(() => {
+        console.log('[review-loop] batch done, advancing tick');
         sharpnessInFlightRef.current = false;
         setReviewLoopTick((value) => value + 1);
       });
+    };
     const hasIdle = typeof window.requestIdleCallback === 'function';
     const idle: number = hasIdle
       ? window.requestIdleCallback(run, { timeout: 400 })
       : window.setTimeout(run, 250);
     return () => {
+      // Cancel the pending scheduler. Because sharpnessInFlightRef is now set
+      // INSIDE run() (not before scheduling it), if cleanup fires before the
+      // idle/timeout callback executes, the ref is still false — safe to leave.
+      // If run() already started, the ref is true and the async work is genuinely
+      // in-flight; its .finally() will reset it. We must NOT reset the ref here
+      // in that case — doing so was the original concurrent-batch race condition.
       if (hasIdle) {
         window.cancelIdleCallback(idle);
       } else {
-        clearTimeout(idle as number);
+        clearTimeout(idle as unknown as number);
       }
-      sharpnessInFlightRef.current = false;
     };
-  }, [files, dispatch, reviewPaused, reviewWaitingForThumbnails, viewMode, focusedIndex, sortedFiles, reviewLoopTick, faceConcurrency, gpuFaceAcceleration]);
+  // Intentionally minimal deps — files/sortedFiles/settings are read via refs to avoid
+  // restarting (and racing) the loop on every SET_REVIEW_SCORES dispatch.
+  // The loop advances itself via setReviewLoopTick in .finally().
+  // focusedIndex is kept so the focused image is always prioritised in the sort.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dispatch, reviewLoopTick, focusedIndex]);
 
   useEffect(() => {
     setBackgroundPreviewPaused(backgroundLoadingPaused);
