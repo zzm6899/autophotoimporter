@@ -114,9 +114,11 @@ function setFaceConcurrency(n: number): void {
 }
 
 async function acquireFaceSemaphore(gen: number): Promise<void> {
+  // Check generation before acquiring any slot — stale jobs should never
+  // consume a semaphore slot, so check first and throw without incrementing.
+  if (gen !== faceQueueGeneration) throw new Error(STALE_FACE_JOB);
   if (faceActiveCount < faceSemaphoreSlots) {
     faceActiveCount++;
-    if (gen !== faceQueueGeneration) throw new Error(STALE_FACE_JOB);
     return;
   }
   await new Promise<void>((resolve) => faceSemaphoreQueue.push(resolve));
