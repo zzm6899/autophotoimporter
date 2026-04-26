@@ -52,6 +52,7 @@ vi.mock('../services/duplicate-detector', () => ({
 
 vi.mock('../services/exif-parser', () => ({
   generatePreview: vi.fn(),
+  setRawPreviewQuality: vi.fn(),
 }));
 
 vi.mock('../services/ftp-source', () => ({

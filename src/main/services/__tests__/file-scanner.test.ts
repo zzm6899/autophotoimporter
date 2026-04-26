@@ -10,6 +10,7 @@ vi.mock('../exif-parser', () => ({
   parseExifDate: vi.fn(),
   extractEmbeddedThumbnail: vi.fn(),
   generateThumbnail: vi.fn(),
+  clearThumbnailMemCache: vi.fn(),
   EXIFR_SUPPORTED: new Set(['.jpg', '.jpeg', '.heic', '.dng', '.cr2', '.cr3', '.arw', '.nef', '.raf']),
 }));
 

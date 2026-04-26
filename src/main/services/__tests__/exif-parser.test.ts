@@ -236,6 +236,11 @@ describe('parseExifDate', () => {
 // --- extractEmbeddedThumbnail ---
 
 describe('extractEmbeddedThumbnail', () => {
+  beforeEach(() => {
+    // stat is called for the mem-cache key; reject gracefully so caching is skipped
+    mockStat.mockRejectedValue(new Error('stat-not-needed'));
+  });
+
   it('returns base64 data URI on success', async () => {
     const thumbData = Buffer.from('fake-jpeg-data');
     mockExifrThumbnail.mockResolvedValue(thumbData);
