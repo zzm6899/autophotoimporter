@@ -41,6 +41,9 @@ const githubRepoName = process.env.GITHUB_RELEASE_REPO || '';
 const githubToken = process.env.GITHUB_RELEASE_TOKEN || '';
 const ACTIVATION_CODE_PREFIX = 'PIC';
 const ACTIVATION_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const defaultMaxDevices = Math.max(1, Number.parseInt(process.env.DEFAULT_MAX_DEVICES || '1', 10) || 1);
+
+const CULLER_LOGO_SVG = '<svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M128 252C196.483 252 252 196.483 252 128C252 59.5167 196.483 4 128 4C59.5167 4 4 59.5167 4 128C4 196.483 59.5167 252 128 252ZM128 226.694C182.507 226.694 226.694 182.507 226.694 128C226.694 73.4929 182.507 29.3061 128 29.3061C73.4929 29.3061 29.3061 73.4929 29.3061 128C29.3061 182.507 73.4929 226.694 128 226.694ZM188.633 131.549C181.333 137.253 172.145 140.653 162.163 140.653C138.404 140.653 119.143 121.392 119.143 97.6327C119.143 85.8325 123.894 75.1419 131.587 67.3695C130.4 67.3004 129.204 67.2653 128 67.2653C94.4572 67.2653 67.2653 94.4572 67.2653 128C67.2653 161.543 94.4572 188.735 128 188.735C160.352 188.735 186.795 163.44 188.633 131.549ZM117.878 148.245C123.468 148.245 128 143.713 128 138.122C128 132.532 123.468 128 117.878 128C112.287 128 107.755 132.532 107.755 138.122C107.755 143.713 112.287 148.245 117.878 148.245ZM107.755 153.306C107.755 156.101 105.489 158.367 102.694 158.367C99.8986 158.367 97.6327 156.101 97.6327 153.306C97.6327 150.511 99.8986 148.245 102.694 148.245C105.489 148.245 107.755 150.511 107.755 153.306ZM177.347 97.6326C177.347 106.018 170.549 112.816 162.163 112.816C161.21 112.816 160.278 112.729 159.373 112.561C163.87 111.53 167.225 107.503 167.225 102.694C167.225 97.1034 162.693 92.5714 157.102 92.5714C152.292 92.5714 148.266 95.9258 147.235 100.423C147.067 99.5183 146.98 98.5857 146.98 97.6326C146.98 89.2469 153.778 82.449 162.163 82.449C170.549 82.449 177.347 89.2469 177.347 97.6326Z" fill="white"/></svg>';
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL || 'postgres://photo_importer:photo_importer@db:5432/photo_importer_updates',
@@ -246,6 +249,8 @@ function nav(page = '') {
   const link = (href, label, name) =>
     `<a href="${href}"${page === name ? ' class="active"' : ''}>${label}</a>`;
   return `<div class="nav">
+    <a href="/admin" style="display:flex;align-items:center;gap:7px;padding:4px 10px 4px 6px;border-radius:8px;color:var(--text);font-size:.8125rem;font-weight:700;letter-spacing:-.01em"><span style="display:flex;align-items:center;width:18px;height:18px;flex-shrink:0">${CULLER_LOGO_SVG}</span> Culler</a>
+    <div class="nav-sep"></div>
     ${link('/admin', 'Dashboard', 'dashboard')}
     ${link('/admin/licenses', 'Licenses', 'licenses')}
     ${link('/admin/releases', 'Releases', 'releases')}
@@ -770,16 +775,23 @@ app.get('/admin/login', (req, res, next) => {
 }, (_req, res) => {
   res.send(htmlPage('Admin Login', `
     <div class="panel" style="max-width:420px;margin:48px auto">
-      <h1>Photo Importer Admin</h1>
-      <p class="muted">Sign in to manage updates and licenses for culler.z2hs.au.</p>
+      <div style="display:flex;align-items:center;gap:11px;margin-bottom:24px">
+        <span style="display:flex;align-items:center;width:36px;height:36px;flex-shrink:0">${CULLER_LOGO_SVG}</span>
+        <div>
+          <div style="font-weight:700;font-size:1.1rem;letter-spacing:-.02em">Culler</div>
+          <div style="font-size:.75rem;color:var(--muted)">Admin Panel</div>
+        </div>
+      </div>
+      <h1 style="margin-bottom:6px">Sign in</h1>
+      <p class="muted" style="margin-bottom:20px">Manage updates and licenses for culler.z2hs.au.</p>
       <form method="post" action="/admin/login">
         <label>Email</label>
-        <input type="email" name="email" required />
+        <input type="email" name="email" required autofocus />
         <div style="height:10px"></div>
         <label>Password</label>
         <input type="password" name="password" required />
         <div style="height:14px"></div>
-        <button type="submit">Sign in</button>
+        <button type="submit" style="width:100%">Sign in</button>
       </form>
     </div>
   `));
@@ -792,9 +804,16 @@ app.post('/admin/login', async (req, res) => {
   if (!user || !(await bcrypt.compare(password, user.password_hash))) {
     return res.status(401).send(htmlPage('Admin Login', `
       <div class="panel" style="max-width:420px;margin:48px auto">
-        <h1>Photo Importer Admin</h1>
-        <p class="bad">Invalid email or password.</p>
-        <a href="/admin/login">Try again</a>
+        <div style="display:flex;align-items:center;gap:11px;margin-bottom:24px">
+          <span style="display:flex;align-items:center;width:36px;height:36px;flex-shrink:0">${CULLER_LOGO_SVG}</span>
+          <div>
+            <div style="font-weight:700;font-size:1.1rem;letter-spacing:-.02em">Culler</div>
+            <div style="font-size:.75rem;color:var(--muted)">Admin Panel</div>
+          </div>
+        </div>
+        <h1 style="margin-bottom:6px">Sign in</h1>
+        <p class="bad" style="margin-bottom:16px">Invalid email or password.</p>
+        <a href="/admin/login"><button type="button" style="width:100%">Try again</button></a>
       </div>
     `));
   }
@@ -837,7 +856,14 @@ app.get('/admin', authSession, async (_req, res) => {
   const diskBar = disk ? `<div style="margin-top:8px;background:var(--border2);border-radius:4px;height:6px;overflow:hidden"><div style="width:${diskPct}%;background:${diskPct > 85 ? '#f87171' : diskPct > 65 ? '#fdba74' : '#34d399'};height:100%;border-radius:4px"></div></div><p class="muted" style="margin-top:4px;font-size:.72rem">${formatBytes(disk.used)} used of ${formatBytes(disk.total)} (${disk.pct})</p>` : '';
 
   res.send(htmlPage('Admin Dashboard', `
-    <div class="top"><div><h1>Update Admin</h1><p class="muted">admin.culler.z2hs.au</p></div>${nav('dashboard')}</div>
+    <div class="hero">
+      <div class="hero-copy">
+        <div class="hero-kicker">Dashboard</div>
+        <h1>Update Admin</h1>
+        <p>Manage licenses, releases, and update delivery for culler.z2hs.au.</p>
+      </div>
+      ${nav('dashboard')}
+    </div>
     <div class="cards">
       ${licenseStats.rows.map((row) => `<div class="card"><div class="card-label">Licenses · ${row.status}</div><div class="card-value">${row.count}</div></div>`).join('')}
       ${releaseStats.rows.map((row) => `<div class="card"><div class="card-label">Releases · ${row.platform} / ${row.rollout_state}</div><div class="card-value">${row.count}</div></div>`).join('')}
@@ -907,7 +933,7 @@ app.get('/admin/licenses', authSession, async (_req, res) => {
           <label>Expiry <span style="font-weight:400">(optional)</span></label>
           <input name="expiry" placeholder="31-12-2027" />
           <label>Max devices</label>
-          <input type="number" name="maxDevices" min="1" step="1" value="1" />
+          <input type="number" name="maxDevices" min="1" step="1" value="${defaultMaxDevices}" />
           <label>Notes <span style="font-weight:400">(optional)</span></label>
           <textarea name="notes" rows="2"></textarea>
           <div style="height:16px"></div>
@@ -976,7 +1002,14 @@ app.post('/admin/licenses/generate', authSession, async (req, res) => {
     const activationCode = await upsertLicenseRecord(validated, req.body.notes);
 
     return res.send(htmlPage('License Generated', `
-      <div class="top"><div><h1>License generated</h1><p class="muted">Store this key somewhere safe before leaving the page.</p></div>${nav('licenses')}</div>
+      <div class="hero">
+        <div class="hero-copy">
+          <div class="hero-kicker">Success</div>
+          <h1>License generated</h1>
+          <p>Store this key somewhere safe before leaving the page.</p>
+        </div>
+        ${nav('licenses')}
+      </div>
       <div class="panel">
         <p><strong>${validated.entitlement.name}</strong>${validated.entitlement.email ? ` <span class="muted">(${validated.entitlement.email})</span>` : ''}</p>
         <p class="muted">Full access${validated.entitlement.expiresAt ? ` until ${formatLicenseDate(validated.entitlement.expiresAt)}` : ' with no expiry'}.</p>
@@ -1022,7 +1055,14 @@ app.get('/admin/licenses/:id', authSession, async (req, res) => {
     [record.fingerprint],
   );
   return res.send(htmlPage(`License ${record.customer_name}`, `
-    <div class="top"><div><h1>${record.customer_name}</h1><p class="muted">License details and activation info.</p></div>${nav('licenses')}</div>
+    <div class="hero">
+      <div class="hero-copy">
+        <div class="hero-kicker">License</div>
+        <h1>${record.customer_name}</h1>
+        <p>License details and device activation info.</p>
+      </div>
+      ${nav('licenses')}
+    </div>
     <div class="grid">
       <div class="panel">
         <h2>Details</h2>
@@ -1255,7 +1295,14 @@ app.get('/admin/releases/:id/edit', authSession, async (req, res) => {
   }
   const row = result.rows[0];
   return res.send(htmlPage(`Edit ${row.release_name}`, `
-    <div class="top"><div><h1>Edit release</h1><p class="muted">${row.version} &middot; ${row.platform} &middot; ${row.channel}</p></div>${nav('releases')}</div>
+    <div class="hero">
+      <div class="hero-copy">
+        <div class="hero-kicker">Edit Release</div>
+        <h1>${row.release_name}</h1>
+        <p>${row.version} &middot; ${row.platform} &middot; ${row.channel}</p>
+      </div>
+      ${nav('releases')}
+    </div>
     <div class="panel" style="max-width:680px">
       <form method="post" action="/admin/releases/${row.id}/edit">
         <label>Release name</label>
@@ -1393,7 +1440,14 @@ app.get('/admin/customers', authSession, async (_req, res) => {
     LIMIT 100
   `);
   res.send(htmlPage('Customers', `
-    <div class="top"><div><h1>Customers / installs</h1><p class="muted">Latest seen update activity per install fingerprint.</p></div>${nav('customers')}</div>
+    <div class="hero">
+      <div class="hero-copy">
+        <div class="hero-kicker">Installs</div>
+        <h1>Customers / Installs</h1>
+        <p>Latest seen update activity per install fingerprint.</p>
+      </div>
+      ${nav('customers')}
+    </div>
     <div class="panel">
       <h2>${rows.rows.length} active installs</h2>
       <table><thead><tr><th>Fingerprint</th><th>Last activity</th><th>Detail</th></tr></thead><tbody>
