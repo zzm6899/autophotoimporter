@@ -415,7 +415,10 @@ function scanBufferForLargestJpeg(buf: Buffer): Buffer | undefined {
     if (i < 0 || i >= buf.length - 4) break;
     if (buf[i + 1] === 0xd8 && buf[i + 2] === 0xff) {
       const m = buf[i + 3];
-      if (m === 0xe0 || m === 0xe1 || m === 0xdb || m === 0xc0 || m === 0xc4 || m === 0xfe) {
+      // Accept any valid JPEG starting sequence: all APP markers (0xe0–0xef covers
+      // JFIF, EXIF, ICC profile, Photoshop IPTC/APP13=0xed, etc.), bare quantisation
+      // tables (0xdb), SOF (0xc0), Huffman tables (0xc4), or a comment (0xfe).
+      if ((m >= 0xe0 && m <= 0xef) || m === 0xdb || m === 0xc0 || m === 0xc4 || m === 0xfe) {
         const eoi = findJpegEnd(buf, i + 2);
         if (eoi > i) {
           const segLen = eoi - i + 2;

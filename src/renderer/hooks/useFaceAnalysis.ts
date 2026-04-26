@@ -68,14 +68,16 @@ export function useFaceAnalysis(): UseFaceAnalysisReturn {
 
     cancelledRef.current = false;
 
-    // Check model availability on first call (result is cached in state)
+    // Check model availability. Re-check on every call until models are confirmed
+    // present — never cache a false result, because models may finish downloading
+    // mid-session (new device first launch). Only cache true so subsequent calls
+    // skip the IPC round-trip once models are confirmed available.
     let available = modelsAvailable;
-    if (available === null) {
+    if (available !== true) {
       try {
         available = await window.electronAPI.faceModelsAvailable();
-        setModelsAvailable(available);
+        if (available) setModelsAvailable(true);
       } catch {
-        setModelsAvailable(false);
         return;
       }
     }
