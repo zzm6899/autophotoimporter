@@ -115,8 +115,11 @@ function setFaceConcurrency(n: number): void {
 
 async function acquireFaceSemaphore(gen: number): Promise<void> {
   if (faceActiveCount < faceSemaphoreSlots) {
-    faceActiveCount++;
+    // Check generation BEFORE incrementing — if we increment and then throw,
+    // releaseFaceSemaphore() is never called (the caller's finally block is in a
+    // separate try that was never entered), permanently leaking the slot count.
     if (gen !== faceQueueGeneration) throw new Error(STALE_FACE_JOB);
+    faceActiveCount++;
     return;
   }
   await new Promise<void>((resolve) => faceSemaphoreQueue.push(resolve));
