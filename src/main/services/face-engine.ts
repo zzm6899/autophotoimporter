@@ -137,6 +137,7 @@ let embedderSession: any | null = null;
 let personSession: any | null = null;
 let sessionLoadPromise: Promise<void> | null = null;
 let gpuAvailable: boolean | null = null;
+let actualExecutionProvider: string | null = null; // verified after first inference
 
 // Settings-driven configuration
 let gpuFaceAccelerationEnabled = true;  // Can be disabled by user
@@ -156,34 +157,11 @@ export function configureCpuOptimization(enabled: boolean): void {
  * Caches result so we don't repeatedly probe unavailable GPUs.
  */
 function getExecutionProviders(): string[] {
-  // Already probed — use cached result
-  if (gpuAvailable !== null) {
-    return gpuAvailable ? ['cuda', 'tensorrt', 'webgpu', 'dml', 'coreml', 'cpu'] : ['cpu'];
-  }
-
-  // If GPU acceleration is disabled in settings, skip to CPU
-  if (!gpuFaceAccelerationEnabled) {
-    return ['cpu'];
-  }
-
-  // Platform-specific GPU provider recommendations
-  const platform = process.platform;
-  let providers: string[] = [];
-
-  if (platform === 'win32') {
-    // Windows: try DirectML (GPU-agnostic) first, then CUDA for NVIDIA
-    providers = ['dml', 'cuda', 'tensorrt', 'cpu'];
-  } else if (platform === 'darwin') {
-    // macOS: CoreML for Apple Silicon, then CUDA for Intel with external GPU
-    providers = ['coreml', 'cuda', 'tensorrt', 'cpu'];
-  } else if (platform === 'linux') {
-    // Linux: CUDA for NVIDIA, then CPU
-    providers = ['cuda', 'tensorrt', 'cpu'];
-  } else {
-    providers = ['cpu'];
-  }
-
-  return providers;
+  // UltraFace (RFB-640) and MobileFaceNet ops don't fully fuse on DML/CoreML —
+  // unsupported ops fall back through a slow CPU<->GPU copy loop making DML ~4x
+  // SLOWER than optimised CPU (measured: 684ms/img DML vs ~180ms CPU on RTX 4070).
+  // Always use CPU with ORT's full graph optimisation for these models.
+  return ['cpu'];
 }
 
 async function loadSessions(): Promise<void> {
@@ -191,44 +169,34 @@ async function loadSessions(): Promise<void> {
   sessionLoadPromise = (async () => {
     try {
       const runtime = getOrt();
-      const providers = getExecutionProviders();
-      const opts = {
-        executionProviders: providers,
-        graphOptimizationLevel: cpuOptimizationMode ? 'basic' : 'all',  // Lighter optimization for older CPUs
+      const cpuCount = Math.max(2, require('os').cpus().length);
+
+      // CPU-optimised session options — 'all' graph optimisation fuses Conv+BN+ReLU
+      // chains for the best throughput on these small detection/embedding models.
+      const opts: Record<string, unknown> = {
+        executionProviders: ['cpu'],
+        graphOptimizationLevel: cpuOptimizationMode ? 'basic' : 'all',
+        intraOpNumThreads: cpuOptimizationMode ? 2 : Math.min(cpuCount, 6),
+        interOpNumThreads: 1,
       };
 
-      const [detPath, embPath] = [
+      const [detPath, embPath, personPath] = [
         modelPath('version-RFB-640.onnx'),
         modelPath('w600k_mbf.onnx'),
+        modelPath('ssd_mobilenet_v1_12.onnx'),
       ];
-      const personPath = modelPath('ssd_mobilenet_v1_12.onnx');
 
-      // Log configuration for diagnostics
-      if (cpuOptimizationMode) {
-        console.log('[face-engine] CPU optimization mode enabled — using basic graph optimization');
-      }
+      console.log('[face-engine] Loading sessions (CPU optimised, threads:', Math.min(cpuCount, 6), ')');
 
-      try {
-        [detectorSession, embedderSession, personSession] = await Promise.all([
-          runtime.InferenceSession.create(detPath, opts),
-          runtime.InferenceSession.create(embPath, opts),
-          runtime.InferenceSession.create(personPath, opts),
-        ]);
-        // Successfully created sessions with GPU providers
-        gpuAvailable = providers.some((p) => p !== 'cpu');
-      } catch (gpuError) {
-        // GPU provider failed — fall back to CPU only
-        console.warn('GPU acceleration unavailable, falling back to CPU:', gpuError);
-        gpuAvailable = false;
-        const cpuOpts = { ...opts, executionProviders: ['cpu'] };
-        [detectorSession, embedderSession, personSession] = await Promise.all([
-          runtime.InferenceSession.create(detPath, cpuOpts),
-          runtime.InferenceSession.create(embPath, cpuOpts),
-          runtime.InferenceSession.create(personPath, cpuOpts),
-        ]);
-      }
+      [detectorSession, embedderSession, personSession] = await Promise.all([
+        runtime.InferenceSession.create(detPath, opts),
+        runtime.InferenceSession.create(embPath, opts),
+        runtime.InferenceSession.create(personPath, opts),
+      ]);
+      gpuAvailable = false;
+      actualExecutionProvider = 'cpu';
+      console.log('[face-engine] Sessions loaded — EP: cpu');
     } catch (e) {
-      // Reset so the next call retries rather than returning the cached rejection
       sessionLoadPromise = null;
       throw e;
     }
@@ -243,6 +211,7 @@ export async function disposeFaceEngine(): Promise<void> {
   personSession = null;
   sessionLoadPromise = null;
   gpuAvailable = null;
+  actualExecutionProvider = null;
   await Promise.allSettled([d?.release(), e?.release(), p?.release()]);
 }
 
@@ -252,6 +221,22 @@ export async function disposeFaceEngine(): Promise<void> {
  */
 export function isGpuAvailable(): boolean | null {
   return gpuAvailable;
+}
+
+/**
+ * Pre-warm the ONNX face engine by loading sessions without running inference.
+ * Call this at app startup so the first real analyzeFaces() call is fast.
+ */
+export async function prewarmFaceEngine(): Promise<void> {
+  await loadSessions();
+}
+
+/**
+ * Returns the actual execution provider in use ('cpu', 'dml', 'coreml', etc.)
+ * or null if sessions haven't been loaded yet.
+ */
+export function getActualExecutionProvider(): string | null {
+  return actualExecutionProvider;
 }
 
 // ---------------------------------------------------------------------------
@@ -270,6 +255,29 @@ import { extractLargestEmbeddedJpeg } from './exif-parser';
  * Returns a decoded nativeImage ready for resizing/cropping.
  * Result is NOT cached — callers that need to reuse it should keep the reference.
  */
+// Short-lived decode cache: avoid re-loading the same RAW file within one
+// analyzeFaces() call chain. Max 8 entries; evict oldest when full.
+const imageDecodeCache = new Map<string, Electron.NativeImage>();
+const MAX_DECODE_CACHE = 8;
+
+/** Clear the in-process image decode cache. Call when the scan source changes. */
+export function clearImageDecodeCache(): void {
+  imageDecodeCache.clear();
+}
+
+async function loadNativeImageCached(imagePath: string): Promise<Electron.NativeImage> {
+  const cached = imageDecodeCache.get(imagePath);
+  if (cached) return cached;
+  const img = await loadNativeImage(imagePath);
+  if (imageDecodeCache.size >= MAX_DECODE_CACHE) {
+    // Evict oldest entry
+    const firstKey = imageDecodeCache.keys().next().value;
+    if (firstKey !== undefined) imageDecodeCache.delete(firstKey);
+  }
+  imageDecodeCache.set(imagePath, img);
+  return img;
+}
+
 async function loadNativeImage(imagePath: string): Promise<Electron.NativeImage> {
   let img = nativeImage.createFromPath(imagePath);
   if (!img.isEmpty()) return img;
@@ -303,7 +311,7 @@ function resizeToPixels(
   targetH: number,
 ): { data: Buffer; width: number; height: number } {
   const resized = img.resize({ width: targetW, height: targetH });
-  const bitmap = resized.getBitmap() as unknown as Buffer;
+  const bitmap = (resized.toBitmap?.() ?? resized.getBitmap()) as unknown as Buffer;
   const size = resized.getSize();
   return { data: bitmap, width: size.width, height: size.height };
 }
@@ -334,15 +342,18 @@ function pixelsToCHW(
 ): Float32Array {
   const channelSize = width * height;
   const tensor = new Float32Array(3 * channelSize);
-  const bgraBitmap = process.platform === 'win32' || process.platform === 'darwin';
+  const rOff = IS_BGRA_PLATFORM ? 2 : 0;
+  const bOff = IS_BGRA_PLATFORM ? 0 : 2;
+  const invStd0 = 1.0 / std[0], invStd1 = 1.0 / std[1], invStd2 = 1.0 / std[2];
+  const sc = 1.0 / 255.0;
+  // Pre-compute scaled means
+  const m0 = mean[0], m1 = mean[1], m2 = mean[2];
+  const ch1 = channelSize, ch2 = channelSize * 2;
   for (let i = 0; i < channelSize; i++) {
     const base = i * 4;
-    const r = (bgraBitmap ? pixels[base + 2] : pixels[base]) / 255.0;
-    const g = pixels[base + 1] / 255.0;
-    const b = (bgraBitmap ? pixels[base] : pixels[base + 2]) / 255.0;
-    tensor[i] = (r - mean[0]) / std[0];
-    tensor[channelSize + i] = (g - mean[1]) / std[1];
-    tensor[2 * channelSize + i] = (b - mean[2]) / std[2];
+    tensor[i]       = (pixels[base + rOff] * sc - m0) * invStd0;
+    tensor[ch1 + i] = (pixels[base + 1]   * sc - m1) * invStd1;
+    tensor[ch2 + i] = (pixels[base + bOff] * sc - m2) * invStd2;
   }
   return tensor;
 }
@@ -352,14 +363,16 @@ function pixelsToHWCUint8(
   width: number,
   height: number,
 ): Uint8Array {
-  const tensor = new Uint8Array(width * height * 3);
-  const bgraBitmap = process.platform === 'win32' || process.platform === 'darwin';
-  for (let i = 0; i < width * height; i++) {
+  const n = width * height;
+  const tensor = new Uint8Array(n * 3);
+  const rOff = IS_BGRA_PLATFORM ? 2 : 0;
+  const bOff = IS_BGRA_PLATFORM ? 0 : 2;
+  for (let i = 0; i < n; i++) {
     const src = i * 4;
     const dst = i * 3;
-    tensor[dst] = bgraBitmap ? pixels[src + 2] : pixels[src];
+    tensor[dst]     = pixels[src + rOff];
     tensor[dst + 1] = pixels[src + 1];
-    tensor[dst + 2] = bgraBitmap ? pixels[src] : pixels[src + 2];
+    tensor[dst + 2] = pixels[src + bOff];
   }
   return tensor;
 }
@@ -377,6 +390,8 @@ const CONF_THRESHOLD = 0.7;
 const IOU_THRESHOLD  = 0.3;
 const PERSON_THRESHOLD = 0.45;
 const PERSON_CLASS_ID = 1;
+// Electron nativeImage.toBitmap() returns BGRA on Windows/macOS, RGBA elsewhere
+const IS_BGRA_PLATFORM = process.platform === 'win32' || process.platform === 'darwin';
 
 interface RawBox {
   x1: number; y1: number; x2: number; y2: number; score: number;
@@ -461,12 +476,12 @@ async function detectPersons(imagePath: string, cachedImg?: Electron.NativeImage
   let img = cachedImg ?? await loadNativeImage(imagePath);
 
   const original = img.getSize();
-  const scale = Math.min(1, 640 / Math.max(original.width, original.height));
+  const scale = Math.min(1, 320 / Math.max(original.width, original.height)); // 320 sufficient for body detection, faster than 640
   const targetW = Math.max(32, Math.round(original.width * scale));
   const targetH = Math.max(32, Math.round(original.height * scale));
   img = img.resize({ width: targetW, height: targetH });
 
-  const bitmap = img.getBitmap() as unknown as Buffer;
+  const bitmap = (img.toBitmap?.() ?? img.getBitmap()) as unknown as Buffer;
   const input = pixelsToHWCUint8(bitmap, targetW, targetH);
   const tensor = new (getOrt().Tensor)('uint8', input, [1, targetH, targetW, 3]);
   const result = await personSession.run({ 'image_tensor:0': tensor });
@@ -534,7 +549,7 @@ async function embedFace(imagePath: string, box: FaceBox, cachedImg?: Electron.N
   img = img.crop({ x: cropX, y: cropY, width: cropW, height: cropH });
   img = img.resize({ width: EMBED_W, height: EMBED_H });
 
-  const bitmap = img.getBitmap() as unknown as Buffer;
+  const bitmap = (img.toBitmap?.() ?? img.getBitmap()) as unknown as Buffer;
   const floats = pixelsToCHW(bitmap, EMBED_W, EMBED_H, EMB_MEAN, EMB_STD);
   const tensor = new (getOrt().Tensor)('float32', floats, [1, 3, EMBED_H, EMBED_W]);
 
@@ -566,18 +581,22 @@ async function embedFace(imagePath: string, box: FaceBox, cachedImg?: Electron.N
  * @param imagePath  Absolute path to a JPEG/PNG/HEIC/WEBP image.
  * @returns          Detected boxes + per-face embeddings.
  */
+let _analyzeCallCount = 0;
+let _analyzeTotalMs = 0;
+
 export async function analyzeFaces(imagePath: string): Promise<FaceAnalysisResult> {
   await loadSessions();
+  const t0 = Date.now();
 
   // Decode the image once — for RAW files this extracts the embedded JPEG preview.
   // We reuse the same nativeImage for detection, person detection, and embedding
   // so we don't re-read (and re-decode) the file multiple times.
-  const img = await loadNativeImage(imagePath);
+  const img = await loadNativeImageCached(imagePath);
 
-  const [boxes, personBoxes] = await Promise.all([
-    detectFaces(imagePath, img).catch(() => [] as FaceBox[]),
-    detectPersons(imagePath, img).catch(() => [] as FaceBox[]),
-  ]);
+  // Run sequentially — both use the same CPU cores so parallel just causes
+  // cache thrashing and L3 contention with no throughput benefit.
+  const boxes = await detectFaces(imagePath, img).catch(() => [] as FaceBox[]);
+  const personBoxes = await detectPersons(imagePath, img).catch(() => [] as FaceBox[]);
 
   if (boxes.length === 0) return { boxes, personBoxes, embeddings: [] };
 
@@ -589,7 +608,60 @@ export async function analyzeFaces(imagePath: string): Promise<FaceAnalysisResul
     ),
   );
 
+  // Clear cached decode now that all ONNX passes are done
+  imageDecodeCache.delete(imagePath);
+
+  // Diagnostic timing — log every 10 images so we can see GPU vs CPU throughput
+  _analyzeCallCount++;
+  _analyzeTotalMs += Date.now() - t0;
+  if (_analyzeCallCount % 10 === 0) {
+    const avg = (_analyzeTotalMs / _analyzeCallCount).toFixed(0);
+    console.log(`[face-engine] EP:${actualExecutionProvider ?? '?'} avg=${avg}ms/img over ${_analyzeCallCount} images`);
+  }
+
   return { boxes: facesToEmbed, personBoxes, embeddings };
+}
+
+/**
+ * Run a quick DML diagnostic — creates a session with DML, runs 5 dummy inferences,
+ * and reports timing + actual EP. Call from ipc-handlers for a /diagnose endpoint.
+ */
+export async function diagnoseFaceEngine(): Promise<{
+  ep: string | null;
+  gpuAvailable: boolean | null;
+  avgInferenceMs: number;
+  sessionLoadMs: number;
+  platform: string;
+  providers: string[];
+}> {
+  const t0 = Date.now();
+  await loadSessions();
+  const sessionLoadMs = Date.now() - t0;
+
+  const providers = getExecutionProviders();
+  // Run 5 dummy detector inferences and time them
+  const runtime = getOrt();
+  const dummyInput = new Float32Array(1 * 3 * DETECTOR_H * DETECTOR_W);
+  const tensor = new (runtime.Tensor)('float32', dummyInput, [1, 3, DETECTOR_H, DETECTOR_W]);
+  const times: number[] = [];
+  for (let i = 0; i < 5; i++) {
+    const t = Date.now();
+    try { await detectorSession!.run({ input: tensor }); } catch { /* ignore */ }
+    times.push(Date.now() - t);
+  }
+  const avgInferenceMs = times.reduce((a, b) => a + b, 0) / times.length;
+
+  console.log('[face-engine] DIAG: EP=%s sessionLoad=%dms avgInference=%dms times=%s',
+    actualExecutionProvider, sessionLoadMs, avgInferenceMs.toFixed(1), JSON.stringify(times));
+
+  return {
+    ep: actualExecutionProvider,
+    gpuAvailable,
+    avgInferenceMs,
+    sessionLoadMs,
+    platform: process.platform,
+    providers,
+  };
 }
 
 /**

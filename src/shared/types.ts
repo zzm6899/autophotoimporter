@@ -289,6 +289,13 @@ export interface AppSettings {
   rawPreviewCache?: boolean;       // Cache RAW preview extractions (default: true)
   cpuOptimization?: boolean;       // Use lighter models/settings for older CPUs (default: false)
   rawPreviewQuality?: number;      // 0-100 for RAW preview JPEG quality (default: 70)
+  /** Device performance tier — 'auto' detects from CPU/RAM, or user override */
+  perfTier?: 'auto' | 'low' | 'balanced' | 'high';
+  /** Fast Keeper Mode: score using sharpness/exposure/ratings only, skip ONNX */
+  fastKeeperMode?: boolean;
+  /** Renderer concurrency hint from device-tier (runtime only, not persisted) */
+  previewConcurrency?: number;
+  faceConcurrency?: number;
   jobPresets: JobPreset[];
   selectionSets: SelectionSet[];
   licenseKey?: string;
@@ -470,10 +477,15 @@ export const IPC = {
   FACE_ANALYZE: 'face:analyze',
   FACE_MODELS_AVAILABLE: 'face:models-available',
   FACE_GPU_AVAILABLE: 'face:gpu-available',
+  FACE_EXECUTION_PROVIDER: 'face:execution-provider',
   FACE_MODEL_DOWNLOAD_PROGRESS: 'face:model-download-progress',
 
   // Cache management
   CACHE_CLEAR: 'cache:clear',
+  FACE_CACHE_CLEAR: 'face-cache:clear',
+
+  // Device performance tier
+  DEVICE_TIER_GET: 'device-tier:get',
 
   // Auto-import + device events
   DEVICE_INSERTED: 'device:inserted',

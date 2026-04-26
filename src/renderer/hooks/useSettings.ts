@@ -80,6 +80,36 @@ export function useSettings() {
       if (Array.isArray(settings.selectionSets)) {
         dispatch({ type: 'SET_SELECTION_SETS', sets: settings.selectionSets });
       }
+      // Performance settings
+      if (typeof settings.gpuFaceAcceleration === 'boolean') {
+        dispatch({ type: 'SET_PERFORMANCE_OPTION', key: 'gpuFaceAcceleration', value: settings.gpuFaceAcceleration });
+      }
+      if (typeof settings.rawPreviewCache === 'boolean') {
+        dispatch({ type: 'SET_PERFORMANCE_OPTION', key: 'rawPreviewCache', value: settings.rawPreviewCache });
+      }
+      if (typeof settings.cpuOptimization === 'boolean') {
+        dispatch({ type: 'SET_PERFORMANCE_OPTION', key: 'cpuOptimization', value: settings.cpuOptimization });
+      }
+      if (typeof settings.rawPreviewQuality === 'number') {
+        dispatch({ type: 'SET_RAW_PREVIEW_QUALITY', quality: settings.rawPreviewQuality });
+      }
+      if (settings.perfTier) {
+        dispatch({ type: 'SET_PERF_TIER', tier: settings.perfTier });
+      }
+      if (typeof settings.fastKeeperMode === 'boolean') {
+        dispatch({ type: 'SET_FAST_KEEPER_MODE', enabled: settings.fastKeeperMode });
+      }
+      if (typeof settings.previewConcurrency === 'number' && settings.previewConcurrency > 0) {
+        dispatch({ type: 'SET_PREVIEW_CONCURRENCY', concurrency: settings.previewConcurrency });
+      } else {
+        window.electronAPI.getDeviceTier?.().then((p) => {
+          dispatch({ type: 'SET_PREVIEW_CONCURRENCY', concurrency: p.previewConcurrency });
+        }).catch(() => undefined);
+      }
+      if (typeof settings.faceConcurrency === 'number' && settings.faceConcurrency > 0) {
+        dispatch({ type: 'SET_FACE_CONCURRENCY', concurrency: settings.faceConcurrency });
+      }
+
       dispatch({ type: 'HYDRATE_LICENSE_STATUS', status: settings.licenseStatus ?? null });
       if (settings.licenseKey) {
         window.electronAPI.activateLicense(settings.licenseKey).then((status) => {

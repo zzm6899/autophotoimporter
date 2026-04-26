@@ -195,6 +195,41 @@ const api = {
   clearCache: (): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke(IPC.CACHE_CLEAR),
 
+  /** Update how many face analyses run in parallel (1–4). */
+  setFaceAnalysisConcurrency: (n: number): Promise<void> =>
+    ipcRenderer.invoke('face:set-concurrency', n),
+
+  /** Clear the persistent face-analysis result cache. */
+  clearFaceCache: (): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke(IPC.FACE_CACHE_CLEAR),
+
+  /** Returns the execution provider actually in use: 'cpu', 'dml', 'coreml', or null if not yet determined. */
+  getExecutionProvider: (): Promise<string | null> =>
+    ipcRenderer.invoke(IPC.FACE_EXECUTION_PROVIDER),
+
+  /** Run a quick DML benchmark — returns EP, avg inference time, session load time. */
+  diagnoseFaceEngine: (): Promise<{
+    ep: string | null;
+    gpuAvailable: boolean | null;
+    avgInferenceMs: number;
+    sessionLoadMs: number;
+    platform: string;
+    providers: string[];
+  }> =>
+    ipcRenderer.invoke('face:diagnose'),
+
+  /** Get the device performance tier profile. */
+  getDeviceTier: (): Promise<{
+    tier: 'low' | 'balanced' | 'high';
+    cpuCores: number;
+    totalMemGB: number;
+    previewConcurrency: number;
+    faceConcurrency: number;
+    cpuOptimization: boolean;
+    rawPreviewQuality: number;
+  }> =>
+    ipcRenderer.invoke(IPC.DEVICE_TIER_GET),
+
   /** Subscribe to background face-model download progress events. */
   onFaceModelDownloadProgress: (cb: (progress: ModelDownloadProgress) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, progress: ModelDownloadProgress) => cb(progress);

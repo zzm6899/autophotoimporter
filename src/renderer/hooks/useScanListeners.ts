@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 
 export function useScanListeners() {
@@ -11,12 +11,24 @@ export function useScanListeners() {
   } = useAppState();
   const dispatch = useAppDispatch();
 
+  // Track whether we're in an active scan at the listener layer.
+  // This ref stays in sync with the phase state and lets the onScanComplete
+  // callback discard stale IPC events that arrive after the phase left 'scanning'.
+  const isActiveRef = useRef(false);
+  useEffect(() => {
+    isActiveRef.current = phase === 'scanning';
+  }, [phase]);
+
   useEffect(() => {
     const unsubBatch = window.electronAPI.onScanBatch((files) => {
       dispatch({ type: 'SCAN_BATCH', files });
     });
 
     const unsubComplete = window.electronAPI.onScanComplete(() => {
+      // Discard SCAN_COMPLETE that arrives after the scan was cancelled /
+      // superseded. The reducer also guards on phase === 'scanning', so this
+      // is belt-and-suspenders — but it avoids a spurious dispatch entirely.
+      if (!isActiveRef.current) return;
       dispatch({ type: 'SCAN_COMPLETE' });
     });
 

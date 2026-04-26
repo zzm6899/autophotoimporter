@@ -13,7 +13,9 @@ import { generatePreview } from './services/exif-parser';
 import { checkForUpdate, fetchUpdateHistory } from './services/update-checker';
 import { probeFtp, mirrorFtp } from './services/ftp-source';
 import { activateLicenseInput, checkHostedLicenseStatus, validateLicenseKey } from './services/license';
-import { analyzeFaces, faceModelsAvailable, serializeEmbedding, isGpuAvailable, configureGpuAcceleration, configureCpuOptimization } from './services/face-engine';
+import { analyzeFaces, faceModelsAvailable, serializeEmbedding, isGpuAvailable, getActualExecutionProvider, configureGpuAcceleration, configureCpuOptimization, clearImageDecodeCache, diagnoseFaceEngine } from './services/face-engine';
+import { getCachedFaceResult, setCachedFaceResult, clearFaceCache } from './services/face-cache';
+import { detectDeviceTier, applyDeviceTier } from './services/device-tier';
 import { setRawPreviewQuality } from './services/exif-parser';
 
 const execFileAsync = promisify(execFile);
@@ -75,7 +77,62 @@ const DEFAULT_SETTINGS: AppSettings = {
   selectionSets: [],
   licenseKey: '',
   licenseStatus: { valid: false, message: 'No license activated.' },
+  perfTier: 'auto',
+  fastKeeperMode: false,
+  previewConcurrency: 2,
+  faceConcurrency: 1,
 };
+
+// ---------------------------------------------------------------------------
+// Face analysis semaphore — module-level so loadSettings can initialise it
+// ---------------------------------------------------------------------------
+let faceSemaphoreSlots = 1;
+let faceSemaphoreQueue: Array<() => void> = [];
+let faceActiveCount = 0;
+
+// Incremented on every SCAN_START so in-flight semaphore waiters from the
+// previous source can detect they've been superseded and bail out early.
+let faceQueueGeneration = 0;
+
+/** Call on SCAN_START to immediately drain all queued (not yet running) face jobs. */
+function cancelPendingFaceJobs(): void {
+  faceQueueGeneration++;
+  // Drain the queue — each resolve() unblocks the awaiting acquireFaceSemaphore()
+  // call; the generation check inside will then throw STALE_FACE_JOB.
+  const drained = faceSemaphoreQueue.splice(0);
+  for (const resolve of drained) resolve();
+}
+
+const STALE_FACE_JOB = 'stale-face-job';
+
+function setFaceConcurrency(n: number): void {
+  faceSemaphoreSlots = Math.max(1, Math.min(8, n));
+  while (faceActiveCount < faceSemaphoreSlots && faceSemaphoreQueue.length > 0) {
+    faceActiveCount++;
+    faceSemaphoreQueue.shift()?.();
+  }
+}
+
+async function acquireFaceSemaphore(gen: number): Promise<void> {
+  if (faceActiveCount < faceSemaphoreSlots) {
+    faceActiveCount++;
+    if (gen !== faceQueueGeneration) throw new Error(STALE_FACE_JOB);
+    return;
+  }
+  await new Promise<void>((resolve) => faceSemaphoreQueue.push(resolve));
+  // Check generation AFTER waking up — if a new scan started while we waited,
+  // don't consume a slot; throw so the caller returns an empty result.
+  if (gen !== faceQueueGeneration) throw new Error(STALE_FACE_JOB);
+  faceActiveCount++;
+}
+
+function releaseFaceSemaphore(): void {
+  faceActiveCount--;
+  if (faceSemaphoreQueue.length > 0 && faceActiveCount < faceSemaphoreSlots) {
+    faceActiveCount++;
+    faceSemaphoreQueue.shift()?.();
+  }
+}
 
 async function loadSettings(): Promise<AppSettings> {
   try {
@@ -90,7 +147,20 @@ async function loadSettings(): Promise<AppSettings> {
     configureGpuAcceleration(merged.gpuFaceAcceleration ?? true);
     configureCpuOptimization(merged.cpuOptimization ?? false);
     setRawPreviewQuality(merged.rawPreviewQuality ?? 70);
-    
+    setFaceConcurrency(merged.faceConcurrency ?? 1);
+
+    // Apply device-tier presets on first load (overridden by explicit user settings)
+    const profile = detectDeviceTier(
+      merged.perfTier && merged.perfTier !== 'auto' ? merged.perfTier : undefined
+    );
+    applyDeviceTier(profile, {
+      setCpuOptimization: configureCpuOptimization,
+      setRawPreviewQuality,
+    }, {
+      cpuOptimization: merged.cpuOptimization,
+      rawPreviewQuality: merged.rawPreviewQuality,
+    });
+
     return { ...merged, licenseStatus };
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -110,6 +180,7 @@ async function saveSettings(settings: Partial<AppSettings>): Promise<void> {
   configureGpuAcceleration(merged.gpuFaceAcceleration ?? true);
   configureCpuOptimization(merged.cpuOptimization ?? false);
   setRawPreviewQuality(merged.rawPreviewQuality ?? 70);
+  setFaceConcurrency(merged.faceConcurrency ?? 1);
 }
 
 async function getLicenseStatus() {
@@ -456,6 +527,8 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IPC.SCAN_START, async (_event, sourcePath: string, folderPattern?: string) => {
     console.log(`[scan] Starting scan of: ${sourcePath}`);
     scannedFiles = [];
+    clearImageDecodeCache(); // flush stale RAW decodes from previous source
+    cancelPendingFaceJobs(); // drain queued face jobs from old source so they don't compete with new scan
     try {
       const total = await scanFiles(
         sourcePath,
@@ -870,6 +943,15 @@ export function registerIpcHandlers(): void {
    * Returns true when the ONNX face models are present on disk.
    * The renderer uses this to show/hide face-related UI affordances.
    */
+  ipcMain.handle(IPC.FACE_EXECUTION_PROVIDER, () => {
+    return getActualExecutionProvider();
+  });
+
+  // Diagnostic: run a quick benchmark and return timing + EP info
+  ipcMain.handle('face:diagnose', async () => {
+    return diagnoseFaceEngine();
+  });
+
   ipcMain.handle(IPC.FACE_MODELS_AVAILABLE, () => {
     return faceModelsAvailable();
   });
@@ -898,50 +980,95 @@ export function registerIpcHandlers(): void {
    * Errors per file are returned as { path, error } rather than throwing, so
    * one bad file doesn't abort the whole batch.
    */
-  // Global mutex — only one ONNX inference runs at a time across all IPC
-  // callers (grid loop, SingleView, burst scan). Without this, concurrent
-  // analyzeFaces() calls from the renderer queue up inside ipcMain.handle and
-  // run back-to-back with no yield, making the UI unresponsive for minutes.
-  let faceAnalyzeMutex = Promise.resolve();
+  // Semaphore is now module-level (see top of file) so loadSettings can init it.
 
   ipcMain.handle(IPC.FACE_ANALYZE, (_event, input: string | string[]) => {
     const paths = Array.isArray(input) ? input : [input];
-    // Each IPC call appends a task to the mutex chain and returns its own result.
+
     const task = async (): Promise<object[]> => {
-      const results: object[] = [];
-      for (const filePath of paths) {
+      // ── Phase 1: parallel cache lookup (no semaphore — pure disk reads) ──
+      const cacheResults = await Promise.all(paths.map(async (filePath) => {
+        const cached = await getCachedFaceResult(filePath).catch(() => null);
+        return { filePath, cached };
+      }));
+
+      const hits: object[] = [];
+      const misses: string[] = [];
+      for (const { filePath, cached } of cacheResults) {
+        if (cached) {
+          hits.push({
+            path: filePath,
+            boxes: cached.result.boxes,
+            personBoxes: cached.result.personBoxes,
+            embeddings: cached.hexEmbeddings,
+            faceCount: cached.result.boxes.length,
+            personCount: cached.result.personBoxes.length,
+          });
+        } else {
+          misses.push(filePath);
+        }
+      }
+      if (misses.length === 0) return hits;
+
+      // ── Phase 2: ONNX inference for cache misses (semaphore-limited) ──
+      // Capture generation before any awaits so stale jobs from a previous
+      // source can be detected and dropped without running ONNX inference.
+      const capturedGen = faceQueueGeneration;
+      const onnxResults = await Promise.all(misses.map(async (filePath) => {
+        try {
+          await acquireFaceSemaphore(capturedGen);
+        } catch (err: unknown) {
+          // Stale job (scan source changed) — return empty result silently.
+          if ((err as Error).message === STALE_FACE_JOB) {
+            return { path: filePath, boxes: [], personBoxes: [], embeddings: [], faceCount: 0, personCount: 0 };
+          }
+          throw err;
+        }
         try {
           const { boxes, personBoxes, embeddings } = await analyzeFaces(filePath);
-          results.push({
+          const hexEmbeddings = embeddings.map(serializeEmbedding);
+          await setCachedFaceResult(filePath, { boxes, personBoxes, embeddings }, hexEmbeddings).catch(() => undefined);
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          return {
             path: filePath,
             boxes,
             personBoxes,
-            embeddings: embeddings.map(serializeEmbedding),
+            embeddings: hexEmbeddings,
             faceCount: boxes.length,
             personCount: personBoxes.length,
-          });
+          };
         } catch (err: unknown) {
-          results.push({
+          return {
             path: filePath,
-            boxes: [],
-            personBoxes: [],
-            embeddings: [],
+            boxes: [] as object[],
+            personBoxes: [] as object[],
+            embeddings: [] as string[],
             faceCount: 0,
             personCount: 0,
             error: (err as Error).message,
-          });
+          };
+        } finally {
+          releaseFaceSemaphore();
         }
-        // Yield between images so IPC messages (navigation, source change) can
-        // be processed between each 1-4s ONNX inference.
-        await new Promise<void>((resolve) => setImmediate(resolve));
+      }));
+
+      // Merge hits + misses in original path order
+      const allByPath = new Map<string, object>();
+      for (const r of [...hits, ...onnxResults]) {
+        allByPath.set((r as { path: string }).path, r);
       }
-      return results;
+      return paths.map((p) => allByPath.get(p) ?? {
+        path: p, boxes: [], personBoxes: [], embeddings: [], faceCount: 0, personCount: 0,
+        error: 'result missing',
+      });
     };
-    // Chain: wait for all previous calls to finish, then run this one.
-    const result = faceAnalyzeMutex.then(() => task());
-    // Advance the mutex to the tail (ignoring errors so the chain never breaks).
-    faceAnalyzeMutex = result.then(() => undefined, () => undefined);
-    return result;
+
+    return task();
+  });
+
+  // Allow renderer to update face concurrency at runtime
+  ipcMain.handle('face:set-concurrency', (_event, n: number) => {
+    setFaceConcurrency(n);
   });
 
   // Clear the on-disk thumbnail/preview cache (temp folder).
@@ -955,6 +1082,34 @@ export function registerIpcHandlers(): void {
       return { success: false, error: (err as Error).message };
     }
   });
+
+  // Clear the persistent face-analysis result cache
+  ipcMain.handle(IPC.FACE_CACHE_CLEAR, async () => {
+    try {
+      await clearFaceCache();
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Return the detected device performance tier profile
+  ipcMain.handle(IPC.DEVICE_TIER_GET, async () => {
+    const settings = await loadSettings();
+    return detectDeviceTier(
+      settings.perfTier && settings.perfTier !== 'auto' ? settings.perfTier : undefined
+    );
+  });
+
+  // Prewarm ONNX face engine 5s after startup so first analysis is fast
+  setTimeout(() => {
+    void (async () => {
+      try {
+        const { prewarmFaceEngine } = await import('./services/face-engine');
+        await prewarmFaceEngine();
+      } catch { /* non-fatal */ }
+    })();
+  }, 5000);
 
   setTimeout(() => {
     void refreshUpdateState();

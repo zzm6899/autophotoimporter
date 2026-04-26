@@ -39,6 +39,14 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     exposureMaxStops,
     selectionSets,
     licenseStatus,
+    gpuFaceAcceleration,
+    rawPreviewCache,
+    cpuOptimization,
+    rawPreviewQuality,
+    perfTier,
+    fastKeeperMode,
+    previewConcurrency,
+    faceConcurrency,
   } = useAppState();
   const dispatch = useAppDispatch();
   const { updateState, checkNow, downloadUpdate, installUpdate, openRelease } = useUpdateNotification();
@@ -46,6 +54,11 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const [licenseInput, setLicenseInput] = useState('');
   const [licenseBusy, setLicenseBusy] = useState(false);
   const [licenseFeedback, setLicenseFeedback] = useState<string | null>(null);
+  const [gpuStatus, setGpuStatus] = useState<boolean | null>(null);
+  const [executionProvider, setExecutionProvider] = useState<string | null>(null);
+  const [faceCacheClearing, setFaceCacheClearing] = useState(false);
+  const [diagnosing, setDiagnosing] = useState(false);
+  const [diagResult, setDiagResult] = useState<string | null>(null);
 
   const formatDisplayDate = (value?: string) => {
     if (!value) return 'Never';
@@ -66,6 +79,23 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
       year: 'numeric',
     }).format(date);
   };
+
+  useEffect(() => {
+    // Poll GPU status — ONNX warms up 5s after startup, so retry a few times
+    const fetchGpuStatus = async () => {
+      try {
+        const [gpu, ep] = await Promise.all([
+          window.electronAPI.isGpuAvailable?.() ?? Promise.resolve(null),
+          window.electronAPI.getExecutionProvider?.() ?? Promise.resolve(null),
+        ]);
+        setGpuStatus(gpu);
+        if (ep) setExecutionProvider(ep);
+        // If not yet determined, retry after 3s (ONNX may still be loading)
+        if (gpu === null) setTimeout(fetchGpuStatus, 3000);
+      } catch { /* ignore */ }
+    };
+    void fetchGpuStatus();
+  }, []);
 
   useEffect(() => {
     setLicenseInput(licenseStatus?.activationCode ?? licenseStatus?.key ?? '');
@@ -126,6 +156,51 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const handleBurstWindow = (seconds: number) => {
     dispatch({ type: 'SET_BURST_WINDOW', seconds });
     set('burstWindowSec', seconds);
+  };
+
+  const handlePerformanceOption = (key: 'gpuFaceAcceleration' | 'rawPreviewCache' | 'cpuOptimization', value: boolean) => {
+    dispatch({ type: 'SET_PERFORMANCE_OPTION', key, value });
+    void window.electronAPI.setSettings({ [key]: value });
+  };
+  const handleRawPreviewQuality = (quality: number) => {
+    dispatch({ type: 'SET_RAW_PREVIEW_QUALITY', quality });
+    void window.electronAPI.setSettings({ rawPreviewQuality: quality });
+  };
+  const handlePerfTier = (tier: 'auto' | 'low' | 'balanced' | 'high') => {
+    dispatch({ type: 'SET_PERF_TIER', tier });
+    void window.electronAPI.setSettings({ perfTier: tier });
+  };
+  const handleFastKeeperMode = (enabled: boolean) => {
+    dispatch({ type: 'SET_FAST_KEEPER_MODE', enabled });
+    void window.electronAPI.setSettings({ fastKeeperMode: enabled });
+  };
+  const handleFaceConcurrency = (concurrency: number) => {
+    dispatch({ type: 'SET_FACE_CONCURRENCY', concurrency });
+    void window.electronAPI.setSettings({ faceConcurrency: concurrency });
+    void window.electronAPI.setFaceAnalysisConcurrency?.(concurrency);
+  };
+
+  const handleDiagnose = async () => {
+    setDiagnosing(true);
+    setDiagResult(null);
+    try {
+      const r = await window.electronAPI.diagnoseFaceEngine?.();
+      if (r) {
+        setDiagResult(
+          `EP: ${r.ep ?? 'unknown'} | GPU: ${r.gpuAvailable ? 'yes' : 'no'} | ` +
+          `Inference: ${r.avgInferenceMs.toFixed(0)}ms/img | Session load: ${r.sessionLoadMs}ms`
+        );
+      }
+    } catch (e) {
+      setDiagResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setDiagnosing(false);
+    }
+  };
+
+  const handleClearFaceCache = async () => {
+    setFaceCacheClearing(true);
+    try { await window.electronAPI.clearFaceCache(); } finally { setFaceCacheClearing(false); }
   };
 
   const handleMaxStops = (stops: number) => {
@@ -318,82 +393,50 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
             </div>
           </section>
 
-          {/* License */}
+          {/* License — compact */}
           <section>
             <h3 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-2">License</h3>
-            <div className="space-y-2">
-              <p className="text-[10px] text-text-muted">
-                Full access is required for importing. Without a license, the app stays in browse/review mode.
-              </p>
-              <textarea
-                value={licenseInput}
-                onChange={(e) => setLicenseInput(e.target.value)}
-                rows={3}
-                placeholder="Paste license key or activation code"
-                className="w-full resize-y px-2 py-1.5 text-xs font-mono bg-surface-raised border border-border rounded text-text placeholder-text-muted focus:border-text focus:outline-none"
-              />
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={handleActivateLicense}
-                  disabled={licenseBusy || !licenseInput.trim()}
-                  className="px-3 py-1 text-xs rounded bg-accent text-white hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {licenseBusy ? 'Checking...' : 'Activate'}
-                </button>
-                <button
-                  onClick={handleClearLicense}
-                  disabled={licenseBusy || !licenseStatus?.key}
-                  className="px-3 py-1 text-xs rounded bg-surface-raised text-text-secondary hover:bg-border disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  Clear
-                </button>
-                {!licenseStatus?.valid && (
-                  <button
-                    onClick={() => dispatch({ type: 'OPEN_LICENSE_PROMPT' })}
-                    className="px-3 py-1 text-xs rounded bg-surface-raised text-text-secondary hover:bg-border"
-                  >
-                    Open popup
-                  </button>
-                )}
-                {licenseStatus?.valid ? (
-                  <span className="text-[10px] text-emerald-300">Active</span>
-                ) : (
-                  <span className="text-[10px] text-text-muted">Not activated</span>
+            {licenseStatus?.valid ? (
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-emerald-300 font-medium">✓ Active</span>
+                  {licenseStatus.entitlement?.name && (
+                    <span className="text-[10px] text-text-muted">{licenseStatus.entitlement.name}</span>
+                  )}
+                  {licenseStatus.deviceSlotsUsed != null && (
+                    <span className="text-[10px] text-text-muted ml-auto">{licenseStatus.deviceSlotsUsed}/{licenseStatus.deviceSlotsTotal ?? licenseStatus.entitlement?.maxDevices ?? '∞'} seats</span>
+                  )}
+                </div>
+                {(licenseStatus.activationCode ?? licenseStatus.key) && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-text-muted">Code:</span>
+                    <code className="text-[10px] font-mono text-text-secondary bg-surface-raised px-1.5 py-0.5 rounded truncate max-w-[160px]">
+                      {(licenseStatus.activationCode ?? licenseStatus.key ?? '').slice(0, 20)}&hellip;
+                    </code>
+                    <button onClick={handleClearLicense} disabled={licenseBusy} className="text-[10px] text-text-muted hover:text-text ml-auto">Deactivate</button>
+                  </div>
                 )}
               </div>
-              {(licenseFeedback || licenseStatus?.message) && (
-                <p className={`text-[10px] ${!licenseFeedback && licenseStatus?.valid ? 'text-emerald-300' : 'text-text-muted'}`}>
-                  {licenseFeedback || licenseStatus?.message}
-                </p>
-              )}
-              {licenseStatus?.entitlement && (
-                <div className="grid grid-cols-2 gap-1 text-[10px] text-text-muted">
-                  {licenseStatus.activationCode && (
-                    <div className="bg-surface-alt border border-border rounded px-2 py-1 col-span-2">
-                      Activation: <span className="text-text-secondary font-mono">{licenseStatus.activationCode}</span>
-                    </div>
-                  )}
-                  <div className="bg-surface-alt border border-border rounded px-2 py-1">
-                    Owner: <span className="text-text-secondary">{licenseStatus.entitlement.name}</span>
-                  </div>
-                  <div className="bg-surface-alt border border-border rounded px-2 py-1">
-                    Tier: <span className="text-text-secondary">{licenseStatus.entitlement.tier || 'Full access'}</span>
-                  </div>
-                  <div className="bg-surface-alt border border-border rounded px-2 py-1">
-                    Issued: <span className="text-text-secondary">{formatDisplayDate(licenseStatus.entitlement.issuedAt)}</span>
-                  </div>
-                  <div className="bg-surface-alt border border-border rounded px-2 py-1">
-                    Expires: <span className="text-text-secondary">{formatDisplayDate(licenseStatus.entitlement.expiresAt)}</span>
-                  </div>
-                  <div className="bg-surface-alt border border-border rounded px-2 py-1">
-                    Seats: <span className="text-text-secondary">{licenseStatus.deviceSlotsUsed ?? 0}/{licenseStatus.deviceSlotsTotal ?? licenseStatus.entitlement.maxDevices ?? '∞'}</span>
-                  </div>
-                  <div className="bg-surface-alt border border-border rounded px-2 py-1">
-                    This device: <span className="text-text-secondary">{licenseStatus.deviceName || 'Current machine'}</span>
-                  </div>
+            ) : (
+              <div className="space-y-1.5">
+                <input
+                  type="text"
+                  value={licenseInput}
+                  onChange={(e) => setLicenseInput(e.target.value)}
+                  placeholder="Paste license key"
+                  className="w-full px-2 py-1 text-xs font-mono bg-surface-raised border border-border rounded text-text placeholder-text-muted focus:border-text focus:outline-none"
+                />
+                <div className="flex items-center gap-2">
+                  <button onClick={handleActivateLicense} disabled={licenseBusy || !licenseInput.trim()} className="px-3 py-1 text-xs rounded bg-accent text-white hover:bg-accent-hover disabled:opacity-50">
+                    {licenseBusy ? 'Checking…' : 'Activate'}
+                  </button>
+                  <button onClick={() => dispatch({ type: 'OPEN_LICENSE_PROMPT' })} className="text-[10px] text-text-muted hover:text-text">More options</button>
                 </div>
-              )}
-            </div>
+                {(licenseFeedback ?? licenseStatus?.message) && (
+                  <p className="text-[10px] text-text-muted">{licenseFeedback ?? licenseStatus?.message}</p>
+                )}
+              </div>
+            )}
           </section>
 
           {/* Version / updates */}
@@ -844,6 +887,137 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                 />
               </div>
             )}
+          </section>
+
+          <section>
+            <h3 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-2">Performance</h3>
+
+            {/* Fast Keeper Mode */}
+            <label className="flex items-center gap-2 cursor-pointer mb-2">
+              <input
+                type="checkbox"
+                checked={fastKeeperMode}
+                onChange={(e) => handleFastKeeperMode(e.target.checked)}
+              />
+              <span className="text-xs text-text">Fast Keeper Mode</span>
+            </label>
+            {fastKeeperMode && (
+              <p className="text-[10px] text-text-muted mb-2 ml-5">
+                Skips face detection — scores photos by sharpness &amp; exposure only. Much faster for large batches.
+              </p>
+            )}
+
+            {/* Device tier */}
+            <div className="mb-2">
+              <span className="text-[10px] text-text-secondary block mb-1">Processing tier</span>
+              <div className="flex gap-1">
+                {(['auto', 'low', 'balanced', 'high'] as const).map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => handlePerfTier(t)}
+                    className={`px-2 py-0.5 text-[10px] rounded border transition-colors ${perfTier === t ? 'bg-accent text-white border-accent' : 'bg-surface-raised border-surface-border text-text-secondary hover:text-text'}`}
+                  >
+                    {t.charAt(0).toUpperCase() + t.slice(1)}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* RAW preview quality */}
+            <div className="mb-2">
+              <div className="flex items-center justify-between mb-0.5">
+                <span className="text-[10px] text-text-secondary">RAW preview quality</span>
+                <span className="text-[10px] text-text-secondary font-mono">{rawPreviewQuality}%</span>
+              </div>
+              <input
+                type="range"
+                min={40}
+                max={95}
+                step={5}
+                value={rawPreviewQuality}
+                onChange={(e) => handleRawPreviewQuality(Number(e.target.value))}
+                className="w-full h-1 bg-surface-raised rounded appearance-none cursor-pointer accent-accent"
+              />
+            </div>
+
+            {/* CPU optimization */}
+            <label className="flex items-center gap-2 cursor-pointer mb-1">
+              <input
+                type="checkbox"
+                checked={cpuOptimization}
+                onChange={(e) => handlePerformanceOption('cpuOptimization', e.target.checked)}
+              />
+              <span className="text-xs text-text">CPU optimization mode</span>
+            </label>
+
+            {/* GPU acceleration */}
+            <label className="flex items-center gap-2 cursor-pointer mb-1">
+              <input
+                type="checkbox"
+                checked={gpuFaceAcceleration}
+                onChange={(e) => handlePerformanceOption('gpuFaceAcceleration', e.target.checked)}
+              />
+              <span className="text-xs text-text">GPU face acceleration</span>
+            </label>
+            {gpuStatus !== null && (
+              <p className="text-[10px] text-text-muted ml-5 mb-1">
+                {gpuStatus ? `Active (${executionProvider ?? 'GPU'})` : 'Not available on this machine — using CPU'}
+              </p>
+            )}
+
+            {/* RAW preview cache */}
+            <label className="flex items-center gap-2 cursor-pointer mb-2">
+              <input
+                type="checkbox"
+                checked={rawPreviewCache}
+                onChange={(e) => handlePerformanceOption('rawPreviewCache', e.target.checked)}
+              />
+              <span className="text-xs text-text">Cache RAW previews</span>
+            </label>
+
+            {/* Face analysis concurrency */}
+            <div className="mb-2">
+              <div className="flex items-center justify-between mb-0.5">
+                <span className="text-[10px] text-text-secondary">Simultaneous face scans</span>
+                <span className="text-[10px] text-text-secondary font-mono">{faceConcurrency}</span>
+              </div>
+              <input
+                type="range"
+                min={1}
+                max={4}
+                step={1}
+                value={faceConcurrency}
+                onChange={(e) => handleFaceConcurrency(Number(e.target.value))}
+                className="w-full h-1 bg-surface-raised rounded appearance-none cursor-pointer accent-accent"
+              />
+              <p className="text-[10px] text-text-muted mt-0.5">Higher = faster scanning, but more CPU/GPU usage. Keep at 1 unless your machine is fast.</p>
+            </div>
+
+            {/* Clear face cache */}
+            <button
+              onClick={handleClearFaceCache}
+              disabled={faceCacheClearing}
+              className="text-[10px] text-text-secondary border border-surface-border rounded px-2 py-1 hover:text-text hover:border-text-secondary transition-colors disabled:opacity-50"
+            >
+              {faceCacheClearing ? 'Clearing…' : 'Clear face cache'}
+            </button>
+            <p className="text-[10px] text-text-muted mt-0.5">
+              Forces re-analysis of all photos on next import. Use after swapping lenses or changing detection settings.
+            </p>
+
+            {/* GPU Diagnose */}
+            <div className="mt-2">
+              <button
+                onClick={handleDiagnose}
+                disabled={diagnosing}
+                className="text-[10px] text-text-secondary border border-surface-border rounded px-2 py-1 hover:text-text hover:border-text-secondary transition-colors disabled:opacity-50"
+              >
+                {diagnosing ? 'Running benchmark…' : 'Diagnose GPU'}
+              </button>
+              {diagResult && (
+                <p className="text-[10px] text-text-muted mt-1 font-mono">{diagResult}</p>
+              )}
+            </div>
           </section>
 
         </div>

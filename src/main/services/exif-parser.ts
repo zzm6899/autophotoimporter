@@ -59,9 +59,34 @@ const RAW_EXTENSIONS = new Set([
 const THUMB_WIDTH = 320;
 const PREVIEW_WIDTH = 1920;
 const PREVIEW_QUALITY = 85;
-const MAX_RAW_SCAN_BYTES = 8 * 1024 * 1024;
+// Most cameras embed their full preview within the first 3MB of the RAW file.
+// We try 3MB first; if no large JPEG is found we extend to 12MB as a fallback.
+const MAX_RAW_SCAN_BYTES_FAST = 3 * 1024 * 1024;
+const MAX_RAW_SCAN_BYTES = 12 * 1024 * 1024;
 const MAX_DIRECT_THUMB_BYTES = 512 * 1024;
 const MAX_DIRECT_PREVIEW_BYTES = 6 * 1024 * 1024;
+
+// In-memory thumbnail result cache — avoids re-reading RAW files across
+// repeated scans of the same source. Keyed by "path|mtime|size".
+// Max 2000 entries (~160MB at 80KB/thumb average) — evict oldest on overflow.
+const thumbMemCache = new Map<string, string>();
+const THUMB_MEM_CACHE_MAX = 2000;
+
+function thumbMemCacheKey(filePath: string, mtimeMs: number, size: number): string {
+  return `${filePath}|${mtimeMs}|${size}`;
+}
+
+function thumbMemCacheSet(key: string, dataUri: string): void {
+  if (thumbMemCache.size >= THUMB_MEM_CACHE_MAX) {
+    // Evict oldest entry
+    thumbMemCache.delete(thumbMemCache.keys().next().value as string);
+  }
+  thumbMemCache.set(key, dataUri);
+}
+
+export function clearThumbnailMemCache(): void {
+  thumbMemCache.clear();
+}
 
 // Settings-driven overrides (will be set at runtime by ipc-handlers)
 let rawPreviewQuality = PREVIEW_QUALITY;  // Can be overridden by user settings
@@ -200,20 +225,31 @@ export async function extractEmbeddedThumbnail(
 ): Promise<string | undefined> {
   if (!EXIFR_SUPPORTED.has(extension)) return undefined;
   try {
+    // Check memory cache first — avoids re-reading the same RAW on repeated scans.
+    const s = await stat(filePath).catch(() => null);
+    const memKey = s ? thumbMemCacheKey(filePath, s.mtimeMs, s.size) : null;
+    if (memKey) {
+      const cached = thumbMemCache.get(memKey);
+      if (cached) return cached;
+    }
+
     const thumbData = await exifr.thumbnail(filePath);
     if (!thumbData || thumbData.byteLength === 0) return undefined;
     const buffer = Buffer.isBuffer(thumbData) ? thumbData : Buffer.from(thumbData);
+    let result: string | undefined;
     if (buffer.length > MAX_DIRECT_THUMB_BYTES) {
       // Larger than ideal for a grid thumbnail — resize in-process (no process spawn).
       const img = nativeImage.createFromBuffer(buffer);
       if (!img.isEmpty()) {
         const resized = img.resize({ width: THUMB_WIDTH });
         const small = resized.toJPEG(70);
-        return `data:image/jpeg;base64,${small.toString('base64')}`;
+        result = `data:image/jpeg;base64,${small.toString('base64')}`;
       }
-      return undefined;
+    } else {
+      result = `data:image/jpeg;base64,${buffer.toString('base64')}`;
     }
-    return `data:image/jpeg;base64,${buffer.toString('base64')}`;
+    if (result && memKey) thumbMemCacheSet(memKey, result);
+    return result;
   } catch {
     return undefined;
   }
@@ -343,11 +379,23 @@ export async function extractLargestEmbeddedJpeg(filePath: string): Promise<Buff
   let buf: Buffer;
   try {
     const fullStat = await stat(filePath);
-    const toRead = Math.min(Number(fullStat.size), MAX_RAW_SCAN_BYTES);
-    buf = Buffer.alloc(toRead);
+    const fileSize = Number(fullStat.size);
+    // Two-pass strategy: try first 3MB (covers ~95% of cameras). Only extend
+    // to 12MB if no preview-sized JPEG (>256KB) was found in the fast pass.
+    const fastRead = Math.min(fileSize, MAX_RAW_SCAN_BYTES_FAST);
+    buf = Buffer.alloc(fastRead);
     const handle = await fsOpen(filePath, 'r');
     try {
-      await handle.read(buf, 0, toRead, 0);
+      await handle.read(buf, 0, fastRead, 0);
+      const fast = scanBufferForLargestJpeg(buf);
+      if (fast && fast.length > 256 * 1024) return fast;
+      // Fast pass found nothing useful — extend to full limit
+      if (fileSize > fastRead) {
+        const fullRead = Math.min(fileSize, MAX_RAW_SCAN_BYTES);
+        const fullBuf = Buffer.alloc(fullRead);
+        await handle.read(fullBuf, 0, fullRead, 0);
+        buf = fullBuf;
+      }
     } finally {
       await handle.close();
     }
@@ -355,6 +403,10 @@ export async function extractLargestEmbeddedJpeg(filePath: string): Promise<Buff
     return undefined;
   }
 
+  return scanBufferForLargestJpeg(buf);
+}
+
+function scanBufferForLargestJpeg(buf: Buffer): Buffer | undefined {
   let best: Buffer | undefined;
   let i = 0;
   while (i < buf.length - 4) {
@@ -444,8 +496,10 @@ async function embeddedFallback(
 
 /**
  * Lightweight embedded-thumbnail extractor used only for grid thumbnails.
- * Tries exifr.thumbnail() first (fast, no full file read) and only falls
- * back to the slower byte-scan when that returns nothing useful.
+ * Tries exifr.thumbnail() first (fast, no full file read). Falls back to
+ * byte-scan only when exifr returns nothing at all (not when it returns a
+ * small thumbnail — a small thumb is better than a 3–12MB RAW read stalling
+ * the queue for 1000 other files).
  */
 async function embeddedFallbackForThumbnail(
   filePath: string,
@@ -454,38 +508,50 @@ async function embeddedFallbackForThumbnail(
 ): Promise<string | undefined> {
   if (!EXIFR_SUPPORTED.has(extension)) return undefined;
 
+  // Check memory cache first.
+  const s = await stat(filePath).catch(() => null);
+  const memKey = s ? thumbMemCacheKey(filePath, s.mtimeMs, s.size) : null;
+  if (memKey) {
+    const cached = thumbMemCache.get(memKey);
+    if (cached) return cached;
+  }
+
   // Fast path: exifr parses the IFD1 thumbnail without reading the whole file.
+  let exifrFailed = false;
   try {
     const thumbData = await exifr.thumbnail(filePath);
     if (thumbData && thumbData.byteLength > 0) {
       const buffer = Buffer.isBuffer(thumbData) ? thumbData : Buffer.from(thumbData);
+      let result: string | undefined;
       if (outPath && buffer.length > MAX_DIRECT_THUMB_BYTES) {
-        const resized = await resizeEmbeddedJpegToDataUri(buffer, outPath, THUMB_WIDTH, 60);
-        if (resized) return resized;
+        result = await resizeEmbeddedJpegToDataUri(buffer, outPath, THUMB_WIDTH, 60);
       }
-      return `data:image/jpeg;base64,${buffer.toString('base64')}`;
+      if (!result) result = `data:image/jpeg;base64,${buffer.toString('base64')}`;
+      // Accept any size — even a small IFD1 thumb is instantly usable in the grid.
+      if (memKey) thumbMemCacheSet(memKey, result);
+      return result;
     }
   } catch {
-    // fall through to byte-scan
+    exifrFailed = true;
   }
 
-  // Slow path: scan raw bytes for the largest embedded JPEG (covers RAW files
-  // whose IFD1 thumbnail is missing or too small).
-  try {
-    const big = await extractLargestEmbeddedJpeg(filePath);
-    if (big && big.length > 32 * 1024) {
-      const resized = outPath
-        ? await resizeEmbeddedJpegToDataUri(big, outPath, THUMB_WIDTH, 60)
-        : undefined;
-      if (resized) return resized;
-      // nativeImage resize failed (shouldn't happen for valid JPEG) — return raw
-      // if it fits; the browser will scale it down in CSS.
-      if (big.length <= MAX_DIRECT_THUMB_BYTES) return `data:image/jpeg;base64,${big.toString('base64')}`;
-      // Too large to send raw — skip rather than OOM the renderer.
-      return undefined;
+  // Slow path: only when exifr returned nothing (missing/no IFD1 thumbnail).
+  // This reads up to 3MB (fast pass) then up to 12MB if needed.
+  if (!exifrFailed || true) { // always try when exifr returned empty
+    try {
+      const big = await extractLargestEmbeddedJpeg(filePath);
+      if (big && big.length > 32 * 1024) {
+        const resized = outPath
+          ? await resizeEmbeddedJpegToDataUri(big, outPath, THUMB_WIDTH, 60)
+          : undefined;
+        const result = resized
+          ?? (big.length <= MAX_DIRECT_THUMB_BYTES ? `data:image/jpeg;base64,${big.toString('base64')}` : undefined);
+        if (result && memKey) thumbMemCacheSet(memKey, result);
+        return result;
+      }
+    } catch {
+      // fall through
     }
-  } catch {
-    // fall through
   }
 
   return undefined;
@@ -564,10 +630,6 @@ export async function generateThumbnail(filePath: string, _fileName: string): Pr
       // not cached
     }
 
-    // For RAW files on any platform, try to extract the embedded JPEG
-    // preview first — this avoids spawning sips / ImageMagick / PowerShell for
-    // files that already contain a usable preview in their header.
-    // Uses the fast exifr.thumbnail() path before falling back to the full scan.
     if (RAW_EXTENSIONS.has(ext)) {
       const fallback = await embeddedFallbackForThumbnail(filePath, ext, outPath);
       if (fallback) return fallback;

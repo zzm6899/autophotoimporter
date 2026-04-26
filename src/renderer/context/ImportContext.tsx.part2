@@ -1,0 +1,513 @@
+tId, [...(groups.get(f.burstId) ?? []), f]);
+        }
+      }
+      const keepers = new Set<string>();
+      for (const group of groups.values()) {
+        const sorted = group.slice().sort((a, b) =>
+          Number(!!b.isProtected) - Number(!!a.isProtected) ||
+          (b.rating ?? 0) - (a.rating ?? 0) ||
+          (b.sharpnessScore ?? -1) - (a.sharpnessScore ?? -1) ||
+          (a.burstIndex ?? 0) - (b.burstIndex ?? 0),
+        );
+        if (sorted[0]) keepers.add(sorted[0].path);
+      }
+      return withFileHistory(state, state.files.map((f) =>
+        f.burstId && groups.has(f.burstId)
+          ? { ...f, pick: keepers.has(f.path) ? 'selected' : 'rejected' }
+          : f,
+      ));
+    }
+    case 'SET_SHARPNESS_BATCH':
+      return {
+        ...state,
+        files: state.files.map((f) =>
+          Object.prototype.hasOwnProperty.call(action.scores, f.path)
+            ? (() => {
+                const sharpnessScore = action.scores[f.path];
+                const review = scoreReview({ ...f, sharpnessScore });
+                return {
+                  ...f,
+                  sharpnessScore,
+                  blurRisk: review.blurRisk,
+                  reviewScore: review.score,
+                  reviewReasons: review.reasons,
+                };
+              })()
+            : f,
+        ),
+      };
+    case 'SET_REVIEW_SCORES': {
+      // In the live app this action is intercepted by ImportProvider before
+      // reaching the reducer (see the dispatch override in ImportProvider),
+      // so this path only runs in tests that call the reducer directly.
+      const patchPaths = Object.keys(action.scores);
+      if (patchPaths.length === 0) return state;
+      const patchSet = new Set(patchPaths);
+      let changed = false;
+      const files = state.files.map((f) => {
+        if (!patchSet.has(f.path)) return f;
+        const patch = action.scores[f.path];
+        if (!patch) return f;
+        changed = true;
+        const merged = { ...f, ...patch };
+        const review = scoreReview(merged);
+        return {
+          ...merged,
+          blurRisk: patch.blurRisk ?? review.blurRisk,
+          reviewScore: patch.reviewScore ?? review.score,
+          reviewReasons: patch.reviewReasons ?? review.reasons,
+        };
+      });
+      return changed ? { ...state, files } : state;
+    }
+    case 'CLEAR_FACE_DATA':
+      // Wipe faceBoxes + subjectSharpnessScore so the background reviewer
+      // re-runs analyzeSubject for every photo using the current FaceDetector.
+      return {
+        ...state,
+        files: state.files.map((f) =>
+          f.type !== 'photo' ? f : {
+            ...f,
+            faceBoxes: undefined,
+            faceCount: undefined,
+            faceDetection: undefined,
+            faceEmbedding: undefined,
+            faceSignature: undefined,
+            faceGroupId: undefined,
+            faceGroupSize: undefined,
+            personCount: undefined,
+            personBoxes: undefined,
+            subjectSharpnessScore: undefined,
+          },
+        ),
+      };
+    case 'GROUP_VISUAL_DUPLICATES': {
+      const groups = groupByVisualHash(state.files, action.threshold ?? 8);
+      const groupByPath = new Map<string, { id: string; size: number }>();
+      for (const [id, paths] of Object.entries(groups)) {
+        for (const p of paths) groupByPath.set(p, { id, size: paths.length });
+      }
+      return {
+        ...state,
+        files: state.files.map((f) => {
+          const group = groupByPath.get(f.path);
+          const next = group
+            ? { ...f, visualGroupId: group.id, visualGroupSize: group.size }
+            : { ...f, visualGroupId: undefined, visualGroupSize: undefined };
+          const review = scoreReview(next);
+          return { ...next, reviewScore: review.score, blurRisk: review.blurRisk, reviewReasons: review.reasons };
+        }),
+      };
+    }
+    case 'GROUP_FACE_SIMILAR': {
+      const groups = groupByFaceSignature(state.files, action.threshold ?? 10);
+      const groupByPath = new Map<string, { id: string; size: number }>();
+      for (const [id, paths] of Object.entries(groups)) {
+        for (const p of paths) groupByPath.set(p, { id, size: paths.length });
+      }
+      return {
+        ...state,
+        files: state.files.map((f) => {
+          const group = groupByPath.get(f.path);
+          const next = group
+            ? { ...f, faceGroupId: group.id, faceGroupSize: group.size }
+            : { ...f, faceGroupId: undefined, faceGroupSize: undefined };
+          const review = scoreReview(next);
+          return { ...next, reviewScore: review.score, blurRisk: review.blurRisk, reviewReasons: review.reasons };
+        }),
+      };
+    }
+    case 'PICK_BEST_IN_GROUPS': {
+      const groups = new Map<string, MediaFile[]>();
+      for (const f of state.files) {
+        if (f.visualGroupId && f.visualGroupSize && f.visualGroupSize > 1) {
+          groups.set(f.visualGroupId, [...(groups.get(f.visualGroupId) ?? []), f]);
+        }
+        if (f.burstId && f.burstSize && f.burstSize > 1) {
+          const id = `burst:${f.burstId}`;
+          groups.set(id, [...(groups.get(id) ?? []), f]);
+        }
+      }
+      const keepers = new Set<string>();
+      for (const group of groups.values()) {
+        const best = bestInGroup(group);
+        if (best) keepers.add(best.path);
+      }
+      return withFileHistory(state, state.files.map((f) => {
+        const inGroup = (f.visualGroupId && groups.has(f.visualGroupId)) || (f.burstId && groups.has(`burst:${f.burstId}`));
+        return inGroup ? { ...f, pick: keepers.has(f.path) ? 'selected' : 'rejected' } : f;
+      }));
+    }
+    case 'QUEUE_BEST': {
+      const candidates = state.files
+        .filter((f) => f.type === 'photo' && f.pick !== 'rejected' && !f.duplicate)
+        .sort((a, b) =>
+          Number(!!b.isProtected) - Number(!!a.isProtected) ||
+          (b.rating ?? 0) - (a.rating ?? 0) ||
+          keeperScore(b) - keeperScore(a) ||
+          faceQuality(b) - faceQuality(a) ||
+          (b.reviewScore ?? 0) - (a.reviewScore ?? 0),
+        );
+      const groupByPath = new Set<string>();
+      const groups = new Map<string, MediaFile[]>();
+      for (const f of candidates) {
+        const groupId =
+          f.burstId && f.burstSize && f.burstSize > 1 ? `burst:${f.burstId}` :
+          f.visualGroupId && f.visualGroupSize && f.visualGroupSize > 1 ? `visual:${f.visualGroupId}` :
+          f.faceGroupId && f.faceGroupSize && f.faceGroupSize > 1 ? `face:${f.faceGroupId}` :
+          null;
+        if (groupId) {
+          groupByPath.add(f.path);
+          groups.set(groupId, [...(groups.get(groupId) ?? []), f]);
+        }
+      }
+
+      const next = new Set<string>();
+      for (const f of candidates) {
+        if ((f.rating ?? 0) > 0 || f.pick === 'selected') next.add(f.path);
+      }
+      const autoBestInGroup = (group: MediaFile[]): MediaFile | null => {
+        if (group.length === 0) return null;
+        return group.slice().sort((a, b) =>
+          Number(!!b.isProtected) - Number(!!a.isProtected) ||
+          faceQuality(b) - faceQuality(a) ||
+          (b.faceCount ?? 0) - (a.faceCount ?? 0) ||
+          (b.subjectSharpnessScore ?? 0) - (a.subjectSharpnessScore ?? 0) ||
+          Number(a.blurRisk === 'high') - Number(b.blurRisk === 'high') ||
+          (b.sharpnessScore ?? 0) - (a.sharpnessScore ?? 0) ||
+          (b.reviewScore ?? 0) - (a.reviewScore ?? 0) ||
+          keeperScore(b) - keeperScore(a) ||
+          (a.burstIndex ?? 0) - (b.burstIndex ?? 0),
+        )[0];
+      };
+      for (const group of groups.values()) {
+        const best = autoBestInGroup(group);
+        if (!best) continue;
+        if (best.pick === 'selected' || best.isProtected || (best.rating ?? 0) > 0 || keeperScore(best) >= 70 || (best.reviewScore ?? 0) >= 62) {
+          next.add(best.path);
+        }
+      }
+
+      const targetCount = Math.min(120, Math.max(8, Math.ceil(candidates.length * 0.08)));
+      for (const f of candidates) {
+        if (next.has(f.path)) continue;
+        if (f.pick === 'selected') {
+          next.add(f.path);
+          continue;
+        }
+        if (groupByPath.has(f.path)) continue;
+        if ((keeperScore(f) >= 85 || (f.reviewScore ?? 0) >= 70 || (f.rating ?? 0) > 0 || f.isProtected) && next.size < targetCount) {
+          next.add(f.path);
+        }
+      }
+      return { ...state, queuedPaths: [...next], filter: next.size > 0 ? 'queue' : state.filter };
+    }
+    case 'AUTO_CULL_SAFE': {
+      const groups = new Map<string, MediaFile[]>();
+      for (const f of state.files) {
+        if (f.burstId && f.burstSize && f.burstSize > 1) {
+          groups.set(`burst:${f.burstId}`, [...(groups.get(`burst:${f.burstId}`) ?? []), f]);
+        }
+        if (f.visualGroupId && f.visualGroupSize && f.visualGroupSize > 1) {
+          groups.set(`visual:${f.visualGroupId}`, [...(groups.get(`visual:${f.visualGroupId}`) ?? []), f]);
+        }
+      }
+
+      const reject = new Set<string>();
+      const keep = new Set<string>();
+      for (const group of groups.values()) {
+        const best = bestInGroup(group);
+        if (!best) continue;
+        keep.add(best.path);
+        for (const file of group) {
+          if (file.path === best.path) continue;
+          if (file.isProtected || (file.rating ?? 0) > 0 || file.pick === 'selected') continue;
+          const muchWorse =
+            (file.blurRisk === 'high' && faceQuality(file) < 45) ||
+            (faceQuality(best) - faceQuality(file) >= 45) ||
+            ((best.subjectSharpnessScore ?? 0) - (file.subjectSharpnessScore ?? 0) >= 25) ||
+            ((best.sharpnessScore ?? 0) - (file.sharpnessScore ?? 0) >= 60) ||
+            (keeperScore(best) - keeperScore(file) >= 42) ||
+            ((best.reviewScore ?? 0) - (file.reviewScore ?? 0) >= 22);
+          if (muchWorse) reject.add(file.path);
+        }
+      }
+
+      return withFileHistory(state, state.files.map((f) => {
+        if (keep.has(f.path)) return { ...f, pick: 'selected' };
+        if (reject.has(f.path)) return { ...f, pick: 'rejected' };
+        return f;
+      }));
+    }
+    case 'REJECT_DUPLICATES':
+      return withFileHistory(state, state.files.map((f) =>
+        f.duplicate ? { ...f, pick: 'rejected' } : f,
+      ));
+    case 'UNDO_FILE_EDIT':
+      if (state.fileHistory.length === 0) return state;
+      return {
+        ...state,
+        files: state.fileHistory[0],
+        fileHistory: state.fileHistory.slice(1),
+      };
+    case 'NORMALIZE_SELECTION_TO_MEDIAN': {
+      // Find files in the selection that actually have an EV — the median is
+      // only meaningful over computed values. Ties break toward the lower
+      // index (stable sort), which tends to be the earlier shot.
+      const pathSet = new Set(action.filePaths);
+      const candidates = state.files
+        .filter((f) => pathSet.has(f.path) && typeof f.exposureValue === 'number')
+        .slice()
+        .sort((a, b) => (a.exposureValue as number) - (b.exposureValue as number));
+      if (candidates.length === 0) return state;
+      const anchor = candidates[Math.floor((candidates.length - 1) / 2)];
+      return {
+        ...withFileHistory(state, state.files.map((f) => {
+          if (!pathSet.has(f.path)) return f;
+          if (f.path === anchor.path) {
+            // The anchor itself never needs normalizing.
+            return { ...f, normalizeToAnchor: false };
+          }
+          return { ...f, normalizeToAnchor: true };
+        })),
+        exposureAnchorPath: anchor.path,
+      };
+    }
+    case 'SET_VOLUME_IMPORT_QUEUE':
+      return { ...state, volumeImportQueue: action.paths };
+    case 'ADVANCE_VOLUME_IMPORT_QUEUE': {
+      const [, ...rest] = state.volumeImportQueue;
+      const nextSource = state.volumeImportQueue[1] ?? state.selectedSource;
+      return {
+        ...state,
+        volumeImportQueue: rest,
+        selectedSource: nextSource,
+        files: [],
+        phase: 'idle',
+        exposureAnchorPath: null,
+        queuedPaths: [],
+        selectedPaths: [],
+        importResult: null,
+        importProgress: null,
+        fileHistory: [],
+        focusedIndex: -1,
+        filter: 'all',
+      };
+    }
+    case 'HYDRATE_LICENSE_STATUS': {
+      const valid = !!action.status?.valid;
+      return {
+        ...state,
+        licenseStatus: action.status,
+        licenseHydrated: true,
+        licensePromptOpen: !valid,
+        licenseBannerDismissed: false,
+      };
+    }
+    case 'SET_LICENSE_STATUS':
+      return {
+        ...state,
+        licenseStatus: action.status,
+        licenseHydrated: true,
+        licensePromptOpen: action.status?.valid ? false : state.licensePromptOpen,
+        licenseBannerDismissed: action.status?.valid ? false : state.licenseBannerDismissed,
+      };
+    case 'OPEN_LICENSE_PROMPT':
+      return { ...state, licensePromptOpen: true, licenseBannerDismissed: false };
+    case 'CLOSE_LICENSE_PROMPT':
+      return { ...state, licensePromptOpen: false };
+    case 'DISMISS_LICENSE_BANNER':
+      return { ...state, licenseBannerDismissed: true };
+    default:
+      return state;
+  }
+}
+
+const StateContext = createContext<State>(initialState);
+const DispatchContext = createContext<Dispatch<Action>>(() => {});
+
+// ---------------------------------------------------------------------------
+// Review scores overlay — kept outside the reducer so SET_REVIEW_SCORES
+// dispatches don't trigger a full state.files.map() on every face completion.
+// Components that need merged files call useMergedFiles() instead of
+// reading state.files directly.
+// ---------------------------------------------------------------------------
+type ReviewPatch = Partial<MediaFile> & { reviewScore?: number; blurRisk?: MediaFile['blurRisk']; reviewReasons?: string[] };
+const ReviewScoresContext = createContext<Map<string, ReviewPatch>>(new Map());
+const ReviewScoresVersionContext = createContext<number>(0);
+
+export function ImportProvider({ children }: { children: ReactNode }) {
+  const [state, rawDispatch] = useReducer(reducer, initialState);
+
+  // Mutable ref to current state so the dispatch interceptor can read files
+  // without stale closure issues (the dispatch callback has [] deps).
+  const stateRef = useRef(state);
+  stateRef.current = state;
+
+  // Mutable map of review score overlays — never triggers a re-render itself.
+  const reviewScoresRef = useRef<Map<string, ReviewPatch>>(new Map());
+  // Version counter: bumped on every SET_REVIEW_SCORES so consumers re-render.
+  const [reviewVersion, setReviewVersion] = useState(0);
+
+  // Intercept SET_REVIEW_SCORES before it hits the reducer.
+  const dispatch = useCallback<Dispatch<Action>>((action) => {
+    if (action.type === 'SET_REVIEW_SCORES') {
+      const scores = action.scores;
+      if (Object.keys(scores).length === 0) return;
+      let dirty = false;
+      for (const [p, patch] of Object.entries(scores)) {
+        if (patch) { reviewScoresRef.current.set(p, patch); dirty = true; }
+      }
+      if (dirty) setReviewVersion((v) => v + 1);
+      return;
+    }
+    // Wipe the overlay on source change or face rescan so stale scores
+    // don't prevent re-analysis. CLEAR_FACE_DATA clears faceBoxes in the
+    // reducer but the overlay would re-merge them on top — clear it too.
+    if (
+      action.type === 'SELECT_SOURCE' ||
+      action.type === 'SET_FILES' ||
+      action.type === 'CLEAR_FACE_DATA'
+    ) {
+      reviewScoresRef.current.clear();
+      setReviewVersion((v) => v + 1);
+    }
+    if (action.type === 'CLEAR_PICKS') {
+      setReviewVersion((v) => v + 1);
+    }
+    // QUEUE_BEST runs inside the reducer against state.files which has NO
+    // overlay data (face scores, review scores are only in the overlay Map).
+    // Intercept it here, merge the overlay, run the same logic with full data,
+    // then dispatch QUEUE_ADD_PATHS with the result so the reducer just stores paths.
+    if (action.type === 'QUEUE_BEST') {
+      // Access current state via the ref snapshot — we need state.files here.
+      // We re-read it via a lazy getter trick: dispatch a dummy observer action
+      // that is synchronous. Instead, capture state in a ref updated on every render.
+      // Since this callback is recreated on every render via useCallback([], []),
+      // we need stateRef to avoid stale closure. stateRef is set below.
+      const overlay = reviewScoresRef.current;
+      const rawFiles = stateRef.current.files;
+      const mergedFiles: MediaFile[] = rawFiles.map((f) => {
+        const patch = overlay.get(f.path);
+        if (!patch) return f;
+        const merged = { ...f, ...patch };
+        if (patch.reviewScore === undefined) {
+          const review = scoreReview(merged);
+          merged.blurRisk = patch.blurRisk ?? review.blurRisk;
+          merged.reviewScore = review.score;
+          merged.reviewReasons = review.reasons;
+        }
+        return merged;
+      });
+      const candidates = mergedFiles
+        .filter((f) => f.type === 'photo' && f.pick !== 'rejected' && !f.duplicate)
+        .sort((a, b) =>
+          Number(!!b.isProtected) - Number(!!a.isProtected) ||
+          (b.rating ?? 0) - (a.rating ?? 0) ||
+          keeperScore(b) - keeperScore(a) ||
+          faceQuality(b) - faceQuality(a) ||
+          (b.reviewScore ?? 0) - (a.reviewScore ?? 0),
+        );
+      const groupByPath = new Set<string>();
+      const groups = new Map<string, MediaFile[]>();
+      for (const f of candidates) {
+        const groupId =
+          f.burstId && f.burstSize && f.burstSize > 1 ? `burst:${f.burstId}` :
+          f.visualGroupId && f.visualGroupSize && f.visualGroupSize > 1 ? `visual:${f.visualGroupId}` :
+          f.faceGroupId && f.faceGroupSize && f.faceGroupSize > 1 ? `face:${f.faceGroupId}` :
+          null;
+        if (groupId) {
+          groupByPath.add(f.path);
+          groups.set(groupId, [...(groups.get(groupId) ?? []), f]);
+        }
+      }
+      const next = new Set<string>();
+      for (const f of candidates) {
+        if ((f.rating ?? 0) > 0 || f.pick === 'selected') next.add(f.path);
+      }
+      const autoBestInGroup = (group: MediaFile[]): MediaFile | null => {
+        if (group.length === 0) return null;
+        return group.slice().sort((a, b) =>
+          Number(!!b.isProtected) - Number(!!a.isProtected) ||
+          faceQuality(b) - faceQuality(a) ||
+          (b.faceCount ?? 0) - (a.faceCount ?? 0) ||
+          (b.subjectSharpnessScore ?? 0) - (a.subjectSharpnessScore ?? 0) ||
+          Number(a.blurRisk === 'high') - Number(b.blurRisk === 'high') ||
+          (b.sharpnessScore ?? 0) - (a.sharpnessScore ?? 0) ||
+          (b.reviewScore ?? 0) - (a.reviewScore ?? 0) ||
+          keeperScore(b) - keeperScore(a) ||
+          (a.burstIndex ?? 0) - (b.burstIndex ?? 0),
+        )[0];
+      };
+      for (const group of groups.values()) {
+        const best = autoBestInGroup(group);
+        if (!best) continue;
+        if (best.pick === 'selected' || best.isProtected || (best.rating ?? 0) > 0 || keeperScore(best) >= 70 || (best.reviewScore ?? 0) >= 62) {
+          next.add(best.path);
+        }
+      }
+      const targetCount = Math.min(120, Math.max(8, Math.ceil(candidates.length * 0.08)));
+      for (const f of candidates) {
+        if (next.has(f.path)) continue;
+        if (f.pick === 'selected') { next.add(f.path); continue; }
+        if (groupByPath.has(f.path)) continue;
+        if ((keeperScore(f) >= 85 || (f.reviewScore ?? 0) >= 70 || (f.rating ?? 0) > 0 || f.isProtected) && next.size < targetCount) {
+          next.add(f.path);
+        }
+      }
+      rawDispatch({ type: 'QUEUE_ADD_PATHS', paths: [...next] });
+      if (next.size > 0) rawDispatch({ type: 'SET_FILTER', filter: 'queue' });
+      return;
+    }
+    rawDispatch(action);
+  }, []);
+
+  return (
+    <StateContext.Provider value={state}>
+      <DispatchContext.Provider value={dispatch}>
+        <ReviewScoresContext.Provider value={reviewScoresRef.current}>
+          <ReviewScoresVersionContext.Provider value={reviewVersion}>
+            {children}
+          </ReviewScoresVersionContext.Provider>
+        </ReviewScoresContext.Provider>
+      </DispatchContext.Provider>
+    </StateContext.Provider>
+  );
+}
+
+export function useAppState() {
+  return useContext(StateContext);
+}
+
+export function useAppDispatch() {
+  return useContext(DispatchContext);
+}
+
+/**
+ * Returns state.files with review score overlays merged in.
+ * Re-renders when either the files array or review scores change.
+ * Use this instead of useAppState().files anywhere face scores are needed.
+ */
+export function useMergedFiles(): MediaFile[] {
+  const { files } = useContext(StateContext);
+  const scores = useContext(ReviewScoresContext);
+  const version = useContext(ReviewScoresVersionContext);
+
+  return useMemo(() => {
+    if (scores.size === 0) return files;
+    return files.map((f) => {
+      const patch = scores.get(f.path);
+      if (!patch) return f;
+      const merged = { ...f, ...patch };
+      // Only recompute review score if not already provided in the patch
+      if (patch.reviewScore === undefined) {
+        const review = scoreReview(merged);
+        merged.blurRisk = patch.blurRisk ?? review.blurRisk;
+        merged.reviewScore = review.score;
+        merged.reviewReasons = review.reasons;
+      }
+      return merged;
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [files, version]);
+}

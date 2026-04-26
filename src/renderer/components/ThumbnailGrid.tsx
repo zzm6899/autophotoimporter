@@ -538,7 +538,7 @@ async function visualHash(src: string): Promise<string> {
 }
 
 export function ThumbnailGrid() {
-  const { phase, selectedSource, scanError, focusedIndex, viewMode, showLeftPanel, showRightPanel, filter, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused } = useAppState();
+  const { phase, selectedSource, scanError, focusedIndex, viewMode, showLeftPanel, showRightPanel, filter, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused, fastKeeperMode, faceConcurrency, gpuFaceAcceleration } = useAppState();
   // useMergedFiles() overlays face/review scores without re-running the full
   // reducer map — O(n) only when scores.size > 0, otherwise returns the same array.
   const files = useMergedFiles();
@@ -710,10 +710,9 @@ export function ThumbnailGrid() {
     if (reviewPaused) return;
     // Allow analysis in all view modes — use a smaller batch in single/split
     // so face detection doesn't compete with the detail preview load.
-    // Always process one at a time — ONNX inference blocks the main process
-    // for 1-4s per image. Larger batches cause the UI to freeze completely.
-    const batchSize = 1;
-    // Keep batch small so scoring doesn't freeze the UI on slow machines.
+    // With DML/GPU active, inference is fast (~50ms/image) — batch more to
+    // keep the GPU fed. CPU inference is slower so stay conservative.
+    const batchSize = gpuFaceAcceleration ? Math.max(4, faceConcurrency * 4) : 2;
     const focusedPath = focusedIndex >= 0 && focusedIndex < sortedFiles.length ? sortedFiles[focusedIndex].path : null;
     const visibleRank = new Map<string, number>();
     sortedFiles.slice(0, 240).forEach((f, index) => visibleRank.set(f.path, index));
@@ -721,9 +720,9 @@ export function ThumbnailGrid() {
       .filter((f) => f.type === 'photo' && f.thumbnail && (
         typeof f.sharpnessScore !== 'number' ||
         !f.visualHash ||
-        typeof f.subjectSharpnessScore !== 'number' ||
-        (f.faceDetection === 'native' && (f.faceCount ?? 0) > 0 && !f.faceEmbedding) ||
-        f.faceBoxes === undefined  // re-run face detection if it hasn't been stored yet
+        (!fastKeeperMode && typeof f.subjectSharpnessScore !== 'number') ||
+        (!fastKeeperMode && f.faceDetection === 'native' && (f.faceCount ?? 0) > 0 && !f.faceEmbedding) ||
+        (!fastKeeperMode && f.faceBoxes === undefined)  // re-run face detection if it hasn't been stored yet
       ))
       .sort((a, b) => {
         const af = focusedPath && a.path === focusedPath ? -1000 : 0;
@@ -738,7 +737,7 @@ export function ThumbnailGrid() {
     if (candidates.length === 0) return;
     sharpnessInFlightRef.current = true;
     const run = () => void (async () => {
-      const onnxResults = await window.electronAPI.analyzeFaces(candidates.map((f) => f.path)).catch(() => []);
+      const onnxResults = fastKeeperMode ? [] : await window.electronAPI.analyzeFaces(candidates.map((f) => f.path)).catch(() => []);
       const onnxByPath = new Map(onnxResults.map((result) => [result.path, result]));
 
       return Promise.all(candidates.map(async (f) => {
@@ -828,7 +827,7 @@ export function ThumbnailGrid() {
       });
     const hasIdle = typeof window.requestIdleCallback === 'function';
     const idle: number = hasIdle
-      ? window.requestIdleCallback(run, { timeout: 1200 })
+      ? window.requestIdleCallback(run, { timeout: 400 })
       : window.setTimeout(run, 250);
     return () => {
       if (hasIdle) {
@@ -838,7 +837,7 @@ export function ThumbnailGrid() {
       }
       sharpnessInFlightRef.current = false;
     };
-  }, [files, dispatch, reviewPaused, reviewWaitingForThumbnails, viewMode, focusedIndex, sortedFiles, reviewLoopTick]);
+  }, [files, dispatch, reviewPaused, reviewWaitingForThumbnails, viewMode, focusedIndex, sortedFiles, reviewLoopTick, faceConcurrency, gpuFaceAcceleration]);
 
   useEffect(() => {
     setBackgroundPreviewPaused(backgroundLoadingPaused);

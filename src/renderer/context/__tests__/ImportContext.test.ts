@@ -77,6 +77,15 @@ function makeState(overrides: Record<string, unknown> = {}) {
     licenseHydrated: false,
     licensePromptOpen: false,
     licenseBannerDismissed: false,
+    // Performance
+    gpuFaceAcceleration: true,
+    rawPreviewCache: true,
+    cpuOptimization: true,
+    rawPreviewQuality: 70,
+    perfTier: 'auto' as const,
+    fastKeeperMode: false,
+    previewConcurrency: 2,
+    faceConcurrency: 1,
     ...overrides,
   };
 }

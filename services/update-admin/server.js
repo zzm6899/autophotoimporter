@@ -1107,12 +1107,16 @@ app.post('/admin/licenses/:id/devices/:deviceRowId/remove', authSession, async (
   res.redirect(`/admin/licenses/${req.params.id}`);
 });
 
-app.get('/admin/releases', authSession, async (_req, res) => {
+app.get('/admin/releases', authSession, async (req, res) => {
   const releases = await pool.query('SELECT * FROM releases ORDER BY published_at DESC, id DESC LIMIT 100');
   const githubRelease = hasGitHubReleaseConfig()
     ? await fetchLatestGitHubReleaseMeta().catch((error) => ({ error: error instanceof Error ? error.message : 'Could not load GitHub release.' }))
     : null;
-  res.send(htmlPage('Releases', `
+  const warnMsg = req.query.warn ? String(req.query.warn) : null;
+  const warnBanner = warnMsg
+    ? '<div style="background:#7f1d1d;border:1px solid #ef4444;border-radius:8px;padding:12px 16px;margin-bottom:16px;color:#fca5a5;font-size:.85rem">Warning: ' + warnMsg + '</div>'
+    : '';
+  res.send(htmlPage('Releases', warnBanner + `
     <div class="hero">
       <div class="hero-copy">
         <div class="hero-kicker">Hosted Releases</div>
@@ -1311,23 +1315,72 @@ app.post('/admin/releases/:id/edit', authSession, async (req, res) => {
 
 app.post('/admin/releases/:id/delete', authSession, async (req, res) => {
   const release = await pool.query('SELECT * FROM releases WHERE id = $1', [req.params.id]);
-  if (release.rowCount) {
-    const row = release.rows[0];
-    // Try to delete the local artifact file if it's hosted on this server
-    try {
-      const artifactUrl = row.artifact_url || '';
-      const baseUrl = publicUpdatesBaseUrl();
-      if (artifactUrl.startsWith(baseUrl + '/artifacts/')) {
-        const relPath = artifactUrl.slice((baseUrl + '/artifacts/').length);
-        const localPath = path.join(artifactsRoot, decodeURIComponent(relPath));
-        // Safety check: must be inside artifactsRoot
-        if (localPath.startsWith(path.resolve(artifactsRoot))) {
-          await fs.promises.unlink(localPath).catch(() => {});
-        }
-      }
-    } catch {}
+  if (!release.rowCount) {
+    return res.redirect('/admin/releases');
   }
+
+  const row = release.rows[0];
+  const artifactUrl = row.artifact_url || '';
+  const deleteErrors = [];
+
+  // ── Case 1: locally-hosted artifact ──────────────────────────────────────
+  const baseUrl = publicUpdatesBaseUrl();
+  if (artifactUrl.startsWith(baseUrl + '/artifacts/')) {
+    try {
+      const relPath = artifactUrl.slice((baseUrl + '/artifacts/').length);
+      const localPath = path.join(artifactsRoot, decodeURIComponent(relPath));
+      if (localPath.startsWith(path.resolve(artifactsRoot))) {
+        await fs.promises.unlink(localPath);
+      }
+    } catch (err) {
+      deleteErrors.push('Local file: ' + err.message);
+    }
+  }
+
+  // ── Case 2: GitHub-hosted artifact ───────────────────────────────────────
+  // artifact_url is a browser_download_url like:
+  //   https://github.com/<owner>/<repo>/releases/download/<tag>/<file>
+  const ghDownloadPrefix = 'https://github.com/' + githubRepoOwner + '/' + githubRepoName + '/releases/download/';
+  if (hasGitHubReleaseConfig() && artifactUrl.startsWith(ghDownloadPrefix)) {
+    try {
+      const rest = artifactUrl.slice(ghDownloadPrefix.length); // "<tag>/<filename>"
+      const tagName = rest.split('/')[0];
+      const assetName = decodeURIComponent(rest.split('/').slice(1).join('/'));
+      const ghBase = githubApiBase.replace(/\/$/, '');
+      const releaseRes = await fetch(
+        ghBase + '/repos/' + githubRepoOwner + '/' + githubRepoName + '/releases/tags/' + encodeURIComponent(tagName),
+        { headers: githubHeaders() },
+      );
+      if (releaseRes.ok) {
+        const ghRelease = await releaseRes.json();
+        const asset = (ghRelease.assets || []).find((a) => a.name === assetName);
+        if (asset) {
+          const delRes = await fetch(
+            ghBase + '/repos/' + githubRepoOwner + '/' + githubRepoName + '/releases/assets/' + asset.id,
+            { method: 'DELETE', headers: githubHeaders() },
+          );
+          if (!delRes.ok && delRes.status !== 204) {
+            deleteErrors.push('GitHub asset delete returned ' + delRes.status);
+          }
+        } else {
+          // Asset may already be gone — not a hard error
+          console.warn('[delete-release] GitHub asset not found in tag', tagName, '- may already be deleted');
+        }
+      } else {
+        deleteErrors.push('GitHub release lookup for tag ' + tagName + ' returned ' + releaseRes.status);
+      }
+    } catch (err) {
+      deleteErrors.push('GitHub delete: ' + err.message);
+    }
+  }
+
+  // Always remove from DB regardless of file-deletion outcome
   await pool.query('DELETE FROM releases WHERE id = $1', [req.params.id]);
+
+  if (deleteErrors.length > 0) {
+    const warn = encodeURIComponent('Release removed from database, but cleanup had issues: ' + deleteErrors.join('; '));
+    return res.redirect('/admin/releases?warn=' + warn);
+  }
   res.redirect('/admin/releases');
 });
 

@@ -72,6 +72,15 @@ interface State {
   licenseHydrated: boolean;
   licensePromptOpen: boolean;
   licenseBannerDismissed: boolean;
+  // Performance
+  gpuFaceAcceleration: boolean;
+  rawPreviewCache: boolean;
+  cpuOptimization: boolean;
+  rawPreviewQuality: number;
+  perfTier: 'auto' | 'low' | 'balanced' | 'high';
+  fastKeeperMode: boolean;
+  previewConcurrency: number;
+  faceConcurrency: number;
 }
 
 export type Action =
@@ -169,7 +178,13 @@ export type Action =
   | { type: 'SET_LICENSE_STATUS'; status: LicenseValidation | null }
   | { type: 'OPEN_LICENSE_PROMPT' }
   | { type: 'CLOSE_LICENSE_PROMPT' }
-  | { type: 'DISMISS_LICENSE_BANNER' };
+  | { type: 'DISMISS_LICENSE_BANNER' }
+  | { type: 'SET_PERFORMANCE_OPTION'; key: 'gpuFaceAcceleration' | 'rawPreviewCache' | 'cpuOptimization'; value: boolean }
+  | { type: 'SET_RAW_PREVIEW_QUALITY'; quality: number }
+  | { type: 'SET_PERF_TIER'; tier: 'auto' | 'low' | 'balanced' | 'high' }
+  | { type: 'SET_FAST_KEEPER_MODE'; enabled: boolean }
+  | { type: 'SET_PREVIEW_CONCURRENCY'; concurrency: number }
+  | { type: 'SET_FACE_CONCURRENCY'; concurrency: number };
 
 const systemDark = typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches;
 
@@ -241,6 +256,14 @@ const initialState: State = {
   licenseHydrated: false,
   licensePromptOpen: false,
   licenseBannerDismissed: false,
+  gpuFaceAcceleration: true,
+  rawPreviewCache: true,
+  cpuOptimization: true,
+  rawPreviewQuality: 70,
+  perfTier: 'auto',
+  fastKeeperMode: false,
+  previewConcurrency: 2,
+  faceConcurrency: 1,
 };
 
 function withFileHistory(state: State, files: MediaFile[]): State {
@@ -264,6 +287,11 @@ export function reducer(state: State, action: Action): State {
     case 'SCAN_BATCH':
       return { ...state, files: [...state.files, ...action.files] };
     case 'SCAN_COMPLETE': {
+      // Guard: ignore stale SCAN_COMPLETE events that arrive after a new
+      // SCAN_START has already been dispatched (or after import began).
+      // This prevents a cancelled scan's completion from resetting the
+      // phase to 'idle' before the new scan's batches arrive.
+      if (state.phase !== 'scanning') return state;
       // Bursts can only be reliably grouped once every file has a parsed
       // dateTaken, so we do it here (not per-batch). If the user has toggled
       // grouping off, just drop any stale burst data.
@@ -279,9 +307,7 @@ export function reducer(state: State, action: Action): State {
       return {
         ...state,
         files: grouped,
-        phase: state.phase === 'importing'
-          ? 'importing'
-          : (state.files.length > 0 ? 'ready' : 'idle'),
+        phase: state.files.length > 0 ? 'ready' : 'idle',
         scanPaused: false,
         // Reset collapsed state on every rescan — otherwise old IDs accumulate
         collapsedBursts: [],
@@ -831,6 +857,18 @@ export function reducer(state: State, action: Action): State {
       return { ...state, licensePromptOpen: false };
     case 'DISMISS_LICENSE_BANNER':
       return { ...state, licenseBannerDismissed: true };
+    case 'SET_PERFORMANCE_OPTION':
+      return { ...state, [action.key]: action.value };
+    case 'SET_RAW_PREVIEW_QUALITY':
+      return { ...state, rawPreviewQuality: action.quality };
+    case 'SET_PERF_TIER':
+      return { ...state, perfTier: action.tier };
+    case 'SET_FAST_KEEPER_MODE':
+      return { ...state, fastKeeperMode: action.enabled };
+    case 'SET_PREVIEW_CONCURRENCY':
+      return { ...state, previewConcurrency: action.concurrency };
+    case 'SET_FACE_CONCURRENCY':
+      return { ...state, faceConcurrency: action.concurrency };
     default:
       return state;
   }
@@ -879,7 +917,7 @@ export function ImportProvider({ children }: { children: ReactNode }) {
     // reducer but the overlay would re-merge them on top — clear it too.
     if (
       action.type === 'SELECT_SOURCE' ||
-      action.type === 'SET_FILES' ||
+      action.type === 'RESET_FILES' ||
       action.type === 'CLEAR_FACE_DATA'
     ) {
       reviewScoresRef.current.clear();
