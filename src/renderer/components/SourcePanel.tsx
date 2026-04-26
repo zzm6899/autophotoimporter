@@ -1,3 +1,4 @@
+import { useState, useCallback } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import { useFileScanner } from '../hooks/useFileScanner';
 import { VolumeItem } from './VolumeItem';
@@ -12,10 +13,36 @@ export function SourcePanel() {
   const dispatch = useAppDispatch();
   const { startScan, pauseScan, resumeScan } = useFileScanner();
 
+  const [dragOver, setDragOver] = useState(false);
+
   const handleSelectVolume = (volumePath: string) => {
     dispatch({ type: 'SELECT_SOURCE', path: volumePath });
     startScan(volumePath);
   };
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOver(false);
+    const items = Array.from(e.dataTransfer.files);
+    if (items.length === 0) return;
+    const folderPath = (items[0] as { path?: string }).path;
+    if (!folderPath) return;
+    dispatch({ type: 'SET_SOURCE_KIND', kind: 'volume' });
+    dispatch({ type: 'SELECT_SOURCE', path: folderPath });
+    startScan(folderPath);
+  }, [dispatch, startScan]);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOver(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+  }, []);
 
   const handleImportAllCards = () => {
     const dcimVolumes = [...volumes]
@@ -44,7 +71,12 @@ export function SourcePanel() {
   const totalSize = files.reduce((sum, f) => sum + f.size, 0);
 
   return (
-    <div className="flex flex-col h-full">
+    <div
+      className={`flex flex-col h-full transition-colors ${dragOver ? 'bg-accent/10 ring-1 ring-inset ring-accent/40' : ''}`}
+      onDrop={handleDrop}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+    >
       <div className="px-2.5 py-2 flex items-center justify-between">
         <h2 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider">Source</h2>
         <div className="flex items-center gap-px bg-surface border border-border rounded overflow-hidden">
@@ -108,14 +140,24 @@ export function SourcePanel() {
             </div>
           )}
 
-          {/* Choose folder button */}
-          <div className="px-2.5 py-1.5">
+          {/* Choose folder / drop zone */}
+          <div className="px-2.5 py-1.5 space-y-1.5">
             <button
               onClick={handleChooseFolder}
               className="w-full px-2 py-1 text-xs bg-surface-raised hover:bg-border rounded text-text transition-colors text-left cursor-pointer"
             >
-              Choose Folder...
+              Choose Folder…
             </button>
+            {!selectedSource && (
+              <div className={`flex flex-col items-center justify-center gap-1 rounded border border-dashed py-4 transition-colors ${
+                dragOver ? 'border-accent/60 bg-accent/10 text-accent' : 'border-border text-text-muted'
+              }`}>
+                <svg className="w-5 h-5 opacity-50" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+                </svg>
+                <span className="text-[10px]">Drop folder here</span>
+              </div>
+            )}
           </div>
         </>
       )}
@@ -237,50 +279,66 @@ export function SourcePanel() {
         </div>
       )}
 
-      {/* Quick help */}
-      {files.length > 0 && (
-        <div className="mt-auto px-2.5 py-2 border-t border-border">
-          <h3 className="text-[10px] text-text-muted uppercase tracking-wider mb-1">Quick Help</h3>
-          <div className="space-y-0.5 text-[10px] text-text-muted">
-            <div className="flex justify-between">
-              <span>Open photo</span>
-              <span className="text-text-secondary">Double-click</span>
+      {/* Help section — onboarding when empty, shortcuts when files loaded */}
+      <div className="mt-auto px-2.5 py-2 border-t border-border">
+        {files.length === 0 ? (
+          <>
+            <h3 className="text-[10px] text-text-muted uppercase tracking-wider mb-1.5">How it works</h3>
+            <div className="space-y-1.5 text-[10px] text-text-muted">
+              <div className="flex gap-2">
+                <span className="text-text-secondary font-medium shrink-0">1.</span>
+                <span>Insert an SD card or choose a folder — photos are scanned automatically.</span>
+              </div>
+              <div className="flex gap-2">
+                <span className="text-text-secondary font-medium shrink-0">2.</span>
+                <span>AI review runs in the background: blur detection, face recognition, and keeper scoring.</span>
+              </div>
+              <div className="flex gap-2">
+                <span className="text-text-secondary font-medium shrink-0">3.</span>
+                <span>Pick keepers with <kbd className="bg-surface-raised px-0.5 rounded">P</kbd>, reject with <kbd className="bg-surface-raised px-0.5 rounded">X</kbd>, then set a destination and import.</span>
+              </div>
+              <div className="flex gap-2">
+                <span className="text-text-secondary font-medium shrink-0">4.</span>
+                <span>Use <strong className="text-text-secondary">Safe Cull</strong> or <strong className="text-text-secondary">Best Shot</strong> to let AI pre-select for you.</span>
+              </div>
             </div>
-            <div className="flex justify-between">
-              <span>Keep photo</span>
-              <span className="text-text-secondary">P</span>
+          </>
+        ) : (
+          <>
+            <h3 className="text-[10px] text-text-muted uppercase tracking-wider mb-1">Quick Help</h3>
+            <div className="space-y-0.5 text-[10px] text-text-muted">
+              <div className="flex justify-between">
+                <span>Open photo</span>
+                <span className="text-text-secondary">Double-click</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Pick / Reject / Clear</span>
+                <span className="text-text-secondary">P / X / U</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Star rating</span>
+                <span className="text-text-secondary">1 – 5</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Range select</span>
+                <span className="text-text-secondary">Shift+Click</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Select all</span>
+                <span className="text-text-secondary">{MOD}+A</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Navigate</span>
+                <span className="text-text-secondary">Arrows</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Deselect / Back</span>
+                <span className="text-text-secondary">Esc</span>
+              </div>
             </div>
-            <div className="flex justify-between">
-              <span>{MOD}+Click</span>
-              <span className="text-text-secondary">Toggle select</span>
-            </div>
-            <div className="flex justify-between">
-              <span>Shift+Click</span>
-              <span className="text-text-secondary">Range select</span>
-            </div>
-            <div className="flex justify-between">
-              <span>{MOD}+A</span>
-              <span className="text-text-secondary">Select all</span>
-            </div>
-            <div className="flex justify-between">
-              <span>P / X / U</span>
-              <span className="text-text-secondary">Pick / Reject / Clear</span>
-            </div>
-            <div className="flex justify-between">
-              <span>1 – 5</span>
-              <span className="text-text-secondary">Star rating</span>
-            </div>
-            <div className="flex justify-between">
-              <span>Arrows</span>
-              <span className="text-text-secondary">Navigate</span>
-            </div>
-            <div className="flex justify-between">
-              <span>Esc</span>
-              <span className="text-text-secondary">Deselect / Back</span>
-            </div>
-          </div>
-        </div>
-      )}
+          </>
+        )}
+      </div>
     </div>
   );
 }

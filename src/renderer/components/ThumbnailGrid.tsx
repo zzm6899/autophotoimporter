@@ -737,7 +737,10 @@ export function ThumbnailGrid() {
     if (candidates.length === 0) return;
     sharpnessInFlightRef.current = true;
     const run = () => void (async () => {
-      const onnxResults = fastKeeperMode ? [] : await window.electronAPI.analyzeFaces(candidates.map((f) => f.path)).catch(() => []);
+      const onnxResults = fastKeeperMode ? [] : await Promise.race([
+        window.electronAPI.analyzeFaces(candidates.map((f) => f.path)),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('face timeout')), 35_000)),
+      ]).catch(() => [] as Awaited<ReturnType<typeof window.electronAPI.analyzeFaces>>);
       const onnxByPath = new Map(onnxResults.map((result) => [result.path, result]));
 
       return Promise.all(candidates.map(async (f) => {

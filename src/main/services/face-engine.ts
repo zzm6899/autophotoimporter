@@ -584,7 +584,25 @@ async function embedFace(imagePath: string, box: FaceBox, cachedImg?: Electron.N
 let _analyzeCallCount = 0;
 let _analyzeTotalMs = 0;
 
-export async function analyzeFaces(imagePath: string): Promise<FaceAnalysisResult> {
+// Per-image inference timeout — if ONNX hangs (corrupt model, driver issue),
+// we reject after 30s so the semaphore slot is released and the loop recovers.
+const ANALYZE_TIMEOUT_MS = 30_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`face-engine timeout: ${label}`)), ms);
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
+}
+
+export function analyzeFaces(imagePath: string): Promise<FaceAnalysisResult> {
+  return withTimeout(_analyzeFacesInner(imagePath), ANALYZE_TIMEOUT_MS, imagePath);
+}
+
+async function _analyzeFacesInner(imagePath: string): Promise<FaceAnalysisResult> {
   await loadSessions();
   const t0 = Date.now();
 
