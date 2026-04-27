@@ -373,6 +373,23 @@ function formatLicenseDate(value) {
   return `${day}-${month}-${year}`;
 }
 
+function inferPlanType(plan, expiresAt) {
+  if (plan === 'trial') return 'Trial';
+  if (plan === 'monthly') return 'Monthly';
+  if (plan === 'yearly') return 'Yearly';
+  if (plan === 'lifetime') return 'Lifetime';
+  return expiresAt ? 'Timed' : 'Lifetime';
+}
+
+function formatMoneyFromCents(cents, currency = 'AUD') {
+  const amount = Number(cents || 0) / 100;
+  return new Intl.NumberFormat('en-AU', {
+    style: 'currency',
+    currency: String(currency || 'AUD').toUpperCase(),
+    minimumFractionDigits: amount % 1 === 0 ? 0 : 2,
+  }).format(amount);
+}
+
 function todayLicenseDate() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -662,10 +679,11 @@ async function activationSummary(fingerprint, deviceId) {
 async function registerActivation(fingerprint, deviceId, deviceName) {
   if (!deviceId) return;
   await pool.query(
-    `INSERT INTO license_activations (license_fingerprint, device_id, device_name, first_seen_at, last_seen_at, updated_at)
-     VALUES ($1,$2,$3,NOW(),NOW(),NOW())
+    `INSERT INTO license_activations (license_fingerprint, device_id, device_name, expires_at, first_seen_at, last_seen_at, updated_at)
+     VALUES ($1,$2,$3,(SELECT expires_at FROM license_records WHERE fingerprint = $1),NOW(),NOW(),NOW())
      ON CONFLICT (license_fingerprint, device_id) DO UPDATE
      SET device_name = EXCLUDED.device_name,
+         expires_at = (SELECT expires_at FROM license_records WHERE fingerprint = $1),
          last_seen_at = NOW(),
          updated_at = NOW()`,
     [fingerprint, deviceId, deviceName || null],
@@ -1185,7 +1203,11 @@ app.get('/admin/licenses/:id', authSession, async (req, res) => {
   if (!result.rowCount) {
     return res.status(404).send(htmlPage('License Not Found', `<div class="panel"><h1>License not found</h1><a href="/admin/licenses">Back</a></div>`));
   }
-  const record = result.rows[0];
+  const rawRecord = result.rows[0];
+  const managedRecord = rawRecord.activation_code
+    ? await getLicenseRecordByActivationCode(rawRecord.activation_code)
+    : null;
+  const record = managedRecord ? { ...rawRecord, ...managedRecord } : rawRecord;
   const activations = await pool.query(
     `SELECT id, device_id, device_name, first_seen_at, last_seen_at, expires_at
      FROM license_activations
@@ -1208,6 +1230,7 @@ app.get('/admin/licenses/:id', authSession, async (req, res) => {
         <p style="margin-bottom:12px">${statusPill(record.status)}</p>
         <p class="muted">Activation code: <code>${record.activation_code || '—'}</code></p>
         ${record.customer_email ? `<p class="muted">Email: ${record.customer_email}</p>` : ''}
+        <p class="muted">Plan: ${inferPlanType(record.plan, record.expires_at)}</p>
         <p class="muted">Issued: ${formatLicenseDate(record.issued_at)}</p>
         <p class="muted">Expires: ${formatLicenseDate(record.expires_at)}</p>
         <p class="muted">Seat limit: ${record.max_devices || '&infin;'} device${record.max_devices === 1 ? '' : 's'}</p>
@@ -2533,6 +2556,14 @@ app.post(
           'UPDATE license_records SET expires_at = $1, updated_at = NOW() WHERE activation_code = $2',
           [newExpiry, activationCode]
         );
+        await pool.query(
+          `UPDATE license_activations
+           SET expires_at = $1, updated_at = NOW()
+           WHERE license_fingerprint = (
+             SELECT fingerprint FROM license_records WHERE activation_code = $2
+           )`,
+          [newExpiry, activationCode]
+        );
         
         console.log(`[stripe] ✓ License extended to ${newExpiry.toISOString()}`);
         
@@ -2589,6 +2620,12 @@ app.get('/api/v1/pricing', apiCors, async (_req, res) => {
         monthly:  { price: fmt(cfg.price_monthly_cents),  label: 'Monthly',  period: '/mo' },
         yearly:   { price: fmt(cfg.price_yearly_cents),   label: 'Yearly',   period: '/yr' },
         lifetime: { price: fmt(cfg.price_lifetime_cents), label: 'Lifetime', period: '' },
+      },
+      deviceUpgradePrice: Number(cfg.device_upgrade_price_cents || 0),
+      extensionPrices: {
+        days: Number(cfg.extend_day_price_cents || 0),
+        months: Number(cfg.extend_month_price_cents || 0),
+        years: Number(cfg.extend_year_price_cents || 0),
       },
       trial_days: Number(cfg.trial_days || 14),
     });
@@ -2686,6 +2723,9 @@ async function ensurePricingSchema() {
       ['price_monthly_cents', '900'],
       ['price_yearly_cents', '4900'],
       ['price_lifetime_cents', '4900'],
+      ['extend_day_price_cents', '100'],
+      ['extend_month_price_cents', '900'],
+      ['extend_year_price_cents', '4900'],
       ['stripe_price_monthly', ''],
       ['stripe_price_yearly', ''],
       ['stripe_price_lifetime', ''],
@@ -2833,6 +2873,15 @@ app.get('/admin/pricing', authSession, async (_req, res) => {
         <p class="muted" style="font-size:0.85rem;margin-top:8px">Charged per device when upgrading from 1→2, 2→5, 5→10, etc.</p>
       </div>
       <div class="panel">
+        <h2>Extension Pricing</h2>
+        <label>Price per extra day (cents)</label>
+        <input type="number" name="extend_day_price_cents" value="${cfg.extend_day_price_cents || ''}" placeholder="100" />
+        <label>Price per extra month (cents)</label>
+        <input type="number" name="extend_month_price_cents" value="${cfg.extend_month_price_cents || ''}" placeholder="900" />
+        <label>Price per extra year (cents)</label>
+        <input type="number" name="extend_year_price_cents" value="${cfg.extend_year_price_cents || ''}" placeholder="4900" />
+      </div>
+      <div class="panel">
         <h2>Global settings</h2>
         <label>Currency code</label>
         <input name="currency" value="${cfg.currency || 'aud'}" placeholder="aud" />
@@ -2859,7 +2908,8 @@ app.get('/admin/pricing', authSession, async (_req, res) => {
 
 app.post('/admin/pricing', authSession, async (req, res) => {
   const fields = ['price_monthly_cents', 'price_yearly_cents', 'price_lifetime_cents',
-    'stripe_price_monthly', 'stripe_price_yearly', 'stripe_price_lifetime', 'currency', 'trial_days', 'device_upgrade_price_cents'];
+    'stripe_price_monthly', 'stripe_price_yearly', 'stripe_price_lifetime', 'currency', 'trial_days',
+    'device_upgrade_price_cents', 'extend_day_price_cents', 'extend_month_price_cents', 'extend_year_price_cents'];
   for (const key of fields) {
     const value = String(req.body[key] ?? '').trim();
     await pool.query(
@@ -2933,6 +2983,12 @@ app.post('/admin/licenses/:id/extend', authSession, async (req, res) => {
   await pool.query(
     `UPDATE license_records SET license_key=$1, expires_at=$2, status='active', updated_at=NOW() WHERE id=$3`,
     [newKey, base.toISOString().slice(0,10), row.id],
+  );
+  await pool.query(
+    `UPDATE license_activations
+     SET expires_at = $1, updated_at = NOW()
+     WHERE license_fingerprint = $2`,
+    [base.toISOString().slice(0,10), row.fingerprint],
   );
 
   // Email customer the updated key if they have an email
@@ -3066,21 +3122,18 @@ app.post('/api/v1/extend-license', apiCors, async (req, res) => {
       return res.status(404).json({ error: 'License not found.' });
     }
 
-    if (!license.plan || !['monthly', 'yearly', 'lifetime'].includes(license.plan)) {
-      return res.status(409).json({ error: 'License plan could not be determined for this key yet. Please contact support.' });
+    const unitPriceKey = unit === 'days'
+      ? 'extend_day_price_cents'
+      : unit === 'months'
+        ? 'extend_month_price_cents'
+        : 'extend_year_price_cents';
+    const unitPriceCents = Number(cfg[unitPriceKey] || 0);
+    
+    if (!unitPriceCents) {
+      return res.status(503).json({ error: `Extension pricing not configured for ${unit}.` });
     }
     
-    // Get price based on plan
-    const priceKey = `price_${license.plan}_cents`;
-    const priceCents = cfg[priceKey];
-    
-    if (!priceCents) {
-      return res.status(503).json({ error: 'Plan pricing not configured.' });
-    }
-    
-    // For simplicity, charge the full plan price to extend
-    // (Could implement a more granular pricing model later)
-    const extendCents = Math.ceil(priceCents * (amount / (unit === 'years' ? 12 : unit === 'months' ? 1 : 30)));
+    const extendCents = unitPriceCents * Number(amount);
     
     const origin = req.headers.origin || publicUpdatesBaseUrl();
     const successUrl = `${origin}/manage-license`;
@@ -3147,6 +3200,7 @@ app.get('/upgrade-license', (_req, res) => {
       const code = '${code.replace(/'/g, "\\'")}';
       let currentDevices = 1;
       let pricePerDevice = 0;
+      let pricingCurrency = 'AUD';
       
       async function loadLicense() {
         if (!code) {
@@ -3172,6 +3226,7 @@ app.get('/upgrade-license', (_req, res) => {
           const res = await fetch('/api/v1/pricing');
           const data = await res.json();
           pricePerDevice = (data.deviceUpgradePrice || 0) / 100;
+          pricingCurrency = (data.currency || 'AUD').toUpperCase();
           updateCost();
         } catch (err) {
           console.error(err);
@@ -3183,7 +3238,9 @@ app.get('/upgrade-license', (_req, res) => {
         const devicesToAdd = newCount - currentDevices;
         const totalCost = devicesToAdd * pricePerDevice;
         document.getElementById('newDevices').textContent = newCount;
-        document.getElementById('costDisplay').textContent = totalCost > 0 ? 'AUD $' + totalCost.toFixed(2) : 'FREE';
+        document.getElementById('costDisplay').textContent = totalCost > 0
+          ? new Intl.NumberFormat('en-AU', { style: 'currency', currency: pricingCurrency }).format(totalCost)
+          : 'FREE';
       }
       
       document.getElementById('deviceCount').oninput = updateCost;
@@ -3415,6 +3472,7 @@ app.get('/manage-license', (_req, res) => {
             <option value="years">Years</option>
           </select>
         </div>
+        <p id="extendPriceSummary" style="color:var(--text-muted);font-size:0.85rem;margin:0 0 16px">Loading pricing...</p>
         <button id="confirmExtendBtn" style="width:100%;background:var(--accent);color:#fff;border:none;border-radius:6px;padding:10px;font-weight:500;cursor:pointer">Proceed to payment</button>
         <button id="cancelExtendBtn" style="width:100%;background:transparent;color:var(--text-muted);border:1px solid var(--border);border-radius:6px;padding:10px;font-weight:500;cursor:pointer;margin-top:8px">Cancel</button>
       </div>
@@ -3422,7 +3480,49 @@ app.get('/manage-license', (_req, res) => {
     
     <script>
       let currentLicense = null;
+      let pricingData = null;
       const activationCodeInput = document.getElementById('activationCodeInput');
+
+      function formatMoney(cents) {
+        const currency = (pricingData && pricingData.currency) || 'AUD';
+        return new Intl.NumberFormat('en-AU', {
+          style: 'currency',
+          currency,
+          minimumFractionDigits: 0,
+          maximumFractionDigits: 2,
+        }).format((Number(cents) || 0) / 100);
+      }
+
+      function displayPlan(plan, expiresAt) {
+        if (plan === 'trial') return 'Trial';
+        if (plan === 'monthly') return 'Monthly';
+        if (plan === 'yearly') return 'Yearly';
+        if (plan === 'lifetime') return 'Lifetime';
+        return expiresAt ? 'Timed' : 'Lifetime';
+      }
+
+      async function loadPricing() {
+        try {
+          const res = await fetch('/api/v1/pricing');
+          if (!res.ok) return;
+          pricingData = await res.json();
+          updateExtendSummary();
+        } catch (err) {
+          console.error(err);
+        }
+      }
+
+      function updateExtendSummary() {
+        const summary = document.getElementById('extendPriceSummary');
+        if (!summary) return;
+        const amount = parseInt(document.getElementById('extendAmount').value, 10) || 1;
+        const unit = document.getElementById('extendUnit').value;
+        const unitPrices = pricingData && pricingData.extensionPrices ? pricingData.extensionPrices : {};
+        const totalCents = (Number(unitPrices[unit]) || 0) * amount;
+        summary.textContent = totalCents > 0
+          ? 'Total: ' + formatMoney(totalCents)
+          : 'Pricing not configured yet';
+      }
 
       async function lookupLicense() {
         const code = activationCodeInput.value.trim();
@@ -3471,7 +3571,7 @@ app.get('/manage-license', (_req, res) => {
         document.getElementById('errorMsg').style.display = 'none';
         
         document.getElementById('customerName').textContent = currentLicense.customerName || '—';
-        document.getElementById('planType').textContent = currentLicense.plan === 'monthly' ? 'Monthly' : currentLicense.plan === 'yearly' ? 'Yearly' : 'Lifetime';
+        document.getElementById('planType').textContent = displayPlan(currentLicense.plan, currentLicense.expiresAt);
         document.getElementById('maxDevices').textContent = currentLicense.maxDevices || 1;
         
         const isLifetime = !currentLicense.expiresAt;
@@ -3490,12 +3590,16 @@ app.get('/manage-license', (_req, res) => {
       document.getElementById('extendBtn').onclick = () => {
         document.getElementById('licenseDetails').style.display = 'none';
         document.getElementById('extendForm').style.display = 'block';
+        updateExtendSummary();
       };
       
       document.getElementById('cancelExtendBtn').onclick = () => {
         document.getElementById('extendForm').style.display = 'none';
         document.getElementById('licenseDetails').style.display = 'block';
       };
+
+      document.getElementById('extendAmount').oninput = updateExtendSummary;
+      document.getElementById('extendUnit').onchange = updateExtendSummary;
       
       document.getElementById('confirmExtendBtn').onclick = async () => {
         const amount = parseInt(document.getElementById('extendAmount').value);
@@ -3541,6 +3645,8 @@ app.get('/manage-license', (_req, res) => {
         activationCodeInput.value = initialCode;
         void lookupLicense();
       }
+
+      void loadPricing();
     </script>
   `));
 });

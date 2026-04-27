@@ -103,7 +103,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   };
 
   const openLicenseManagement = async () => {
-    const code = (licenseStatus?.activationCode ?? '').trim();
+    const code = (licenseStatus?.activationCode ?? licenseInput ?? '').trim();
     const url = code
       ? `${BASE_URL}/manage-license?code=${encodeURIComponent(code)}`
       : `${BASE_URL}/manage-license`;
