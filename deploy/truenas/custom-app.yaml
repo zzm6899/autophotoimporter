@@ -17,17 +17,47 @@ services:
       DATABASE_URL: postgres://photo_importer:CHANGE_ME_POSTGRES_PASSWORD@db:5432/photo_importer_updates
       LICENSE_PUBLIC_KEY_PATH: /config/public.pem
       LICENSE_PRIVATE_KEY_PATH: /config/private.pem
+
+      # Admin credentials
       ADMIN_EMAIL: CHANGE_ME_ADMIN_EMAIL
       ADMIN_PASSWORD: CHANGE_ME_ADMIN_PASSWORD
       ADMIN_SESSION_SECRET: CHANGE_ME_ADMIN_SESSION_SECRET
       UPDATE_TOKEN_SECRET: CHANGE_ME_UPDATE_TOKEN_SECRET
       ADMIN_API_TOKEN: CHANGE_ME_ADMIN_API_TOKEN
-      GITHUB_RELEASE_OWNER: juanmnl
-      GITHUB_RELEASE_REPO: importer
+
+      # GitHub release integration
+      GITHUB_RELEASE_OWNER: zzm6899
+      GITHUB_RELEASE_REPO: autophotoimporter
       GITHUB_RELEASE_TOKEN: CHANGE_ME_GITHUB_RELEASE_TOKEN
       GITHUB_API_BASE_URL: https://api.github.com
       PUBLIC_UPDATES_BASE_URL: https://updates.culler.z2hs.au
       COOKIE_SECURE: "true"
+
+      # --- SMTP email (Gmail or any SMTP server) ---
+      MAIL_SERVER: smtp.gmail.com
+      MAIL_PORT: "587"
+      MAIL_USERNAME: zacmorganphotography@gmail.com
+      MAIL_PASSWORD: CHANGE_ME_GMAIL_APP_PASSWORD
+      MAIL_FROM: zacmorganphotography@gmail.com
+
+      # --- Stripe payments ---
+      # Get these from https://dashboard.stripe.com/apikeys
+      STRIPE_SECRET_KEY: CHANGE_ME_STRIPE_SECRET_KEY
+      STRIPE_PUBLISHABLE_KEY: CHANGE_ME_STRIPE_PUBLISHABLE_KEY
+      # Webhook secret — from https://dashboard.stripe.com/webhooks
+      # Register: https://updates.culler.z2hs.au/stripe/webhook
+      # Events: checkout.session.completed, customer.subscription.updated
+      STRIPE_WEBHOOK_SECRET: CHANGE_ME_STRIPE_WEBHOOK_SECRET
+
+      # --- CORS (comma-separated origins allowed to call /api/v1/*) ---
+      # Electron renderer uses localhost in dev; add your website domain for prod
+      CORS_ALLOWED_ORIGINS: "https://culler.z2hs.au,http://culler.z2hs.au"
+
+      # --- Trial / pricing defaults (overridable in /admin/pricing UI) ---
+      TRIAL_DAYS: "14"
+      TRIAL_MAX_DEVICES: "1"
+      TRIAL_COOLDOWN_DAYS: "30"
+
     restart: unless-stopped
     depends_on:
       - db

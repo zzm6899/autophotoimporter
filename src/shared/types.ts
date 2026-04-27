@@ -495,3 +495,5 @@ export const IPC = {
   DISK_FREE_SPACE: 'disk:free-space',
 
   // Shell
+  OPEN_EXTERNAL: 'shell:open-external',
+} as const;

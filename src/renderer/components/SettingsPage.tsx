@@ -62,6 +62,14 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const [trialEmailInput, setTrialEmailInput] = useState('');
   const [trialNameInput, setTrialNameInput] = useState('');
   const [showTrialForm, setShowTrialForm] = useState(false);
+  const [showBuyForm, setShowBuyForm] = useState(false);
+  const [buyPlan, setBuyPlan] = useState<'monthly' | 'yearly' | 'lifetime'>('lifetime');
+  const [buyBusy, setBuyBusy] = useState(false);
+  const [buyFeedback, setBuyFeedback] = useState<string | null>(null);
+  const [buyNameInput, setBuyNameInput] = useState('');
+  const [buyEmailInput, setBuyEmailInput] = useState('');
+
+  const BASE_URL = 'https://updates.culler.z2hs.au';
   const [diagnosing, setDiagnosing] = useState(false);
   const [diagResult, setDiagResult] = useState<string | null>(null);
 
@@ -352,6 +360,33 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     }
   };
 
+  const handleBuy = async () => {
+    const name = buyNameInput.trim();
+    const email = buyEmailInput.trim();
+    if (!name || !email) { setBuyFeedback('Name and email required.'); return; }
+    setBuyBusy(true);
+    setBuyFeedback(null);
+    try {
+      const resp = await fetch(`${BASE_URL}/api/v1/checkout/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plan: buyPlan, name, email }),
+      });
+      const data = await resp.json() as { url?: string; error?: string };
+      if (!resp.ok || !data.url) {
+        setBuyFeedback(data.error ?? 'Could not create checkout. Try again.');
+        return;
+      }
+      // Open Stripe Checkout in the system browser
+      await window.electronAPI.openExternal(data.url);
+      setBuyFeedback('Checkout opened in your browser. Your license key will be emailed once payment is confirmed.');
+    } catch {
+      setBuyFeedback('Network error — check your connection.');
+    } finally {
+      setBuyBusy(false);
+    }
+  };
+
   // Shared inner content (header + scrollable body)
   const inner = (
     <div className={`bg-surface border border-border ${inline ? 'flex flex-col h-full' : 'rounded-xl shadow-2xl w-[520px] max-h-[80vh] flex flex-col overflow-hidden'}`}>
@@ -471,11 +506,11 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
               </div>
             ) : (
               <div className="space-y-2">
-                {/* Buy / Trial CTAs */}
-                {!showTrialForm && (
+                {/* CTA buttons */}
+                {!showBuyForm && !showTrialForm && (
                   <div className="flex items-center gap-2 mb-1">
                     <button
-                      onClick={() => window.electronAPI.openExternal('https://updates.culler.z2hs.au/buy')}
+                      onClick={() => { setShowBuyForm(true); setBuyFeedback(null); }}
                       className="px-3 py-1.5 text-xs rounded bg-accent text-white hover:bg-accent-hover font-medium"
                     >
                       Buy license
@@ -489,10 +524,53 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                   </div>
                 )}
 
+                {/* Buy form */}
+                {showBuyForm && (
+                  <div className="space-y-1.5 p-2.5 rounded-lg bg-surface-raised border border-border">
+                    <p className="text-[10px] text-text-muted font-medium">Choose a plan</p>
+                    <div className="grid grid-cols-3 gap-1">
+                      {(['monthly', 'yearly', 'lifetime'] as const).map((p) => (
+                        <button
+                          key={p}
+                          onClick={() => setBuyPlan(p)}
+                          className={`px-2 py-1.5 text-[10px] rounded border capitalize ${buyPlan === p ? 'border-accent bg-accent/10 text-text' : 'border-border text-text-muted hover:text-text'}`}
+                        >
+                          {p === 'monthly' ? 'Monthly' : p === 'yearly' ? 'Yearly' : 'Lifetime'}
+                        </button>
+                      ))}
+                    </div>
+                    <input
+                      type="text"
+                      value={buyNameInput}
+                      onChange={(e) => setBuyNameInput(e.target.value)}
+                      placeholder="Your name"
+                      className="w-full px-2 py-1 text-xs bg-surface border border-border rounded text-text placeholder-text-muted focus:border-text focus:outline-none"
+                    />
+                    <input
+                      type="email"
+                      value={buyEmailInput}
+                      onChange={(e) => setBuyEmailInput(e.target.value)}
+                      placeholder="Email address"
+                      className="w-full px-2 py-1 text-xs bg-surface border border-border rounded text-text placeholder-text-muted focus:border-text focus:outline-none"
+                    />
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={handleBuy}
+                        disabled={buyBusy || !buyNameInput.trim() || !buyEmailInput.trim()}
+                        className="px-3 py-1 text-xs rounded bg-accent text-white hover:bg-accent-hover disabled:opacity-50"
+                      >
+                        {buyBusy ? 'Opening…' : 'Continue to payment →'}
+                      </button>
+                      <button onClick={() => { setShowBuyForm(false); setBuyFeedback(null); }} className="text-[10px] text-text-muted hover:text-text">Cancel</button>
+                    </div>
+                    {buyFeedback && <p className="text-[10px] text-text-muted">{buyFeedback}</p>}
+                  </div>
+                )}
+
                 {/* Trial form */}
                 {showTrialForm && (
                   <div className="space-y-1.5 p-2.5 rounded-lg bg-surface-raised border border-border">
-                    <p className="text-[10px] text-text-muted">Enter your details to start a 14-day free trial. Your license key will be emailed to you.</p>
+                    <p className="text-[10px] text-text-muted">14-day free trial — no payment needed. License key emailed instantly.</p>
                     <input
                       type="text"
                       value={trialNameInput}

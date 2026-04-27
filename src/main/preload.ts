@@ -245,4 +245,9 @@ const api = {
   platform: process.platform,
 };
 
-// Re-export so non-preload modules can refe
+// Re-export so non-preload modules can reference these types on results.
+export type { ImportError, FaceBox, ModelDownloadProgress };
+
+export type ElectronAPI = typeof api;
+
+contextBridge.exposeInMainWorld('electronAPI', api);

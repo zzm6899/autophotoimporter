@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const https = require('node:https');
+const nodemailer = require('nodemailer');
 const express = require('express');
 const cookieParser = require('cookie-parser');
 const bcrypt = require('bcryptjs');
@@ -45,21 +45,35 @@ const ACTIVATION_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const defaultMaxDevices = Math.max(1, Number.parseInt(process.env.DEFAULT_MAX_DEVICES || '1', 10) || 1);
 
 // --- Payment / trial config ---
-// Stripe: set STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET in your environment.
-// To use the hosted checkout approach, also set STRIPE_PAYMENT_LINK to your
-// Stripe Payment Link URL (e.g. https://buy.stripe.com/xxx).
-// Resend: set RESEND_API_KEY for transactional email delivery.
-// TRIAL_DAYS: how many days a free trial lasts (default 14).
-// TRIAL_MAX_DEVICES: seat limit on trial keys (default 1).
+// Stripe: STRIPE_SECRET_KEY (sk_live_... or sk_test_...) and STRIPE_WEBHOOK_SECRET.
+// Pricing tiers are stored in DB and configurable from the admin /admin/pricing page.
+// STRIPE_PUBLISHABLE_KEY is sent to the checkout page client-side.
 const stripeSecretKey = process.env.STRIPE_SECRET_KEY || '';
 const stripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET || '';
-const stripePaymentLink = process.env.STRIPE_PAYMENT_LINK || '';
-const resendApiKey = process.env.RESEND_API_KEY || '';
-const emailFromAddress = process.env.EMAIL_FROM || 'no-reply@culler.z2hs.au';
+const stripePublishableKey = process.env.STRIPE_PUBLISHABLE_KEY || '';
+
+// --- SMTP email config ---
+// Uses nodemailer with any SMTP server (Gmail, Mailgun, etc.).
+const smtpConfig = {
+  host: process.env.MAIL_SERVER || '',
+  port: Number.parseInt(process.env.MAIL_PORT || '587', 10),
+  secure: process.env.MAIL_PORT === '465',
+  auth: {
+    user: process.env.MAIL_USERNAME || '',
+    pass: process.env.MAIL_PASSWORD || '',
+  },
+};
+const emailFromAddress = process.env.MAIL_FROM || process.env.MAIL_USERNAME || 'no-reply@culler.z2hs.au';
+
+// --- Trial config ---
 const trialDays = Math.max(1, Number.parseInt(process.env.TRIAL_DAYS || '14', 10) || 14);
 const trialMaxDevices = Math.max(1, Number.parseInt(process.env.TRIAL_MAX_DEVICES || '1', 10) || 1);
-// Cooldown: one trial per email address per this many days (default 30)
 const trialCooldownDays = Math.max(1, Number.parseInt(process.env.TRIAL_COOLDOWN_DAYS || '30', 10) || 30);
+
+// CORS origins allowed to call public API endpoints from the Electron renderer
+// and from the website (localhost:5173 for dev, culler.z2hs.au for prod).
+const corsAllowedOrigins = (process.env.CORS_ALLOWED_ORIGINS || 'https://culler.z2hs.au,http://culler.z2hs.au')
+  .split(',').map((o) => o.trim()).filter(Boolean);
 
 const CULLER_LOGO_SVG = '<svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M128 252C196.483 252 252 196.483 252 128C252 59.5167 196.483 4 128 4C59.5167 4 4 59.5167 4 128C4 196.483 59.5167 252 128 252ZM128 226.694C182.507 226.694 226.694 182.507 226.694 128C226.694 73.4929 182.507 29.3061 128 29.3061C73.4929 29.3061 29.3061 73.4929 29.3061 128C29.3061 182.507 73.4929 226.694 128 226.694ZM188.633 131.549C181.333 137.253 172.145 140.653 162.163 140.653C138.404 140.653 119.143 121.392 119.143 97.6327C119.143 85.8325 123.894 75.1419 131.587 67.3695C130.4 67.3004 129.204 67.2653 128 67.2653C94.4572 67.2653 67.2653 94.4572 67.2653 128C67.2653 161.543 94.4572 188.735 128 188.735C160.352 188.735 186.795 163.44 188.633 131.549ZM117.878 148.245C123.468 148.245 128 143.713 128 138.122C128 132.532 123.468 128 117.878 128C112.287 128 107.755 132.532 107.755 138.122C107.755 143.713 112.287 148.245 117.878 148.245ZM107.755 153.306C107.755 156.101 105.489 158.367 102.694 158.367C99.8986 158.367 97.6327 156.101 97.6327 153.306C97.6327 150.511 99.8986 148.245 102.694 148.245C105.489 148.245 107.755 150.511 107.755 153.306ZM177.347 97.6326C177.347 106.018 170.549 112.816 162.163 112.816C161.21 112.816 160.278 112.729 159.373 112.561C163.87 111.53 167.225 107.503 167.225 102.694C167.225 97.1034 162.693 92.5714 157.102 92.5714C152.292 92.5714 148.266 95.9258 147.235 100.423C147.067 99.5183 146.98 98.5857 146.98 97.6326C146.98 89.2469 153.778 82.449 162.163 82.449C170.549 82.449 177.347 89.2469 177.347 97.6326Z" fill="white"/></svg>';
 
@@ -143,6 +157,27 @@ app.use((req, res, next) => {
   express.json({ limit: '2mb' })(req, res, next);
 });
 app.use(cookieParser());
+
+// CORS for public API endpoints called from the Electron renderer + website.
+// Allows localhost:* in development; only listed origins in production.
+function apiCors(req, res, next) {
+  const origin = req.headers.origin || '';
+  const isLocalhost = /^https?:\/\/localhost(:\d+)?$/.test(origin);
+  const isAllowed = isLocalhost || corsAllowedOrigins.includes(origin);
+  if (isAllowed) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  return next();
+}
+
+// Apply CORS to all public /api/v1/* routes
+app.use('/api/v1', apiCors);
+app.use('/stripe', apiCors);
 app.use('/artifacts', express.static(artifactsRoot));
 app.use(express.static(path.join(__dirname, 'web')));
 
@@ -275,6 +310,7 @@ function nav(page = '') {
     <div class="nav-sep"></div>
     ${link('/admin', 'Dashboard', 'dashboard')}
     ${link('/admin/licenses', 'Licenses', 'licenses')}
+    ${link('/admin/pricing', 'Pricing', 'pricing')}
     ${link('/admin/releases', 'Releases', 'releases')}
     ${link('/admin/customers', 'Customers', 'customers')}
     <div class="nav-sep"></div>
@@ -1108,6 +1144,28 @@ app.get('/admin/licenses/:id', authSession, async (req, res) => {
         </div>
       </div>
       <div class="panel">
+        <h2>Extend license</h2>
+        <p class="muted" style="margin-bottom:12px">Adds time to the current expiry (or from today if perpetual). Regenerates the key and emails the customer.</p>
+        <form method="post" action="/admin/licenses/${record.id}/extend">
+          <div style="display:flex;gap:8px;align-items:flex-end">
+            <div style="flex:1">
+              <label>Amount</label>
+              <input type="number" name="amount" min="1" step="1" value="1" />
+            </div>
+            <div style="flex:1">
+              <label>Unit</label>
+              <select name="unit">
+                <option value="months">Months</option>
+                <option value="years">Years</option>
+                <option value="days">Days</option>
+              </select>
+            </div>
+          </div>
+          <div style="height:12px"></div>
+          <button type="submit">Extend &amp; email customer</button>
+        </form>
+      </div>
+      <div class="panel">
         <h2>Stored key</h2>
         <textarea rows="8" readonly>${record.license_key}</textarea>
       </div>
@@ -1843,42 +1901,30 @@ app.get('/api/v1/app/download/:releaseId', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Email helper (Resend — no npm package, plain HTTPS)
+// Email helper — nodemailer SMTP
 // ---------------------------------------------------------------------------
+let _mailerTransport = null;
+function getMailer() {
+  if (!smtpConfig.host || !smtpConfig.auth.user) return null;
+  if (!_mailerTransport) {
+    _mailerTransport = nodemailer.createTransport(smtpConfig);
+  }
+  return _mailerTransport;
+}
+
 async function sendEmail({ to, subject, html }) {
-  if (!resendApiKey) {
-    console.warn('[email] RESEND_API_KEY not set — skipping email to', to);
+  const mailer = getMailer();
+  if (!mailer) {
+    console.warn('[email] SMTP not configured (MAIL_SERVER / MAIL_USERNAME missing) — skipping email to', to);
     return;
   }
-  const body = JSON.stringify({ from: emailFromAddress, to, subject, html });
-  return new Promise((resolve, reject) => {
-    const req = https.request(
-      {
-        hostname: 'api.resend.com',
-        path: '/emails',
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${resendApiKey}`,
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(body),
-        },
-      },
-      (res) => {
-        let data = '';
-        res.on('data', (chunk) => { data += chunk; });
-        res.on('end', () => {
-          if (res.statusCode >= 200 && res.statusCode < 300) {
-            resolve(JSON.parse(data));
-          } else {
-            reject(new Error(`Resend ${res.statusCode}: ${data}`));
-          }
-        });
-      },
-    );
-    req.on('error', reject);
-    req.write(body);
-    req.end();
-  });
+  try {
+    const info = await mailer.sendMail({ from: emailFromAddress, to, subject, html });
+    console.log('[email] sent to', to, '—', info.messageId);
+  } catch (err) {
+    console.error('[email] failed to send to', to, err);
+    throw err;
+  }
 }
 
 function licenseEmailHtml({ customerName, licenseKey, activationCode, expiresLabel }) {
@@ -2101,6 +2147,345 @@ async function start() {
   await waitForDatabase();
   await ensureRuntimeSchema();
   await ensureTrialSchema();
+  await ensureAdminUser();
+  app.listen(port, '0.0.0.0', () => {
+    console.log(`[update-admin] Listening on 0.0.0.0:${port}`);
+  });
+}
+
+start().catch((err) => {
+  console.error('[update-admin] Failed to start:', err);
+  process.exit(1);
+});
+
+    <div class="panel" style="max-width:480px;margin:40px auto;text-align:center">
+      <h1>Purchase not configured</h1>
+      <p class="muted">Set <code>STRIPE_SECRET_KEY</code> to enable purchases.</p>
+    </div>
+  `));
+});
+
+// ---------------------------------------------------------------------------
+// Stripe checkout session  POST /api/v1/checkout/create
+// Body: { plan: 'monthly'|'yearly'|'lifetime', name, email, extensionCode? }
+// Creates a Stripe Checkout Session and returns { url }.
+// extensionCode: if provided, extend that activation code after payment.
+// ---------------------------------------------------------------------------
+async function getStripePricing() {
+  const result = await pool.query('SELECT key, value FROM pricing_config');
+  const cfg = {};
+  for (const row of result.rows) cfg[row.key] = row.value;
+  return cfg;
+}
+
+// Public pricing endpoint — website fetches this to show live plan prices
+app.get('/api/v1/pricing', apiCors, async (_req, res) => {
+  try {
+    const cfg = await getStripePricing();
+    const fmt = (cents) => Number(cents || 0) / 100;
+    return res.json({
+      currency: (cfg.currency || 'aud').toUpperCase(),
+      plans: {
+        monthly:  { price: fmt(cfg.price_monthly_cents),  label: 'Monthly',  period: '/mo' },
+        yearly:   { price: fmt(cfg.price_yearly_cents),   label: 'Yearly',   period: '/yr' },
+        lifetime: { price: fmt(cfg.price_lifetime_cents), label: 'Lifetime', period: '' },
+      },
+      trial_days: Number(cfg.trial_days || 14),
+    });
+  } catch (err) {
+    console.error('[pricing]', err);
+    return res.status(500).json({ error: 'Could not load pricing.' });
+  }
+});
+
+app.post('/api/v1/checkout/create', async (req, res) => {
+  if (!stripeSecretKey) return res.status(503).json({ error: 'Payments not configured.' });
+  const { plan, name, email, extensionCode } = req.body || {};
+  if (!['monthly', 'yearly', 'lifetime'].includes(plan)) {
+    return res.status(400).json({ error: 'plan must be monthly, yearly, or lifetime.' });
+  }
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+    return res.status(400).json({ error: 'Valid email required.' });
+  }
+
+  const pricing = await getStripePricing();
+  const priceId = pricing[`stripe_price_${plan}`];
+  const amountCents = Number(pricing[`price_${plan}_cents`] || 0);
+  const currency = pricing['currency'] || 'aud';
+
+  if (!priceId && !amountCents) {
+    return res.status(503).json({ error: `No price configured for plan: ${plan}` });
+  }
+
+  try {
+    const origin = req.headers.origin || publicUpdatesBaseUrl();
+    const successUrl = `${origin}/checkout-success?session_id={CHECKOUT_SESSION_ID}`;
+    const cancelUrl = `${origin}/`;
+
+    // Build Stripe Checkout Session via API
+    const stripeBody = new URLSearchParams({
+      'payment_method_types[]': 'card',
+      'customer_email': email.trim(),
+      'success_url': successUrl,
+      'cancel_url': cancelUrl,
+      'metadata[plan]': plan,
+      'metadata[customer_name]': (name || '').trim(),
+      'metadata[extension_code]': extensionCode || '',
+    });
+
+    if (priceId) {
+      // Use pre-configured Stripe Price ID (supports subscriptions too)
+      const mode = plan === 'lifetime' ? 'payment' : 'subscription';
+      stripeBody.set('mode', mode);
+      stripeBody.set('line_items[0][price]', priceId);
+      stripeBody.set('line_items[0][quantity]', '1');
+    } else {
+      // Fallback: ad-hoc one-time price
+      stripeBody.set('mode', 'payment');
+      stripeBody.set('line_items[0][price_data][currency]', currency);
+      stripeBody.set('line_items[0][price_data][unit_amount]', String(amountCents));
+      stripeBody.set('line_items[0][price_data][product_data][name]', `Culler Pro — ${plan}`);
+      stripeBody.set('line_items[0][quantity]', '1');
+    }
+
+    const stripeRes = await fetch('https://api.stripe.com/v1/checkout/sessions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${Buffer.from(stripeSecretKey + ':').toString('base64')}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: stripeBody.toString(),
+    });
+    const session = await stripeRes.json();
+    if (!stripeRes.ok) return res.status(400).json({ error: session.error?.message || 'Stripe error.' });
+    return res.json({ url: session.url });
+  } catch (err) {
+    console.error('[checkout] error:', err);
+    return res.status(500).json({ error: 'Could not create checkout session.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Pricing schema + admin page
+// ---------------------------------------------------------------------------
+async function ensurePricingSchema() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS pricing_config (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  // Seed defaults if empty
+  const defaults = [
+    ['price_monthly_cents', '900'],
+    ['price_yearly_cents', '4900'],
+    ['price_lifetime_cents', '4900'],
+    ['stripe_price_monthly', ''],
+    ['stripe_price_yearly', ''],
+    ['stripe_price_lifetime', ''],
+    ['currency', 'aud'],
+    ['trial_days', '14'],
+  ];
+  for (const [key, value] of defaults) {
+    await pool.query(
+      `INSERT INTO pricing_config (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING`,
+      [key, value],
+    );
+  }
+}
+
+app.get('/admin/pricing', authSession, async (_req, res) => {
+  const result = await pool.query('SELECT key, value FROM pricing_config ORDER BY key');
+  const cfg = {};
+  for (const row of result.rows) cfg[row.key] = row.value;
+  return res.send(htmlPage('Pricing Config', `
+    <div class="hero">
+      <div class="hero-copy">
+        <div class="hero-kicker">Revenue</div>
+        <h1>Pricing &amp; Plans</h1>
+        <p>Set prices and Stripe Price IDs for each plan. Stripe Price IDs override manual amounts — use them for subscriptions.</p>
+      </div>
+      ${nav('pricing')}
+    </div>
+    <form method="post" action="/admin/pricing">
+    <div class="grid">
+      <div class="panel">
+        <h2>Monthly</h2>
+        <label>Price (cents, e.g. 900 = $9.00)</label>
+        <input type="number" name="price_monthly_cents" value="${cfg.price_monthly_cents || ''}" placeholder="900" />
+        <label>Stripe Price ID <span style="font-weight:400">(optional, for subscriptions)</span></label>
+        <input name="stripe_price_monthly" value="${cfg.stripe_price_monthly || ''}" placeholder="price_xxx" />
+      </div>
+      <div class="panel">
+        <h2>Yearly</h2>
+        <label>Price (cents)</label>
+        <input type="number" name="price_yearly_cents" value="${cfg.price_yearly_cents || ''}" placeholder="4900" />
+        <label>Stripe Price ID</label>
+        <input name="stripe_price_yearly" value="${cfg.stripe_price_yearly || ''}" placeholder="price_xxx" />
+      </div>
+      <div class="panel">
+        <h2>Lifetime</h2>
+        <label>Price (cents)</label>
+        <input type="number" name="price_lifetime_cents" value="${cfg.price_lifetime_cents || ''}" placeholder="4900" />
+        <label>Stripe Price ID <span style="font-weight:400">(one-time payment)</span></label>
+        <input name="stripe_price_lifetime" value="${cfg.stripe_price_lifetime || ''}" placeholder="price_xxx" />
+      </div>
+      <div class="panel">
+        <h2>Global settings</h2>
+        <label>Currency code</label>
+        <input name="currency" value="${cfg.currency || 'aud'}" placeholder="aud" />
+        <label>Trial length (days)</label>
+        <input type="number" name="trial_days" value="${cfg.trial_days || '14'}" />
+        <label>Stripe Publishable Key <span style="font-weight:400">(shown to client)</span></label>
+        <input name="stripe_publishable_key" value="${stripePublishableKey}" readonly style="opacity:.5" />
+        <p class="muted" style="margin-top:6px">Set via <code>STRIPE_PUBLISHABLE_KEY</code> env var.</p>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:0">
+      <div class="actions">
+        <button type="submit">Save pricing</button>
+      </div>
+    </div>
+    </form>
+    <div class="panel">
+      <h2>How checkout works</h2>
+      <p class="muted">The app calls <code>POST /api/v1/checkout/create</code> with <code>{ plan, name, email }</code>. The server creates a Stripe Checkout Session and returns a redirect URL. After payment, Stripe calls the webhook and the license is auto-generated and emailed. For subscription plans, set a Stripe Price ID — Culler will treat the subscription as a time-limited license renewed each period.</p>
+      <p class="muted" style="margin-top:8px">Webhook URL to register in Stripe: <code>${publicUpdatesBaseUrl()}/stripe/webhook</code></p>
+    </div>
+  `));
+});
+
+app.post('/admin/pricing', authSession, async (req, res) => {
+  const fields = ['price_monthly_cents', 'price_yearly_cents', 'price_lifetime_cents',
+    'stripe_price_monthly', 'stripe_price_yearly', 'stripe_price_lifetime', 'currency', 'trial_days'];
+  for (const key of fields) {
+    const value = String(req.body[key] ?? '').trim();
+    await pool.query(
+      `INSERT INTO pricing_config (key, value, updated_at) VALUES ($1, $2, NOW())
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+      [key, value],
+    );
+  }
+  return res.redirect('/admin/pricing');
+});
+
+// ---------------------------------------------------------------------------
+// License extension  POST /admin/licenses/:id/extend
+// Adds days/months/years to expires_at (or from today if perpetual) and
+// regenerates the license key with the new expiry.
+// ---------------------------------------------------------------------------
+app.post('/admin/licenses/:id/extend', authSession, async (req, res) => {
+  const { amount, unit } = req.body; // unit: days | months | years
+  if (!['days','months','years'].includes(unit) || !Number.isInteger(Number(amount)) || Number(amount) < 1) {
+    return res.status(400).send(htmlPage('Error', `<div class="panel"><p class="bad">Invalid extension params.</p><a href="/admin/licenses/${req.params.id}">Back</a></div>`));
+  }
+  const record = await pool.query('SELECT * FROM license_records WHERE id = $1', [req.params.id]);
+  if (!record.rowCount) return res.status(404).send('Not found');
+  const row = record.rows[0];
+
+  // Calculate new expiry
+  const base = row.expires_at ? new Date(row.expires_at) : new Date();
+  if (unit === 'days') base.setDate(base.getDate() + Number(amount));
+  else if (unit === 'months') base.setMonth(base.getMonth() + Number(amount));
+  else base.setFullYear(base.getFullYear() + Number(amount));
+  const dd = String(base.getDate()).padStart(2,'0');
+  const mm = String(base.getMonth()+1).padStart(2,'0');
+  const yyyy = base.getFullYear();
+  const expiry = `${dd}-${mm}-${yyyy}`;
+
+  // Regenerate license key with new expiry
+  const newKey = createLicenseKey({
+    name: row.customer_name,
+    email: row.customer_email,
+    expiry,
+    notes: row.notes,
+    maxDevices: row.max_devices,
+  });
+  const validated = validateLicenseKey(newKey, licensePublicKeyPem);
+  if (!validated.valid) return res.status(500).send('Key re-generation failed');
+
+  await pool.query(
+    `UPDATE license_records SET license_key=$1, expires_at=$2, status='active', updated_at=NOW() WHERE id=$3`,
+    [newKey, base.toISOString().slice(0,10), row.id],
+  );
+
+  // Email customer the updated key if they have an email
+  if (row.customer_email) {
+    try {
+      await sendEmail({
+        to: row.customer_email,
+        subject: 'Your Culler license has been extended',
+        html: licenseEmailHtml({
+          customerName: row.customer_name,
+          licenseKey: newKey,
+          activationCode: row.activation_code,
+          expiresLabel: `${dd}/${mm}/${yyyy}`,
+        }),
+      });
+    } catch { /* non-fatal */ }
+  }
+
+  return res.redirect(`/admin/licenses/${row.id}`);
+});
+
+// ---------------------------------------------------------------------------
+// Stripe webhook — extended to handle subscription renewals
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Stripe webhook  POST /stripe/webhook  (already registered above)
+// Extended: handle customer.subscription.updated for renewals
+// Also: use metadata[customer_name] and metadata[extension_code] from checkout
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Public pricing endpoint  GET /api/v1/pricing
+// Returns current plan prices so the app/website can display them dynamically.
+// ---------------------------------------------------------------------------
+app.get('/api/v1/pricing', async (_req, res) => {
+  const cfg = await getStripePricing();
+  return res.json({
+    monthly: { cents: Number(cfg.price_monthly_cents || 0), currency: cfg.currency || 'aud' },
+    yearly:  { cents: Number(cfg.price_yearly_cents  || 0), currency: cfg.currency || 'aud' },
+    lifetime: { cents: Number(cfg.price_lifetime_cents || 0), currency: cfg.currency || 'aud' },
+    trialDays: Number(cfg.trial_days || 14),
+    publishableKey: stripePublishableKey,
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Checkout success page  GET /checkout-success
+// ---------------------------------------------------------------------------
+app.get('/checkout-success', (_req, res) => {
+  return res.send(htmlPage('Purchase complete', `
+    <div class="panel" style="max-width:520px;margin:80px auto;text-align:center">
+      <div style="font-size:2.5rem;margin-bottom:16px">✓</div>
+      <h1 style="margin-bottom:8px">Payment confirmed</h1>
+      <p class="muted">Your license key is on its way to your inbox. Check spam if it doesn't arrive within a few minutes.</p>
+      <p class="muted" style="margin-top:12px">Once you have the code, open Culler → Settings → License and paste it in.</p>
+    </div>
+  `));
+});
+
+async function waitForDatabase(maxAttempts = 20, delayMs = 1500) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await pool.query('SELECT 1');
+      return;
+    } catch (error) {
+      if (attempt === maxAttempts) throw error;
+      console.warn(`[update-admin] Database not ready yet (${attempt}/${maxAttempts}). Retrying...`);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+}
+
+async function start() {
+  await waitForDatabase();
+  await ensureRuntimeSchema();
+  await ensureTrialSchema();
+  await ensurePricingSchema();
   await ensureAdminUser();
   app.listen(port, '0.0.0.0', () => {
     console.log(`[update-admin] Listening on 0.0.0.0:${port}`);
