@@ -2122,6 +2122,7 @@ app.post(
     } else {
       const sig = req.headers['stripe-signature'];
       if (!sig || !verifyStripeSignature(req.body.toString('utf8'), sig, stripeWebhookSecret)) {
+        console.error('[stripe-webhook] Invalid signature');
         return res.status(400).json({ error: 'Invalid Stripe signature.' });
       }
     }
@@ -2130,32 +2131,38 @@ app.post(
     try {
       event = JSON.parse(req.body.toString('utf8'));
     } catch {
+      console.error('[stripe-webhook] Invalid JSON');
       return res.status(400).json({ error: 'Invalid JSON.' });
     }
 
+    console.log(`[stripe-webhook] Received event: ${event.type}`);
+
     if (event.type === 'checkout.session.completed') {
       const session = event.data.object;
+      const sessionId = session.id;
       const customerEmail = session.customer_details?.email || session.customer_email || '';
       const customerName = session.customer_details?.name || 'Culler Customer';
       const amountTotal = session.amount_total; // cents
       const currency = (session.currency || 'aud').toUpperCase();
 
-      console.log(`[stripe] checkout.session.completed — ${customerEmail} — ${amountTotal / 100} ${currency}`);
+      console.log(`[stripe] checkout.session.completed — session: ${sessionId} — email: ${customerEmail} — amount: ${amountTotal / 100} ${currency}`);
 
       try {
         const { licenseKey, activationCode } = await generateAndStoreLicense({
           name: customerName,
           email: customerEmail,
           expiry: undefined, // perpetual
-          notes: `Stripe purchase ${session.id} (${amountTotal / 100} ${currency})`,
+          notes: `Stripe purchase ${sessionId} (${amountTotal / 100} ${currency})`,
           maxDevices: defaultMaxDevices,
         });
 
         // Store session-to-license mapping for success page retrieval
         await pool.query(
           'INSERT INTO stripe_sessions (session_id, license_key, activation_code, customer_email) VALUES ($1, $2, $3, $4) ON CONFLICT (session_id) DO UPDATE SET license_key=$2, activation_code=$3',
-          [session.id, licenseKey, activationCode, customerEmail]
+          [sessionId, licenseKey, activationCode, customerEmail]
         );
+
+        console.log(`[stripe] ✓ License issued to ${customerEmail} — activation: ${activationCode.substring(0, 20)}...`);
 
         await sendEmail({
           to: customerEmail,
@@ -2163,9 +2170,9 @@ app.post(
           html: licenseEmailHtml({ customerName, licenseKey, activationCode, expiresLabel: null }),
         });
 
-        console.log(`[stripe] License issued → ${activationCode} for ${customerEmail}`);
+        console.log(`[stripe] ✓ License email sent to ${customerEmail}`);
       } catch (err) {
-        console.error('[stripe] Failed to generate license after payment:', err);
+        console.error('[stripe] ✗ Failed to generate license after payment:', err.message);
         // Return 200 so Stripe doesn't retry — but log for manual follow-up
       }
     }
@@ -2463,13 +2470,21 @@ app.post('/admin/licenses/:id/extend', authSession, async (req, res) => {
 // Called by checkout-success page to display license immediately
 // ---------------------------------------------------------------------------
 app.get('/api/v1/license/:sessionId', apiCors, async (req, res) => {
-  const { sessionId } = req.params;
+  let { sessionId } = req.params;
+  
+  // Handle case where Stripe appends metadata to session ID (e.g., cs_live_...:150)
+  // Stripe session IDs are always cs_live_... or cs_test_..., anything after colon is extra
+  if (sessionId.includes(':')) {
+    sessionId = sessionId.split(':')[0];
+  }
+  
   try {
     const result = await pool.query(
       'SELECT license_key, activation_code, customer_email FROM stripe_sessions WHERE session_id = $1',
       [sessionId]
     );
     if (result.rows.length === 0) {
+      console.warn(`[license-lookup] Session not found: ${sessionId}`);
       return res.status(404).json({ error: 'License not found. It may take a few seconds to process. Please refresh.' });
     }
     const row = result.rows[0];
