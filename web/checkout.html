@@ -4,84 +4,633 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Checkout — Culler</title>
+  <meta name="description" content="Complete your Culler purchase and receive your activation code by email." />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
-      --bg: #0d0d0f; --surface: #141416; --surface-raised: #1c1c1f;
-      --border: #2a2a2e; --text: #f0f0f0; --text-muted: #888; --text-faint: #555;
-      --accent: #6c63ff; --accent-hover: #7b73ff; --green: #34d399; --red: #ff6b6b;
-      --radius: 12px;
+      --bg: #0b0d11;
+      --surface: rgba(17, 20, 26, 0.92);
+      --surface-raised: rgba(24, 29, 37, 0.94);
+      --surface-soft: rgba(108, 99, 255, 0.12);
+      --border: rgba(255, 255, 255, 0.08);
+      --border-strong: rgba(255, 255, 255, 0.14);
+      --text: #f4f6fb;
+      --text-muted: #a0abc0;
+      --text-faint: #6f7890;
+      --accent: #6c63ff;
+      --accent-hover: #7c74ff;
+      --accent-glow: rgba(108, 99, 255, 0.22);
+      --green: #34d399;
+      --green-soft: rgba(52, 211, 153, 0.12);
+      --red: #ff7d7d;
+      --red-soft: rgba(255, 125, 125, 0.12);
+      --shadow-xl: 0 32px 90px rgba(0, 0, 0, 0.4);
+      --radius-xl: 28px;
+      --radius-lg: 18px;
+      --radius-md: 14px;
       --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
     }
     html { scroll-behavior: smooth; }
-    body { font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.6; -webkit-font-smoothing: antialiased; }
-    a { color: var(--accent); text-decoration: none; }
-    a:hover { text-decoration: underline; }
-    
-    .container { max-width: 480px; margin: 60px auto; padding: 2rem; }
-    .header { text-align: center; margin-bottom: 2.5rem; }
-    .header h1 { font-size: 2rem; font-weight: 700; margin-bottom: 0.5rem; }
-    .header p { color: var(--text-muted); font-size: 0.9rem; }
-    
-    .checkout-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 2rem; }
-    .plan-summary { background: var(--surface-raised); border: 1px solid var(--border); border-radius: 10px; padding: 1rem; margin-bottom: 2rem; }
-    .plan-name { font-size: 0.85rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
-    .plan-price { font-size: 1.5rem; font-weight: 700; margin-top: 0.25rem; }
-    
-    .form-group { margin-bottom: 1.5rem; }
-    label { display: block; font-size: 0.9rem; font-weight: 500; margin-bottom: 0.5rem; color: var(--text); }
-    input, select { width: 100%; padding: 0.75rem; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 0.9rem; font-family: inherit; }
-    input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(108,99,255,0.1); }
-    input::placeholder { color: var(--text-faint); }
-    
-    .button { width: 100%; padding: 0.85rem; background: var(--accent); color: #fff; border: none; border-radius: 8px; font-size: 0.95rem; font-weight: 600; cursor: pointer; transition: background 0.2s; }
-    .button:hover:not(:disabled) { background: var(--accent-hover); }
-    .button:disabled { opacity: 0.6; cursor: not-allowed; }
-    
-    .error { color: var(--red); font-size: 0.85rem; padding: 0.75rem; background: rgba(255,107,107,0.1); border-radius: 6px; margin-bottom: 1.5rem; display: none; }
+    body {
+      font-family: var(--font);
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(108, 99, 255, 0.22), transparent 28%),
+        radial-gradient(circle at top right, rgba(52, 211, 153, 0.10), transparent 20%),
+        linear-gradient(180deg, #0a0c10 0%, #0b0d11 42%, #10131a 100%);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background:
+        linear-gradient(90deg, rgba(255,255,255,0.028) 1px, transparent 1px),
+        linear-gradient(rgba(255,255,255,0.022) 1px, transparent 1px);
+      background-size: 44px 44px;
+      mask-image: linear-gradient(180deg, rgba(0,0,0,0.45), transparent 78%);
+    }
+    a { color: inherit; text-decoration: none; }
+    .shell {
+      width: min(1120px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 24px 0 48px;
+      position: relative;
+      z-index: 1;
+    }
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      margin-bottom: 26px;
+      padding: 14px 18px;
+      border-radius: 18px;
+      background: rgba(10, 12, 16, 0.78);
+      border: 1px solid var(--border);
+      backdrop-filter: blur(16px);
+    }
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    .brand svg { width: 28px; height: 28px; flex-shrink: 0; }
+    .topbar-note {
+      color: var(--text-muted);
+      font-size: 0.86rem;
+      text-align: right;
+    }
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(340px, 0.95fr);
+      gap: 24px;
+      align-items: start;
+    }
+    .hero-copy,
+    .checkout-card {
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xl);
+      background: var(--surface);
+      backdrop-filter: blur(18px);
+      box-shadow: var(--shadow-xl);
+    }
+    .hero-copy {
+      padding: clamp(1.5rem, 3vw, 2.2rem);
+      min-height: 100%;
+      position: relative;
+      overflow: hidden;
+    }
+    .hero-copy::after {
+      content: "";
+      position: absolute;
+      right: -60px;
+      bottom: -80px;
+      width: 220px;
+      height: 220px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(108, 99, 255, 0.22), transparent 72%);
+      pointer-events: none;
+    }
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0.45rem 0.8rem;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.03);
+      color: var(--text-muted);
+      font-size: 0.75rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 1.1rem;
+    }
+    .eyebrow-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--green);
+      box-shadow: 0 0 0 6px rgba(52, 211, 153, 0.14);
+    }
+    h1 {
+      font-size: clamp(2.2rem, 5vw, 4rem);
+      line-height: 1.02;
+      letter-spacing: -0.05em;
+      margin-bottom: 1rem;
+      max-width: 11ch;
+    }
+    .hero-sub {
+      color: var(--text-muted);
+      font-size: 1rem;
+      max-width: 50ch;
+      margin-bottom: 1.5rem;
+    }
+    .highlight {
+      color: var(--accent);
+      font-style: normal;
+    }
+    .proof-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 1.4rem;
+    }
+    .proof-card {
+      padding: 1rem 1rem 0.95rem;
+      border-radius: var(--radius-lg);
+      background: rgba(255,255,255,0.035);
+      border: 1px solid var(--border);
+    }
+    .proof-title {
+      font-size: 0.84rem;
+      font-weight: 700;
+      margin-bottom: 0.2rem;
+    }
+    .proof-copy {
+      color: var(--text-muted);
+      font-size: 0.82rem;
+      line-height: 1.5;
+    }
+    .checkout-card {
+      padding: clamp(1.35rem, 3vw, 2rem);
+    }
+    .card-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 1rem;
+      margin-bottom: 1.4rem;
+    }
+    .card-head h2 {
+      font-size: 1.35rem;
+      letter-spacing: -0.03em;
+      margin-bottom: 0.25rem;
+    }
+    .card-head p {
+      color: var(--text-muted);
+      font-size: 0.92rem;
+    }
+    .trust-pill {
+      flex-shrink: 0;
+      padding: 0.55rem 0.8rem;
+      border-radius: 999px;
+      background: var(--green-soft);
+      border: 1px solid rgba(52, 211, 153, 0.22);
+      color: var(--green);
+      font-size: 0.74rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .plan-summary {
+      display: grid;
+      gap: 1rem;
+      padding: 1.15rem;
+      border-radius: 22px;
+      background: linear-gradient(145deg, rgba(108, 99, 255, 0.18), rgba(108, 99, 255, 0.06) 48%, rgba(255,255,255,0.03) 100%);
+      border: 1px solid rgba(108, 99, 255, 0.24);
+      margin-bottom: 1.4rem;
+    }
+    .plan-meta {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 1rem;
+    }
+    .plan-name {
+      font-size: 0.78rem;
+      font-weight: 700;
+      color: #c8ccff;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 0.45rem;
+    }
+    .plan-price {
+      font-size: clamp(1.8rem, 3vw, 2.4rem);
+      font-weight: 800;
+      letter-spacing: -0.05em;
+      line-height: 1;
+    }
+    .plan-tag {
+      padding: 0.45rem 0.75rem;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.08);
+      color: var(--text-muted);
+      font-size: 0.74rem;
+      white-space: nowrap;
+    }
+    .plan-points {
+      display: grid;
+      gap: 0.7rem;
+    }
+    .plan-point {
+      display: flex;
+      align-items: center;
+      gap: 0.7rem;
+      color: var(--text-muted);
+      font-size: 0.88rem;
+    }
+    .plan-point strong { color: var(--text); }
+    .plan-icon {
+      width: 28px;
+      height: 28px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 10px;
+      background: rgba(255,255,255,0.08);
+      color: #d8dbff;
+      font-size: 0.8rem;
+      flex-shrink: 0;
+    }
+    .error,
+    .success {
+      font-size: 0.88rem;
+      padding: 0.9rem 1rem;
+      border-radius: var(--radius-md);
+      margin-bottom: 1rem;
+      display: none;
+      line-height: 1.5;
+    }
+    .error {
+      color: var(--red);
+      background: var(--red-soft);
+      border: 1px solid rgba(255,125,125,0.22);
+    }
     .error.show { display: block; }
-    
-    .success { color: var(--green); font-size: 0.85rem; padding: 0.75rem; background: rgba(52,211,153,0.1); border-radius: 6px; margin-bottom: 1.5rem; display: none; }
+    .success {
+      color: var(--green);
+      background: var(--green-soft);
+      border: 1px solid rgba(52,211,153,0.22);
+    }
     .success.show { display: block; }
-    
-    .back-link { text-align: center; margin-top: 1.5rem; }
-    .back-link a { color: var(--text-muted); font-size: 0.9rem; }
-    .back-link a:hover { color: var(--text); }
+    .checkout-form {
+      display: grid;
+      gap: 1rem;
+    }
+    .form-group { display: grid; gap: 0.5rem; }
+    label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .field-note {
+      color: var(--text-faint);
+      font-size: 0.76rem;
+      font-weight: 500;
+    }
+    input,
+    select {
+      width: 100%;
+      padding: 0.95rem 1rem;
+      background: var(--surface-raised);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      color: var(--text);
+      font-size: 0.95rem;
+      font-family: inherit;
+      transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.12s ease;
+    }
+    input:focus,
+    select:focus {
+      outline: none;
+      border-color: rgba(108,99,255,0.65);
+      box-shadow: 0 0 0 4px rgba(108,99,255,0.12);
+      transform: translateY(-1px);
+    }
+    input::placeholder { color: var(--text-faint); }
+    select { appearance: none; }
+    .field-help {
+      color: var(--text-faint);
+      font-size: 0.8rem;
+      line-height: 1.5;
+    }
+    .summary-breakdown {
+      display: grid;
+      gap: 0.65rem;
+      padding-top: 0.3rem;
+      border-top: 1px solid rgba(255,255,255,0.08);
+    }
+    .summary-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
+    .summary-row strong {
+      color: var(--text);
+      text-align: right;
+    }
+    .summary-row.total {
+      padding-top: 0.2rem;
+      color: var(--text);
+      font-size: 0.92rem;
+      font-weight: 700;
+    }
+    .summary-note {
+      color: var(--text-faint);
+      font-size: 0.8rem;
+      line-height: 1.5;
+    }
+    .button {
+      width: 100%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.7rem;
+      padding: 1rem 1.15rem;
+      background: linear-gradient(135deg, var(--accent), #847cff);
+      color: #fff;
+      border: none;
+      border-radius: 16px;
+      font-size: 0.98rem;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      cursor: pointer;
+      transition: transform 0.14s ease, box-shadow 0.18s ease, background 0.18s ease;
+      box-shadow: 0 18px 34px var(--accent-glow);
+      margin-top: 0.2rem;
+    }
+    .button:hover:not(:disabled) {
+      background: linear-gradient(135deg, var(--accent-hover), #918aff);
+      transform: translateY(-1px);
+    }
+    .button:disabled {
+      opacity: 0.7;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+    .fine-print {
+      display: grid;
+      gap: 0.8rem;
+      margin-top: 1.15rem;
+    }
+    .fine-print-card {
+      padding: 0.95rem 1rem;
+      border-radius: var(--radius-md);
+      background: rgba(255,255,255,0.035);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      font-size: 0.84rem;
+    }
+    .fine-print-card strong { color: var(--text); }
+    .footer-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1rem;
+      flex-wrap: wrap;
+      margin-top: 1.4rem;
+      color: var(--text-muted);
+      font-size: 0.88rem;
+    }
+    .footer-row a { color: var(--text-muted); }
+    .footer-row a:hover { color: var(--text); }
+    .back-link { display: inline-flex; align-items: center; gap: 0.4rem; }
+    .footer-trust {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+    }
+    .footer-trust-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 999px;
+      background: var(--green);
+    }
+    @media (max-width: 980px) {
+      .hero {
+        grid-template-columns: 1fr;
+      }
+      .topbar {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+      .topbar-note { text-align: left; }
+      h1 { max-width: none; }
+    }
+    @media (max-width: 640px) {
+      .shell {
+        width: min(100%, calc(100% - 24px));
+        padding-top: 12px;
+      }
+      .topbar {
+        padding: 12px 14px;
+        border-radius: 16px;
+        margin-bottom: 16px;
+      }
+      .hero-copy,
+      .checkout-card {
+        border-radius: 22px;
+      }
+      .hero-copy,
+      .checkout-card {
+        padding: 1.2rem;
+      }
+      .proof-grid {
+        grid-template-columns: 1fr;
+      }
+      .plan-meta,
+      .footer-row {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+      .button {
+        padding-top: 1.05rem;
+        padding-bottom: 1.05rem;
+      }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition: none !important;
+        scroll-behavior: auto !important;
+      }
+    }
   </style>
 </head>
 <body>
-  <div class="container">
-    <div class="header">
-      <h1>Checkout</h1>
-      <p>Secure payment via Stripe</p>
+  <div class="shell">
+    <div class="topbar">
+      <a href="/" class="brand" aria-label="Back to Culler homepage">
+        <svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path fill-rule="evenodd" clip-rule="evenodd" d="M128 252C196.483 252 252 196.483 252 128C252 59.5167 196.483 4 128 4C59.5167 4 4 59.5167 4 128C4 196.483 59.5167 252 128 252ZM128 226.694C182.507 226.694 226.694 182.507 226.694 128C226.694 73.4929 182.507 29.3061 128 29.3061C73.4929 29.3061 29.3061 73.4929 29.3061 128C29.3061 182.507 73.4929 226.694 128 226.694ZM188.633 131.549C181.333 137.253 172.145 140.653 162.163 140.653C138.404 140.653 119.143 121.392 119.143 97.6327C119.143 85.8325 123.894 75.1419 131.587 67.3695C130.4 67.3004 129.204 67.2653 128 67.2653C94.4572 67.2653 67.2653 94.4572 67.2653 128C67.2653 161.543 94.4572 188.735 128 188.735C160.352 188.735 186.795 163.44 188.633 131.549ZM117.878 148.245C123.468 148.245 128 143.713 128 138.122C128 132.532 123.468 128 117.878 128C112.287 128 107.755 132.532 107.755 138.122C107.755 143.713 112.287 148.245 117.878 148.245ZM107.755 153.306C107.755 156.101 105.489 158.367 102.694 158.367C99.8986 158.367 97.6327 156.101 97.6327 153.306C97.6327 150.511 99.8986 148.245 102.694 148.245C105.489 148.245 107.755 150.511 107.755 153.306ZM177.347 97.6326C177.347 106.018 170.549 112.816 162.163 112.816C161.21 112.816 160.278 112.729 159.373 112.561C163.87 111.53 167.225 107.503 167.225 102.694C167.225 97.1034 162.693 92.5714 157.102 92.5714C152.292 92.5714 148.266 95.9258 147.235 100.423C147.067 99.5183 146.98 98.5857 146.98 97.6326C146.98 89.2469 153.778 82.449 162.163 82.449C170.549 82.449 177.347 89.2469 177.347 97.6326Z" fill="white"/>
+        </svg>
+        Culler
+      </a>
+      <div class="topbar-note">Checkout is secured by Stripe. Your activation details are emailed right after purchase.</div>
     </div>
 
-    <div class="checkout-card">
-      <div class="plan-summary">
-        <div class="plan-name" id="planName">Loading...</div>
-        <div class="plan-price" id="planPrice">—</div>
-      </div>
+    <div class="hero">
+      <section class="hero-copy" aria-label="Checkout overview">
+        <div class="eyebrow">
+          <span class="eyebrow-dot"></span>
+          Secure checkout
+        </div>
+        <h1>Start culling faster, <em class="highlight">not slower</em>.</h1>
+        <p class="hero-sub">
+          Finish checkout here, then we send your Culler activation code straight to your inbox.
+          The app stays local, the workflow stays fast, and setup stays simple on both Mac and Windows.
+        </p>
 
-      <div class="error" id="error"></div>
-      <div class="success" id="success"></div>
+        <div class="proof-grid">
+          <div class="proof-card">
+            <div class="proof-title">Instant delivery</div>
+            <div class="proof-copy">Activation code lands on the success page and in your email once payment clears.</div>
+          </div>
+          <div class="proof-card">
+            <div class="proof-title">No cloud lock-in</div>
+            <div class="proof-copy">Your photos stay on your machine. Culler is a desktop workflow, not a web upload funnel.</div>
+          </div>
+          <div class="proof-card">
+            <div class="proof-title">Clear next steps</div>
+            <div class="proof-copy">Install the app, paste your code, and start culling right away with no account maze.</div>
+          </div>
+          <div class="proof-card">
+            <div class="proof-title">License control</div>
+            <div class="proof-copy">Need extra time or more devices later? You can manage the license from the hosted portal.</div>
+          </div>
+        </div>
+      </section>
 
-      <form id="checkoutForm">
-        <div class="form-group">
-          <label for="name">Full Name *</label>
-          <input type="text" id="name" name="name" required placeholder="John Doe" />
+      <section class="checkout-card" aria-label="Checkout form">
+        <div class="card-head">
+          <div>
+            <h2>Complete your purchase</h2>
+            <p>Enter the details that should receive the license.</p>
+          </div>
+          <div class="trust-pill">Stripe secured</div>
         </div>
 
-        <div class="form-group">
-          <label for="email">Email Address *</label>
-          <input type="email" id="email" name="email" required placeholder="john@example.com" />
+        <div class="plan-summary">
+          <div class="plan-meta">
+            <div>
+              <div class="plan-name" id="planName">Loading plan…</div>
+              <div class="plan-price" id="planPrice">—</div>
+            </div>
+            <div class="plan-tag" id="planTag">License</div>
+          </div>
+
+          <div class="plan-points">
+            <div class="plan-point">
+              <span class="plan-icon">1</span>
+              <span>Activation code is shown after checkout and sent to <strong>your email</strong>.</span>
+            </div>
+            <div class="plan-point">
+              <span class="plan-icon">2</span>
+              <span>Paste it into <strong>Culler → Settings → License</strong> to unlock the app.</span>
+            </div>
+            <div class="plan-point">
+              <span class="plan-icon">3</span>
+              <span>Need changes later? Use the <strong>license manager</strong> to renew or add devices.</span>
+            </div>
+          </div>
+
+          <div class="summary-breakdown">
+            <div class="summary-row">
+              <span>Base plan</span>
+              <strong id="planBaseValue">—</strong>
+            </div>
+            <div class="summary-row">
+              <span>Device coverage</span>
+              <strong id="planDeviceValue">1 device</strong>
+            </div>
+            <div class="summary-row total">
+              <span id="planTotalLabel">Due today</span>
+              <strong id="planTotalValue">—</strong>
+            </div>
+            <div class="summary-note" id="planRenewalNote">Extra device fees, if any, are only charged once at checkout.</div>
+          </div>
         </div>
 
-        <button type="submit" class="button" id="submitBtn">Proceed to Payment</button>
-      </form>
+        <div class="error" id="error" role="alert"></div>
+        <div class="success" id="success" role="status"></div>
 
-      <div class="back-link">
-        <a href="/#pricing">← Back to Pricing</a>
-      </div>
+        <form id="checkoutForm" class="checkout-form">
+          <div class="form-group">
+            <label for="name">
+              <span>Full name</span>
+              <span class="field-note">Shown on the license</span>
+            </label>
+            <input type="text" id="name" name="name" required placeholder="Oscar Smith" autocomplete="name" />
+          </div>
+
+          <div class="form-group">
+            <label for="email">
+              <span>Email address</span>
+              <span class="field-note">Where we send the code</span>
+            </label>
+            <input type="email" id="email" name="email" required placeholder="oscar@example.com" autocomplete="email" />
+          </div>
+
+          <div class="form-group">
+            <label for="deviceCount">
+              <span>Device count</span>
+              <span class="field-note">Included in the license</span>
+            </label>
+            <select id="deviceCount" name="deviceCount"></select>
+            <div class="field-help" id="deviceHint">1 device is included by default.</div>
+          </div>
+
+          <button type="submit" class="button" id="submitBtn">
+            <span>Proceed to payment</span>
+            <span aria-hidden="true">→</span>
+          </button>
+        </form>
+
+        <div class="fine-print">
+          <div class="fine-print-card">
+            <strong>What happens next:</strong> Stripe handles payment, then Culler generates your activation code automatically.
+          </div>
+          <div class="fine-print-card">
+            <strong>Already have a timed license?</strong> You can renew or add devices from the hosted license manager instead of buying again.
+          </div>
+        </div>
+
+        <div class="footer-row">
+          <a href="/#pricing" class="back-link">← Back to pricing</a>
+          <div class="footer-trust">
+            <span class="footer-trust-dot"></span>
+            Secure payment via Stripe
+          </div>
+        </div>
+      </section>
     </div>
   </div>
 
@@ -89,96 +638,176 @@
     const BASE = window.location.origin;
     const params = new URLSearchParams(window.location.search);
     const plan = params.get('plan') || 'monthly';
+    const requestedDevices = Number.parseInt(params.get('devices') || '', 10);
 
     let pricingData = null;
+    let selectedDevices = Number.isInteger(requestedDevices) && requestedDevices > 0 ? requestedDevices : 1;
+
+    function formatMoney(value, currency, period) {
+      const amount = Number(value || 0);
+      const money = new Intl.NumberFormat('en-AU', {
+        style: 'currency',
+        currency,
+        minimumFractionDigits: amount % 1 === 0 ? 0 : 2,
+      }).format(amount);
+      return money + (period ? " " + period : "");
+    }
+
+    function displayPlanMeta(activePlan) {
+      const names = {
+        monthly: "Monthly Pro",
+        yearly: "Yearly Pro",
+        lifetime: "Lifetime License",
+      };
+      const tags = {
+        monthly: "Flexible plan",
+        yearly: "Best value",
+        lifetime: "One-time purchase",
+      };
+
+      document.getElementById("planName").textContent = names[activePlan] || activePlan;
+      document.getElementById("planTag").textContent = tags[activePlan] || "License";
+    }
+
+    function deviceLabel(count) {
+      return count === 1 ? "1 device" : count + " devices";
+    }
+
+    function buildDeviceOptions() {
+      if (!pricingData) return;
+
+      const includedDevices = Math.max(1, Number(pricingData.includedDevices || 1));
+      const maxDevices = Math.max(includedDevices, Number(pricingData.maxCheckoutDevices || includedDevices));
+      const select = document.getElementById("deviceCount");
+
+      if (selectedDevices < includedDevices) selectedDevices = includedDevices;
+      if (selectedDevices > maxDevices) selectedDevices = maxDevices;
+
+      let options = "";
+      for (let count = includedDevices; count <= maxDevices; count += 1) {
+        options += '<option value="' + count + '">' + deviceLabel(count) + '</option>';
+      }
+      select.innerHTML = options;
+      select.value = String(selectedDevices);
+    }
 
     async function loadPricing() {
       try {
-        const res = await fetch(BASE + '/api/v1/pricing');
-        if (!res.ok) throw new Error('Failed to load pricing');
+        const res = await fetch(BASE + "/api/v1/pricing");
+        if (!res.ok) throw new Error("Failed to load pricing");
         pricingData = await res.json();
+        buildDeviceOptions();
         updatePlanDisplay();
       } catch (err) {
-        showError('Failed to load pricing: ' + err.message);
+        showError("Failed to load pricing: " + err.message);
       }
     }
 
     function updatePlanDisplay() {
       if (!pricingData || !pricingData.plans) return;
-      
-      const planData = pricingData.plans[plan];
-      if (!planData) return;
 
-      const planNames = { monthly: 'Monthly Plan', yearly: 'Yearly Plan', lifetime: 'Lifetime License' };
-      const currency = (pricingData.currency || 'aud').toUpperCase();
-      
-      document.getElementById('planName').textContent = planNames[plan] || plan;
-      document.getElementById('planPrice').textContent = 
-        '$' + planData.price.toFixed(2) + ' ' + currency + (planData.period ? ' ' + planData.period : '');
+      const planData = pricingData.plans[plan];
+      if (!planData) {
+        showError("That plan could not be found.");
+        return;
+      }
+
+      const currency = (pricingData.currency || "aud").toUpperCase();
+      const includedDevices = Math.max(1, Number(pricingData.includedDevices || 1));
+      const extraSeatPrice = Number(pricingData.deviceUpgradePrice || 0) / 100;
+      const extraSeats = Math.max(0, selectedDevices - includedDevices);
+      const totalToday = planData.price + (extraSeats * extraSeatPrice);
+      displayPlanMeta(plan);
+      document.getElementById("planPrice").textContent = formatMoney(planData.price, currency, planData.period || "");
+      document.getElementById("planBaseValue").textContent = formatMoney(planData.price, currency, planData.period || "");
+      document.getElementById("planDeviceValue").textContent = deviceLabel(selectedDevices);
+      document.getElementById("planTotalValue").textContent = formatMoney(totalToday, currency, "");
+      document.getElementById("planTotalLabel").textContent = plan === "lifetime" ? "Total" : "Due today";
+
+      const deviceHint = document.getElementById("deviceHint");
+      if (extraSeatPrice > 0) {
+        deviceHint.textContent = deviceLabel(includedDevices) + " included. Each extra device adds " + formatMoney(extraSeatPrice, currency, "") + " once at checkout.";
+      } else {
+        deviceHint.textContent = "Choose how many devices this license should cover from day one.";
+      }
+
+      const renewalNote = document.getElementById("planRenewalNote");
+      const recurringLabel = plan === "monthly" ? "month" : plan === "yearly" ? "year" : "";
+      if (extraSeats > 0 && plan !== "lifetime") {
+        renewalNote.textContent = "Today includes your first " + recurringLabel + " payment plus a one-time extra device fee for " + deviceLabel(selectedDevices) + ".";
+      } else if (plan === "lifetime") {
+        renewalNote.textContent = "One payment, " + deviceLabel(selectedDevices) + " covered, and all future updates stay included.";
+      } else {
+        renewalNote.textContent = "Your license is generated with " + deviceLabel(selectedDevices) + " from the start.";
+      }
     }
 
     function showError(msg) {
-      const errorEl = document.getElementById('error');
+      const errorEl = document.getElementById("error");
       errorEl.textContent = msg;
-      errorEl.classList.add('show');
-      document.getElementById('success').classList.remove('show');
+      errorEl.classList.add("show");
+      document.getElementById("success").classList.remove("show");
     }
 
     function showSuccess(msg) {
-      const successEl = document.getElementById('success');
+      const successEl = document.getElementById("success");
       successEl.textContent = msg;
-      successEl.classList.add('show');
-      document.getElementById('error').classList.remove('show');
+      successEl.classList.add("show");
+      document.getElementById("error").classList.remove("show");
     }
 
-    document.getElementById('checkoutForm').addEventListener('submit', async (e) => {
+    document.getElementById("checkoutForm").addEventListener("submit", async (e) => {
       e.preventDefault();
-      
-      const name = document.getElementById('name').value.trim();
-      const email = document.getElementById('email').value.trim();
-      const btn = document.getElementById('submitBtn');
+
+      const name = document.getElementById("name").value.trim();
+      const email = document.getElementById("email").value.trim();
+      const btn = document.getElementById("submitBtn");
 
       if (!name || !email) {
-        showError('Please fill in all fields');
+        showError("Please fill in all fields.");
         return;
       }
 
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-        showError('Please enter a valid email');
+        showError("Please enter a valid email.");
         return;
       }
 
       btn.disabled = true;
-      btn.textContent = 'Processing...';
+      btn.innerHTML = "<span>Preparing secure checkout</span><span aria-hidden=\"true\">…</span>";
 
       try {
-        const res = await fetch(BASE + '/api/v1/checkout/create', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ plan, name, email })
+        const res = await fetch(BASE + "/api/v1/checkout/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ plan, name, email, maxDevices: selectedDevices })
         });
 
         const data = await res.json();
         if (!res.ok) {
-          throw new Error(data.error || 'Checkout failed');
+          throw new Error(data.error || "Checkout failed");
         }
 
         if (data.url) {
-          showSuccess('Redirecting to payment...');
+          showSuccess("Redirecting to Stripe…");
           setTimeout(() => {
             window.location.href = data.url;
-          }, 500);
+          }, 450);
         } else {
-          throw new Error('No checkout URL returned');
+          throw new Error("No checkout URL returned");
         }
       } catch (err) {
         showError(err.message);
         btn.disabled = false;
-        btn.textContent = 'Proceed to Payment';
+        btn.innerHTML = "<span>Proceed to payment</span><span aria-hidden=\"true\">→</span>";
       }
     });
 
-    // Load pricing on page load
+    document.getElementById("deviceCount").addEventListener("change", (event) => {
+      selectedDevices = Number.parseInt(event.target.value, 10) || selectedDevices;
+      updatePlanDisplay();
+    });
+
     loadPricing();
   </script>
 </body>

@@ -43,6 +43,7 @@ const githubToken = process.env.GITHUB_RELEASE_TOKEN || '';
 const ACTIVATION_CODE_PREFIX = 'PIC';
 const ACTIVATION_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const defaultMaxDevices = Math.max(1, Number.parseInt(process.env.DEFAULT_MAX_DEVICES || '1', 10) || 1);
+const checkoutMaxDevices = Math.max(defaultMaxDevices, Number.parseInt(process.env.CHECKOUT_MAX_DEVICES || '5', 10) || 5);
 
 // --- Payment / trial config ---
 // Stripe: STRIPE_SECRET_KEY (sk_live_... or sk_test_...) and STRIPE_WEBHOOK_SECRET.
@@ -405,6 +406,7 @@ function normalizeLicenseDate(value) {
     return `${year}-${month}-${day}`;
   }
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  if (/^\d{4}-\d{2}-\d{2}T/.test(value)) return value.slice(0, 10);
   return undefined;
 }
 
@@ -486,7 +488,37 @@ function parseMaxDevices(value, fallback = 1) {
   return parsed;
 }
 
-function createLicenseKey({ name, email, expiry, notes, maxDevices }) {
+function safeParseMaxDevices(value, fallback = 1) {
+  try {
+    return parseMaxDevices(value, fallback);
+  } catch {
+    return fallback;
+  }
+}
+
+function parseCheckoutMaxDevices(value, fallback = defaultMaxDevices) {
+  const parsed = parseMaxDevices(value, fallback);
+  if (parsed > checkoutMaxDevices) {
+    throw new Error(`Device count must be between ${defaultMaxDevices} and ${checkoutMaxDevices}.`);
+  }
+  return parsed;
+}
+
+function normalizePlanValue(value) {
+  const plan = String(value || '').trim().toLowerCase();
+  if (!plan || plan === 'custom' || plan === 'timed') return null;
+  if (!['trial', 'monthly', 'yearly', 'lifetime'].includes(plan)) {
+    throw new Error('Plan must be trial, monthly, yearly, lifetime, or custom.');
+  }
+  return plan;
+}
+
+function toLicenseInputDate(value) {
+  const normalized = normalizeLicenseDate(value);
+  return normalized ? formatLicenseDate(normalized) : undefined;
+}
+
+function createLicenseKey({ name, email, expiry, notes, maxDevices, issuedAt }) {
   if (!canGenerateLicenses()) {
     throw new Error('License generation is not enabled on this server.');
   }
@@ -494,6 +526,10 @@ function createLicenseKey({ name, email, expiry, notes, maxDevices }) {
     throw new Error('Customer name is required.');
   }
 
+  const normalizedIssuedAt = normalizeLicenseDate(issuedAt || todayLicenseDate());
+  if (!normalizedIssuedAt) {
+    throw new Error('Issued date must use DD-MM-YYYY.');
+  }
   const normalizedExpiry = expiry ? normalizeLicenseDate(expiry) : undefined;
   if (expiry && !normalizedExpiry) {
     throw new Error('Expiry must use DD-MM-YYYY.');
@@ -501,7 +537,7 @@ function createLicenseKey({ name, email, expiry, notes, maxDevices }) {
 
   const payload = {
     n: name.trim(),
-    i: todayLicenseDate(),
+    i: normalizedIssuedAt,
     t: 'Full access',
     d: parseMaxDevices(maxDevices, 1),
   };
@@ -512,6 +548,72 @@ function createLicenseKey({ name, email, expiry, notes, maxDevices }) {
   const payloadBuffer = Buffer.from(JSON.stringify(payload), 'utf8');
   const signature = crypto.sign(null, payloadBuffer, crypto.createPrivateKey(licensePrivateKeyPem));
   return `PI1-${base64Url(payloadBuffer)}.${base64Url(signature)}`;
+}
+
+function nextLicenseStatus(currentStatus, expiresAt) {
+  if (currentStatus === 'revoked' || currentStatus === 'disabled') {
+    return currentStatus;
+  }
+  if (expiresAt && compareLicenseDate(expiresAt, todayLicenseDate()) < 0) {
+    return 'expired';
+  }
+  return 'active';
+}
+
+function buildUpdatedLicenseRecord(record, changes = {}) {
+  const customerName = String(changes.customerName ?? record.customer_name ?? '').trim();
+  if (!customerName) {
+    throw new Error('Customer name is required.');
+  }
+
+  const customerEmailInput = changes.customerEmail ?? record.customer_email ?? '';
+  const customerEmail = String(customerEmailInput || '').trim() || null;
+  if (customerEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail)) {
+    throw new Error('Customer email must be valid.');
+  }
+  const notesInput = changes.notes ?? record.notes ?? '';
+  const notes = String(notesInput || '').trim() || null;
+  const maxDevices = parseMaxDevices(changes.maxDevices ?? record.max_devices ?? 1, 1);
+  const plan = changes.plan === undefined ? normalizePlanValue(record.plan) : normalizePlanValue(changes.plan);
+  let expiresAt = changes.expiresAt === undefined
+    ? normalizeLicenseDate(record.expires_at)
+    : normalizeLicenseDate(changes.expiresAt);
+
+  if (changes.expiresAt && !expiresAt) {
+    throw new Error('Expiry must use YYYY-MM-DD.');
+  }
+  if (plan === 'lifetime') {
+    expiresAt = null;
+  }
+  if ((plan === 'trial' || plan === 'monthly' || plan === 'yearly') && !expiresAt) {
+    throw new Error('Trial, monthly, and yearly plans require an expiry date.');
+  }
+
+  const issuedAt = issuedDateForRecord(record) || todayLicenseDate();
+  const licenseKey = createLicenseKey({
+    name: customerName,
+    email: customerEmail,
+    expiry: toLicenseInputDate(expiresAt),
+    notes,
+    maxDevices,
+    issuedAt,
+  });
+  const validated = validateLicenseKey(licenseKey, licensePublicKeyPem);
+  if (!validated.valid) {
+    throw new Error(validated.message || 'Key re-generation failed.');
+  }
+
+  return {
+    customerName,
+    customerEmail,
+    expiresAt,
+    issuedAt,
+    licenseKey,
+    maxDevices,
+    notes,
+    plan,
+    status: nextLicenseStatus(record.status, expiresAt),
+  };
 }
 
 function shouldUseSecureCookies(req) {
@@ -1436,7 +1538,17 @@ app.get('/admin/licenses', authSession, async (req, res) => {
             <input name="name" required placeholder="Jane Smith" />
             <label>Email</label>
             <input type="email" name="email" placeholder="jane@example.com" />
-            <div class="row">
+            <div class="row row-3">
+              <div>
+                <label>Plan</label>
+                <select name="plan">
+                  <option value="lifetime">Lifetime</option>
+                  <option value="monthly">Monthly</option>
+                  <option value="yearly">Yearly</option>
+                  <option value="trial">Trial</option>
+                  <option value="">Custom / timed</option>
+                </select>
+              </div>
               <div>
                 <label>Expiry <span style="font-weight:400">(optional)</span></label>
                 <input name="expiry" placeholder="31-12-2027" />
@@ -1549,6 +1661,7 @@ app.get('/admin/licenses', authSession, async (req, res) => {
 
 app.post('/admin/licenses/generate', authSession, async (req, res) => {
   try {
+    const plan = normalizePlanValue(req.body.plan);
     const licenseKey = createLicenseKey({
       name: req.body.name,
       email: req.body.email,
@@ -1561,7 +1674,7 @@ app.post('/admin/licenses/generate', authSession, async (req, res) => {
       throw new Error(validated.message || 'Generated key did not validate.');
     }
 
-    const activationCode = await upsertLicenseRecord(validated, req.body.notes);
+    const activationCode = await upsertLicenseRecord(validated, req.body.notes, plan);
 
     return res.send(htmlPage('License Generated', `
       <div class="hero">
@@ -1622,6 +1735,9 @@ app.get('/admin/licenses/:id', authSession, async (req, res) => {
   );
   const issuedAt = issuedDateForRecord(record);
   const detailsExpiry = latestDeviceExpiry(activations.rows) || normalizeLicenseDate(record.expires_at);
+  const editablePlan = record.plan || (detailsExpiry ? '' : 'lifetime');
+  const editableExpiry = detailsExpiry || '';
+  const hasActivations = activations.rowCount > 0;
   return res.send(htmlPage(`License ${record.customer_name}`, `
     <div class="hero">
       <div class="hero-copy">
@@ -1679,11 +1795,49 @@ app.get('/admin/licenses/:id', authSession, async (req, res) => {
             <div class="detail-value">${record.last_seen_at ? fmtTime(record.last_seen_at) : 'Never'}</div>
           </div>
         </div>
-        <form method="post" action="/admin/licenses/${record.id}/devices" style="margin-top:18px">
-          <label>Max devices</label>
-          <input type="number" name="maxDevices" min="1" step="1" value="${record.max_devices || 1}" />
+        <form method="post" action="/admin/licenses/${record.id}/entitlement" style="margin-top:18px">
+          <div class="panel-head" style="margin-bottom:10px">
+            <div>
+              <h2>Edit entitlement</h2>
+              <p class="muted">${hasActivations
+                ? 'Changes here regenerate the stored key and sync expiry across registered devices so the record stays consistent.'
+                : 'No devices are attached yet, so this is the fastest place to reshape the plan or expiry before first activation.'}</p>
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label>Customer name</label>
+              <input name="customerName" value="${escapeHtml(record.customer_name)}" required />
+            </div>
+            <div>
+              <label>Customer email</label>
+              <input type="email" name="customerEmail" value="${escapeHtml(record.customer_email || '')}" placeholder="customer@example.com" />
+            </div>
+          </div>
+          <div class="row row-3">
+            <div>
+              <label>Plan</label>
+              <select name="plan">
+                <option value=""${editablePlan ? '' : ' selected'}>Custom / timed</option>
+                <option value="trial"${editablePlan === 'trial' ? ' selected' : ''}>Trial</option>
+                <option value="monthly"${editablePlan === 'monthly' ? ' selected' : ''}>Monthly</option>
+                <option value="yearly"${editablePlan === 'yearly' ? ' selected' : ''}>Yearly</option>
+                <option value="lifetime"${editablePlan === 'lifetime' ? ' selected' : ''}>Lifetime</option>
+              </select>
+            </div>
+            <div>
+              <label>Expiry</label>
+              <input type="date" name="expiresAt" value="${editableExpiry}" />
+            </div>
+            <div>
+              <label>Max devices</label>
+              <input type="number" name="maxDevices" min="1" step="1" value="${record.max_devices || 1}" />
+            </div>
+          </div>
+          <label>Notes</label>
+          <textarea name="notes" rows="3" placeholder="Internal notes shown in the admin panel">${escapeHtml(record.notes || '')}</textarea>
           <div class="actions" style="margin-top:14px">
-            <button type="submit">Save seat limit</button>
+            <button type="submit">Save license details</button>
           </div>
         </form>
         <div style="margin-top:18px" class="actions">
@@ -1795,6 +1949,79 @@ app.post('/admin/licenses/:id/devices', authSession, async (req, res) => {
   const maxDevices = parseMaxDevices(req.body.maxDevices, 1);
   await pool.query('UPDATE license_records SET max_devices = $1, updated_at = NOW() WHERE id = $2', [maxDevices, req.params.id]);
   res.redirect(`/admin/licenses/${req.params.id}`);
+});
+
+app.post('/admin/licenses/:id/entitlement', authSession, async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM license_records WHERE id = $1', [req.params.id]);
+    if (!result.rowCount) {
+      return res.status(404).send(htmlPage('License Not Found', `<div class="panel"><h1>License not found</h1><a href="/admin/licenses">Back</a></div>`));
+    }
+
+    const currentRecord = result.rows[0];
+    const updated = buildUpdatedLicenseRecord(currentRecord, {
+      customerName: req.body.customerName,
+      customerEmail: req.body.customerEmail,
+      expiresAt: req.body.expiresAt || null,
+      maxDevices: req.body.maxDevices,
+      notes: req.body.notes,
+      plan: req.body.plan,
+    });
+
+    await pool.query(
+      `UPDATE license_records
+       SET license_key = $1,
+           customer_name = $2,
+           customer_email = $3,
+           plan = $4,
+           expires_at = $5,
+           max_devices = $6,
+           notes = $7,
+           status = $8,
+           updated_at = NOW()
+       WHERE id = $9`,
+      [
+        updated.licenseKey,
+        updated.customerName,
+        updated.customerEmail,
+        updated.plan,
+        updated.expiresAt,
+        updated.maxDevices,
+        updated.notes,
+        updated.status,
+        req.params.id,
+      ],
+    );
+    await pool.query(
+      `UPDATE license_activations
+       SET expires_at = $1, updated_at = NOW()
+       WHERE license_fingerprint = $2`,
+      [updated.expiresAt, currentRecord.fingerprint],
+    );
+    await pool.query(
+      `UPDATE stripe_sessions
+       SET license_key = $1,
+           customer_email = $2,
+           plan = $3,
+           max_devices = $4,
+           expires_at = $5
+       WHERE activation_code = $6`,
+      [updated.licenseKey, updated.customerEmail, updated.plan, updated.maxDevices, updated.expiresAt, currentRecord.activation_code],
+    ).catch(() => {});
+
+    return res.redirect(`/admin/licenses/${req.params.id}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Could not update the license.';
+    return res.status(400).send(htmlPage('License Update Failed', `
+      <div class="panel" style="max-width:620px;margin:60px auto">
+        <h1>License update failed</h1>
+        <p class="bad">${escapeHtml(message)}</p>
+        <div class="actions" style="margin-top:16px">
+          <a href="/admin/licenses/${req.params.id}"><button type="button">Back to license</button></a>
+        </div>
+      </div>
+    `));
+  }
 });
 
 app.post('/admin/licenses/:id/devices/:deviceRowId/expiry', authSession, async (req, res) => {
@@ -2988,6 +3215,7 @@ app.post(
       const amountTotal = session.amount_total; // cents
       const currency = (session.currency || 'aud').toUpperCase();
       const plan = session.metadata?.plan || 'lifetime';
+      const maxDevices = safeParseMaxDevices(session.metadata?.max_devices, defaultMaxDevices);
       const expiryDate = calculatePlanExpiryDate(plan);
       const expiryString = formatExpiryForLicense(expiryDate);
       const expiresLabel = formatExpiryLabel(expiryDate);
@@ -2999,8 +3227,8 @@ app.post(
           name: customerName,
           email: customerEmail,
           expiry: expiryString,
-          notes: `Stripe ${plan} purchase ${sessionId} (${amountTotal / 100} ${currency})`,
-          maxDevices: defaultMaxDevices,
+          notes: `Stripe ${plan} purchase ${sessionId} (${amountTotal / 100} ${currency}, ${maxDevices} devices)`,
+          maxDevices,
           plan,
         });
 
@@ -3010,7 +3238,7 @@ app.post(
         try {
           await pool.query(
             'INSERT INTO stripe_sessions (session_id, license_key, activation_code, customer_email, plan, max_devices, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (session_id) DO UPDATE SET license_key=$2, activation_code=$3, customer_email=$4, plan=$5, max_devices=$6, expires_at=$7',
-            [sessionId, licenseKey, activationCode, customerEmail, plan, defaultMaxDevices, expiryDate]
+            [sessionId, licenseKey, activationCode, customerEmail, plan, maxDevices, expiryDate]
           );
           console.log(`[stripe] ✓ Session stored in stripe_sessions — session: ${sessionId}`);
         } catch (dbErr) {
@@ -3068,6 +3296,7 @@ app.post(
       let customerEmail = checkoutSession?.customer_details?.email || paymentIntent.receipt_email || '';
       let customerName = checkoutSession?.customer_details?.name || paymentIntent.metadata?.customer_name || 'Culler Customer';
       const plan = checkoutSession?.metadata?.plan || paymentIntent.metadata?.plan || 'lifetime';
+      const maxDevices = safeParseMaxDevices(checkoutSession?.metadata?.max_devices || paymentIntent.metadata?.max_devices, defaultMaxDevices);
 
       if (!customerEmail) {
         console.warn('[stripe] Could not determine customer email from checkout session or payment_intent — skipping');
@@ -3076,7 +3305,6 @@ app.post(
 
       // Calculate expiry date based on plan
       let expiryDate = null;
-      const maxDevices = defaultMaxDevices;
       expiryDate = calculatePlanExpiryDate(plan);
 
       if (expiryDate) {
@@ -3094,7 +3322,7 @@ app.post(
           name: customerName,
           email: customerEmail,
           expiry: expiryString, // DD-MM-YYYY format or undefined for lifetime
-          notes: `Stripe ${plan} purchase ${sessionId} (${amountTotal / 100} ${currency})`,
+          notes: `Stripe ${plan} purchase ${sessionId} (${amountTotal / 100} ${currency}, ${maxDevices} devices)`,
           maxDevices,
           plan,
         });
@@ -3147,18 +3375,34 @@ app.post(
       console.log(`[stripe] charge.succeeded — device upgrade: ${activationCode} → ${newDeviceCount} devices`);
       
       try {
-        // Update license max_devices
-        const updateResult = await pool.query(
-          'UPDATE license_records SET max_devices = $1, updated_at = NOW() WHERE activation_code = $2 RETURNING id, customer_email, customer_name',
-          [newDeviceCount, activationCode]
+        const licenseResult = await pool.query(
+          'SELECT * FROM license_records WHERE activation_code = $1',
+          [activationCode]
         );
         
-        if (!updateResult.rowCount) {
+        if (!licenseResult.rowCount) {
           console.error('[stripe] ✗ License not found for upgrade:', activationCode);
           return res.json({ received: true });
         }
         
-        const license = updateResult.rows[0];
+        const license = licenseResult.rows[0];
+        const updated = buildUpdatedLicenseRecord(license, { maxDevices: newDeviceCount });
+        await pool.query(
+          `UPDATE license_records
+           SET license_key = $1,
+               max_devices = $2,
+               status = $3,
+               updated_at = NOW()
+           WHERE id = $4`,
+          [updated.licenseKey, updated.maxDevices, updated.status, license.id]
+        );
+        await pool.query(
+          `UPDATE stripe_sessions
+           SET license_key = $1,
+               max_devices = $2
+           WHERE activation_code = $3`,
+          [updated.licenseKey, updated.maxDevices, activationCode]
+        ).catch(() => {});
         console.log(`[stripe] ✓ License updated to ${newDeviceCount} devices`);
         
         // Send confirmation email
@@ -3170,6 +3414,7 @@ app.post(
               <h2>Device upgrade successful</h2>
               <p>Hi ${license.customer_name},</p>
               <p>Your Culler license has been upgraded to <strong>${newDeviceCount} devices</strong>.</p>
+              <p>Your stored license key has been refreshed too, so future activations stay in sync.</p>
               <p>Simply restart Culler on your devices and they will all work with this license.</p>
               <p style="margin-top:24px;font-size:14px;color:#666"><strong>Activation code:</strong> ${activationCode}</p>
             </div>
@@ -3199,7 +3444,7 @@ app.post(
       try {
         // Get current license to calculate new expiry
         const licenseResult = await pool.query(
-          'SELECT id, customer_email, customer_name, expires_at FROM license_records WHERE activation_code = $1',
+          'SELECT * FROM license_records WHERE activation_code = $1',
           [activationCode]
         );
         
@@ -3218,10 +3463,15 @@ app.post(
         else if (extendUnit === 'months') newExpiry.setMonth(newExpiry.getMonth() + extendAmount);
         else if (extendUnit === 'years') newExpiry.setFullYear(newExpiry.getFullYear() + extendAmount);
         
-        // Update license
+        const updated = buildUpdatedLicenseRecord(license, { expiresAt: newExpiry.toISOString().slice(0, 10) });
         await pool.query(
-          'UPDATE license_records SET expires_at = $1, updated_at = NOW() WHERE activation_code = $2',
-          [newExpiry, activationCode]
+          `UPDATE license_records
+           SET license_key = $1,
+               expires_at = $2,
+               status = $3,
+               updated_at = NOW()
+           WHERE activation_code = $4`,
+          [updated.licenseKey, updated.expiresAt, updated.status, activationCode]
         );
         await pool.query(
           `UPDATE license_activations
@@ -3229,8 +3479,15 @@ app.post(
            WHERE license_fingerprint = (
              SELECT fingerprint FROM license_records WHERE activation_code = $2
            )`,
-          [newExpiry, activationCode]
+          [updated.expiresAt, activationCode]
         );
+        await pool.query(
+          `UPDATE stripe_sessions
+           SET license_key = $1,
+               expires_at = $2
+           WHERE activation_code = $3`,
+          [updated.licenseKey, updated.expiresAt, activationCode]
+        ).catch(() => {});
         
         console.log(`[stripe] ✓ License extended to ${newExpiry.toISOString()}`);
         
@@ -3244,6 +3501,7 @@ app.post(
               <p>Hi ${license.customer_name},</p>
               <p>Your Culler license has been extended by <strong>${extendAmount} ${extendUnit}</strong>.</p>
               <p>New expiry date: <strong>${newExpiry.toLocaleDateString('en-AU', {year: 'numeric', month: 'short', day: 'numeric'})}</strong></p>
+              <p>Your stored license key has also been regenerated to match the new end date.</p>
               <p style="margin-top:24px;font-size:14px;color:#666"><strong>Activation code:</strong> ${activationCode}</p>
             </div>
           `,
@@ -3265,7 +3523,7 @@ app.post(
 
 // ---------------------------------------------------------------------------
 // Stripe checkout session  POST /api/v1/checkout/create
-// Body: { plan: 'monthly'|'yearly'|'lifetime', name, email, extensionCode? }
+// Body: { plan: 'monthly'|'yearly'|'lifetime', name, email, maxDevices?, extensionCode? }
 // Creates a Stripe Checkout Session and returns { url }.
 // extensionCode: if provided, extend that activation code after payment.
 // ---------------------------------------------------------------------------
@@ -3289,6 +3547,8 @@ app.get('/api/v1/pricing', apiCors, async (_req, res) => {
         lifetime: { price: fmt(cfg.price_lifetime_cents), label: 'Lifetime', period: '' },
       },
       deviceUpgradePrice: Number(cfg.device_upgrade_price_cents || 0),
+      includedDevices: defaultMaxDevices,
+      maxCheckoutDevices: checkoutMaxDevices,
       extensionPrices: {
         days: Number(cfg.extend_day_price_cents || 0),
         months: Number(cfg.extend_month_price_cents || 0),
@@ -3304,7 +3564,7 @@ app.get('/api/v1/pricing', apiCors, async (_req, res) => {
 
 app.post('/api/v1/checkout/create', async (req, res) => {
   if (!stripeSecretKey) return res.status(503).json({ error: 'Payments not configured.' });
-  const { plan, name, email, extensionCode } = req.body || {};
+  const { plan, name, email, maxDevices, extensionCode } = req.body || {};
   if (!['monthly', 'yearly', 'lifetime'].includes(plan)) {
     return res.status(400).json({ error: 'plan must be monthly, yearly, or lifetime.' });
   }
@@ -3315,7 +3575,15 @@ app.post('/api/v1/checkout/create', async (req, res) => {
   const pricing = await getStripePricing();
   const priceId = pricing[`stripe_price_${plan}`];
   const amountCents = Number(pricing[`price_${plan}_cents`] || 0);
+  const pricePerExtraDeviceCents = Number(pricing.device_upgrade_price_cents || 0);
   const currency = pricing['currency'] || 'aud';
+  let selectedMaxDevices;
+  try {
+    selectedMaxDevices = parseCheckoutMaxDevices(maxDevices, defaultMaxDevices);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+  const extraDevices = Math.max(0, selectedMaxDevices - defaultMaxDevices);
 
   if (!priceId && !amountCents) {
     return res.status(503).json({ error: `No price configured for plan: ${plan}` });
@@ -3333,6 +3601,7 @@ app.post('/api/v1/checkout/create', async (req, res) => {
       'success_url': successUrl,
       'cancel_url': cancelUrl,
       'metadata[plan]': plan,
+      'metadata[max_devices]': String(selectedMaxDevices),
       'metadata[customer_name]': (name || '').trim(),
       'metadata[customer_email]': email.trim(),
       'metadata[extension_code]': extensionCode || '',
@@ -3351,6 +3620,14 @@ app.post('/api/v1/checkout/create', async (req, res) => {
       stripeBody.set('line_items[0][price_data][unit_amount]', String(amountCents));
       stripeBody.set('line_items[0][price_data][product_data][name]', `Culler Pro — ${plan}`);
       stripeBody.set('line_items[0][quantity]', '1');
+    }
+
+    if (extraDevices > 0 && pricePerExtraDeviceCents > 0) {
+      stripeBody.set('line_items[1][price_data][currency]', currency);
+      stripeBody.set('line_items[1][price_data][unit_amount]', String(pricePerExtraDeviceCents));
+      stripeBody.set('line_items[1][price_data][product_data][name]', 'Culler additional device seat');
+      stripeBody.set('line_items[1][price_data][product_data][description]', `Adds ${extraDevices} extra device${extraDevices > 1 ? 's' : ''} to this license.`);
+      stripeBody.set('line_items[1][quantity]', String(extraDevices));
     }
 
     const stripeRes = await fetch('https://api.stripe.com/v1/checkout/sessions', {
@@ -3717,6 +3994,7 @@ app.post('/admin/licenses/:id/extend', authSession, async (req, res) => {
     expiry,
     notes: row.notes,
     maxDevices: row.max_devices,
+    issuedAt: issuedDateForRecord(row),
   });
   const validated = validateLicenseKey(newKey, licensePublicKeyPem);
   if (!validated.valid) return res.status(500).send('Key re-generation failed');
@@ -4033,48 +4311,119 @@ app.get('/upgrade-license', (_req, res) => {
 // ---------------------------------------------------------------------------
 app.get('/checkout-success', (_req, res) => {
   return res.send(htmlPage('Purchase complete', `
-    <div class="panel" style="max-width:620px;margin:80px auto;text-align:center">
-      <div style="font-size:2.5rem;margin-bottom:16px">✓</div>
-      <h1 style="margin-bottom:8px">Payment confirmed</h1>
-      <p class="muted" id="loadingMsg">Loading your activation code...</p>
-      
-      <div id="licenseBox" style="display:none;margin-top:24px;text-align:left;background:var(--surface-raised);border:1px solid var(--border);border-radius:12px;padding:20px">
-        <p style="font-size:0.85rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px">Your activation code</p>
-        <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px;font-family:monospace;word-break:break-all;margin-bottom:12px;display:flex;align-items:flex-start;gap:12px">
-          <code id="activationCode" style="font-size:0.9rem;line-height:1.6;flex:1;font-weight:600"></code>
-          <button id="copyBtn" style="flex-shrink:0;background:var(--accent);color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:0.8rem;font-weight:500;cursor:pointer;white-space:nowrap">Copy</button>
-        </div>
-        <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:8px">Paste it into:</p>
-        <p style="font-size:0.9rem;margin-bottom:16px"><strong>Culler → Settings → License</strong></p>
-        
-        <div id="planInfo" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px;font-size:0.85rem;line-height:1.6;margin-bottom:16px">
-          <p style="margin-bottom:8px"><strong>License details:</strong></p>
-          <div style="margin-left:12px">
-            <p>Plan: <strong id="planType">—</strong></p>
-            <p>Devices: <strong id="maxDevices">—</strong></p>
-            <p id="expiryLine" style="display:none">Expires: <strong id="expiryDate">—</strong></p>
+    <div class="shell" style="max-width:1040px;padding-top:56px">
+      <div class="hero" style="max-width:980px;margin:0 auto 18px">
+        <div class="hero-copy">
+          <div class="hero-kicker">Payment received</div>
+          <h1>Your Culler license is being prepared.</h1>
+          <p class="muted" id="loadingMsg">Pairing your payment with an activation code now.</p>
+          <div class="hero-meta">
+            <span class="hero-note" id="statusBadge">Waiting for license sync</span>
+            <span class="hero-note">Usually ready in under 10 seconds</span>
+            <span class="hero-note">A copy is emailed automatically</span>
           </div>
         </div>
-        
-        <div style="background:rgba(100,150,200,0.1);border:1px solid rgba(100,150,200,0.3);border-radius:8px;padding:12px;margin-bottom:16px;text-align:center">
-          <p style="font-size:0.9rem;margin-bottom:8px">Ready to get started?</p>
-          <a href="https://culler.z2hs.au/download.html" target="_blank" style="display:inline-block;background:var(--accent);color:#fff;text-decoration:none;border-radius:6px;padding:8px 16px;font-size:0.9rem;font-weight:500">↓ Download Culler</a>
+        <div class="actions">
+          <a href="https://culler.z2hs.au/download.html" target="_blank" rel="noreferrer"><button type="button">Download Culler</button></a>
+          <a href="/manage-license"><button class="secondary" type="button">Manage license</button></a>
         </div>
       </div>
-      
-      <div id="errorBox" style="display:none;margin-top:16px;background:#ff6b6b;background:rgba(255,107,107,0.1);border:1px solid rgba(255,107,107,0.3);border-radius:8px;padding:12px;color:#ff6b6b;font-size:0.9rem"></div>
-      
-      <div id="helpBox" style="display:none;margin-top:24px;background:rgba(100,150,200,0.1);border:1px solid rgba(100,150,200,0.3);border-radius:8px;padding:16px;font-size:0.85rem;line-height:1.6">
-        <p style="margin-bottom:8px"><strong>License taking longer than expected?</strong></p>
-        <p style="margin-bottom:8px">Usually arrives within 10 seconds. If it doesn't appear soon, please:</p>
-        <ol style="margin-left:20px;margin-bottom:8px">
-          <li>Check your email (spam folder too)</li>
-          <li>Wait another minute and refresh this page</li>
-          <li>Contact support if the issue persists</li>
-        </ol>
+
+      <div class="grid" style="max-width:980px;margin:0 auto">
+        <div class="stack">
+          <div class="panel" id="loadingPanel">
+            <div class="panel-head">
+              <div>
+                <h2>Generating your activation</h2>
+                <p class="muted">We wait for the payment webhook, mint the signed key, and attach it to your session automatically.</p>
+              </div>
+            </div>
+            <div class="notice">
+              <p style="font-weight:700;margin-bottom:6px">What is happening right now</p>
+              <p class="muted" id="loadingDetail">Checking Stripe session and looking for the fresh license record.</p>
+            </div>
+          </div>
+
+          <div class="panel" id="licenseBox" style="display:none">
+            <div class="panel-head">
+              <div>
+                <h2>Activation code</h2>
+                <p class="muted">Paste this into Culler and keep it somewhere safe for later.</p>
+              </div>
+            </div>
+            <div style="padding:18px;border:1px solid var(--border-strong);border-radius:22px;background:linear-gradient(135deg,rgba(96,199,178,.14),rgba(242,191,131,.08) 42%,rgba(12,22,28,.92) 100%)">
+              <div style="display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap">
+                <code id="activationCode" style="display:block;font-size:1.1rem;font-weight:780;letter-spacing:.18em;padding:16px 18px;border-radius:18px;border:1px solid rgba(255,255,255,.1);background:rgba(5,12,16,.68);flex:1;min-width:260px;text-align:center"></code>
+                <button id="copyBtn" class="secondary" type="button">Copy code</button>
+              </div>
+            </div>
+            <div class="detail-grid" style="margin-top:16px">
+              <div class="detail-item">
+                <div class="detail-label">Plan</div>
+                <div class="detail-value" id="planType">—</div>
+              </div>
+              <div class="detail-item">
+                <div class="detail-label">Seat limit</div>
+                <div class="detail-value"><span id="maxDevices">—</span> device<span id="devicePlural"></span></div>
+              </div>
+              <div class="detail-item" id="expiryItem" style="display:none">
+                <div class="detail-label">Expires</div>
+                <div class="detail-value" id="expiryDate">—</div>
+              </div>
+            </div>
+            <div class="actions" style="margin-top:18px">
+              <a href="https://culler.z2hs.au/download.html" target="_blank" rel="noreferrer"><button type="button">Open download page</button></a>
+              <a href="/manage-license"><button class="secondary" type="button">Open license manager</button></a>
+            </div>
+          </div>
+
+          <div id="errorBox" class="notice danger" style="display:none"></div>
+        </div>
+
+        <div class="stack">
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>Next steps</h2>
+                <p class="muted">You should only need a minute from here to get the app unlocked.</p>
+              </div>
+            </div>
+            <ol class="list" style="padding-left:20px">
+              <li>Download or open the latest Culler build.</li>
+              <li>Go to <strong>Settings → License</strong>.</li>
+              <li>Paste the activation code and confirm.</li>
+              <li>Restart the app if it was already open.</li>
+            </ol>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>Email backup</h2>
+                <p class="muted">The same activation details are also sent to your inbox for safekeeping.</p>
+              </div>
+            </div>
+            <div class="notice">
+              <p style="font-weight:700;margin-bottom:6px">If the page is closed too early</p>
+              <p class="muted">Check your email, including spam or promotions. The activation code normally arrives there within a couple of minutes.</p>
+            </div>
+          </div>
+
+          <div class="panel" id="helpBox" style="display:none">
+            <div class="panel-head">
+              <div>
+                <h2>Taking longer than expected?</h2>
+                <p class="muted">This usually resolves on its own, but these checks cover the common delays.</p>
+              </div>
+            </div>
+            <ol class="list" style="padding-left:20px">
+              <li>Refresh this page after another minute.</li>
+              <li>Check your email and spam folder for the activation message.</li>
+              <li>Use the license manager if you already have the code.</li>
+            </ol>
+          </div>
+        </div>
       </div>
-      
-      <p class="muted" style="margin-top:24px">A copy has also been sent to your email. Check spam if it doesn't arrive within a few minutes.</p>
     </div>
 
     <script>
@@ -4082,9 +4431,21 @@ app.get('/checkout-success', (_req, res) => {
       let sessionId = params.get('session_id');
       let retryCount = 0;
       const MAX_RETRIES = 30;
+      const statusBadge = document.getElementById('statusBadge');
+      const loadingMsg = document.getElementById('loadingMsg');
+      const loadingPanel = document.getElementById('loadingPanel');
+      const loadingDetail = document.getElementById('loadingDetail');
 
       if (sessionId && sessionId.includes(':')) {
         sessionId = sessionId.split(':')[0];
+      }
+
+      function displayPlan(plan, expiresAt) {
+        if (plan === 'trial') return 'Trial';
+        if (plan === 'monthly') return 'Monthly';
+        if (plan === 'yearly') return 'Yearly';
+        if (plan === 'lifetime') return 'Lifetime';
+        return expiresAt ? 'Timed' : 'Lifetime';
       }
 
       async function loadLicense() {
@@ -4095,13 +4456,21 @@ app.get('/checkout-success', (_req, res) => {
           return;
         }
 
+        loadingMsg.textContent = retryCount === 1
+          ? 'Pairing your payment with an activation code now.'
+          : 'Still working on it. Checking again for your code.';
+        loadingDetail.textContent = 'Attempt ' + retryCount + ' of ' + MAX_RETRIES + '. Looking for the Stripe session and generated license.';
+        statusBadge.textContent = retryCount === 1 ? 'Waiting for license sync' : 'Retrying license lookup';
+
         try {
           const res = await fetch('/api/v1/license/' + sessionId);
           const data = await res.json();
 
           if (!res.ok) {
             if (retryCount >= MAX_RETRIES) {
-              document.getElementById('loadingMsg').style.display = 'none';
+              loadingPanel.style.display = 'none';
+              loadingMsg.textContent = 'We have not received the activation code yet.';
+              statusBadge.textContent = 'Needs a quick retry';
               document.getElementById('helpBox').style.display = 'block';
               return;
             }
@@ -4110,19 +4479,22 @@ app.get('/checkout-success', (_req, res) => {
             return;
           }
 
-          document.getElementById('loadingMsg').style.display = 'none';
+          loadingPanel.style.display = 'none';
+          loadingMsg.textContent = 'Activation code ready.';
+          statusBadge.textContent = 'Ready to activate';
           document.getElementById('helpBox').style.display = 'none';
           const codeEl = document.getElementById('activationCode');
           codeEl.textContent = data.activationCode;
           document.getElementById('licenseBox').style.display = 'block';
           
-          if (data.plan) document.getElementById('planType').textContent = 
-            data.plan === 'monthly' ? 'Monthly' : data.plan === 'yearly' ? 'Yearly' : 'Lifetime';
-          if (data.maxDevices) document.getElementById('maxDevices').textContent = data.maxDevices;
+          document.getElementById('planType').textContent = displayPlan(data.plan, data.expiresAt);
+          const deviceCount = Number(data.maxDevices || 1);
+          document.getElementById('maxDevices').textContent = String(deviceCount);
+          document.getElementById('devicePlural').textContent = deviceCount === 1 ? '' : 's';
           if (data.expiresAt) {
             const date = new Date(data.expiresAt);
             document.getElementById('expiryDate').textContent = date.toLocaleDateString('en-AU', {year: 'numeric', month: 'short', day: 'numeric'});
-            document.getElementById('expiryLine').style.display = 'block';
+            document.getElementById('expiryItem').style.display = 'block';
           }
           
           document.getElementById('copyBtn').onclick = async () => {
@@ -4142,7 +4514,9 @@ app.get('/checkout-success', (_req, res) => {
       }
 
       function showError(msg) {
-        document.getElementById('loadingMsg').style.display = 'none';
+        loadingPanel.style.display = 'none';
+        loadingMsg.textContent = 'We hit a snag fetching your activation code.';
+        statusBadge.textContent = 'Needs attention';
         const errorBox = document.getElementById('errorBox');
         errorBox.textContent = msg;
         errorBox.style.display = 'block';

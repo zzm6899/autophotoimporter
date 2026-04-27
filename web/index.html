@@ -10,57 +10,122 @@
     :root {
       --bg: #0d0d0f; --surface: #141416; --surface-raised: #1c1c1f;
       --border: #2a2a2e; --text: #f0f0f0; --text-muted: #888; --text-faint: #555;
-      --accent: #6c63ff; --accent-hover: #7b73ff; --green: #34d399;
+      --accent: #6c63ff; --accent-hover: #7b73ff; --accent-soft: rgba(108,99,255,.16); --green: #34d399;
       --radius: 12px;
       --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
       --mono: "SF Mono", "Fira Code", Consolas, monospace;
+      --page-width: 1120px;
+      --shadow-lg: 0 32px 80px rgba(0,0,0,.45);
     }
     html { scroll-behavior: smooth; }
-    body { font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.6; -webkit-font-smoothing: antialiased; }
+    body {
+      font-family: var(--font);
+      background:
+        radial-gradient(circle at top left, rgba(108,99,255,.18), transparent 28%),
+        radial-gradient(circle at top right, rgba(52,211,153,.10), transparent 24%),
+        linear-gradient(180deg, #0b0b0d 0%, #0d0d0f 30%, #111114 100%);
+      color: var(--text);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
     a { color: inherit; text-decoration: none; }
     nav {
-      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+      position: fixed; top: 12px; left: 16px; right: 16px; z-index: 100;
       display: flex; align-items: center; justify-content: space-between;
-      padding: 0 2rem; height: 56px;
-      background: rgba(13,13,15,0.85); backdrop-filter: blur(12px);
-      border-bottom: 1px solid var(--border);
+      max-width: min(calc(100% - 32px), var(--page-width));
+      margin: 0 auto;
+      padding: 0 1.25rem; height: 64px;
+      background: rgba(13,13,15,0.82); backdrop-filter: blur(16px);
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 18px;
+      box-shadow: 0 18px 44px rgba(0,0,0,.28);
     }
     .nav-logo { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 1rem; letter-spacing: -.01em; }
     .nav-logo svg { width: 28px; height: 28px; }
-    .nav-links { display: flex; align-items: center; gap: 1.5rem; font-size: 0.875rem; color: var(--text-muted); }
+    .nav-links { display: flex; align-items: center; justify-content: center; gap: 1.5rem; font-size: 0.875rem; color: var(--text-muted); flex: 1; }
     .nav-links a:hover { color: var(--text); }
-    .nav-cta { padding: 0.45rem 1rem; background: var(--accent); color: #fff; border-radius: 8px; font-size: 0.875rem; font-weight: 500; transition: background 0.15s; }
+    .nav-cta { padding: 0.6rem 1rem; background: var(--accent); color: #fff; border-radius: 10px; font-size: 0.875rem; font-weight: 600; transition: background 0.15s, transform 0.1s; box-shadow: 0 14px 32px rgba(108,99,255,.2); }
     .nav-cta:hover { background: var(--accent-hover); }
-    .hero { padding: 140px 2rem 60px; text-align: center; max-width: 760px; margin: 0 auto; }
+    .nav-menu-toggle {
+      display: none; align-items: center; justify-content: center; flex-direction: column; gap: 4px;
+      width: 42px; height: 42px; border-radius: 12px; border: 1px solid var(--border);
+      background: var(--surface-raised); cursor: pointer;
+    }
+    .nav-menu-toggle span { width: 16px; height: 2px; border-radius: 999px; background: var(--text); }
+    .mobile-menu {
+      position: fixed; top: 88px; left: 16px; right: 16px; z-index: 95;
+      max-width: min(calc(100% - 32px), var(--page-width));
+      margin: 0 auto;
+      padding: 0.8rem;
+      display: grid;
+      gap: 0.55rem;
+      background: rgba(20,20,22,.96);
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 18px;
+      box-shadow: 0 24px 48px rgba(0,0,0,.38);
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(-8px);
+      transition: opacity 0.18s ease, transform 0.18s ease;
+    }
+    .mobile-menu.open { opacity: 1; pointer-events: auto; transform: translateY(0); }
+    .mobile-menu a {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0.9rem 1rem;
+      border-radius: 12px;
+      background: var(--surface-raised);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-size: 0.95rem;
+      font-weight: 500;
+    }
+    .mobile-menu a.mobile-menu-cta {
+      background: var(--accent);
+      border-color: transparent;
+      color: #fff;
+      font-weight: 600;
+    }
+    .hero { padding: clamp(7.5rem, 14vw, 9.5rem) clamp(1.25rem, 4vw, 2rem) clamp(3rem, 6vw, 4rem); text-align: center; max-width: 860px; margin: 0 auto; position: relative; }
     .hero-badge { display: inline-flex; align-items: center; gap: 6px; font-size: 0.75rem; font-weight: 500; letter-spacing: .04em; color: var(--text-muted); text-transform: uppercase; border: 1px solid var(--border); border-radius: 999px; padding: 4px 12px; margin-bottom: 1.5rem; }
     .hero-badge span { color: var(--green); }
     h1 { font-size: clamp(2.2rem, 5vw, 3.8rem); font-weight: 700; letter-spacing: -.03em; line-height: 1.1; margin-bottom: 1.25rem; }
     h1 em { font-style: normal; color: var(--accent); }
-    .hero-sub { font-size: 1.05rem; color: var(--text-muted); max-width: 500px; margin: 0 auto 2.5rem; line-height: 1.7; }
+    .hero-sub { font-size: clamp(0.98rem, 1.6vw, 1.08rem); color: var(--text-muted); max-width: 38rem; margin: 0 auto 2.25rem; line-height: 1.75; }
     .hero-actions { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
+    .hero-proof { display: flex; justify-content: center; gap: 0.75rem; flex-wrap: wrap; margin-top: 1.35rem; }
+    .hero-proof-item {
+      padding: 0.65rem 0.9rem;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: rgba(28,28,31,.82);
+      color: var(--text-muted);
+      font-size: 0.8rem;
+      line-height: 1.3;
+    }
     .btn-primary { display: inline-flex; align-items: center; gap: 8px; padding: 0.75rem 1.75rem; background: var(--accent); color: #fff; border-radius: var(--radius); font-size: 0.95rem; font-weight: 600; transition: background 0.15s, transform 0.1s; }
     .btn-primary:hover { background: var(--accent-hover); transform: translateY(-1px); }
     .btn-secondary { display: inline-flex; align-items: center; gap: 8px; padding: 0.75rem 1.75rem; background: var(--surface-raised); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); font-size: 0.95rem; font-weight: 500; transition: background 0.15s, transform 0.1s; }
     .btn-secondary:hover { background: var(--border); transform: translateY(-1px); }
-    .hero-demo { max-width: 960px; margin: 3rem auto 0; padding: 0 2rem; }
-    .demo-frame { border-radius: 16px; border: 1px solid var(--border); overflow: hidden; background: var(--surface); box-shadow: 0 32px 80px rgba(0,0,0,.5); }
+    .hero-demo { max-width: 1080px; margin: clamp(2rem, 5vw, 3.5rem) auto 0; padding: 0 clamp(1rem, 4vw, 2rem); }
+    .demo-frame { border-radius: 18px; border: 1px solid rgba(255,255,255,.08); overflow: hidden; background: var(--surface); box-shadow: var(--shadow-lg); }
     .demo-frame svg { display: block; width: 100%; }
     .platform-strip { border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 1.75rem 2rem; text-align: center; background: var(--surface); margin-top: 5rem; }
     .platform-strip p { color: var(--text-muted); font-size: 0.8rem; margin-bottom: 1rem; text-transform: uppercase; letter-spacing: .06em; font-weight: 500; }
     .platform-badges { display: flex; justify-content: center; gap: 1.25rem; flex-wrap: wrap; }
     .platform-badge { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 0.875rem; font-weight: 500; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 10px; padding: 0.55rem 1.1rem; }
-    .section { padding: 5rem 2rem; max-width: 1100px; margin: 0 auto; }
+    .section { padding: clamp(3.5rem, 7vw, 5rem) clamp(1.25rem, 4vw, 2rem); max-width: var(--page-width); margin: 0 auto; }
     .section-label { font-size: 0.75rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); margin-bottom: 0.75rem; }
     .section-title { font-size: clamp(1.6rem, 3vw, 2.4rem); font-weight: 700; letter-spacing: -.02em; margin-bottom: 0.75rem; }
     .section-sub { color: var(--text-muted); font-size: 1rem; max-width: 480px; line-height: 1.7; }
-    .features-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1.25rem; margin-top: 3rem; }
+    .features-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 1.25rem; margin-top: 3rem; }
     .feature-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.5rem; transition: border-color 0.2s; }
     .feature-card:hover { border-color: #444; }
     .feature-icon { width: 38px; height: 38px; border-radius: 9px; background: var(--surface-raised); display: flex; align-items: center; justify-content: center; margin-bottom: 1rem; font-size: 1.1rem; }
     .feature-title { font-weight: 600; font-size: 0.95rem; margin-bottom: 0.4rem; }
     .feature-desc { color: var(--text-muted); font-size: 0.85rem; line-height: 1.65; }
     .gif-features { margin-top: 2rem; }
-    .gif-row { display: grid; grid-template-columns: 1fr 1fr; gap: 3.5rem; align-items: center; margin-bottom: 6rem; }
+    .gif-row { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr); gap: clamp(1.5rem, 4vw, 3.5rem); align-items: center; margin-bottom: clamp(3rem, 8vw, 6rem); }
     .gif-row.reverse { direction: rtl; }
     .gif-row.reverse > * { direction: ltr; }
     .gif-frame { border-radius: var(--radius); border: 1px solid var(--border); overflow: hidden; background: var(--surface); box-shadow: 0 16px 48px rgba(0,0,0,.35); }
@@ -69,8 +134,8 @@
     .gif-text p { color: var(--text-muted); font-size: 0.9375rem; line-height: 1.75; margin-bottom: 1rem; }
     .tag-list { display: flex; flex-wrap: wrap; gap: 6px; }
     .tag { font-size: 0.75rem; font-family: var(--mono); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; color: var(--text-muted); }
-    .pricing-section { padding: 5rem 2rem; max-width: 860px; margin: 0 auto; text-align: center; }
-    .pricing-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; margin-top: 3rem; text-align: left; }
+    .pricing-section { padding: clamp(3.5rem, 7vw, 5rem) clamp(1.25rem, 4vw, 2rem); max-width: 920px; margin: 0 auto; text-align: center; }
+    .pricing-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.25rem; margin-top: 3rem; text-align: left; }
     .pricing-card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 2rem; }
     .pricing-card.featured { border-color: var(--accent); background: rgba(108,99,255,.06); }
     .pricing-tier { font-size: 0.7rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 1rem; }
@@ -88,18 +153,129 @@
     .pricing-features li::before { content: "✓"; color: var(--green); font-size: 0.8rem; flex-shrink: 0; }
     .pricing-helper { margin-top: 1.25rem; color: var(--text-muted); font-size: 0.875rem; }
     .pricing-helper a { color: var(--text); text-decoration: underline; text-underline-offset: 0.18em; }
-    .cta-section { padding: 6rem 2rem; text-align: center; border-top: 1px solid var(--border); }
+    .device-picker {
+      margin: 1.1rem 0 1.35rem;
+      padding: 1rem;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: rgba(255,255,255,.03);
+    }
+    .device-picker-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      margin-bottom: 0.8rem;
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }
+    .device-picker-head strong {
+      color: var(--text);
+      font-size: 0.86rem;
+      letter-spacing: 0;
+      text-transform: none;
+    }
+    .device-options {
+      display: flex;
+      gap: 0.55rem;
+      overflow-x: auto;
+      scrollbar-width: none;
+      padding-bottom: 0.1rem;
+    }
+    .device-options::-webkit-scrollbar { display: none; }
+    .device-chip {
+      min-width: 56px;
+      padding: 0.65rem 0.85rem;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--surface-raised);
+      color: var(--text-muted);
+      font-size: 0.86rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.1s;
+      flex: 0 0 auto;
+    }
+    .device-chip:hover { color: var(--text); transform: translateY(-1px); }
+    .device-chip.active {
+      background: var(--accent);
+      border-color: transparent;
+      color: #fff;
+    }
+    .device-pricing-copy,
+    .pricing-micro {
+      margin-top: 0.75rem;
+      color: var(--text-muted);
+      font-size: 0.82rem;
+      line-height: 1.6;
+    }
+    .pricing-micro { margin-top: 0.9rem; }
+    .cta-section { padding: clamp(4rem, 8vw, 6rem) clamp(1.25rem, 4vw, 2rem); text-align: center; border-top: 1px solid var(--border); }
     .cta-section h2 { font-size: clamp(1.8rem, 3.5vw, 2.6rem); font-weight: 700; letter-spacing: -.03em; margin-bottom: 1rem; }
     .cta-section p { color: var(--text-muted); font-size: 1rem; margin-bottom: 2rem; }
-    footer { border-top: 1px solid var(--border); padding: 2rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; color: var(--text-muted); font-size: 0.8125rem; }
+    footer { border-top: 1px solid var(--border); padding: 2rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; color: var(--text-muted); font-size: 0.8125rem; max-width: var(--page-width); margin: 0 auto; }
     .footer-logo { display: flex; align-items: center; gap: 8px; font-weight: 600; color: var(--text); }
     .footer-logo svg { width: 20px; height: 20px; }
     .footer-links { display: flex; gap: 1.5rem; }
     .footer-links a:hover { color: var(--text); }
-    @media (max-width: 680px) {
+    @media (max-width: 900px) {
+      nav {
+        top: 0; left: 0; right: 0;
+        max-width: none;
+        border-radius: 0;
+        border-left: none;
+        border-right: none;
+        height: 64px;
+        padding: 0 1rem;
+      }
+      .nav-links, .nav-cta { display: none; }
+      .nav-menu-toggle { display: inline-flex; }
+      .hero { padding-top: 7.25rem; }
+      .hero-actions { flex-direction: column; align-items: stretch; }
+      .hero-actions a { width: 100%; justify-content: center; }
+      .hero-proof-item { flex: 1 1 calc(50% - 0.75rem); }
       .gif-row, .gif-row.reverse { grid-template-columns: 1fr; direction: ltr; }
       .pricing-grid { grid-template-columns: 1fr; }
-      .nav-links { display: none; }
+      .section-sub { max-width: none; }
+    }
+    @media (max-width: 680px) {
+      .hero { padding-left: 1rem; padding-right: 1rem; }
+      .hero-badge { font-size: 0.7rem; padding: 4px 10px; }
+      .hero-sub { margin-bottom: 1.5rem; }
+      .hero-proof {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        width: 100%;
+      }
+      .hero-proof-item { min-width: 0; text-align: center; }
+      .hero-demo { padding: 0 1rem; }
+      .demo-frame { border-radius: 14px; }
+      .platform-strip { margin-top: 3.5rem; padding-left: 1rem; padding-right: 1rem; }
+      .features-grid { grid-template-columns: 1fr; }
+      .pricing-card { padding: 1.5rem; }
+      .pricing-price { font-size: 2rem; }
+      .device-picker-head { align-items: flex-start; flex-direction: column; }
+      .cta-section p { max-width: 28rem; margin-left: auto; margin-right: auto; }
+      footer {
+        padding: 1.75rem 1rem 2.25rem;
+        flex-direction: column;
+        align-items: flex-start;
+      }
+      .footer-links { flex-wrap: wrap; gap: 0.85rem 1.25rem; }
+    }
+    @media (max-width: 480px) {
+      .hero-proof { grid-template-columns: 1fr; }
+      .mobile-menu { left: 12px; right: 12px; top: 76px; }
+      .gif-text h3 { font-size: 1.3rem; }
+      .gif-text p { font-size: 0.9rem; }
+      .section, .pricing-section, .cta-section { padding-left: 1rem; padding-right: 1rem; }
+      .platform-badges { gap: 0.75rem; }
+      .platform-badge { width: 100%; justify-content: center; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
     }
   </style>
 </head>
@@ -120,7 +296,20 @@
     <a href="download.html">Download</a>
   </div>
   <a href="download.html" class="nav-cta">Download free →</a>
+  <button class="nav-menu-toggle" id="navMenuToggle" type="button" aria-expanded="false" aria-controls="mobileMenu" aria-label="Open navigation menu">
+    <span></span>
+    <span></span>
+    <span></span>
+  </button>
 </nav>
+<div class="mobile-menu" id="mobileMenu">
+  <a href="#features">Features <span>→</span></a>
+  <a href="#workflow">How it works <span>→</span></a>
+  <a href="#pricing">Pricing <span>→</span></a>
+  <a href="download.html">Download <span>→</span></a>
+  <a href="https://updates.culler.z2hs.au/manage-license">Manage license <span>→</span></a>
+  <a href="download.html" class="mobile-menu-cta">Download free <span>→</span></a>
+</div>
 
 <!-- HERO -->
 <section class="hero">
@@ -137,6 +326,12 @@
     </a>
     <a href="#pricing" class="btn-secondary">Buy a license</a>
     <a href="https://updates.culler.z2hs.au/manage-license" class="btn-secondary">Manage or renew</a>
+  </div>
+  <div class="hero-proof">
+    <div class="hero-proof-item">No subscription lock-in</div>
+    <div class="hero-proof-item">No cloud uploads</div>
+    <div class="hero-proof-item">Keyboard-first workflow</div>
+    <div class="hero-proof-item">Pro trial inside the app</div>
   </div>
 </section>
 
@@ -932,7 +1127,7 @@
 <section class="pricing-section" id="pricing">
   <div class="section-label" style="text-align:center">Pricing</div>
   <h2 class="section-title">Pick your plan</h2>
-  <p class="section-sub" style="max-width:440px;margin:0.75rem auto 0">No lock-in. Pay monthly, save with a yearly pass, or own it forever with a one-time lifetime license.</p>
+  <p class="section-sub" style="max-width:560px;margin:0.75rem auto 0">No lock-in. Pick a plan, choose how many devices it should cover on day one, and check out with the right seat count already baked into the license.</p>
 
   <!-- Plan toggle -->
   <div class="plan-toggle" id="planToggle">
@@ -961,9 +1156,19 @@
       <div class="pricing-tier">Pro</div>
       <div class="pricing-price" id="proPrice"><span class="price-loading">Loading…</span></div>
       <div class="pricing-note" id="proNote">14-day free trial — no payment needed to start.</div>
+      <div class="device-picker">
+        <div class="device-picker-head">
+          <span>License seats</span>
+          <strong id="deviceCountLabel">1 device</strong>
+        </div>
+        <div class="device-options" id="deviceOptions"></div>
+        <div class="device-pricing-copy" id="devicePricingCopy">1 device is included by default.</div>
+      </div>
       <a href="#" class="pricing-btn" id="proBuyBtn">Buy license →</a>
+      <div class="pricing-micro" id="pricingToday">Your selected device count will carry through to checkout and license generation.</div>
       <ul class="pricing-features">
         <li>Everything in Free</li>
+        <li id="proDeviceFeature">1 device included at checkout</li>
         <li>AI sharpness scoring</li>
         <li>Face detection &amp; review</li>
         <li>Burst auto-pick (Shift+B)</li>
@@ -994,7 +1199,11 @@
     padding: 4px;
     gap: 2px;
     margin: 2rem 0 0;
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
   }
+  .plan-toggle::-webkit-scrollbar { display: none; }
   .plan-tab {
     padding: 0.45rem 1.1rem;
     border-radius: 7px;
@@ -1009,6 +1218,8 @@
     display: flex;
     align-items: center;
     gap: 6px;
+    flex: 1 0 auto;
+    white-space: nowrap;
   }
   .plan-tab:hover { color: var(--text); }
   .plan-tab.active { background: var(--accent); color: #fff; }
@@ -1024,25 +1235,106 @@
   .plan-tab.active .save-badge { background: rgba(255,255,255,0.2); color: #fff; }
   .price-loading { color: var(--text-faint); font-size: 1.2rem; font-weight: 400; }
   .pricing-period { font-size: 1rem; font-weight: 400; color: var(--text-muted); }
+  @media (max-width: 560px) {
+    .plan-toggle { display: flex; width: 100%; }
+    .plan-tab { justify-content: center; padding: 0.7rem 1rem; }
+  }
 </style>
+
+<script>
+(function() {
+  const toggle = document.getElementById('navMenuToggle');
+  const menu = document.getElementById('mobileMenu');
+  if (!toggle || !menu) return;
+
+  const closeMenu = () => {
+    menu.classList.remove('open');
+    toggle.setAttribute('aria-expanded', 'false');
+  };
+
+  toggle.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const willOpen = !menu.classList.contains('open');
+    menu.classList.toggle('open', willOpen);
+    toggle.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+  });
+
+  menu.querySelectorAll('a').forEach((link) => {
+    link.addEventListener('click', closeMenu);
+  });
+
+  document.addEventListener('click', (event) => {
+    if (!menu.contains(event.target) && !toggle.contains(event.target)) {
+      closeMenu();
+    }
+  });
+
+  window.addEventListener('resize', () => {
+    if (window.innerWidth > 900) closeMenu();
+  });
+})();
+</script>
 
 <script>
 (function() {
   const BASE = 'https://updates.culler.z2hs.au';
   let pricingData = null;
   let activePlan = 'monthly';
+  let activeDevices = 1;
 
   function fmt(price, currency) {
     return new Intl.NumberFormat('en-AU', { style: 'currency', currency, minimumFractionDigits: price % 1 === 0 ? 0 : 2 }).format(price);
+  }
+
+  function deviceLabel(count) {
+    return count === 1 ? '1 device' : count + ' devices';
+  }
+
+  function deviceLicenseLabel(count) {
+    return count === 1 ? '1-device license' : count + '-device license';
+  }
+
+  function renderDeviceOptions() {
+    if (!pricingData) return;
+    const list = document.getElementById('deviceOptions');
+    if (!list) return;
+
+    const includedDevices = Math.max(1, Number(pricingData.includedDevices || 1));
+    const maxDevices = Math.max(includedDevices, Number(pricingData.maxCheckoutDevices || includedDevices));
+    if (activeDevices < includedDevices) activeDevices = includedDevices;
+    if (activeDevices > maxDevices) activeDevices = maxDevices;
+
+    const chips = [];
+    for (let count = includedDevices; count <= maxDevices; count += 1) {
+      chips.push(
+        '<button type="button" class="device-chip' + (count === activeDevices ? ' active' : '') + '" data-device-count="' + count + '">' + count + '</button>'
+      );
+    }
+    list.innerHTML = chips.join('');
+    list.querySelectorAll('[data-device-count]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        activeDevices = Number(btn.dataset.deviceCount || includedDevices);
+        renderDeviceOptions();
+        renderPrice();
+      });
+    });
   }
 
   function renderPrice() {
     if (!pricingData) return;
     const plan = pricingData.plans[activePlan];
     const cur = pricingData.currency || 'AUD';
+    const includedDevices = Math.max(1, Number(pricingData.includedDevices || 1));
+    const extraSeatPrice = Number(pricingData.deviceUpgradePrice || 0) / 100;
+    const extraSeats = Math.max(0, activeDevices - includedDevices);
+    const todayTotal = plan.price + (extraSeats * extraSeatPrice);
     const priceEl = document.getElementById('proPrice');
     const noteEl = document.getElementById('proNote');
     const btnEl = document.getElementById('proBuyBtn');
+    const deviceLabelEl = document.getElementById('deviceCountLabel');
+    const devicePricingEl = document.getElementById('devicePricingCopy');
+    const pricingTodayEl = document.getElementById('pricingToday');
+    const deviceFeatureEl = document.getElementById('proDeviceFeature');
     if (priceEl) {
       priceEl.innerHTML = fmt(plan.price, cur) + (plan.period ? '<span class="pricing-period">' + plan.period + '</span>' : '<span class="pricing-period"> one-time</span>');
     }
@@ -1057,8 +1349,31 @@
         noteEl.textContent = pricingData.trial_days + '-day free trial — no payment needed to start.';
       }
     }
+    if (deviceLabelEl) {
+      deviceLabelEl.textContent = deviceLabel(activeDevices);
+    }
+    if (devicePricingEl) {
+      devicePricingEl.textContent = extraSeatPrice > 0
+        ? (includedDevices === 1
+          ? '1 device is included. Each extra device adds ' + fmt(extraSeatPrice, cur) + ' once at checkout.'
+          : includedDevices + ' devices are included. Each extra device adds ' + fmt(extraSeatPrice, cur) + ' once at checkout.')
+        : 'Choose the device count you want this license to cover from day one.';
+    }
+    if (pricingTodayEl) {
+      if (extraSeats > 0) {
+        pricingTodayEl.textContent = 'Today: ' + fmt(todayTotal, cur) + (plan.period ? ' charged now, then ' + fmt(plan.price, cur) + plan.period + ' after that. Extra device fees are one-time.' : ' total for a ' + deviceLicenseLabel(activeDevices) + '.');
+      } else {
+        pricingTodayEl.textContent = activePlan === 'lifetime'
+          ? 'Today: ' + fmt(plan.price, cur) + ' total for a lifetime license.'
+          : 'Today: ' + fmt(plan.price, cur) + ' with ' + deviceLabel(activeDevices) + ' included.';
+      }
+    }
+    if (deviceFeatureEl) {
+      deviceFeatureEl.textContent = deviceLabel(activeDevices) + ' included at checkout';
+    }
     if (btnEl) {
-      btnEl.href = BASE + '/checkout.html?plan=' + activePlan;
+      btnEl.href = BASE + '/checkout.html?plan=' + activePlan + '&devices=' + activeDevices;
+      btnEl.textContent = activeDevices > 1 ? 'Buy ' + deviceLicenseLabel(activeDevices) + ' →' : 'Buy license →';
     }
     // Update save badge
     const badge = document.getElementById('saveBadge');
@@ -1075,6 +1390,8 @@
       const r = await fetch(BASE + '/api/v1/pricing');
       if (!r.ok) throw new Error('non-200');
       pricingData = await r.json();
+      activeDevices = Math.max(1, Number(pricingData.includedDevices || 1));
+      renderDeviceOptions();
       renderPrice();
     } catch (e) {
       // Fallback to hardcoded defaults if API unreachable
@@ -1085,8 +1402,13 @@
           yearly:   { price: 49,  label: 'Yearly',   period: '/yr' },
           lifetime: { price: 49,  label: 'Lifetime', period: '' },
         },
+        deviceUpgradePrice: 500,
+        includedDevices: 1,
+        maxCheckoutDevices: 5,
         trial_days: 14,
       };
+      activeDevices = 1;
+      renderDeviceOptions();
       renderPrice();
     }
   }
