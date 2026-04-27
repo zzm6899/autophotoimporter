@@ -698,6 +698,13 @@ export function registerIpcHandlers(): void {
     return { valid: false, message: 'License removed.', status: 'unknown' as const };
   });
 
+  ipcMain.handle(IPC.OPEN_EXTERNAL, async (_event, url: string) => {
+    // Only allow https URLs to prevent arbitrary protocol abuse
+    if (typeof url === 'string' && url.startsWith('https://')) {
+      await shell.openExternal(url);
+    }
+  });
+
   // Updates
   ipcMain.handle(IPC.UPDATE_OPEN_RELEASE, async (_event, url: string) => {
     await shell.openExternal(url);
@@ -1243,14 +1250,4 @@ async function runAutoImport(volume: Volume): Promise<void> {
     sendToRenderer(IPC.AUTO_IMPORT_COMPLETE, result);
   } catch (err) {
     console.error('[auto-import] failed:', err);
-    const message = err instanceof Error ? err.message : 'Auto-import failed';
-    sendToRenderer(IPC.AUTO_IMPORT_COMPLETE, {
-      imported: 0,
-      skipped: 0,
-      verified: 0,
-      errors: [{ file: 'auto-import', error: message }],
-      totalBytes: 0,
-      durationMs: 0,
-    } satisfies ImportResult);
-  }
-}
+    const message = err instanceof Error ? err.message : 'Auto-import fai

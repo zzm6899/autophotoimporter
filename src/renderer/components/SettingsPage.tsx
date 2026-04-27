@@ -57,6 +57,11 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const [gpuStatus, setGpuStatus] = useState<boolean | null>(null);
   const [executionProvider, setExecutionProvider] = useState<string | null>(null);
   const [faceCacheClearing, setFaceCacheClearing] = useState(false);
+  const [trialBusy, setTrialBusy] = useState(false);
+  const [trialFeedback, setTrialFeedback] = useState<string | null>(null);
+  const [trialEmailInput, setTrialEmailInput] = useState('');
+  const [trialNameInput, setTrialNameInput] = useState('');
+  const [showTrialForm, setShowTrialForm] = useState(false);
   const [diagnosing, setDiagnosing] = useState(false);
   const [diagResult, setDiagResult] = useState<string | null>(null);
 
@@ -308,6 +313,45 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     }
   };
 
+  const handleRequestTrial = async () => {
+    const name = trialNameInput.trim();
+    const email = trialEmailInput.trim();
+    if (!name || !email) {
+      setTrialFeedback('Please enter your name and email address.');
+      return;
+    }
+    setTrialBusy(true);
+    setTrialFeedback(null);
+    try {
+      const resp = await fetch('https://updates.culler.z2hs.au/api/v1/trial/request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, email }),
+      });
+      const data = await resp.json() as { ok?: boolean; activationCode?: string; expiresLabel?: string; error?: string };
+      if (!resp.ok || !data.ok) {
+        setTrialFeedback(data.error ?? 'Could not start trial. Please try again.');
+        return;
+      }
+      // Auto-activate the returned code
+      const status = await window.electronAPI.activateLicense(data.activationCode ?? '');
+      if (status.valid) {
+        dispatch({ type: 'SET_LICENSE_STATUS', status });
+        setLicenseFeedback(null);
+        setShowTrialForm(false);
+        setTrialEmailInput('');
+        setTrialNameInput('');
+      } else {
+        // Key was issued but activation failed — tell user to check email
+        setTrialFeedback(`Trial issued! Check ${email} for your license key.`);
+      }
+    } catch {
+      setTrialFeedback('Network error — check your connection and try again.');
+    } finally {
+      setTrialBusy(false);
+    }
+  };
+
   // Shared inner content (header + scrollable body)
   const inner = (
     <div className={`bg-surface border border-border ${inline ? 'flex flex-col h-full' : 'rounded-xl shadow-2xl w-[520px] max-h-[80vh] flex flex-col overflow-hidden'}`}>
@@ -426,23 +470,76 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                 )}
               </div>
             ) : (
-              <div className="space-y-1.5">
-                <input
-                  type="text"
-                  value={licenseInput}
-                  onChange={(e) => setLicenseInput(e.target.value)}
-                  placeholder="Paste license key"
-                  className="w-full px-2 py-1 text-xs font-mono bg-surface-raised border border-border rounded text-text placeholder-text-muted focus:border-text focus:outline-none"
-                />
-                <div className="flex items-center gap-2">
-                  <button onClick={handleActivateLicense} disabled={licenseBusy || !licenseInput.trim()} className="px-3 py-1 text-xs rounded bg-accent text-white hover:bg-accent-hover disabled:opacity-50">
-                    {licenseBusy ? 'Checking…' : 'Activate'}
-                  </button>
-                  <button onClick={() => dispatch({ type: 'OPEN_LICENSE_PROMPT' })} className="text-[10px] text-text-muted hover:text-text">More options</button>
-                </div>
-                {(licenseFeedback ?? licenseStatus?.message) && (
-                  <p className="text-[10px] text-text-muted">{licenseFeedback ?? licenseStatus?.message}</p>
+              <div className="space-y-2">
+                {/* Buy / Trial CTAs */}
+                {!showTrialForm && (
+                  <div className="flex items-center gap-2 mb-1">
+                    <button
+                      onClick={() => window.electronAPI.openExternal('https://updates.culler.z2hs.au/buy')}
+                      className="px-3 py-1.5 text-xs rounded bg-accent text-white hover:bg-accent-hover font-medium"
+                    >
+                      Buy license
+                    </button>
+                    <button
+                      onClick={() => { setShowTrialForm(true); setTrialFeedback(null); }}
+                      className="px-3 py-1.5 text-xs rounded bg-surface-raised border border-border text-text-secondary hover:text-text"
+                    >
+                      Try free for 14 days
+                    </button>
+                  </div>
                 )}
+
+                {/* Trial form */}
+                {showTrialForm && (
+                  <div className="space-y-1.5 p-2.5 rounded-lg bg-surface-raised border border-border">
+                    <p className="text-[10px] text-text-muted">Enter your details to start a 14-day free trial. Your license key will be emailed to you.</p>
+                    <input
+                      type="text"
+                      value={trialNameInput}
+                      onChange={(e) => setTrialNameInput(e.target.value)}
+                      placeholder="Your name"
+                      className="w-full px-2 py-1 text-xs bg-surface border border-border rounded text-text placeholder-text-muted focus:border-text focus:outline-none"
+                    />
+                    <input
+                      type="email"
+                      value={trialEmailInput}
+                      onChange={(e) => setTrialEmailInput(e.target.value)}
+                      placeholder="Email address"
+                      className="w-full px-2 py-1 text-xs bg-surface border border-border rounded text-text placeholder-text-muted focus:border-text focus:outline-none"
+                    />
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={handleRequestTrial}
+                        disabled={trialBusy || !trialNameInput.trim() || !trialEmailInput.trim()}
+                        className="px-3 py-1 text-xs rounded bg-accent text-white hover:bg-accent-hover disabled:opacity-50"
+                      >
+                        {trialBusy ? 'Sending…' : 'Start trial'}
+                      </button>
+                      <button onClick={() => { setShowTrialForm(false); setTrialFeedback(null); }} className="text-[10px] text-text-muted hover:text-text">Cancel</button>
+                    </div>
+                    {trialFeedback && <p className="text-[10px] text-text-muted">{trialFeedback}</p>}
+                  </div>
+                )}
+
+                {/* Existing key entry */}
+                <div className="space-y-1.5">
+                  <input
+                    type="text"
+                    value={licenseInput}
+                    onChange={(e) => setLicenseInput(e.target.value)}
+                    placeholder="Paste license key or activation code"
+                    className="w-full px-2 py-1 text-xs font-mono bg-surface-raised border border-border rounded text-text placeholder-text-muted focus:border-text focus:outline-none"
+                  />
+                  <div className="flex items-center gap-2">
+                    <button onClick={handleActivateLicense} disabled={licenseBusy || !licenseInput.trim()} className="px-3 py-1 text-xs rounded bg-accent text-white hover:bg-accent-hover disabled:opacity-50">
+                      {licenseBusy ? 'Checking…' : 'Activate'}
+                    </button>
+                    <button onClick={() => dispatch({ type: 'OPEN_LICENSE_PROMPT' })} className="text-[10px] text-text-muted hover:text-text">More options</button>
+                  </div>
+                  {(licenseFeedback ?? licenseStatus?.message) && (
+                    <p className="text-[10px] text-text-muted">{licenseFeedback ?? licenseStatus?.message}</p>
+                  )}
+                </div>
               </div>
             )}
           </section>

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Culler — Photo culling &amp; import for photographers</title>
-  <meta name="description" content="Cull, review, and import photos from your camera cards at full speed. Available for macOS and Windows." />
+  <meta name="description" content="Cull, review, and import photos from your camera cards at full speed. Mac and Windows." />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -58,7 +58,7 @@
 
     /* HERO */
     .hero {
-      padding: 140px 2rem 80px;
+      padding: 140px 2rem 60px;
       text-align: center;
       max-width: 760px;
       margin: 0 auto;
@@ -80,8 +80,8 @@
     }
     h1 em { font-style: normal; color: var(--accent); }
     .hero-sub {
-      font-size: 1.1rem; color: var(--text-muted);
-      max-width: 520px; margin: 0 auto 2.5rem;
+      font-size: 1.05rem; color: var(--text-muted);
+      max-width: 500px; margin: 0 auto 2.5rem; line-height: 1.7;
     }
     .hero-actions { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
     .btn-primary {
@@ -100,27 +100,36 @@
     }
     .btn-secondary:hover { background: var(--border); transform: translateY(-1px); }
 
-    /* APP PREVIEW */
-    .preview-wrap {
-      max-width: 1000px; margin: 4rem auto; padding: 0 2rem;
+    /* HERO DEMO (big animated preview) */
+    .hero-demo {
+      max-width: 960px; margin: 3rem auto 0; padding: 0 2rem;
     }
-    .preview-frame {
+    .demo-frame {
       border-radius: 16px;
       border: 1px solid var(--border);
       overflow: hidden;
       background: var(--surface);
-      aspect-ratio: 16/10;
-      display: flex; align-items: center; justify-content: center;
-      position: relative;
+      box-shadow: 0 32px 80px rgba(0,0,0,.5);
     }
-    .preview-frame img, .preview-frame video {
-      width: 100%; height: 100%; object-fit: cover;
+    .demo-frame svg { display: block; width: 100%; }
+
+    /* PLATFORM STRIP */
+    .platform-strip {
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      padding: 1.75rem 2rem;
+      text-align: center;
+      background: var(--surface);
+      margin-top: 5rem;
     }
-    .preview-placeholder {
-      display: flex; flex-direction: column; align-items: center; gap: 12px;
-      color: var(--text-faint); font-size: 0.875rem;
+    .platform-strip p { color: var(--text-muted); font-size: 0.8rem; margin-bottom: 1rem; text-transform: uppercase; letter-spacing: .06em; font-weight: 500; }
+    .platform-badges { display: flex; justify-content: center; gap: 1.25rem; flex-wrap: wrap; }
+    .platform-badge {
+      display: flex; align-items: center; gap: 8px;
+      color: var(--text); font-size: 0.875rem; font-weight: 500;
+      background: var(--surface-raised); border: 1px solid var(--border);
+      border-radius: 10px; padding: 0.55rem 1.1rem;
     }
-    .preview-placeholder svg { opacity: .25; }
 
     /* FEATURES */
     .section { padding: 5rem 2rem; max-width: 1100px; margin: 0 auto; }
@@ -133,12 +142,12 @@
       font-weight: 700; letter-spacing: -.02em;
       margin-bottom: 0.75rem;
     }
-    .section-sub { color: var(--text-muted); font-size: 1rem; max-width: 480px; }
+    .section-sub { color: var(--text-muted); font-size: 1rem; max-width: 480px; line-height: 1.7; }
 
     .features-grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-      gap: 1.5rem;
+      gap: 1.25rem;
       margin-top: 3rem;
     }
     .feature-card {
@@ -148,24 +157,24 @@
       padding: 1.5rem;
       transition: border-color 0.2s;
     }
-    .feature-card:hover { border-color: var(--accent); }
+    .feature-card:hover { border-color: #444; }
     .feature-icon {
-      width: 40px; height: 40px; border-radius: 10px;
+      width: 38px; height: 38px; border-radius: 9px;
       background: var(--surface-raised);
       display: flex; align-items: center; justify-content: center;
-      margin-bottom: 1rem; font-size: 1.25rem;
+      margin-bottom: 1rem; font-size: 1.1rem;
     }
-    .feature-title { font-weight: 600; font-size: 0.975rem; margin-bottom: 0.4rem; }
-    .feature-desc { color: var(--text-muted); font-size: 0.875rem; line-height: 1.6; }
+    .feature-title { font-weight: 600; font-size: 0.95rem; margin-bottom: 0.4rem; }
+    .feature-desc { color: var(--text-muted); font-size: 0.85rem; line-height: 1.65; }
 
-    /* GIF FEATURES */
-    .gif-features { margin-top: 5rem; }
+    /* WORKFLOW DEMOS */
+    .gif-features { margin-top: 2rem; }
     .gif-row {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 3rem;
+      gap: 3.5rem;
       align-items: center;
-      margin-bottom: 5rem;
+      margin-bottom: 6rem;
     }
     .gif-row.reverse { direction: rtl; }
     .gif-row.reverse > * { direction: ltr; }
@@ -174,26 +183,14 @@
       border: 1px solid var(--border);
       overflow: hidden;
       background: var(--surface);
-      aspect-ratio: 16/10;
-      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 16px 48px rgba(0,0,0,.35);
     }
-    .gif-frame img { width: 100%; height: 100%; object-fit: cover; }
-    .gif-placeholder {
-      display: flex; flex-direction: column; align-items: center;
-      gap: 8px; color: var(--text-faint); font-size: 0.8rem; padding: 2rem;
-      text-align: center;
-    }
-    .gif-placeholder-label {
-      font-size: 0.7rem; font-family: var(--mono);
-      background: var(--surface-raised); border: 1px dashed var(--border);
-      border-radius: 6px; padding: 4px 10px; color: var(--text-faint);
-    }
-    .gif-text {}
+    .gif-frame svg { display: block; width: 100%; }
     .gif-text h3 {
-      font-size: 1.4rem; font-weight: 700; letter-spacing: -.02em;
-      margin-bottom: 0.75rem;
+      font-size: 1.5rem; font-weight: 700; letter-spacing: -.02em;
+      margin-bottom: 0.75rem; line-height: 1.25;
     }
-    .gif-text p { color: var(--text-muted); font-size: 0.9375rem; line-height: 1.7; margin-bottom: 1rem; }
+    .gif-text p { color: var(--text-muted); font-size: 0.9375rem; line-height: 1.75; margin-bottom: 1rem; }
     .tag-list { display: flex; flex-wrap: wrap; gap: 6px; }
     .tag {
       font-size: 0.75rem; font-family: var(--mono);
@@ -201,30 +198,71 @@
       border-radius: 6px; padding: 3px 8px; color: var(--text-muted);
     }
 
-    /* SOCIAL PROOF / PLATFORMS */
-    .platform-strip {
-      border-top: 1px solid var(--border);
-      border-bottom: 1px solid var(--border);
-      padding: 2rem;
+    /* PRICING */
+    .pricing-section {
+      padding: 5rem 2rem;
+      max-width: 860px;
+      margin: 0 auto;
       text-align: center;
+    }
+    .pricing-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.25rem;
+      margin-top: 3rem;
+      text-align: left;
+    }
+    .pricing-card {
       background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 2rem;
     }
-    .platform-strip p { color: var(--text-muted); font-size: 0.875rem; margin-bottom: 1.25rem; }
-    .platform-badges { display: flex; justify-content: center; gap: 1.5rem; flex-wrap: wrap; }
-    .platform-badge {
+    .pricing-card.featured {
+      border-color: var(--accent);
+      background: rgba(108,99,255,.06);
+    }
+    .pricing-tier {
+      font-size: 0.7rem; font-weight: 700; letter-spacing: .1em;
+      text-transform: uppercase; color: var(--text-muted); margin-bottom: 1rem;
+    }
+    .pricing-card.featured .pricing-tier { color: var(--accent); }
+    .pricing-price {
+      font-size: 2.4rem; font-weight: 700; letter-spacing: -.04em; margin-bottom: 0.25rem;
+    }
+    .pricing-price span { font-size: 1rem; font-weight: 400; color: var(--text-muted); }
+    .pricing-note { font-size: 0.8rem; color: var(--text-muted); margin-bottom: 1.75rem; }
+    .pricing-btn {
+      display: block; width: 100%; text-align: center;
+      padding: 0.7rem 1.5rem; border-radius: 10px;
+      font-size: 0.9rem; font-weight: 600;
+      background: var(--surface-raised); color: var(--text);
+      border: 1px solid var(--border);
+      transition: background 0.15s;
+      cursor: pointer;
+    }
+    .pricing-btn:hover { background: var(--border); }
+    .pricing-card.featured .pricing-btn {
+      background: var(--accent); color: #fff; border-color: transparent;
+    }
+    .pricing-card.featured .pricing-btn:hover { background: var(--accent-hover); }
+    .pricing-features { margin-top: 1.75rem; }
+    .pricing-features li {
+      list-style: none; font-size: 0.875rem; color: var(--text-muted);
+      padding: 0.4rem 0; border-bottom: 1px solid var(--border);
       display: flex; align-items: center; gap: 8px;
-      color: var(--text); font-size: 0.875rem; font-weight: 500;
-      background: var(--surface-raised); border: 1px solid var(--border);
-      border-radius: 10px; padding: 0.6rem 1.2rem;
     }
+    .pricing-features li:last-child { border-bottom: none; }
+    .pricing-features li::before { content: "✓"; color: var(--green); font-size: 0.8rem; flex-shrink: 0; }
 
-    /* CTA SECTION */
+    /* CTA */
     .cta-section {
       padding: 6rem 2rem;
       text-align: center;
+      border-top: 1px solid var(--border);
     }
     .cta-section h2 {
-      font-size: clamp(1.8rem, 3.5vw, 2.8rem);
+      font-size: clamp(1.8rem, 3.5vw, 2.6rem);
       font-weight: 700; letter-spacing: -.03em; margin-bottom: 1rem;
     }
     .cta-section p { color: var(--text-muted); font-size: 1rem; margin-bottom: 2rem; }
@@ -244,6 +282,7 @@
 
     @media (max-width: 680px) {
       .gif-row, .gif-row.reverse { grid-template-columns: 1fr; direction: ltr; }
+      .pricing-grid { grid-template-columns: 1fr; }
       .nav-links { display: none; }
     }
   </style>
@@ -260,209 +299,184 @@
   </a>
   <div class="nav-links">
     <a href="#features">Features</a>
-    <a href="#workflow">Workflow</a>
+    <a href="#workflow">How it works</a>
+    <a href="#pricing">Pricing</a>
     <a href="download.html">Download</a>
   </div>
   <a href="download.html" class="nav-cta">Download free →</a>
-  <!-- admin link intentionally omitted from public nav -->
 </nav>
 
 <!-- HERO -->
 <section class="hero">
-  <div class="hero-badge"><span>●</span> Now available for Mac &amp; Windows</div>
-  <h1>Cull faster.<br/><em>Import smarter.</em></h1>
+  <div class="hero-badge"><span>●</span> Mac &amp; Windows</div>
+  <h1>Culling that gets<br/>out of <em>your way</em></h1>
   <p class="hero-sub">
-    Culler connects directly to your camera card. Review full-res photos with keyboard-speed culling,
-    then import only the keepers — automatically organized.
+    Plug in your card, tap through your shots with keyboard shortcuts,
+    import only what you want — organized exactly how you like. No subscriptions, no cloud, no waiting.
   </p>
   <div class="hero-actions">
     <a href="download.html" class="btn-primary">
       <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor"><path d="M10 2a.75.75 0 01.75.75v8.69l2.97-2.97a.75.75 0 111.06 1.06l-4.25 4.25a.75.75 0 01-1.06 0L5.22 9.53a.75.75 0 011.06-1.06l2.97 2.97V2.75A.75.75 0 0110 2zM3 15.75a.75.75 0 000 1.5h14a.75.75 0 000-1.5H3z"/></svg>
-      Download — it's free
+      Download free
     </a>
-    <a href="#features" class="btn-secondary">See features</a>
+    <a href="#pricing" class="btn-secondary">Buy a license</a>
   </div>
 </section>
 
-<!-- APP PREVIEW -->
-<div class="preview-wrap">
-  <div class="preview-frame">
-    <!-- Replace src with your actual app screenshot or screen recording -->
-    <!-- <img src="assets/app-preview.png" alt="Culler app screenshot" /> -->
-    <div class="preview-placeholder">
-      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
-      <div>App screenshot / screen recording goes here</div>
-      <div style="font-family:var(--mono);font-size:.7rem;color:var(--text-faint)">assets/app-preview.png</div>
-    </div>
-  </div>
-</div>
+<!-- HERO ANIMATED DEMO -->
+<div class="hero-demo">
+  <div class="demo-frame">
+    <!-- Animated UI mockup: grid of thumbnails with keyboard culling -->
+    <svg viewBox="0 0 960 600" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <style>
+          .app-bg { fill: #141416; }
+          .sidebar { fill: #0f0f11; }
+          .thumb { rx: 4; ry: 4; }
+          .thumb-base { fill: #1e1e22; }
+          .pick-ring { fill: none; stroke: #34d399; stroke-width: 2.5; rx: 5; ry: 5; }
+          .reject-ring { fill: none; stroke: #f87171; stroke-width: 2.5; rx: 5; ry: 5; }
+          .select-ring { fill: none; stroke: #6c63ff; stroke-width: 2.5; rx: 5; ry: 5; }
+          .kbd { fill: #2a2a2e; rx: 4; ry: 4; }
+          .kbd-txt { fill: #e0e0e0; font-family: ui-monospace, monospace; font-size: 13px; font-weight: 600; }
+          .label { fill: #888; font-family: system-ui, sans-serif; font-size: 11px; }
+          .count { fill: #f0f0f0; font-family: system-ui, sans-serif; font-size: 13px; font-weight: 600; }
+        </style>
 
-<!-- PLATFORM STRIP -->
-<div class="platform-strip">
-  <p>Available on your platform</p>
-  <div class="platform-badges">
-    <div class="platform-badge">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg>
-      macOS 12+
-    </div>
-    <div class="platform-badge">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.557l7.357-1.002.003 7.096-7.354.042L3 5.557zm7.354 6.913l.004 7.098L3.003 18.56l-.002-6.14 7.353.05zm.892-8.046L21 2.5v8.402l-9.754.077V4.424zm9.758 8.048l-.002 8.31L11.246 19.44v-7.022l9.758.054z"/></svg>
-      Windows 10+
-    </div>
-    <div class="platform-badge">
-      <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor"><path d="M3.196 12.87l-.825.483a.75.75 0 000 1.294l7.25 4.25a.75.75 0 00.758 0l7.25-4.25a.75.75 0 000-1.294l-.825-.484-5.666 3.322a1.5 1.5 0 01-1.516 0l-5.426-3.32z"/><path d="M3.196 8.87l-.825.483a.75.75 0 000 1.294l7.25 4.25a.75.75 0 00.758 0l7.25-4.25a.75.75 0 000-1.294l-.825-.484-5.666 3.322a1.5 1.5 0 01-1.516 0l-5.426-3.32z"/><path d="M10.38 1.103a.75.75 0 00-.76 0l-7.25 4.25a.75.75 0 000 1.294l7.25 4.25a.75.75 0 00.76 0l7.25-4.25a.75.75 0 000-1.294l-7.25-4.25z"/></svg>
-      Auto-updates
-    </div>
-  </div>
-</div>
+        <!-- Thumbnail image patterns (fake landscape photos) -->
+        <linearGradient id="p1" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#1a2535"/>
+          <stop offset="60%" stop-color="#2d3f55"/>
+          <stop offset="100%" stop-color="#3a5070"/>
+        </linearGradient>
+        <linearGradient id="p2" x1="0" y1="1" x2="1" y2="0">
+          <stop offset="0%" stop-color="#251a18"/>
+          <stop offset="50%" stop-color="#4a2e25"/>
+          <stop offset="100%" stop-color="#6b4030"/>
+        </linearGradient>
+        <linearGradient id="p3" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#1a2518"/>
+          <stop offset="50%" stop-color="#2d4528"/>
+          <stop offset="100%" stop-color="#3a5535"/>
+        </linearGradient>
+        <linearGradient id="p4" x1="1" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#25201a"/>
+          <stop offset="50%" stop-color="#4a3d28"/>
+          <stop offset="100%" stop-color="#5e4e33"/>
+        </linearGradient>
+        <linearGradient id="p5" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#1e1a2e"/>
+          <stop offset="50%" stop-color="#2e2845"/>
+          <stop offset="100%" stop-color="#3e3660"/>
+        </linearGradient>
+        <linearGradient id="p6" x1="0" y1="1" x2="1" y2="0">
+          <stop offset="0%" stop-color="#1a2520"/>
+          <stop offset="50%" stop-color="#283d2e"/>
+          <stop offset="100%" stop-color="#345040"/>
+        </linearGradient>
 
-<!-- FEATURES GRID -->
-<section class="section" id="features">
-  <div class="section-label">Features</div>
-  <h2 class="section-title">Everything a photographer needs,<br/>nothing they don't.</h2>
-  <p class="section-sub">Built for the import-and-cull workflow. Keyboard-first, distraction-free.</p>
+        <!-- Glow effect for selected thumbnail -->
+        <filter id="glow">
+          <feGaussianBlur stdDeviation="3" result="blur"/>
+          <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+      </defs>
 
-  <div class="features-grid">
-    <div class="feature-card">
-      <div class="feature-icon">⚡</div>
-      <div class="feature-title">Keyboard-speed culling</div>
-      <div class="feature-desc">P to pick, X to reject, Shift+B for best-of. Rate 0–5 with number keys. Never touch a mouse.</div>
-    </div>
-    <div class="feature-card">
-      <div class="feature-icon">🎯</div>
-      <div class="feature-title">Burst grouping</div>
-      <div class="feature-desc">Consecutive shots are automatically grouped as bursts. Review the whole series, pick one, collapse the rest.</div>
-    </div>
-    <div class="feature-card">
-      <div class="feature-icon">🔍</div>
-      <div class="feature-title">Duplicate detection</div>
-      <div class="feature-desc">Already-imported files are detected by name and size. Re-inserting a card never creates duplicates.</div>
-    </div>
-    <div class="feature-card">
-      <div class="feature-icon">📁</div>
-      <div class="feature-title">Smart folder structure</div>
-      <div class="feature-desc">Choose from presets like <code>YYYY/MM/DD</code> or build your own with custom tokens. Always organized.</div>
-    </div>
-    <div class="feature-card">
-      <div class="feature-icon">📡</div>
-      <div class="feature-title">FTP output</div>
-      <div class="feature-desc">Simultaneously mirror imported files to a FTP/FTPS server. Great for remote backup or tethered workflows.</div>
-    </div>
-    <div class="feature-card">
-      <div class="feature-icon">🔄</div>
-      <div class="feature-title">Auto-import</div>
-      <div class="feature-desc">Insert a DCIM card and Culler automatically imports to your preset destination. No clicks required.</div>
-    </div>
-    <div class="feature-card">
-      <div class="feature-icon">🌓</div>
-      <div class="feature-title">Exposure normalization</div>
-      <div class="feature-desc">Auto-adjust exposure during export using your anchor photo as the reference. Consistent results, faster.</div>
-    </div>
-    <div class="feature-card">
-      <div class="feature-icon">✅</div>
-      <div class="feature-title">Checksum verification</div>
-      <div class="feature-desc">Every imported file is verified by checksum. Your images arrive bit-perfect, every time.</div>
-    </div>
-    <div class="feature-card">
-      <div class="feature-icon">💾</div>
-      <div class="feature-title">Backup copy</div>
-      <div class="feature-desc">Set a second destination and every import is mirrored there automatically. Built-in redundancy.</div>
-    </div>
-  </div>
-</section>
+      <!-- App chrome -->
+      <rect width="960" height="600" class="app-bg"/>
 
-<!-- GIF FEATURES -->
-<section class="section gif-features" id="workflow">
-  <div class="section-label">Workflow</div>
-  <h2 class="section-title">See it in action</h2>
+      <!-- Title bar -->
+      <rect width="960" height="36" fill="#0f0f11"/>
+      <circle cx="18" cy="18" r="5.5" fill="#ff5f57"/>
+      <circle cx="34" cy="18" r="5.5" fill="#febc2e"/>
+      <circle cx="50" cy="18" r="5.5" fill="#28c840"/>
+      <text x="480" y="23" text-anchor="middle" fill="#666" font-family="system-ui,sans-serif" font-size="12">Culler — SD Card (3,421 photos)</text>
 
-  <div class="gif-row">
-    <div class="gif-frame">
-      <!-- <img src="assets/gifs/culling.gif" alt="Culling workflow" /> -->
-      <div class="gif-placeholder">
-        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity=".3"><path d="m15 10-4 4 6 6-4-14-2 8-6-2 10-2z"/></svg>
-        GIF: culling workflow
-        <div class="gif-placeholder-label">assets/gifs/culling.gif</div>
-      </div>
-    </div>
-    <div class="gif-text">
-      <h3>Cull at the speed of thought</h3>
-      <p>Full-resolution thumbnails, instant keyboard response. Tap through hundreds of shots in minutes, not hours. Compare any two images side by side with a single keypress.</p>
-      <div class="tag-list">
-        <span class="tag">P — Pick</span>
-        <span class="tag">X — Reject</span>
-        <span class="tag">Shift+B — Best of burst</span>
-        <span class="tag">0–5 — Star rating</span>
-        <span class="tag">Space — Full resolution</span>
-      </div>
-    </div>
-  </div>
+      <!-- Sidebar -->
+      <rect x="0" y="36" width="200" height="564" class="sidebar"/>
+      <rect x="0" y="36" width="200" height="564" fill="none" stroke="#2a2a2e" stroke-width="1"/>
 
-  <div class="gif-row reverse">
-    <div class="gif-frame">
-      <!-- <img src="assets/gifs/import.gif" alt="Import workflow" /> -->
-      <div class="gif-placeholder">
-        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity=".3"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-        GIF: import + organization
-        <div class="gif-placeholder-label">assets/gifs/import.gif</div>
-      </div>
-    </div>
-    <div class="gif-text">
-      <h3>Import only the keepers</h3>
-      <p>Queue up your picks and hit Import. Culler organizes files into your chosen folder structure, verifies every byte, and ejects the card when done.</p>
-      <div class="tag-list">
-        <span class="tag">Auto date folders</span>
-        <span class="tag">Checksum verify</span>
-        <span class="tag">Auto eject</span>
-        <span class="tag">Backup mirror</span>
-      </div>
-    </div>
-  </div>
+      <!-- Sidebar stats -->
+      <text x="20" y="70" fill="#666" font-family="system-ui,sans-serif" font-size="10" font-weight="600" letter-spacing="0.06em">CARD</text>
+      <text x="20" y="90" fill="#e0e0e0" font-family="system-ui,sans-serif" font-size="13" font-weight="600">SD Card — EOS R5</text>
+      <text x="20" y="108" fill="#666" font-family="system-ui,sans-serif" font-size="11">3,421 photos · 48.2 GB</text>
 
-  <div class="gif-row">
-    <div class="gif-frame">
-      <!-- <img src="assets/gifs/burst.gif" alt="Burst grouping" /> -->
-      <div class="gif-placeholder">
-        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity=".3"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-        GIF: burst grouping
-        <div class="gif-placeholder-label">assets/gifs/burst.gif</div>
-      </div>
-    </div>
-    <div class="gif-text">
-      <h3>Burst shots, handled</h3>
-      <p>Rapid-fire sequences are detected and grouped automatically. Expand a burst, pick your favourite, collapse the rest — with one shortcut.</p>
-      <div class="tag-list">
-        <span class="tag">B — Select burst</span>
-        <span class="tag">G — Collapse/expand</span>
-        <span class="tag">Configurable window</span>
-      </div>
-    </div>
-  </div>
-</section>
+      <line x1="16" y1="124" x2="184" y2="124" stroke="#2a2a2e" stroke-width="1"/>
 
-<!-- CTA -->
-<section class="cta-section">
-  <h2>Ready to cull faster?</h2>
-  <p>Free download. No subscription. Works with any SD card or camera USB.</p>
-  <a href="download.html" class="btn-primary" style="display:inline-flex;margin:0 auto;">
-    Download Culler — it's free →
-  </a>
-</section>
+      <text x="20" y="146" fill="#666" font-family="system-ui,sans-serif" font-size="10" font-weight="600" letter-spacing="0.06em">SESSION</text>
 
-<!-- FOOTER -->
-<footer>
-  <div class="footer-logo">
-    <svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path fill-rule="evenodd" clip-rule="evenodd" d="M128 252C196.483 252 252 196.483 252 128C252 59.5167 196.483 4 128 4C59.5167 4 4 59.5167 4 128C4 196.483 59.5167 252 128 252ZM128 226.694C182.507 226.694 226.694 182.507 226.694 128C226.694 73.4929 182.507 29.3061 128 29.3061C73.4929 29.3061 29.3061 73.4929 29.3061 128C29.3061 182.507 73.4929 226.694 128 226.694ZM188.633 131.549C181.333 137.253 172.145 140.653 162.163 140.653C138.404 140.653 119.143 121.392 119.143 97.6327C119.143 85.8325 123.894 75.1419 131.587 67.3695C130.4 67.3004 129.204 67.2653 128 67.2653C94.4572 67.2653 67.2653 94.4572 67.2653 128C67.2653 161.543 94.4572 188.735 128 188.735C160.352 188.735 186.795 163.44 188.633 131.549ZM117.878 148.245C123.468 148.245 128 143.713 128 138.122C128 132.532 123.468 128 117.878 128C112.287 128 107.755 132.532 107.755 138.122C107.755 143.713 112.287 148.245 117.878 148.245ZM107.755 153.306C107.755 156.101 105.489 158.367 102.694 158.367C99.8986 158.367 97.6327 156.101 97.6327 153.306C97.6327 150.511 99.8986 148.245 102.694 148.245C105.489 148.245 107.755 150.511 107.755 153.306ZM177.347 97.6326C177.347 106.018 170.549 112.816 162.163 112.816C161.21 112.816 160.278 112.729 159.373 112.561C163.87 111.53 167.225 107.503 167.225 102.694C167.225 97.1034 162.693 92.5714 157.102 92.5714C152.292 92.5714 148.266 95.9258 147.235 100.423C147.067 99.5183 146.98 98.5857 146.98 97.6326C146.98 89.2469 153.778 82.449 162.163 82.449C170.549 82.449 177.347 89.2469 177.347 97.6326Z" fill="white"/>
-    </svg>
-    Culler
-  </div>
-  <div class="footer-links">
-    <a href="download.html">Download</a>
-    <a href="mailto:help@z2hs.au">Contact</a>
-  </div>
-  <div>© 2025 Culler. All rights reserved.</div>
-</footer>
+      <!-- Animated pick/reject counters -->
+      <text x="20" y="168" fill="#888" font-family="system-ui,sans-serif" font-size="11">Picked</text>
+      <text x="184" y="168" text-anchor="end" fill="#34d399" font-family="ui-monospace,monospace" font-size="13" font-weight="700">
+        <animate attributeName="textContent" dur="4.5s" repeatCount="indefinite"
+          values="12;12;13;13;13;13;14;14;14;14;14;12" keyTimes="0;0.1;0.22;0.35;0.5;0.6;0.72;0.85;0.9;0.95;0.98;1" calcMode="discrete"/>
+      </text>
+      <text x="20" y="188" fill="#888" font-family="system-ui,sans-serif" font-size="11">Rejected</text>
+      <text x="184" y="188" text-anchor="end" fill="#f87171" font-family="ui-monospace,monospace" font-size="13" font-weight="700">
+        <animate attributeName="textContent" dur="4.5s" repeatCount="indefinite"
+          values="5;6;6;6;7;7;7;7;8;8;8;5" keyTimes="0;0.1;0.22;0.35;0.5;0.6;0.72;0.85;0.9;0.95;0.98;1" calcMode="discrete"/>
+      </text>
+      <text x="20" y="208" fill="#888" font-family="system-ui,sans-serif" font-size="11">Unreviewed</text>
+      <text x="184" y="208" text-anchor="end" fill="#e0e0e0" font-family="ui-monospace,monospace" font-size="13" font-weight="700">3,404</text>
 
-</body>
-</html>
+      <line x1="16" y1="222" x2="184" y2="222" stroke="#2a2a2e" stroke-width="1"/>
+
+      <!-- Destination -->
+      <text x="20" y="244" fill="#666" font-family="system-ui,sans-serif" font-size="10" font-weight="600" letter-spacing="0.06em">DESTINATION</text>
+      <rect x="16" y="252" width="168" height="28" rx="6" fill="#1c1c1f" stroke="#2a2a2e" stroke-width="1"/>
+      <text x="26" y="271" fill="#888" font-family="ui-monospace,monospace" font-size="10">~/Pictures/2025/05/17</text>
+
+      <!-- Import button -->
+      <rect x="16" y="510" width="168" height="36" rx="8" fill="#6c63ff"/>
+      <text x="100" y="533" text-anchor="middle" fill="white" font-family="system-ui,sans-serif" font-size="13" font-weight="600">Import picks →</text>
+
+      <!-- Main thumbnail grid -->
+      <!-- Row 1 -->
+      <!-- thumb 1 — PICKED (green ring) -->
+      <rect x="216" y="52" width="144" height="96" rx="4" fill="url(#p1)"/>
+      <!-- mountain silhouette -->
+      <polygon points="216,148 260,90 290,110 316,80 360,148" fill="#0d1a2a" opacity="0.6"/>
+      <rect x="216" y="120" width="144" height="28" rx="0" fill="url(#p1)" opacity="0.4"/>
+      <rect x="214.5" y="50.5" width="147" height="99" rx="5" fill="none" stroke="#34d399" stroke-width="2.5"/>
+      <rect x="218" y="130" width="14" height="10" rx="2" fill="#34d399"/>
+      <text x="224" y="139" text-anchor="middle" fill="white" font-family="system-ui,sans-serif" font-size="8" font-weight="700">P</text>
+
+      <!-- thumb 2 — REJECTED (red ring) -->
+      <rect x="372" y="52" width="144" height="96" rx="4" fill="url(#p2)"/>
+      <polygon points="372,148 410,100 440,115 480,88 516,148" fill="#1a0a05" opacity="0.6"/>
+      <rect x="370.5" y="50.5" width="147" height="99" rx="5" fill="none" stroke="#f87171" stroke-width="2.5"/>
+      <rect x="374" y="130" width="14" height="10" rx="2" fill="#f87171"/>
+      <text x="380" y="139" text-anchor="middle" fill="white" font-family="system-ui,sans-serif" font-size="8" font-weight="700">X</text>
+
+      <!-- thumb 3 — SELECTED (purple ring, currently viewing) -->
+      <rect x="528" y="52" width="144" height="96" rx="4" fill="url(#p3)"/>
+      <polygon points="528,148 565,95 600,112 645,82 672,148" fill="#050f05" opacity="0.6"/>
+      <rect x="526.5" y="50.5" width="147" height="99" rx="5" fill="none" stroke="#6c63ff" stroke-width="3"/>
+
+      <!-- thumb 4 -->
+      <rect x="684" y="52" width="144" height="96" rx="4" fill="url(#p4)"/>
+      <polygon points="684,148 720,102 755,118 790,90 828,148" fill="#100a00" opacity="0.6"/>
+
+      <!-- thumb 5 (partially visible) -->
+      <rect x="840" y="52" width="114" height="96" rx="4" fill="url(#p5)"/>
+
+      <!-- Row 2 -->
+      <rect x="216" y="160" width="144" height="96" rx="4" fill="url(#p5)"/>
+      <polygon points="216,256 255,198 288,215 325,188 360,256" fill="#080515" opacity="0.6"/>
+      <!-- animate pick ring appearing on this thumb at the right moment -->
+      <rect x="214.5" y="158.5" width="147" height="99" rx="5" fill="none" stroke="#34d399" stroke-width="2.5" opacity="0">
+        <animate attributeName="opacity" dur="4.5s" repeatCount="indefinite"
+          values="0;0;0;0;0;0;0;1;1;1;1;0" keyTimes="0;0.1;0.22;0.35;0.5;0.6;0.72;0.72;0.85;0.9;0.98;1" calcMode="discrete"/>
+      </rect>
+
+      <rect x="372" y="160" width="144" height="96" rx="4" fill="url(#p6)"/>
+      <polygon points="372,256 410,200 442,218 478,192 516,256" fill="#050f05" opacity="0.5"/>
+
+      <rect x="528" y="160" width="144" height="96" rx="4" fill="url(#p1)"/>
+      <polygon points="528,256 568,202 600,218 640,190 672,256" fill="#051020" opacity="0.6"/>
+
+      <rect x="684" y="160" width="144" height="96" rx="4" fill="url(#p2)"/>
+      <rect x="840" y="160" width="114" height="96" rx="4" fill="url(#p3)"/>
+
+      <!-- Row 3 — partially visible -->
+      <rect x="21

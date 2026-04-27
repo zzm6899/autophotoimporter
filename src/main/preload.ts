@@ -237,13 +237,12 @@ const api = {
     return () => ipcRenderer.removeListener(IPC.FACE_MODEL_DOWNLOAD_PROGRESS, handler);
   },
 
+  /** Open a URL in the system's default browser. Only https:// URLs are permitted. */
+  openExternal: (url: string): Promise<void> =>
+    ipcRenderer.invoke(IPC.OPEN_EXTERNAL, url),
+
   // Platform info (renderer uses this to show Ctrl vs ⌘ in shortcuts)
   platform: process.platform,
 };
 
-// Re-export so non-preload modules can reference these types on results.
-export type { ImportError, FaceBox, ModelDownloadProgress };
-
-export type ElectronAPI = typeof api;
-
-contextBridge.exposeInMainWorld('electronAPI', api);
+// Re-export so non-preload modules can refe

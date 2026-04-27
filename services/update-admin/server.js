@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const https = require('node:https');
 const express = require('express');
 const cookieParser = require('cookie-parser');
 const bcrypt = require('bcryptjs');
@@ -42,6 +43,23 @@ const githubToken = process.env.GITHUB_RELEASE_TOKEN || '';
 const ACTIVATION_CODE_PREFIX = 'PIC';
 const ACTIVATION_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const defaultMaxDevices = Math.max(1, Number.parseInt(process.env.DEFAULT_MAX_DEVICES || '1', 10) || 1);
+
+// --- Payment / trial config ---
+// Stripe: set STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET in your environment.
+// To use the hosted checkout approach, also set STRIPE_PAYMENT_LINK to your
+// Stripe Payment Link URL (e.g. https://buy.stripe.com/xxx).
+// Resend: set RESEND_API_KEY for transactional email delivery.
+// TRIAL_DAYS: how many days a free trial lasts (default 14).
+// TRIAL_MAX_DEVICES: seat limit on trial keys (default 1).
+const stripeSecretKey = process.env.STRIPE_SECRET_KEY || '';
+const stripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET || '';
+const stripePaymentLink = process.env.STRIPE_PAYMENT_LINK || '';
+const resendApiKey = process.env.RESEND_API_KEY || '';
+const emailFromAddress = process.env.EMAIL_FROM || 'no-reply@culler.z2hs.au';
+const trialDays = Math.max(1, Number.parseInt(process.env.TRIAL_DAYS || '14', 10) || 14);
+const trialMaxDevices = Math.max(1, Number.parseInt(process.env.TRIAL_MAX_DEVICES || '1', 10) || 1);
+// Cooldown: one trial per email address per this many days (default 30)
+const trialCooldownDays = Math.max(1, Number.parseInt(process.env.TRIAL_COOLDOWN_DAYS || '30', 10) || 30);
 
 const CULLER_LOGO_SVG = '<svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M128 252C196.483 252 252 196.483 252 128C252 59.5167 196.483 4 128 4C59.5167 4 4 59.5167 4 128C4 196.483 59.5167 252 128 252ZM128 226.694C182.507 226.694 226.694 182.507 226.694 128C226.694 73.4929 182.507 29.3061 128 29.3061C73.4929 29.3061 29.3061 73.4929 29.3061 128C29.3061 182.507 73.4929 226.694 128 226.694ZM188.633 131.549C181.333 137.253 172.145 140.653 162.163 140.653C138.404 140.653 119.143 121.392 119.143 97.6327C119.143 85.8325 123.894 75.1419 131.587 67.3695C130.4 67.3004 129.204 67.2653 128 67.2653C94.4572 67.2653 67.2653 94.4572 67.2653 128C67.2653 161.543 94.4572 188.735 128 188.735C160.352 188.735 186.795 163.44 188.633 131.549ZM117.878 148.245C123.468 148.245 128 143.713 128 138.122C128 132.532 123.468 128 117.878 128C112.287 128 107.755 132.532 107.755 138.122C107.755 143.713 112.287 148.245 117.878 148.245ZM107.755 153.306C107.755 156.101 105.489 158.367 102.694 158.367C99.8986 158.367 97.6327 156.101 97.6327 153.306C97.6327 150.511 99.8986 148.245 102.694 148.245C105.489 148.245 107.755 150.511 107.755 153.306ZM177.347 97.6326C177.347 106.018 170.549 112.816 162.163 112.816C161.21 112.816 160.278 112.729 159.373 112.561C163.87 111.53 167.225 107.503 167.225 102.694C167.225 97.1034 162.693 92.5714 157.102 92.5714C152.292 92.5714 148.266 95.9258 147.235 100.423C147.067 99.5183 146.98 98.5857 146.98 97.6326C146.98 89.2469 153.778 82.449 162.163 82.449C170.549 82.449 177.347 89.2469 177.347 97.6326Z" fill="white"/></svg>';
 
@@ -119,7 +137,11 @@ function getDiskStats(dirPath) {
 
 app.set('trust proxy', true);
 app.use(express.urlencoded({ extended: false }));
-app.use(express.json({ limit: '2mb' }));
+// Skip global JSON parsing for the Stripe webhook — it needs the raw body for signature verification.
+app.use((req, res, next) => {
+  if (req.path === '/stripe/webhook') return next();
+  express.json({ limit: '2mb' })(req, res, next);
+});
 app.use(cookieParser());
 app.use('/artifacts', express.static(artifactsRoot));
 app.use(express.static(path.join(__dirname, 'web')));
@@ -1820,6 +1842,248 @@ app.get('/api/v1/app/download/:releaseId', async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Email helper (Resend — no npm package, plain HTTPS)
+// ---------------------------------------------------------------------------
+async function sendEmail({ to, subject, html }) {
+  if (!resendApiKey) {
+    console.warn('[email] RESEND_API_KEY not set — skipping email to', to);
+    return;
+  }
+  const body = JSON.stringify({ from: emailFromAddress, to, subject, html });
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      {
+        hostname: 'api.resend.com',
+        path: '/emails',
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${resendApiKey}`,
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+        },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => {
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            resolve(JSON.parse(data));
+          } else {
+            reject(new Error(`Resend ${res.statusCode}: ${data}`));
+          }
+        });
+      },
+    );
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+function licenseEmailHtml({ customerName, licenseKey, activationCode, expiresLabel }) {
+  const expiry = expiresLabel ? `<p>This license expires on <strong>${expiresLabel}</strong>.</p>` : '';
+  return `
+    <div style="font-family:system-ui,sans-serif;max-width:560px;margin:0 auto;color:#1a1a1a">
+      <h2 style="margin-bottom:4px">Your Culler license</h2>
+      <p>Hi ${customerName},</p>
+      <p>Thanks for trying Culler. Here are your license details:</p>
+      ${expiry}
+      <p><strong>Activation code</strong> (easiest — paste this into Culler → Settings → License):</p>
+      <pre style="background:#f4f4f5;padding:12px 16px;border-radius:8px;font-size:15px;letter-spacing:.05em">${activationCode}</pre>
+      <p style="margin-top:24px"><strong>Full license key</strong> (alternative, for offline use):</p>
+      <pre style="background:#f4f4f5;padding:12px 16px;border-radius:8px;font-size:11px;word-break:break-all;white-space:pre-wrap">${licenseKey}</pre>
+      <p style="color:#6b7280;font-size:13px;margin-top:32px">Questions? Reply to this email.</p>
+    </div>
+  `;
+}
+
+// ---------------------------------------------------------------------------
+// Stripe helper — verify webhook signature without the stripe npm package
+// ---------------------------------------------------------------------------
+function verifyStripeSignature(rawBody, sigHeader, secret) {
+  // Stripe-Signature: t=timestamp,v1=hmac,...
+  const parts = Object.fromEntries(
+    sigHeader.split(',').map((p) => p.split('=')),
+  );
+  const timestamp = parts.t;
+  const signatures = sigHeader.split(',')
+    .filter((p) => p.startsWith('v1='))
+    .map((p) => p.slice(3));
+  if (!timestamp || !signatures.length) return false;
+  const payload = `${timestamp}.${rawBody}`;
+  const expected = crypto.createHmac('sha256', secret).update(payload, 'utf8').digest('hex');
+  // Timing-safe compare against each signature
+  return signatures.some((sig) => {
+    try {
+      return crypto.timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(sig, 'hex'));
+    } catch { return false; }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Trial: add cooldown column if not present
+// ---------------------------------------------------------------------------
+async function ensureTrialSchema() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS trial_requests (
+      id SERIAL PRIMARY KEY,
+      email TEXT NOT NULL,
+      license_fingerprint TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_trial_requests_email ON trial_requests(email, created_at DESC)');
+}
+
+// ---------------------------------------------------------------------------
+// Shared: generate a license and return { licenseKey, activationCode, expiresLabel }
+// ---------------------------------------------------------------------------
+async function generateAndStoreLicense({ name, email, expiry, notes, maxDevices }) {
+  const licenseKey = createLicenseKey({ name, email, expiry, notes, maxDevices });
+  const validated = validateLicenseKey(licenseKey, licensePublicKeyPem);
+  if (!validated.valid) throw new Error(validated.message || 'Generated key did not validate.');
+  const activationCode = await upsertLicenseRecord(validated, notes);
+  const expiresLabel = expiry ? expiry.split('-').reverse().join('/') : null; // DD-MM-YYYY → DD/MM/YYYY
+  return { licenseKey, activationCode, expiresLabel };
+}
+
+// ---------------------------------------------------------------------------
+// Trial endpoint  POST /api/v1/trial/request
+// Body: { name, email }
+// ---------------------------------------------------------------------------
+app.post('/api/v1/trial/request', async (req, res) => {
+  const { name, email } = req.body || {};
+  if (!name || !name.trim()) return res.status(400).json({ error: 'name is required.' });
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+    return res.status(400).json({ error: 'A valid email address is required.' });
+  }
+  const cleanEmail = email.trim().toLowerCase();
+  const cleanName = name.trim();
+
+  try {
+    // Cooldown check — one trial per email per trialCooldownDays
+    const cooldown = await pool.query(
+      `SELECT id FROM trial_requests WHERE lower(email) = $1 AND created_at > NOW() - ($2 || ' days')::interval LIMIT 1`,
+      [cleanEmail, trialCooldownDays],
+    );
+    if (cooldown.rowCount > 0) {
+      return res.status(429).json({ error: `A trial was already issued to this address recently. Please wait ${trialCooldownDays} days before requesting another.` });
+    }
+
+    // Compute expiry date DD-MM-YYYY
+    const expiryDate = new Date();
+    expiryDate.setDate(expiryDate.getDate() + trialDays);
+    const dd = String(expiryDate.getDate()).padStart(2, '0');
+    const mm = String(expiryDate.getMonth() + 1).padStart(2, '0');
+    const yyyy = expiryDate.getFullYear();
+    const expiry = `${dd}-${mm}-${yyyy}`;
+
+    const { licenseKey, activationCode, expiresLabel } = await generateAndStoreLicense({
+      name: cleanName,
+      email: cleanEmail,
+      expiry,
+      notes: `Trial (${trialDays} days)`,
+      maxDevices: trialMaxDevices,
+    });
+
+    // Record trial so we can enforce cooldown
+    await pool.query(
+      `INSERT INTO trial_requests (email, license_fingerprint) VALUES ($1, (SELECT fingerprint FROM license_records WHERE activation_code = $2))`,
+      [cleanEmail, activationCode],
+    );
+
+    // Send email
+    await sendEmail({
+      to: cleanEmail,
+      subject: `Your Culler ${trialDays}-day trial license`,
+      html: licenseEmailHtml({ customerName: cleanName, licenseKey, activationCode, expiresLabel }),
+    });
+
+    return res.json({ ok: true, activationCode, expiresLabel });
+  } catch (err) {
+    console.error('[trial] error:', err);
+    return res.status(500).json({ error: 'Could not issue trial license. Please try again.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Stripe webhook  POST /stripe/webhook
+// Must be registered as a raw-body route (before express.json parses it).
+// In your Stripe dashboard point the webhook at: https://updates.culler.z2hs.au/stripe/webhook
+// Events to listen for: checkout.session.completed
+// ---------------------------------------------------------------------------
+app.post(
+  '/stripe/webhook',
+  express.raw({ type: 'application/json' }),
+  async (req, res) => {
+    if (!stripeWebhookSecret) {
+      console.warn('[stripe] STRIPE_WEBHOOK_SECRET not set — accepting webhook without verification (dev only)');
+    } else {
+      const sig = req.headers['stripe-signature'];
+      if (!sig || !verifyStripeSignature(req.body.toString('utf8'), sig, stripeWebhookSecret)) {
+        return res.status(400).json({ error: 'Invalid Stripe signature.' });
+      }
+    }
+
+    let event;
+    try {
+      event = JSON.parse(req.body.toString('utf8'));
+    } catch {
+      return res.status(400).json({ error: 'Invalid JSON.' });
+    }
+
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data.object;
+      const customerEmail = session.customer_details?.email || session.customer_email || '';
+      const customerName = session.customer_details?.name || 'Culler Customer';
+      const amountTotal = session.amount_total; // cents
+      const currency = (session.currency || 'aud').toUpperCase();
+
+      console.log(`[stripe] checkout.session.completed — ${customerEmail} — ${amountTotal / 100} ${currency}`);
+
+      try {
+        const { licenseKey, activationCode } = await generateAndStoreLicense({
+          name: customerName,
+          email: customerEmail,
+          expiry: undefined, // perpetual
+          notes: `Stripe purchase ${session.id} (${amountTotal / 100} ${currency})`,
+          maxDevices: defaultMaxDevices,
+        });
+
+        await sendEmail({
+          to: customerEmail,
+          subject: 'Your Culler license — thank you!',
+          html: licenseEmailHtml({ customerName, licenseKey, activationCode, expiresLabel: null }),
+        });
+
+        console.log(`[stripe] License issued → ${activationCode} for ${customerEmail}`);
+      } catch (err) {
+        console.error('[stripe] Failed to generate license after payment:', err);
+        // Return 200 so Stripe doesn't retry — but log for manual follow-up
+      }
+    }
+
+    return res.json({ received: true });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Buy redirect  GET /buy
+// Redirects to the Stripe Payment Link (or shows instructions if not configured).
+// ---------------------------------------------------------------------------
+app.get('/buy', (_req, res) => {
+  if (stripePaymentLink) {
+    return res.redirect(302, stripePaymentLink);
+  }
+  return res.status(503).send(htmlPage('Purchase', `
+    <div class="panel" style="max-width:480px;margin:40px auto">
+      <h1>Purchase not yet configured</h1>
+      <p class="muted">Set the <code>STRIPE_PAYMENT_LINK</code> environment variable to enable purchases.</p>
+    </div>
+  `));
+});
+
 async function waitForDatabase(maxAttempts = 20, delayMs = 1500) {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
@@ -1836,6 +2100,7 @@ async function waitForDatabase(maxAttempts = 20, delayMs = 1500) {
 async function start() {
   await waitForDatabase();
   await ensureRuntimeSchema();
+  await ensureTrialSchema();
   await ensureAdminUser();
   app.listen(port, '0.0.0.0', () => {
     console.log(`[update-admin] Listening on 0.0.0.0:${port}`);

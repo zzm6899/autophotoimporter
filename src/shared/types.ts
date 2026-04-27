@@ -493,4 +493,5 @@ export const IPC = {
   AUTO_IMPORT_COMPLETE: 'auto-import:complete',
   EJECT_VOLUME: 'volume:eject',
   DISK_FREE_SPACE: 'disk:free-space',
-} as const;
+
+  // Shell
