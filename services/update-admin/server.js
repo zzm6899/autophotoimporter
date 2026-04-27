@@ -381,6 +381,35 @@ function inferPlanType(plan, expiresAt) {
   return expiresAt ? 'Timed' : 'Lifetime';
 }
 
+function compareLicenseDate(a, b) {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
+}
+
+function issuedDateForRecord(record) {
+  return normalizeLicenseDate(record?.issued_at)
+    || normalizeLicenseDate(record?.created_at)
+    || null;
+}
+
+function latestDeviceExpiry(rows) {
+  let latest = null;
+  for (const row of rows || []) {
+    const normalized = normalizeLicenseDate(row?.expires_at);
+    if (!normalized) continue;
+    if (!latest || compareLicenseDate(normalized, latest) > 0) {
+      latest = normalized;
+    }
+  }
+  return latest;
+}
+
+function isActiveOnDate(expiresAt, today = normalizeLicenseDate(new Date().toISOString())) {
+  const normalized = normalizeLicenseDate(expiresAt);
+  if (!normalized) return true;
+  return compareLicenseDate(normalized, today) >= 0;
+}
+
 function formatMoneyFromCents(cents, currency = 'AUD') {
   const amount = Number(cents || 0) / 100;
   return new Intl.NumberFormat('en-AU', {
@@ -601,7 +630,7 @@ async function upsertLicenseRecord(validated, notes, plan = null) {
      SET license_key = EXCLUDED.license_key,
          customer_name = EXCLUDED.customer_name,
          customer_email = EXCLUDED.customer_email,
-         issued_at = EXCLUDED.issued_at,
+         issued_at = COALESCE(license_records.issued_at, EXCLUDED.issued_at),
          expires_at = EXCLUDED.expires_at,
          plan = COALESCE(EXCLUDED.plan, license_records.plan),
          max_devices = EXCLUDED.max_devices,
@@ -665,14 +694,20 @@ async function activationSummary(fingerprint, deviceId) {
     `SELECT id, device_id, device_name, first_seen_at, last_seen_at, expires_at
      FROM license_activations
      WHERE license_fingerprint = $1
-       AND (expires_at IS NULL OR expires_at >= CURRENT_DATE)
      ORDER BY last_seen_at DESC, id DESC`,
     [fingerprint],
   );
+  const rows = activations.rows;
+  const currentDevice = deviceId ? rows.find((row) => row.device_id === deviceId) || null : null;
+  const activeRows = rows.filter((row) => isActiveOnDate(row.expires_at));
   return {
-    count: activations.rowCount,
-    rows: activations.rows,
-    currentDeviceRegistered: deviceId ? activations.rows.some((row) => row.device_id === deviceId) : false,
+    count: activeRows.length,
+    rows,
+    activeRows,
+    currentDevice,
+    currentDeviceRegistered: Boolean(currentDevice),
+    currentDeviceActive: currentDevice ? isActiveOnDate(currentDevice.expires_at) : false,
+    latestExpiry: latestDeviceExpiry(rows),
   };
 }
 
@@ -683,7 +718,6 @@ async function registerActivation(fingerprint, deviceId, deviceName) {
      VALUES ($1,$2,$3,(SELECT expires_at FROM license_records WHERE fingerprint = $1),NOW(),NOW(),NOW())
      ON CONFLICT (license_fingerprint, device_id) DO UPDATE
      SET device_name = EXCLUDED.device_name,
-         expires_at = (SELECT expires_at FROM license_records WHERE fingerprint = $1),
          last_seen_at = NOW(),
          updated_at = NOW()`,
     [fingerprint, deviceId, deviceName || null],
@@ -745,6 +779,25 @@ async function resolveLicenseRecord(licenseKey, options = {}) {
 
   const maxDevices = effectiveMaxDevices(validated, record);
   const summary = await activationSummary(fingerprint, deviceId);
+  if (deviceId && summary.currentDeviceRegistered && !summary.currentDeviceActive) {
+    return {
+      ok: false,
+      status: 403,
+      message: `This device expired on ${formatLicenseDate(summary.currentDevice.expires_at)}.`,
+      fingerprint,
+      validated,
+      record,
+      activation: {
+        count: summary.count,
+        currentDeviceRegistered: true,
+        currentDeviceActive: false,
+        currentDevice: summary.currentDevice,
+        maxDevices,
+        devices: summary.rows,
+        latestExpiry: summary.latestExpiry,
+      },
+    };
+  }
   if (maxDevices && deviceId && !summary.currentDeviceRegistered && summary.count >= maxDevices) {
     return {
       ok: false,
@@ -756,7 +809,11 @@ async function resolveLicenseRecord(licenseKey, options = {}) {
       activation: {
         count: summary.count,
         currentDeviceRegistered: false,
+        currentDeviceActive: false,
+        currentDevice: null,
         maxDevices,
+        devices: summary.rows,
+        latestExpiry: summary.latestExpiry,
       },
     };
   }
@@ -773,21 +830,18 @@ async function resolveLicenseRecord(licenseKey, options = {}) {
     activation: {
       count: freshSummary.count,
       currentDeviceRegistered: freshSummary.currentDeviceRegistered,
+      currentDeviceActive: freshSummary.currentDeviceActive,
+      currentDevice: freshSummary.currentDevice,
       maxDevices,
       devices: freshSummary.rows,
+      latestExpiry: freshSummary.latestExpiry,
     },
   };
 }
 
 async function latestRelease(platform, channel) {
-  const result = await pool.query(
-    `SELECT * FROM releases
-     WHERE platform = $1 AND channel = $2 AND rollout_state = 'live'
-     ORDER BY published_at DESC, id DESC
-     LIMIT 1`,
-    [platform, channel],
-  );
-  return result.rows[0] || null;
+  const releases = await liveReleases({ platform, channel, limit: 1 });
+  return releases[0] || null;
 }
 
 async function releaseByVersion(version) {
@@ -799,6 +853,34 @@ async function releaseByVersion(version) {
     [version],
   );
   return result.rows[0] || null;
+}
+
+async function liveReleases({ platform = null, channel = 'stable', limit = 10 } = {}) {
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 10, 50));
+  const rows = await pool.query(
+    `SELECT *
+     FROM releases
+     WHERE ($1::text IS NULL OR platform = $1)
+       AND channel = $2
+       AND rollout_state = 'live'
+     ORDER BY published_at DESC, id DESC
+     LIMIT $3`,
+    [platform, channel, safeLimit],
+  );
+  return rows.rows;
+}
+
+function serializePublicRelease(row) {
+  return {
+    version: row.version,
+    releaseName: row.release_name,
+    notes: row.release_notes,
+    releaseUrl: row.release_url,
+    artifactUrl: row.artifact_url,
+    publishedAt: row.published_at,
+    channel: row.channel,
+    platform: row.platform,
+  };
 }
 
 function hasGitHubReleaseConfig() {
@@ -1215,6 +1297,8 @@ app.get('/admin/licenses/:id', authSession, async (req, res) => {
      ORDER BY last_seen_at DESC, id DESC`,
     [record.fingerprint],
   );
+  const issuedAt = issuedDateForRecord(record);
+  const detailsExpiry = latestDeviceExpiry(activations.rows) || normalizeLicenseDate(record.expires_at);
   return res.send(htmlPage(`License ${record.customer_name}`, `
     <div class="hero">
       <div class="hero-copy">
@@ -1230,9 +1314,9 @@ app.get('/admin/licenses/:id', authSession, async (req, res) => {
         <p style="margin-bottom:12px">${statusPill(record.status)}</p>
         <p class="muted">Activation code: <code>${record.activation_code || '—'}</code></p>
         ${record.customer_email ? `<p class="muted">Email: ${record.customer_email}</p>` : ''}
-        <p class="muted">Plan: ${inferPlanType(record.plan, record.expires_at)}</p>
-        <p class="muted">Issued: ${formatLicenseDate(record.issued_at)}</p>
-        <p class="muted">Expires: ${formatLicenseDate(record.expires_at)}</p>
+        <p class="muted">Plan: ${inferPlanType(record.plan, detailsExpiry)}</p>
+        <p class="muted">Issued: ${formatLicenseDate(issuedAt)}</p>
+        <p class="muted">Expires: ${formatLicenseDate(detailsExpiry)}</p>
         <p class="muted">Seat limit: ${record.max_devices || '&infin;'} device${record.max_devices === 1 ? '' : 's'}</p>
         <p class="muted">Devices seen: ${activations.rowCount}</p>
         <p class="muted">Last seen: ${record.last_seen_at ? fmtTime(record.last_seen_at) : 'Never'}</p>
@@ -1729,6 +1813,35 @@ app.post('/api/v1/license/resolve', async (req, res) => {
 
   const maxDevices = Number(record.max_devices || 0) || null;
   const summary = await activationSummary(record.fingerprint, deviceId);
+  const issuedAt = issuedDateForRecord(record);
+  const currentDeviceExpiry = summary.currentDeviceRegistered ? normalizeLicenseDate(summary.currentDevice?.expires_at) : null;
+  const effectiveExpiry = currentDeviceExpiry || normalizeLicenseDate(record.expires_at);
+  const activeMessage = effectiveExpiry
+    ? `License active until ${formatLicenseDate(effectiveExpiry)}.`
+    : 'License active.';
+  if (deviceId && summary.currentDeviceRegistered && !summary.currentDeviceActive) {
+    return res.status(403).json({
+      allowed: false,
+      message: `This device expired on ${formatLicenseDate(summary.currentDevice.expires_at)}.`,
+      activationCode,
+      status: 'expired',
+      entitlement: {
+        product: 'photo-importer',
+        name: record.customer_name,
+        email: record.customer_email || undefined,
+        issuedAt,
+        expiresAt: currentDeviceExpiry || undefined,
+        tier: 'Full access',
+        notes: record.notes || undefined,
+        maxDevices: maxDevices || undefined,
+      },
+      deviceId: deviceId || undefined,
+      deviceName: deviceName || undefined,
+      deviceSlotsUsed: summary.count,
+      deviceSlotsTotal: maxDevices || undefined,
+      currentDeviceRegistered: true,
+    });
+  }
   if (maxDevices && deviceId && !summary.currentDeviceRegistered && summary.count >= maxDevices) {
     return res.status(403).json({
       allowed: false,
@@ -1752,16 +1865,14 @@ app.post('/api/v1/license/resolve', async (req, res) => {
     allowed: true,
     activationCode,
     licenseKey: record.license_key,
-    message: record.expires_at
-      ? `License active until ${formatLicenseDate(record.expires_at)}.`
-      : 'License active.',
+    message: activeMessage,
     status: 'active',
     entitlement: {
       product: 'photo-importer',
       name: record.customer_name,
       email: record.customer_email || undefined,
-      issuedAt: record.issued_at,
-      expiresAt: record.expires_at || undefined,
+      issuedAt,
+      expiresAt: effectiveExpiry || undefined,
       tier: 'Full access',
       notes: record.notes || undefined,
       maxDevices: maxDevices || undefined,
@@ -1783,6 +1894,10 @@ app.get('/api/v1/license/status', async (req, res) => {
   }
 
   const resolved = await resolveLicenseRecord(licenseKey, { deviceId, deviceName });
+  const issuedAt = resolved.record ? issuedDateForRecord(resolved.record) : resolved.validated?.entitlement?.issuedAt;
+  const effectiveExpiry = resolved.activation?.currentDevice?.expires_at
+    ? normalizeLicenseDate(resolved.activation.currentDevice.expires_at)
+    : (resolved.activation?.latestExpiry || resolved.record?.expires_at || resolved.validated?.entitlement?.expiresAt || null);
   if (!resolved.ok) {
     return res.status(resolved.status).json({
       allowed: false,
@@ -1790,7 +1905,12 @@ app.get('/api/v1/license/status', async (req, res) => {
       status: resolved.record?.status || 'unknown',
       activationCode: resolved.record?.activation_code,
       entitlement: resolved.validated?.entitlement
-        ? { ...resolved.validated.entitlement, maxDevices: resolved.activation?.maxDevices || resolved.validated.entitlement.maxDevices }
+        ? {
+            ...resolved.validated.entitlement,
+            issuedAt: issuedAt || resolved.validated.entitlement.issuedAt,
+            expiresAt: effectiveExpiry || undefined,
+            maxDevices: resolved.activation?.maxDevices || resolved.validated.entitlement.maxDevices,
+          }
         : undefined,
       deviceId: deviceId || undefined,
       deviceName: deviceName || undefined,
@@ -1802,13 +1922,18 @@ app.get('/api/v1/license/status', async (req, res) => {
 
   return res.json({
     allowed: true,
-    message: resolved.record?.expires_at
-      ? `License active until ${formatLicenseDate(resolved.record.expires_at)}.`
+    message: effectiveExpiry
+      ? `License active until ${formatLicenseDate(effectiveExpiry)}.`
       : 'License active.',
     status: resolved.record?.status || 'active',
     activationCode: resolved.record?.activation_code,
     entitlement: resolved.validated?.entitlement
-      ? { ...resolved.validated.entitlement, maxDevices: resolved.activation?.maxDevices || resolved.validated.entitlement.maxDevices }
+      ? {
+          ...resolved.validated.entitlement,
+          issuedAt: issuedAt || resolved.validated.entitlement.issuedAt,
+          expiresAt: effectiveExpiry || undefined,
+          maxDevices: resolved.activation?.maxDevices || resolved.validated.entitlement.maxDevices,
+        }
       : undefined,
     deviceId: deviceId || undefined,
     deviceName: deviceName || undefined,
@@ -1883,10 +2008,10 @@ app.get('/api/v1/app/update', async (req, res) => {
     allowed: true,
     currentVersion: version,
     latestVersion: release.version,
-    releaseName: release.release_name,
-    releaseNotes: release.release_notes,
-    releaseDate: release.published_at,
-    releaseUrl: release.release_url,
+    releaseName: serializePublicRelease(release).releaseName,
+    releaseNotes: serializePublicRelease(release).notes,
+    releaseDate: serializePublicRelease(release).publishedAt,
+    releaseUrl: serializePublicRelease(release).releaseUrl,
     ...(token ? {
       downloadUrl: `${publicUpdatesBaseUrl()}/api/v1/app/download/${release.id}?token=${encodeURIComponent(token)}`,
       feedUrl: platform === 'windows' ? `${publicUpdatesBaseUrl()}/artifacts/windows` : undefined,
@@ -1916,28 +2041,10 @@ app.get('/api/v1/app/releases', async (req, res) => {
   const latestOnly = String(req.query.latest || '').toLowerCase() === 'true';
   const limit = latestOnly ? 1 : Math.min(Number(req.query.limit || 10), 50);
 
-  const rows = await pool.query(
-    `SELECT version, release_name, release_notes, release_url, artifact_url, published_at, channel, platform
-     FROM releases
-     WHERE ($1::text IS NULL OR platform = $1)
-       AND channel = $2
-       AND rollout_state = 'live'
-     ORDER BY published_at DESC, id DESC
-     LIMIT $3`,
-    [platform, channel, limit],
-  );
+  const rows = await liveReleases({ platform, channel, limit });
 
   return res.json({
-    releases: rows.rows.map((row) => ({
-      version: row.version,
-      releaseName: row.release_name,
-      notes: row.release_notes,
-      releaseUrl: row.release_url,
-      artifactUrl: row.artifact_url,
-      publishedAt: row.published_at,
-      channel: row.channel,
-      platform: row.platform,
-    })),
+    releases: rows.map(serializePublicRelease),
   });
 });
 
@@ -3074,6 +3181,15 @@ app.get('/api/v1/license-info/:code', apiCors, async (req, res) => {
   
   try {
     const row = await getLicenseRecordByActivationCode(code);
+    const activations = row
+      ? await pool.query(
+          `SELECT expires_at
+           FROM license_activations
+           WHERE license_fingerprint = $1
+           ORDER BY last_seen_at DESC, id DESC`,
+          [row.fingerprint],
+        )
+      : { rows: [] };
 
     if (!row) {
       return res.status(404).json({ error: 'License not found.' });
@@ -3086,7 +3202,8 @@ app.get('/api/v1/license-info/:code', apiCors, async (req, res) => {
       customerEmail: row.customer_email,
       plan: row.plan,
       maxDevices: row.max_devices,
-      expiresAt: row.expires_at,
+      issuedAt: issuedDateForRecord(row),
+      expiresAt: latestDeviceExpiry(activations.rows) || normalizeLicenseDate(row.expires_at),
     });
   } catch (err) {
     console.error('[license-info] Error:', err.message);

@@ -3,6 +3,7 @@ import { generateKeyPairSync, sign } from 'node:crypto';
 
 let validateLicenseKey: typeof import('../license').validateLicenseKey;
 let activateLicenseInput: typeof import('../license').activateLicenseInput;
+let checkHostedLicenseStatus: typeof import('../license').checkHostedLicenseStatus;
 const { privateKey, publicKey } = generateKeyPairSync('ed25519');
 const publicPem = publicKey.export({ type: 'spki', format: 'pem' }).toString();
 
@@ -20,7 +21,7 @@ beforeAll(async () => {
   vi.doMock('../device-id', () => ({
     getDeviceIdentity: vi.fn(async () => ({ id: 'device-1', name: 'Test Machine' })),
   }));
-  ({ validateLicenseKey, activateLicenseInput } = await import('../license'));
+  ({ validateLicenseKey, activateLicenseInput, checkHostedLicenseStatus } = await import('../license'));
 });
 
 afterEach(() => {
@@ -103,5 +104,31 @@ describe('validateLicenseKey', () => {
     expect(result.valid).toBe(true);
     expect(result.entitlement?.expiresAt).toBe('2026-05-11');
     expect(result.message).toContain('active');
+  });
+
+  it('preserves an existing activation code when hosted status omits it', async () => {
+    const key = makeLicense({
+      n: 'Existing Customer',
+      e: 'existing@example.com',
+      i: '24-04-2026',
+      x: '31-12-2027',
+      t: 'Full access',
+    });
+
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        allowed: true,
+        status: 'active',
+      }),
+    })) as typeof fetch);
+
+    const result = await checkHostedLicenseStatus(key, {
+      ...validateLicenseKey(key),
+      activationCode: 'PIC-EXIST-1234-ABCD',
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.activationCode).toBe('PIC-EXIST-1234-ABCD');
   });
 });

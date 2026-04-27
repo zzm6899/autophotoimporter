@@ -95,6 +95,16 @@ function normalizeValidation(result: LicenseValidation): LicenseValidation {
   };
 }
 
+function pickActivationCode(
+  remote: string | undefined,
+  fallback: string | undefined,
+): string | undefined {
+  const normalizedRemote = remote?.trim();
+  if (normalizedRemote) return normalizedRemote;
+  const normalizedFallback = fallback?.trim();
+  return normalizedFallback || undefined;
+}
+
 function mergeEntitlement(
   remote: LicenseEntitlement | undefined,
   fallback: LicenseEntitlement | undefined,
@@ -231,7 +241,7 @@ export async function activateLicenseInput(input: string): Promise<LicenseValida
 
       return normalizeValidation({
         ...local,
-        activationCode: payload.activationCode ?? trimmed,
+        activationCode: pickActivationCode(payload.activationCode, trimmed),
         entitlement: mergeEntitlement(payload.entitlement, local.entitlement),
         message: payload.message || local.message,
         status: payload.status ?? 'active',
@@ -277,7 +287,7 @@ export async function checkHostedLicenseStatus(
         key: local.key,
         entitlement: mergeEntitlement(payload.entitlement, local.entitlement),
         message: payload.message || 'License no longer active.',
-        activationCode: payload.activationCode,
+        activationCode: pickActivationCode(payload.activationCode, existing?.activationCode),
         status: payload.status ?? 'unknown',
         deviceId: payload.deviceId,
         deviceName: payload.deviceName,
@@ -290,7 +300,7 @@ export async function checkHostedLicenseStatus(
     return normalizeValidation({
       ...local,
       entitlement: mergeEntitlement(payload.entitlement, local.entitlement),
-      activationCode: payload.activationCode,
+      activationCode: pickActivationCode(payload.activationCode, existing?.activationCode),
       message: payload.message || local.message,
       status: payload.status ?? 'active',
       deviceId: payload.deviceId,

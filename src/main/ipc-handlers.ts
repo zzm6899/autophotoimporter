@@ -154,8 +154,12 @@ async function loadSettings(): Promise<AppSettings> {
     const data = await readFile(getSettingsPath(), 'utf-8');
     const parsed = JSON.parse(data) as Partial<AppSettings>;
     const merged = { ...DEFAULT_SETTINGS, ...parsed };
+    const storedActivationCode = merged.licenseActivationCode?.trim();
     const licenseStatus = merged.licenseKey
-      ? validateLicenseKey(merged.licenseKey)
+      ? {
+          ...validateLicenseKey(merged.licenseKey),
+          activationCode: storedActivationCode || undefined,
+        }
       : { valid: false, message: 'No license activated.', status: 'unknown' as const };
     
     // Apply performance settings immediately

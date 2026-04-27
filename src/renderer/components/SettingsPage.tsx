@@ -72,6 +72,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const BASE_URL = 'https://updates.culler.z2hs.au';
   const [diagnosing, setDiagnosing] = useState(false);
   const [diagResult, setDiagResult] = useState<string | null>(null);
+  const activationCode = licenseStatus?.activationCode?.trim() || '';
 
   const formatDisplayDate = (value?: string) => {
     if (!value) return 'Never';
@@ -103,7 +104,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   };
 
   const openLicenseManagement = async () => {
-    const code = (licenseStatus?.activationCode ?? licenseInput ?? '').trim();
+    const code = activationCode;
     const url = code
       ? `${BASE_URL}/manage-license?code=${encodeURIComponent(code)}`
       : `${BASE_URL}/manage-license`;
@@ -530,11 +531,11 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                       : 'Your license has reached its expiry date. Renew or upgrade to keep using Pro features.'}
                   </div>
                 )}
-                {(licenseStatus.activationCode ?? licenseStatus.key) && (
+                {activationCode && (
                   <div className="flex items-center gap-1.5">
                     <span className="text-[10px] text-text-muted">Code:</span>
                     <code className="text-[10px] font-mono text-text-secondary bg-surface-raised px-1.5 py-0.5 rounded truncate max-w-[160px]">
-                      {(licenseStatus.activationCode ?? licenseStatus.key ?? '').slice(0, 20)}&hellip;
+                      {activationCode}
                     </code>
                     <button
                       onClick={() => { void openLicenseManagement(); }}
