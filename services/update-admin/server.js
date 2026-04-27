@@ -2285,6 +2285,7 @@ app.post(
       const customerName = paymentIntent.metadata?.customer_name || 'Culler Customer';
 
       try {
+        console.log(`[stripe] Generating license for: ${customerName} (${customerEmail})`);
         const { licenseKey, activationCode } = await generateAndStoreLicense({
           name: customerName,
           email: customerEmail,
@@ -2294,19 +2295,26 @@ app.post(
         });
 
         console.log(`[stripe] ✓ License generated — activation: ${activationCode.substring(0, 20)}...`);
+        console.log(`[stripe] Storing session in stripe_sessions: session=${sessionId}, email=${customerEmail}`);
 
         // Store session-to-license mapping for success page retrieval
         try {
-          await pool.query(
+          const insertResult = await pool.query(
             'INSERT INTO stripe_sessions (session_id, license_key, activation_code, customer_email) VALUES ($1, $2, $3, $4) ON CONFLICT (session_id) DO UPDATE SET license_key=$2, activation_code=$3',
             [sessionId, licenseKey, activationCode, customerEmail]
           );
           console.log(`[stripe] ✓ Session stored in stripe_sessions — session: ${sessionId}`);
         } catch (dbErr) {
-          console.error('[stripe] ✗ Failed to store session:', dbErr.message, dbErr.detail);
+          console.error('[stripe] ✗ Database error storing session:');
+          console.error('  Query:', 'INSERT INTO stripe_sessions...');
+          console.error('  Params:', [sessionId, '***', '***', customerEmail]);
+          console.error('  Error:', dbErr.message);
+          console.error('  Detail:', dbErr.detail);
+          console.error('  Code:', dbErr.code);
           throw dbErr;
         }
 
+        console.log(`[stripe] Sending email to ${customerEmail}`);
         await sendEmail({
           to: customerEmail,
           subject: 'Your Culler license — thank you!',
@@ -2316,7 +2324,9 @@ app.post(
         console.log(`[stripe] ✓ License email sent to ${customerEmail}`);
       } catch (err) {
         console.error('[stripe] ✗ Failed to generate license after payment_intent.succeeded:');
-        console.error(err);
+        console.error('  Error type:', err.constructor.name);
+        console.error('  Message:', err.message);
+        console.error('  Stack:', err.stack);
       }
     }
 
@@ -2619,26 +2629,34 @@ app.get('/api/v1/license/:sessionId', apiCors, async (req, res) => {
   // Handle case where Stripe appends metadata to session ID (e.g., cs_live_...:150)
   // Stripe session IDs are always cs_live_... or cs_test_..., anything after colon is extra
   if (sessionId.includes(':')) {
+    const original = sessionId;
     sessionId = sessionId.split(':')[0];
+    console.log(`[license-lookup] Cleaned session ID: ${original} → ${sessionId}`);
   }
   
   try {
+    console.log(`[license-lookup] Querying stripe_sessions for: ${sessionId}`);
     const result = await pool.query(
       'SELECT license_key, activation_code, customer_email FROM stripe_sessions WHERE session_id = $1',
       [sessionId]
     );
+    
+    console.log(`[license-lookup] Query returned ${result.rows.length} rows`);
+    
     if (result.rows.length === 0) {
       console.warn(`[license-lookup] Session not found: ${sessionId}`);
       return res.status(404).json({ error: 'License not found. It may take a few seconds to process. Please refresh.' });
     }
     const row = result.rows[0];
+    console.log(`[license-lookup] ✓ Found license for ${row.customer_email}`);
     return res.json({
       licenseKey: row.license_key,
       activationCode: row.activation_code,
       email: row.customer_email,
     });
   } catch (err) {
-    console.error('[license-lookup]', err);
+    console.error('[license-lookup] Database error:', err.message);
+    console.error('[license-lookup] Stack:', err.stack);
     return res.status(500).json({ error: 'Could not retrieve license.' });
   }
 });
