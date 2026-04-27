@@ -188,6 +188,7 @@ function htmlPage(title, body) {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
   <title>${title} — Culler Admin</title>
   <script>
     // Convert all <time data-ts="..."> elements to local browser time on load
@@ -202,102 +203,134 @@ function htmlPage(title, body) {
     });
   </script>
   <style>
-    :root{--bg:#090e1a;--surface:#0f1829;--surface2:#172033;--border:#1e2d45;--border2:#2a3f5f;--text:#e8edf5;--muted:#7a90b0;--faint:#3d5068;--blue:#3b82f6;--blue-dk:#2563eb;--radius:12px}
+    :root{--bg:#091116;--surface:rgba(13,24,31,.9);--surface-2:rgba(19,33,41,.92);--surface-3:rgba(28,45,55,.96);--border:rgba(95,130,147,.22);--border-strong:rgba(135,177,198,.3);--text:#edf5f7;--muted:#9db2bc;--faint:#6f8791;--accent:#60c7b2;--accent-strong:#1ea48b;--accent-soft:rgba(96,199,178,.16);--accent-warm:#f2bf83;--danger:#ff9d8d;--danger-soft:rgba(255,123,103,.14);--warning:#ffd08a;--ok:#9fe4bb;--shadow:0 24px 60px rgba(0,0,0,.28);--radius:24px;--radius-sm:16px}
     *,*::before,*::after{box-sizing:border-box}
-    body{font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);margin:0;-webkit-font-smoothing:antialiased;line-height:1.6}
-    a{color:var(--blue);text-decoration:none}
-    a:hover{color:#93c5fd}
-    code{font-family:ui-monospace,'SF Mono',Consolas,monospace;font-size:.8em;background:var(--surface2);padding:2px 6px;border-radius:4px;white-space:nowrap}
-    h1{font-size:1.35rem;font-weight:700;margin:0;letter-spacing:-.02em}
-    h2{font-size:.7rem;font-weight:600;margin:0 0 14px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
-    p{margin:0 0 8px}
-    label{display:block;font-size:.8rem;font-weight:500;color:var(--muted);margin-bottom:4px;margin-top:14px}
+    html{color-scheme:dark}
+    body{font-family:'Segoe UI Variable','Avenir Next','Segoe UI',Tahoma,sans-serif;background:radial-gradient(circle at top left,rgba(47,108,119,.32),transparent 28%),radial-gradient(circle at top right,rgba(242,191,131,.12),transparent 24%),linear-gradient(180deg,#0b1318 0%,#091116 54%,#081015 100%);color:var(--text);margin:0;min-height:100vh;-webkit-font-smoothing:antialiased;line-height:1.55;position:relative;overflow-x:hidden}
+    body::before{content:'';position:fixed;inset:0;pointer-events:none;background:linear-gradient(90deg,rgba(255,255,255,.018) 1px,transparent 1px),linear-gradient(rgba(255,255,255,.018) 1px,transparent 1px);background-size:48px 48px;mask-image:linear-gradient(180deg,rgba(0,0,0,.34),transparent 80%)}
+    body::after{content:'';position:fixed;inset:auto -10vw -20vh auto;width:46vw;height:46vw;border-radius:50%;pointer-events:none;background:radial-gradient(circle,rgba(96,199,178,.08),transparent 70%);filter:blur(10px)}
+    a{color:inherit;text-decoration:none}
+    a:hover{color:#fff}
+    code{font-family:ui-monospace,'SF Mono',Consolas,monospace;font-size:.83em;background:rgba(12,20,26,.88);border:1px solid rgba(128,163,178,.14);padding:3px 8px;border-radius:999px;white-space:normal;overflow-wrap:anywhere}
+    pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+    h1{font-size:clamp(1.8rem,3vw,2.85rem);font-weight:750;margin:0;letter-spacing:-.04em;line-height:1.04;max-width:16ch}
+    h2{font-size:.78rem;font-weight:700;margin:0 0 14px;color:var(--muted);text-transform:uppercase;letter-spacing:.16em}
+    p{margin:0}
+    label{display:block;font-size:.8rem;font-weight:650;color:var(--muted);margin-bottom:6px;margin-top:14px;letter-spacing:.02em}
     label:first-child{margin-top:0}
-    .shell{max-width:1200px;margin:0 auto;padding:20px 24px}
-    .top{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;padding-bottom:18px;margin-bottom:20px;border-bottom:1px solid var(--border)}
-    .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-bottom:20px}
-    .card{background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius);padding:16px 20px}
-    .card-label{font-size:.7rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px}
-    .card-value{font-size:2rem;font-weight:700;line-height:1.1;letter-spacing:-.04em}
-    .panel{background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius);padding:20px;margin-bottom:16px}
-    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;margin-bottom:16px}
-    .row{display:flex;gap:12px}
-    .row>*{flex:1}
+    .shell{max-width:1380px;margin:0 auto;padding:34px 24px 56px;position:relative;z-index:1}
+    .hero{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:22px;align-items:end;padding:28px 28px 24px;margin-bottom:22px;border:1px solid var(--border-strong);border-radius:32px;background:linear-gradient(135deg,rgba(96,199,178,.14),rgba(242,191,131,.08) 35%,rgba(13,24,31,.9) 72%);box-shadow:var(--shadow);backdrop-filter:blur(18px)}
+    .hero-copy{display:flex;flex-direction:column;gap:10px;min-width:0}
+    .hero-copy p{max-width:66ch;color:var(--muted);font-size:1rem}
+    .hero-kicker{font-size:.72rem;font-weight:800;letter-spacing:.18em;text-transform:uppercase;color:var(--accent-warm)}
+    .hero-meta{display:flex;gap:10px;flex-wrap:wrap}
+    .hero-note{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border:1px solid var(--border);border-radius:999px;background:rgba(6,14,18,.34);color:var(--muted);font-size:.8rem}
+    .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin-bottom:20px}
+    .card,.panel{background:linear-gradient(180deg,rgba(17,29,36,.92),rgba(12,22,28,.94));border:1px solid var(--border);border-radius:24px;box-shadow:var(--shadow);backdrop-filter:blur(18px)}
+    .card{padding:20px 20px 18px;min-height:154px;display:flex;flex-direction:column;justify-content:space-between}
+    .card-label{font-size:.76rem;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.14em;line-height:1.45}
+    .card-value{font-size:clamp(1.75rem,2.8vw,2.6rem);font-weight:760;line-height:1.02;letter-spacing:-.05em;margin-top:12px}
+    .card-note,.subtle{color:var(--muted);font-size:.88rem;line-height:1.45}
+    .metric-list{display:grid;gap:8px;margin-top:14px}
+    .metric-row{display:flex;justify-content:space-between;gap:12px;color:var(--muted);font-size:.88rem}
+    .metric-row strong{color:var(--text);font-weight:700}
+    .panel{padding:22px;margin-bottom:16px;overflow:hidden}
+    .panel > * + *{margin-top:14px}
+    .panel > h2:first-child{margin-top:0}
+    .panel-head{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap}
+    .panel-head p{max-width:64ch}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;margin-bottom:16px}
+    .stack{display:flex;flex-direction:column;gap:16px}
+    .row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+    .row-3{grid-template-columns:repeat(3,minmax(0,1fr))}
+    .row-bottom{align-items:end}
+    .toolbar{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end}
+    .toolbar .grow{flex:1 1 220px}
+    .toolbar .toolbar-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
     .actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
     form.inline{display:inline}
-    .nav{display:flex;align-items:center;gap:2px;flex-wrap:wrap;background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius);padding:5px}
-    .nav a{font-size:.8125rem;font-weight:500;color:var(--muted);padding:6px 12px;border-radius:8px;transition:color .15s,background .15s}
-    .nav a:hover,.nav a.active{color:var(--text);background:var(--surface2)}
-    .nav-sep{width:1px;height:16px;background:var(--border2);margin:0 4px;flex-shrink:0}
-    .nav form.inline button{font-size:.8125rem;padding:6px 12px;border-radius:8px;background:transparent;color:var(--muted);border:none;font-weight:500;cursor:pointer;font-family:inherit;transition:color .15s,background .15s}
-    .nav form.inline button:hover{background:var(--surface2);color:var(--text)}
-    table{width:100%;border-collapse:collapse;font-size:.8125rem}
-    thead{border-bottom:2px solid var(--border2)}
-    th{padding:10px;text-align:left;font-weight:600;font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}
-    td{padding:11px 10px;border-bottom:1px solid var(--border);vertical-align:middle}
+    .nav-shell{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end;max-width:100%}
+    .nav-brand{display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:999px;border:1px solid var(--border);background:rgba(7,15,19,.58);font-size:.88rem;font-weight:750;letter-spacing:-.01em;box-shadow:0 10px 24px rgba(0,0,0,.18)}
+    .nav-links{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:6px;border:1px solid var(--border);border-radius:999px;background:rgba(7,15,19,.58);box-shadow:0 10px 24px rgba(0,0,0,.18)}
+    .nav-links a,.nav-shell form.inline button{font-size:.82rem;font-weight:650;color:var(--muted);padding:9px 14px;border-radius:999px;transition:background .18s,color .18s,border-color .18s,transform .18s;line-height:1.2}
+    .nav-links a:hover,.nav-links a.active,.nav-shell form.inline button:hover{color:var(--text);background:rgba(96,199,178,.16)}
+    .nav-links a.active{box-shadow:inset 0 0 0 1px rgba(96,199,178,.3)}
+    .nav-shell form.inline button{background:rgba(7,15,19,.58);border:1px solid var(--border);cursor:pointer;font-family:inherit}
+    .table-wrap{margin-top:12px;overflow:auto;border:1px solid var(--border);border-radius:20px;background:rgba(8,16,20,.48)}
+    table{width:100%;border-collapse:collapse;font-size:.89rem;min-width:720px}
+    thead{border-bottom:1px solid var(--border-strong);background:rgba(255,255,255,.02)}
+    th{padding:14px 16px;text-align:left;font-weight:750;font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.14em;white-space:nowrap}
+    td{padding:15px 16px;border-bottom:1px solid rgba(116,148,161,.12);vertical-align:top;overflow-wrap:anywhere}
     tbody tr:last-child td{border-bottom:none}
-    tbody tr:hover td{background:rgba(255,255,255,.018)}
-    input,textarea,select{width:100%;background:rgba(0,0,0,.3);border:1px solid var(--border2);border-radius:8px;color:var(--text);padding:9px 12px;box-sizing:border-box;font-size:.875rem;font-family:inherit;transition:border-color .15s,box-shadow .15s}
-    input:focus,textarea:focus,select:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px rgba(59,130,246,.15)}
-    textarea[readonly]{background:#020b18;font-family:ui-monospace,'SF Mono',Consolas,monospace;font-size:.78rem;line-height:1.5}
+    tbody tr:hover td{background:rgba(255,255,255,.02)}
+    td code{display:inline-block;max-width:100%}
+    .cell-actions{width:1%;white-space:nowrap}
+    input,textarea,select{width:100%;background:rgba(6,14,18,.52);border:1px solid var(--border);border-radius:16px;color:var(--text);padding:11px 14px;box-sizing:border-box;font-size:.92rem;font-family:inherit;transition:border-color .15s,box-shadow .15s,background .15s}
+    input::placeholder,textarea::placeholder{color:#70848d}
+    input:focus,textarea:focus,select:focus{outline:none;border-color:rgba(96,199,178,.7);box-shadow:0 0 0 4px rgba(96,199,178,.12);background:rgba(9,18,23,.8)}
+    textarea{resize:vertical;min-height:100px}
+    textarea[readonly]{background:rgba(6,12,16,.88);font-family:ui-monospace,'SF Mono',Consolas,monospace;font-size:.84rem;line-height:1.55}
     select{cursor:pointer}
-    button{background:var(--blue-dk);color:white;border:none;border-radius:8px;padding:9px 16px;cursor:pointer;font-size:.875rem;font-weight:500;transition:background .15s;font-family:inherit;line-height:1.4}
-    button:hover{background:var(--blue)}
-    button.secondary{background:var(--surface2);color:var(--text);border:1px solid var(--border2)}
-    button.secondary:hover{background:var(--border2);color:var(--text)}
-    button.sm{padding:5px 10px;font-size:.75rem}
-    button.danger{background:#4a0e0e;color:#fca5a5;border:1px solid #7f1d1d}
-    button.danger:hover{background:#7f1d1d}
-    .pill{display:inline-flex;align-items:center;padding:3px 9px;border-radius:999px;font-size:.7rem;font-weight:600;letter-spacing:.02em;background:var(--surface2);color:var(--muted)}
-    .pill-active,.pill-live{background:rgba(34,197,94,.12);color:#86efac}
-    .pill-revoked{background:rgba(239,68,68,.12);color:#fca5a5}
-    .pill-expired,.pill-draft{background:rgba(249,115,22,.1);color:#fdba74}
-    .pill-disabled,.pill-hidden{background:rgba(100,116,139,.12);color:#64748b}
-    .muted{color:var(--muted);font-size:.8125rem}
-    .ok{color:#86efac}
-    .bad{color:#fca5a5}
-    .warn{color:#fdba74}
-    @media(max-width:900px){
-      .row{flex-direction:column}
-      .shell{padding:12px 10px}
-      .top{flex-direction:column;gap:10px}
-      h1{font-size:1.15rem}
-      .panel{padding:14px}
-      .grid{grid-template-columns:1fr}
-      .cards{grid-template-columns:repeat(2,1fr)}
-      table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch;white-space:nowrap}
-      .nav{gap:2px}
-      .nav a{padding:5px 9px;font-size:.75rem}
-      input,textarea,select{font-size:.875rem}
+    button{background:linear-gradient(135deg,var(--accent),var(--accent-strong));color:#041016;border:none;border-radius:999px;padding:10px 16px;cursor:pointer;font-size:.9rem;font-weight:750;transition:transform .15s,box-shadow .15s,opacity .15s;font-family:inherit;line-height:1.25;box-shadow:0 12px 24px rgba(30,164,139,.2)}
+    button:hover{transform:translateY(-1px);box-shadow:0 16px 28px rgba(30,164,139,.24)}
+    button.secondary{background:rgba(17,31,39,.9);color:var(--text);border:1px solid var(--border);box-shadow:none}
+    button.secondary:hover{background:rgba(28,45,55,.98);box-shadow:none}
+    button.sm{padding:7px 12px;font-size:.78rem}
+    button.danger{background:linear-gradient(135deg,#6b231e,#87241f);color:#ffd8d1;border:1px solid rgba(255,123,103,.35);box-shadow:none}
+    button.danger:hover{box-shadow:none;background:linear-gradient(135deg,#7f2a23,#992e26)}
+    .pill{display:inline-flex;align-items:center;padding:5px 10px;border-radius:999px;font-size:.72rem;font-weight:760;letter-spacing:.08em;text-transform:uppercase;background:rgba(255,255,255,.06);color:var(--muted);border:1px solid transparent}
+    .pill-active,.pill-live{background:rgba(80,200,120,.14);color:var(--ok);border-color:rgba(80,200,120,.22)}
+    .pill-revoked{background:rgba(255,123,103,.14);color:var(--danger);border-color:rgba(255,123,103,.2)}
+    .pill-expired,.pill-draft{background:rgba(242,191,131,.14);color:var(--warning);border-color:rgba(242,191,131,.22)}
+    .pill-disabled,.pill-hidden{background:rgba(122,144,156,.16);color:#b1c1c8;border-color:rgba(122,144,156,.2)}
+    .muted{color:var(--muted);font-size:.88rem}
+    .ok{color:var(--ok)}
+    .bad{color:var(--danger)}
+    .warn{color:var(--warning)}
+    .list{margin:0;padding-left:18px;color:var(--muted)}
+    .list li{margin:6px 0}
+    .notice{padding:14px 16px;border:1px solid var(--border);border-radius:18px;background:rgba(96,199,178,.08)}
+    .notice.warning{background:rgba(242,191,131,.09);border-color:rgba(242,191,131,.18)}
+    .notice.danger{background:var(--danger-soft);border-color:rgba(255,123,103,.18)}
+    .detail-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px}
+    .detail-item{padding:14px 16px;border:1px solid rgba(116,148,161,.14);border-radius:18px;background:rgba(6,14,18,.36)}
+    .detail-label{font-size:.72rem;font-weight:760;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+    .detail-value{font-size:1rem;font-weight:650;line-height:1.35;overflow-wrap:anywhere}
+    .danger-zone{border-color:rgba(255,123,103,.24);background:linear-gradient(180deg,rgba(57,18,18,.66),rgba(25,11,11,.8))}
+    .center-card{max-width:540px;margin:72px auto}
+    .center-card.center-wide{max-width:760px}
+    @media(max-width:1080px){
+      .hero{grid-template-columns:1fr}
+      .nav-shell{justify-content:flex-start}
     }
-    @media(max-width:480px){
+    @media(max-width:860px){
+      .shell{padding:18px 12px 36px}
+      .hero{padding:22px 18px 18px;border-radius:24px}
+      h1{max-width:none}
+      .panel,.card{border-radius:20px}
+      .grid,.row,.row-3{grid-template-columns:1fr}
+      .cards{grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}
+      .toolbar{flex-direction:column;align-items:stretch}
+      .toolbar .toolbar-actions{width:100%}
+      .table-wrap{overflow:visible}
+      table.table-stack{min-width:0}
+      .table-stack thead{display:none}
+      .table-stack,.table-stack tbody,.table-stack tr,.table-stack td{display:block;width:100%}
+      .table-stack tr{padding:14px 16px;border-bottom:1px solid rgba(116,148,161,.12)}
+      .table-stack tbody tr:last-child{border-bottom:none}
+      .table-stack td{padding:8px 0;border:none;display:grid;grid-template-columns:minmax(88px,120px) minmax(0,1fr);gap:12px;align-items:start}
+      .table-stack td::before{content:attr(data-label);font-size:.7rem;font-weight:760;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+      .table-stack td.cell-actions{display:block}
+      .table-stack td.cell-actions::before{display:block;margin-bottom:8px}
+    }
+    @media(max-width:560px){
       .cards{grid-template-columns:1fr}
       .actions{flex-direction:column;align-items:stretch}
-      .actions a,.actions form.inline{display:block}
-      .actions button{width:100%}
+      .actions a,.actions form.inline{display:block;width:100%}
+      .actions button,.toolbar button{width:100%}
+      .nav-brand,.nav-links,.nav-shell form.inline{width:100%}
+      .nav-brand,.nav-links{justify-content:center}
     }
-    :root{--bg:#0d0d0f;--surface:rgba(20,20,22,.92);--surface2:#1c1c1f;--surface3:#242429;--border:#2a2a2e;--border2:#33333a;--text:#f0f0f0;--muted:#9d9da6;--faint:#64646d;--blue:#6c63ff;--blue-dk:#6c63ff;--radius:16px}
-    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;background:radial-gradient(circle at top,#1a1a24 0,var(--bg) 42%),var(--bg)}
-    a{color:var(--text)}
-    a:hover{color:#fff}
-    .shell{max-width:1240px;padding:28px 24px 40px}
-    .nav{gap:4px;background:rgba(20,20,22,.88);border-radius:999px;padding:6px;box-shadow:0 14px 30px rgba(0,0,0,.14)}
-    .nav a:hover,.nav a.active,.nav form.inline button:hover{background:rgba(108,99,255,.14)}
-    .card,.panel{box-shadow:0 18px 42px rgba(0,0,0,.18);backdrop-filter:blur(14px)}
-    .panel{border-radius:16px}
-    input,textarea,select{background:rgba(0,0,0,.28);border-radius:12px;padding:10px 12px}
-    input:focus,textarea:focus,select:focus{border-color:#6c63ff;box-shadow:0 0 0 3px rgba(108,99,255,.15)}
-    textarea[readonly]{background:#111117}
-    button{background:#6c63ff;border-radius:12px;padding:10px 16px;font-weight:600;transition:background .15s,transform .12s}
-    button:hover{background:#7b73ff;transform:translateY(-1px)}
-    button.secondary:hover{background:var(--surface3)}
-    .hero{display:flex;justify-content:space-between;align-items:flex-end;gap:18px;padding:20px 22px;margin-bottom:18px;border:1px solid var(--border2);border-radius:24px;background:linear-gradient(135deg,rgba(108,99,255,.14),rgba(52,211,153,.06) 55%,rgba(20,20,22,.92));box-shadow:0 24px 50px rgba(0,0,0,.2)}
-    .hero-kicker{font-size:.72rem;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
-    .hero-copy p{color:var(--muted);margin-top:8px}
-    .stack{display:flex;flex-direction:column;gap:12px}
-    .list{margin:0;padding-left:18px;color:var(--muted)}
-    .list li{margin:4px 0}
-    @media(max-width:900px){.hero{flex-direction:column;align-items:flex-start;border-radius:18px}}
   </style>
 </head>
 <body><div class="shell">${body}</div></body></html>`;
@@ -306,15 +339,15 @@ function htmlPage(title, body) {
 function nav(page = '') {
   const link = (href, label, name) =>
     `<a href="${href}"${page === name ? ' class="active"' : ''}>${label}</a>`;
-  return `<div class="nav">
-    <a href="/admin" style="display:flex;align-items:center;gap:7px;padding:4px 10px 4px 6px;border-radius:8px;color:var(--text);font-size:.8125rem;font-weight:700;letter-spacing:-.01em"><span style="display:flex;align-items:center;width:18px;height:18px;flex-shrink:0">${CULLER_LOGO_SVG}</span> Culler</a>
-    <div class="nav-sep"></div>
-    ${link('/admin', 'Dashboard', 'dashboard')}
-    ${link('/admin/licenses', 'Licenses', 'licenses')}
-    ${link('/admin/pricing', 'Pricing', 'pricing')}
-    ${link('/admin/releases', 'Releases', 'releases')}
-    ${link('/admin/customers', 'Customers', 'customers')}
-    <div class="nav-sep"></div>
+  return `<div class="nav-shell">
+    <a href="/admin" class="nav-brand"><span style="display:flex;align-items:center;width:18px;height:18px;flex-shrink:0">${CULLER_LOGO_SVG}</span><span>Culler Admin</span></a>
+    <div class="nav-links">
+      ${link('/admin', 'Dashboard', 'dashboard')}
+      ${link('/admin/licenses', 'Licenses', 'licenses')}
+      ${link('/admin/pricing', 'Pricing', 'pricing')}
+      ${link('/admin/releases', 'Releases', 'releases')}
+      ${link('/admin/customers', 'Customers', 'customers')}
+    </div>
     <form class="inline" method="post" action="/admin/logout"><button type="submit">Log out</button></form>
   </div>`;
 }
@@ -350,6 +383,15 @@ function signSession(payload) {
 
 function signDownloadToken(payload) {
   return jwt.sign(payload, updateSecret, { expiresIn: '15m' });
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function base64Url(input) {
@@ -973,25 +1015,32 @@ app.get('/admin/login', (req, res, next) => {
   }
 }, (_req, res) => {
   res.send(htmlPage('Admin Login', `
-    <div class="panel" style="max-width:420px;margin:48px auto">
-      <div style="display:flex;align-items:center;gap:11px;margin-bottom:24px">
-        <span style="display:flex;align-items:center;width:36px;height:36px;flex-shrink:0">${CULLER_LOGO_SVG}</span>
-        <div>
-          <div style="font-weight:700;font-size:1.1rem;letter-spacing:-.02em">Culler</div>
-          <div style="font-size:.75rem;color:var(--muted)">Admin Panel</div>
+    <div class="center-card">
+      <div class="panel">
+        <div style="display:flex;align-items:center;gap:14px;margin-bottom:24px">
+          <span style="display:flex;align-items:center;justify-content:center;width:44px;height:44px;flex-shrink:0;border-radius:14px;background:rgba(96,199,178,.14);border:1px solid var(--border)">${CULLER_LOGO_SVG}</span>
+          <div>
+            <div class="hero-kicker" style="margin-bottom:4px">Hosted admin</div>
+            <div style="font-weight:780;font-size:1.15rem;letter-spacing:-.03em">Culler</div>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:22px">
+          <h1 style="font-size:2rem;max-width:none">Sign in</h1>
+          <p class="muted">Manage licenses, pricing, releases, and install activity from one place.</p>
+        </div>
+        <form method="post" action="/admin/login">
+          <label>Email</label>
+          <input type="email" name="email" required autofocus autocomplete="username" />
+          <div style="height:12px"></div>
+          <label>Password</label>
+          <input type="password" name="password" required autocomplete="current-password" />
+          <div style="height:18px"></div>
+          <button type="submit" style="width:100%">Enter admin</button>
+        </form>
+        <div class="notice" style="margin-top:16px">
+          <p class="muted">This panel controls live licensing and update delivery for <code>culler.z2hs.au</code>.</p>
         </div>
       </div>
-      <h1 style="margin-bottom:6px">Sign in</h1>
-      <p class="muted" style="margin-bottom:20px">Manage updates and licenses for culler.z2hs.au.</p>
-      <form method="post" action="/admin/login">
-        <label>Email</label>
-        <input type="email" name="email" required autofocus />
-        <div style="height:10px"></div>
-        <label>Password</label>
-        <input type="password" name="password" required />
-        <div style="height:14px"></div>
-        <button type="submit" style="width:100%">Sign in</button>
-      </form>
     </div>
   `));
 });
@@ -1002,17 +1051,24 @@ app.post('/admin/login', async (req, res) => {
   const user = result.rows[0];
   if (!user || !(await bcrypt.compare(password, user.password_hash))) {
     return res.status(401).send(htmlPage('Admin Login', `
-      <div class="panel" style="max-width:420px;margin:48px auto">
-        <div style="display:flex;align-items:center;gap:11px;margin-bottom:24px">
-          <span style="display:flex;align-items:center;width:36px;height:36px;flex-shrink:0">${CULLER_LOGO_SVG}</span>
-          <div>
-            <div style="font-weight:700;font-size:1.1rem;letter-spacing:-.02em">Culler</div>
-            <div style="font-size:.75rem;color:var(--muted)">Admin Panel</div>
+      <div class="center-card">
+        <div class="panel">
+          <div style="display:flex;align-items:center;gap:14px;margin-bottom:24px">
+            <span style="display:flex;align-items:center;justify-content:center;width:44px;height:44px;flex-shrink:0;border-radius:14px;background:rgba(255,123,103,.14);border:1px solid rgba(255,123,103,.22)">${CULLER_LOGO_SVG}</span>
+            <div>
+              <div class="hero-kicker" style="margin-bottom:4px;color:var(--danger)">Access denied</div>
+              <div style="font-weight:780;font-size:1.15rem;letter-spacing:-.03em">Culler</div>
+            </div>
           </div>
+          <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:18px">
+            <h1 style="font-size:2rem;max-width:none">Sign in</h1>
+            <p class="muted">Check your email and password, then try again.</p>
+          </div>
+          <div class="notice danger" style="margin-bottom:18px">
+            <p class="bad">Invalid email or password.</p>
+          </div>
+          <a href="/admin/login"><button type="button" style="width:100%">Try again</button></a>
         </div>
-        <h1 style="margin-bottom:6px">Sign in</h1>
-        <p class="bad" style="margin-bottom:16px">Invalid email or password.</p>
-        <a href="/admin/login"><button type="button" style="width:100%">Try again</button></a>
       </div>
     `));
   }
@@ -1060,166 +1116,433 @@ app.get('/admin', authSession, async (_req, res) => {
   const artifactSize = getDirSize(artifactsRoot);
   const disk = getDiskStats(artifactsRoot);
   const diskPct = disk ? Math.round((disk.used / disk.total) * 100) : null;
-  const diskBar = disk ? `<div style="margin-top:8px;background:var(--border2);border-radius:4px;height:6px;overflow:hidden"><div style="width:${diskPct}%;background:${diskPct > 85 ? '#f87171' : diskPct > 65 ? '#fdba74' : '#34d399'};height:100%;border-radius:4px"></div></div><p class="muted" style="margin-top:4px;font-size:.72rem">${formatBytes(disk.used)} used of ${formatBytes(disk.total)} (${disk.pct})</p>` : '';
+  const diskBar = disk ? `<div style="margin-top:10px;background:rgba(255,255,255,.06);border-radius:999px;height:8px;overflow:hidden"><div style="width:${diskPct}%;background:${diskPct > 85 ? '#ff9d8d' : diskPct > 65 ? '#ffd08a' : '#60c7b2'};height:100%;border-radius:999px"></div></div><p class="muted" style="margin-top:8px">${formatBytes(disk.used)} used of ${formatBytes(disk.total)} (${disk.pct})</p>` : '';
 
   const stripeRow = stripeStats.rows[0] || { total_customers: 0, total_licenses: 0, licenses_30d: 0 };
   const plans = subStats.rows.reduce((acc, row) => { acc[row.plan] = row.cnt; return acc; }, { monthly: 0, yearly: 0, lifetime: 0 });
+  const licenseCounts = licenseStats.rows.reduce((acc, row) => {
+    acc[row.status] = Number(row.count || 0);
+    return acc;
+  }, {});
+  const totalLicenses = Object.values(licenseCounts).reduce((sum, count) => sum + Number(count || 0), 0);
+  const releaseCounts = releaseStats.rows.reduce((acc, row) => {
+    const key = `${row.platform}_${row.rollout_state}`;
+    acc[key] = Number(row.count || 0);
+    acc.total += Number(row.count || 0);
+    return acc;
+  }, { total: 0 });
+  const totalDevices = Number(deviceCount.rows[0]?.count || 0);
+  const stripeCustomers = Number(stripeRow.total_customers || 0);
+  const stripeLicenses = Number(stripeRow.total_licenses || 0);
+  const stripeRecent = Number(stripeRow.licenses_30d || 0);
 
   res.send(htmlPage('Admin Dashboard', `
     <div class="hero">
       <div class="hero-copy">
-        <div class="hero-kicker">Dashboard</div>
-        <h1>Update Admin</h1>
-        <p>Manage licenses, releases, and update delivery for culler.z2hs.au.</p>
+        <div class="hero-kicker">Control room</div>
+        <h1>Hosted admin overview</h1>
+        <p>Track license health, release rollout, Stripe activity, and update delivery without digging through crowded tables.</p>
+        <div class="hero-meta">
+          <span class="hero-note">${totalLicenses} licenses tracked</span>
+          <span class="hero-note">${totalDevices} devices registered</span>
+          <span class="hero-note">${releaseCounts.total} release entries</span>
+        </div>
       </div>
       ${nav('dashboard')}
     </div>
     <div class="cards">
-      ${licenseStats.rows.map((row) => `<div class="card"><div class="card-label">Licenses · ${row.status}</div><div class="card-value">${row.count}</div></div>`).join('')}
-      ${releaseStats.rows.map((row) => `<div class="card"><div class="card-label">Releases · ${row.platform} / ${row.rollout_state}</div><div class="card-value">${row.count}</div></div>`).join('')}
-      <div class="card"><div class="card-label">Total devices</div><div class="card-value">${deviceCount.rows[0].count}</div></div>
-    </div>
-    
-    <div class="cards">
-      <div class="card"><div class="card-label">💳 Stripe customers</div><div class="card-value">${stripeRow.total_customers}</div></div>
-      <div class="card"><div class="card-label">📦 Licenses sold</div><div class="card-value">${stripeRow.total_licenses}</div></div>
-      <div class="card"><div class="card-label">📈 Last 30 days</div><div class="card-value">${stripeRow.licenses_30d}</div></div>
-      <div class="card"><div class="card-label">🎯 Plans (90d)</div><div class="card-value" style="font-size:0.8rem;line-height:1.8">
-        <span style="color:#34d399">●</span> Monthly: ${plans.monthly}<br/>
-        <span style="color:#60a5fa">●</span> Yearly: ${plans.yearly}<br/>
-        <span style="color:#f59e0b">●</span> Lifetime: ${plans.lifetime}
-      </div></div>
+      <div class="card">
+        <div>
+          <div class="card-label">License health</div>
+          <div class="card-value">${totalLicenses}</div>
+          <div class="card-note">Stored customer licenses</div>
+        </div>
+        <div class="metric-list">
+          <div class="metric-row"><span>Active</span><strong>${licenseCounts.active || 0}</strong></div>
+          <div class="metric-row"><span>Revoked</span><strong>${licenseCounts.revoked || 0}</strong></div>
+          <div class="metric-row"><span>Expired / disabled</span><strong>${(licenseCounts.expired || 0) + (licenseCounts.disabled || 0)}</strong></div>
+        </div>
+      </div>
+      <div class="card">
+        <div>
+          <div class="card-label">Release rollout</div>
+          <div class="card-value">${releaseCounts.total}</div>
+          <div class="card-note">Entries across Windows and macOS</div>
+        </div>
+        <div class="metric-list">
+          <div class="metric-row"><span>Windows live / draft</span><strong>${releaseCounts.windows_live || 0} / ${releaseCounts.windows_draft || 0}</strong></div>
+          <div class="metric-row"><span>macOS live / draft</span><strong>${releaseCounts.macos_live || 0} / ${releaseCounts.macos_draft || 0}</strong></div>
+          <div class="metric-row"><span>Hidden</span><strong>${(releaseCounts.windows_hidden || 0) + (releaseCounts.macos_hidden || 0)}</strong></div>
+        </div>
+      </div>
+      <div class="card">
+        <div>
+          <div class="card-label">Storage & devices</div>
+          <div class="card-value">${formatBytes(artifactSize)}</div>
+          <div class="card-note">Artifacts currently hosted</div>
+        </div>
+        <div class="metric-list">
+          <div class="metric-row"><span>Registered devices</span><strong>${totalDevices}</strong></div>
+          <div class="metric-row"><span>Disk free</span><strong>${disk ? formatBytes(disk.available) : 'Unknown'}</strong></div>
+        </div>
+      </div>
+      <div class="card">
+        <div>
+          <div class="card-label">Stripe snapshot</div>
+          <div class="card-value">${stripeLicenses}</div>
+          <div class="card-note">Captured paid licenses</div>
+        </div>
+        <div class="metric-list">
+          <div class="metric-row"><span>Customers</span><strong>${stripeCustomers}</strong></div>
+          <div class="metric-row"><span>Last 30 days</span><strong>${stripeRecent}</strong></div>
+          <div class="metric-row"><span>Plans (90d)</span><strong>${plans.monthly}/${plans.yearly}/${plans.lifetime}</strong></div>
+        </div>
+      </div>
     </div>
     
     <div class="grid">
       <div class="panel">
-        <h2>Storage</h2>
-        <div class="cards" style="grid-template-columns:1fr 1fr;gap:8px;margin-bottom:0">
-          <div class="card"><div class="card-label">Artifacts</div><div class="card-value" style="font-size:1.3rem">${formatBytes(artifactSize)}</div></div>
-          ${disk ? `<div class="card"><div class="card-label">Disk free</div><div class="card-value" style="font-size:1.3rem;color:${diskPct > 85 ? '#f87171' : diskPct > 65 ? '#fdba74' : 'inherit'}">${formatBytes(disk.available)}</div></div>` : ''}
+        <div class="panel-head">
+          <div>
+            <h2>Storage</h2>
+            <p class="muted">Keep an eye on artifact usage before new builds land.</p>
+          </div>
+        </div>
+        <div class="detail-grid">
+          <div class="detail-item">
+            <div class="detail-label">Artifacts</div>
+            <div class="detail-value">${formatBytes(artifactSize)}</div>
+          </div>
+          ${disk ? `<div class="detail-item">
+            <div class="detail-label">Disk free</div>
+            <div class="detail-value" style="color:${diskPct > 85 ? 'var(--danger)' : diskPct > 65 ? 'var(--warning)' : 'var(--text)'}">${formatBytes(disk.available)}</div>
+          </div>` : ''}
         </div>
         ${diskBar}
       </div>
       <div class="panel">
-        <h2>Recently active licenses</h2>
-        <table><thead><tr><th>Customer</th><th>Status</th><th>Devices</th><th>Last seen</th></tr></thead><tbody>
-        ${topLicenses.rows.map((row) => `<tr>
-          <td>${row.customer_name}</td>
-          <td><span class="pill pill-${row.status}">${row.status}</span></td>
-          <td>${row.device_count}</td>
-          <td class="muted">${row.last_seen_at ? fmtTime(row.last_seen_at) : 'Never'}</td>
-        </tr>`).join('')}
-        </tbody></table>
+        <div class="panel-head">
+          <div>
+            <h2>Recently active licenses</h2>
+            <p class="muted">The most recently seen customers and how many devices they occupy.</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table-stack">
+            <thead><tr><th>Customer</th><th>Status</th><th>Devices</th><th>Last seen</th></tr></thead>
+            <tbody>
+            ${topLicenses.rows.map((row) => `<tr>
+              <td data-label="Customer">${row.customer_name}</td>
+              <td data-label="Status">${statusPill(row.status)}</td>
+              <td data-label="Devices">${row.device_count}</td>
+              <td data-label="Last seen" class="muted">${row.last_seen_at ? fmtTime(row.last_seen_at) : 'Never'}</td>
+            </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
     <div class="grid">
       <div class="panel">
-        <h2>Recent update activity</h2>
-        <table><thead><tr><th>Event</th><th>Detail</th><th>Time</th></tr></thead><tbody>
-        ${recentEvents.rows.map((row) => `<tr><td>${row.event_type}</td><td class="muted">${row.detail || '—'}</td><td class="muted">${fmtTime(row.created_at)}</td></tr>`).join('')}
-        </tbody></table>
+        <div class="panel-head">
+          <div>
+            <h2>Recent update activity</h2>
+            <p class="muted">The latest requests hitting the updater and API endpoints.</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table-stack">
+            <thead><tr><th>Event</th><th>Detail</th><th>Time</th></tr></thead>
+            <tbody>
+            ${recentEvents.rows.map((row) => `<tr>
+              <td data-label="Event">${row.event_type}</td>
+              <td data-label="Detail" class="muted">${row.detail || '—'}</td>
+              <td data-label="Time" class="muted">${fmtTime(row.created_at)}</td>
+            </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
       </div>
       ${errorEvents.rows.length > 0 ? `<div class="panel">
-        <h2>⚠ Blocked / failed events</h2>
-        <table><thead><tr><th>Event</th><th>Detail</th><th>Time</th></tr></thead><tbody>
-        ${errorEvents.rows.map((row) => `<tr><td class="bad">${row.event_type}</td><td class="muted">${row.detail || '—'}</td><td class="muted">${fmtTime(row.created_at)}</td></tr>`).join('')}
-        </tbody></table>
-      </div>` : ''}
+        <div class="panel-head">
+          <div>
+            <h2>Blocked or failed events</h2>
+            <p class="muted">Quick triage for rejected requests and failed update checks.</p>
+          </div>
+          <span class="pill pill-revoked">${errorEvents.rows.length} recent</span>
+        </div>
+        <div class="table-wrap">
+          <table class="table-stack">
+            <thead><tr><th>Event</th><th>Detail</th><th>Time</th></tr></thead>
+            <tbody>
+            ${errorEvents.rows.map((row) => `<tr>
+              <td data-label="Event" class="bad">${row.event_type}</td>
+              <td data-label="Detail" class="muted">${row.detail || '—'}</td>
+              <td data-label="Time" class="muted">${fmtTime(row.created_at)}</td>
+            </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>` : `<div class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Plan mix</h2>
+            <p class="muted">Recent plan selection from Stripe activity over the last 90 days.</p>
+          </div>
+        </div>
+        <div class="detail-grid">
+          <div class="detail-item">
+            <div class="detail-label">Monthly</div>
+            <div class="detail-value">${plans.monthly}</div>
+          </div>
+          <div class="detail-item">
+            <div class="detail-label">Yearly</div>
+            <div class="detail-value">${plans.yearly}</div>
+          </div>
+          <div class="detail-item">
+            <div class="detail-label">Lifetime</div>
+            <div class="detail-value">${plans.lifetime}</div>
+          </div>
+        </div>
+      </div>`}
     </div>
   `));
 });
 
-app.get('/admin/licenses', authSession, async (_req, res) => {
-  const [licenseResult, stripeLicensesResult] = await Promise.all([
-    pool.query('SELECT * FROM license_records ORDER BY updated_at DESC NULLS LAST, created_at DESC LIMIT 100'),
+app.get('/admin/licenses', authSession, async (req, res) => {
+  const queryValue = String(req.query.q || '').trim();
+  const rawStatus = String(req.query.status || '').trim().toLowerCase();
+  const statusValue = ['active', 'revoked', 'expired', 'disabled'].includes(rawStatus) ? rawStatus : '';
+  const params = [];
+  const filters = [];
+  if (queryValue) {
+    params.push(`%${queryValue}%`);
+    const idx = params.length;
+    filters.push(`(
+      customer_name ILIKE $${idx}
+      OR COALESCE(customer_email, '') ILIKE $${idx}
+      OR COALESCE(activation_code, '') ILIKE $${idx}
+    )`);
+  }
+  if (statusValue) {
+    params.push(statusValue);
+    filters.push(`status = $${params.length}`);
+  }
+
+  const whereClause = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+  const [licenseResult, stripeLicensesResult, licenseOverview] = await Promise.all([
+    pool.query(`SELECT * FROM license_records ${whereClause} ORDER BY updated_at DESC NULLS LAST, created_at DESC LIMIT 200`, params),
     pool.query('SELECT session_id, license_key, activation_code, customer_email, created_at FROM stripe_sessions ORDER BY created_at DESC LIMIT 50').catch(() => ({ rows: [] })),
+    pool.query(`
+      SELECT COUNT(*)::int AS total,
+             COUNT(*) FILTER (WHERE status = 'active')::int AS active,
+             COUNT(*) FILTER (WHERE status = 'revoked')::int AS revoked,
+             COUNT(*) FILTER (WHERE activation_code IS NULL)::int AS missing_codes
+      FROM license_records
+    `),
   ]);
-  
+
   const generatorEnabled = canGenerateLicenses();
+  const overview = licenseOverview.rows[0] || { total: 0, active: 0, revoked: 0, missing_codes: 0 };
+  const shownCount = licenseResult.rows.length;
+  const hasFilters = Boolean(queryValue || statusValue);
 
   res.send(htmlPage('Licenses', `
     <div class="hero">
       <div class="hero-copy">
         <div class="hero-kicker">Licensing</div>
-        <h1>Device-based licenses with adjustable seat counts.</h1>
-        <p>Each license can carry its own device limit. The desktop app registers a stable machine fingerprint, so you can manage seats without depending on raw MAC addresses.</p>
+        <h1>Clean up licenses without fighting the UI.</h1>
+        <p>Search, filter, generate, import, revoke, re-activate, or fully delete old records so the list stays understandable as your customer base grows.</p>
+        <div class="hero-meta">
+          <span class="hero-note">${shownCount}${hasFilters ? ` of ${overview.total}` : ''} licenses shown</span>
+          <span class="hero-note">${overview.missing_codes} missing activation codes</span>
+          <span class="hero-note">Default seats: ${defaultMaxDevices}</span>
+        </div>
       </div>
       ${nav('licenses')}
     </div>
+
+    <div class="cards">
+      <div class="card">
+        <div>
+          <div class="card-label">Tracked licenses</div>
+          <div class="card-value">${overview.total}</div>
+          <div class="card-note">All stored license records</div>
+        </div>
+      </div>
+      <div class="card">
+        <div>
+          <div class="card-label">Active</div>
+          <div class="card-value">${overview.active}</div>
+          <div class="card-note">Currently valid and usable</div>
+        </div>
+      </div>
+      <div class="card">
+        <div>
+          <div class="card-label">Revoked</div>
+          <div class="card-value">${overview.revoked}</div>
+          <div class="card-note">Blocked from future use</div>
+        </div>
+      </div>
+      <div class="card">
+        <div>
+          <div class="card-label">Needs cleanup</div>
+          <div class="card-value">${overview.missing_codes}</div>
+          <div class="card-note">Records missing an activation code</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>Find licenses</h2>
+          <p class="muted">Filter by customer name, email, or activation code to reduce noise before you review or delete records.</p>
+        </div>
+      </div>
+      <form class="toolbar" method="get" action="/admin/licenses">
+        <div class="grow">
+          <label>Search</label>
+          <input name="q" value="${escapeHtml(queryValue)}" placeholder="Search customer, email, or activation code" />
+        </div>
+        <div style="min-width:180px">
+          <label>Status</label>
+          <select name="status">
+            <option value=""${statusValue ? '' : ' selected'}>All statuses</option>
+            <option value="active"${statusValue === 'active' ? ' selected' : ''}>Active</option>
+            <option value="revoked"${statusValue === 'revoked' ? ' selected' : ''}>Revoked</option>
+            <option value="expired"${statusValue === 'expired' ? ' selected' : ''}>Expired</option>
+            <option value="disabled"${statusValue === 'disabled' ? ' selected' : ''}>Disabled</option>
+          </select>
+        </div>
+        <div class="toolbar-actions">
+          <button type="submit">Apply filters</button>
+          ${hasFilters ? `<a href="/admin/licenses"><button class="secondary" type="button">Reset</button></a>` : ''}
+        </div>
+      </form>
+    </div>
+
     <div class="grid">
       <div class="panel">
-        <h2>Generate license</h2>
+        <div class="panel-head">
+          <div>
+            <h2>Generate license</h2>
+            <p class="muted">Create a new customer key here. Expiry uses <code>DD-MM-YYYY</code>.</p>
+          </div>
+        </div>
         ${generatorEnabled
-          ? `<p class="muted" style="margin-bottom:12px">Create a Full access customer key right here in the admin panel. Expiry uses DD-MM-YYYY.</p>
-        <form method="post" action="/admin/licenses/generate">
-          <label>Customer name</label>
-          <input name="name" required placeholder="Jane Smith" />
-          <label>Email</label>
-          <input type="email" name="email" placeholder="jane@example.com" />
-          <label>Expiry <span style="font-weight:400">(optional)</span></label>
-          <input name="expiry" placeholder="31-12-2027" />
-          <label>Max devices</label>
-          <input type="number" name="maxDevices" min="1" step="1" value="${defaultMaxDevices}" />
-          <label>Notes <span style="font-weight:400">(optional)</span></label>
-          <textarea name="notes" rows="2"></textarea>
-          <div style="height:16px"></div>
-          <button type="submit">Generate and store</button>
-        </form>`
-          : `<p class="bad" style="margin-bottom:8px">License generation is disabled — <code>private.pem</code> is not mounted.</p>
-        <p class="muted">You can still import already-generated licenses below.</p>`}
+          ? `<form method="post" action="/admin/licenses/generate">
+            <label>Customer name</label>
+            <input name="name" required placeholder="Jane Smith" />
+            <label>Email</label>
+            <input type="email" name="email" placeholder="jane@example.com" />
+            <div class="row">
+              <div>
+                <label>Expiry <span style="font-weight:400">(optional)</span></label>
+                <input name="expiry" placeholder="31-12-2027" />
+              </div>
+              <div>
+                <label>Max devices</label>
+                <input type="number" name="maxDevices" min="1" step="1" value="${defaultMaxDevices}" />
+              </div>
+            </div>
+            <label>Notes <span style="font-weight:400">(optional)</span></label>
+            <textarea name="notes" rows="2"></textarea>
+            <div class="actions" style="margin-top:16px">
+              <button type="submit">Generate and store</button>
+            </div>
+          </form>`
+          : `<div class="notice warning">
+            <p class="bad">License generation is disabled because <code>private.pem</code> is not mounted.</p>
+            <p class="muted" style="margin-top:6px">You can still import already-generated keys below.</p>
+          </div>`}
       </div>
       <div class="panel">
-        <h2>Import existing license</h2>
+        <div class="panel-head">
+          <div>
+            <h2>Import existing license</h2>
+            <p class="muted">Store a previously generated key so it can be managed from the admin panel.</p>
+          </div>
+        </div>
         <form method="post" action="/admin/licenses/import">
           <label>License key</label>
           <textarea name="licenseKey" rows="5" required placeholder="PI1-..."></textarea>
           <label>Notes <span style="font-weight:400">(optional)</span></label>
           <textarea name="notes" rows="2"></textarea>
-          <div style="height:16px"></div>
-          <button type="submit">Store license</button>
+          <div class="actions" style="margin-top:16px">
+            <button type="submit">Store license</button>
+          </div>
         </form>
       </div>
       <div class="panel">
-        <h2>Status guide</h2>
-        <p class="muted"><span class="ok">Active</span> — can update normally.</p>
-        <p class="muted"><span class="bad">Revoked</span> — blocks updates immediately.</p>
-        <p class="muted"><span class="warn">Expired</span> — admin mirror of a lapsed subscription.</p>
-        <p class="muted" style="color:#64748b">Disabled — temporary hold without full revocation.</p>
-        <p class="muted" style="margin-top:12px">Generated keys use the same offline format as the desktop app and keep working with your shipped EXE as long as the same private key is used.</p>
+        <div class="panel-head">
+          <div>
+            <h2>Status guide</h2>
+            <p class="muted">Use revoke when you want to block a key, and delete when you want to remove clutter entirely.</p>
+          </div>
+        </div>
+        <ul class="list">
+          <li><span class="ok">Active</span> means updates and activation checks can proceed normally.</li>
+          <li><span class="bad">Revoked</span> blocks the license immediately but keeps the record for history.</li>
+          <li><span class="warn">Expired</span> mirrors a timed license or subscription that has lapsed.</li>
+          <li><span style="color:#b1c1c8">Disabled</span> is useful for a temporary hold without full revocation.</li>
+          <li>Deleting a license also removes its stored device activations, which is the quickest way to clear duplicates and dead records.</li>
+        </ul>
       </div>
     </div>
     
     ${stripeLicensesResult.rows.length > 0 ? `<div class="panel">
-      <h2>Stripe licenses (recent payments)</h2>
-      <table><thead><tr><th>Customer email</th><th>Activation code</th><th>License key</th><th>Issued</th></tr></thead><tbody>
-      ${stripeLicensesResult.rows.map((row) => `<tr>
-        <td class="muted">${row.customer_email}</td>
-        <td><code style="font-size:0.75rem">${row.activation_code}</code></td>
-        <td><code style="font-size:0.65rem;word-break:break-all">${row.license_key.substring(0, 40)}...</code></td>
-        <td class="muted">${fmtTime(row.created_at)}</td>
-      </tr>`).join('')}
-      </tbody></table>
+      <div class="panel-head">
+        <div>
+          <h2>Recent Stripe licenses</h2>
+          <p class="muted">The latest paid licenses mirrored from Stripe sessions.</p>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="table-stack">
+          <thead><tr><th>Customer email</th><th>Activation code</th><th>License key</th><th>Issued</th></tr></thead>
+          <tbody>
+          ${stripeLicensesResult.rows.map((row) => `<tr>
+            <td data-label="Customer email" class="muted">${row.customer_email}</td>
+            <td data-label="Activation code"><code>${row.activation_code || '—'}</code></td>
+            <td data-label="License key"><code>${row.license_key.substring(0, 40)}...</code></td>
+            <td data-label="Issued" class="muted">${fmtTime(row.created_at)}</td>
+          </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
     </div>` : ''}
     
     <div class="panel">
-      <h2>All licenses</h2>
-      <table><thead><tr><th>Customer</th><th>Status</th><th>Seats</th><th>Activation code</th><th>Expires</th><th>Last seen</th><th>Actions</th></tr></thead><tbody>
-      ${licenseResult.rows.map((row) => `<tr>
-        <td><span style="font-weight:600">${row.customer_name}</span>${row.customer_email ? `<div class="muted">${row.customer_email}</div>` : ''}</td>
-        <td>${statusPill(row.status)}</td>
-        <td class="muted">${row.max_devices || '&infin;'} device${row.max_devices === 1 ? '' : 's'}</td>
-        <td><code>${row.activation_code || '—'}</code></td>
-        <td class="muted">${formatLicenseDate(row.expires_at)}</td>
-        <td class="muted">${row.last_seen_at ? fmtTime(row.last_seen_at) : 'Never'}</td>
-        <td>
-          <div class="actions">
-            <a href="/admin/licenses/${row.id}"><button class="secondary sm" type="button">View</button></a>
-            ${row.status !== 'revoked' ? `<form class="inline" method="post" action="/admin/licenses/${row.id}/revoke"><button class="secondary sm" type="submit">Revoke</button></form>` : ''}
-            ${row.status !== 'active' ? `<form class="inline" method="post" action="/admin/licenses/${row.id}/activate"><button class="secondary sm" type="submit">Activate</button></form>` : ''}
-          </div>
-        </td>
-      </tr>`).join('')}
-      </tbody></table>
+      <div class="panel-head">
+        <div>
+          <h2>All licenses</h2>
+          <p class="muted">${hasFilters ? 'Filtered results below.' : 'Newest license activity appears first.'}</p>
+        </div>
+      </div>
+      ${licenseResult.rows.length ? `<div class="table-wrap">
+        <table class="table-stack">
+          <thead><tr><th>Customer</th><th>Status</th><th>Seats</th><th>Activation code</th><th>Expires</th><th>Last seen</th><th>Actions</th></tr></thead>
+          <tbody>
+          ${licenseResult.rows.map((row) => `<tr>
+            <td data-label="Customer"><span style="font-weight:700">${row.customer_name}</span>${row.customer_email ? `<div class="muted">${row.customer_email}</div>` : ''}</td>
+            <td data-label="Status">${statusPill(row.status)}</td>
+            <td data-label="Seats" class="muted">${row.max_devices || '&infin;'} device${row.max_devices === 1 ? '' : 's'}</td>
+            <td data-label="Activation code"><code>${row.activation_code || '—'}</code></td>
+            <td data-label="Expires" class="muted">${formatLicenseDate(row.expires_at)}</td>
+            <td data-label="Last seen" class="muted">${row.last_seen_at ? fmtTime(row.last_seen_at) : 'Never'}</td>
+            <td data-label="Actions" class="cell-actions">
+              <div class="actions">
+                <a href="/admin/licenses/${row.id}"><button class="secondary sm" type="button">View</button></a>
+                ${row.status !== 'revoked' ? `<form class="inline" method="post" action="/admin/licenses/${row.id}/revoke"><button class="secondary sm" type="submit">Revoke</button></form>` : ''}
+                ${row.status !== 'active' ? `<form class="inline" method="post" action="/admin/licenses/${row.id}/activate"><button class="secondary sm" type="submit">Activate</button></form>` : ''}
+                <form class="inline" method="post" action="/admin/licenses/${row.id}/delete" onsubmit="return confirm('Delete this license and all stored device activations? This cannot be undone.')"><button class="danger sm" type="submit">Delete</button></form>
+              </div>
+            </td>
+          </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>` : `<div class="notice"><p class="muted">No licenses matched the current filters.</p></div>`}
     </div>
   `));
 });
@@ -1304,84 +1627,152 @@ app.get('/admin/licenses/:id', authSession, async (req, res) => {
       <div class="hero-copy">
         <div class="hero-kicker">License</div>
         <h1>${record.customer_name}</h1>
-        <p>License details and device activation info.</p>
+        <p>Review entitlement details, device usage, extensions, and cleanup actions for this customer.</p>
+        <div class="hero-meta">
+          <span class="hero-note">Status: ${record.status}</span>
+          <span class="hero-note">${activations.rowCount} registered device${activations.rowCount === 1 ? '' : 's'}</span>
+          <span class="hero-note">${record.activation_code || 'No activation code'}</span>
+        </div>
       </div>
       ${nav('licenses')}
     </div>
     <div class="grid">
       <div class="panel">
-        <h2>Details</h2>
-        <p style="margin-bottom:12px">${statusPill(record.status)}</p>
-        <p class="muted">Activation code: <code>${record.activation_code || '—'}</code></p>
-        ${record.customer_email ? `<p class="muted">Email: ${record.customer_email}</p>` : ''}
-        <p class="muted">Plan: ${inferPlanType(record.plan, detailsExpiry)}</p>
-        <p class="muted">Issued: ${formatLicenseDate(issuedAt)}</p>
-        <p class="muted">Expires: ${formatLicenseDate(detailsExpiry)}</p>
-        <p class="muted">Seat limit: ${record.max_devices || '&infin;'} device${record.max_devices === 1 ? '' : 's'}</p>
-        <p class="muted">Devices seen: ${activations.rowCount}</p>
-        <p class="muted">Last seen: ${record.last_seen_at ? fmtTime(record.last_seen_at) : 'Never'}</p>
-        <form method="post" action="/admin/licenses/${record.id}/devices" style="margin-top:16px">
+        <div class="panel-head">
+          <div>
+            <h2>Details</h2>
+            <p class="muted">Everything tied to this stored license record.</p>
+          </div>
+          ${statusPill(record.status)}
+        </div>
+        <div class="detail-grid">
+          <div class="detail-item">
+            <div class="detail-label">Activation code</div>
+            <div class="detail-value"><code>${record.activation_code || '—'}</code></div>
+          </div>
+          <div class="detail-item">
+            <div class="detail-label">Customer email</div>
+            <div class="detail-value">${record.customer_email || '—'}</div>
+          </div>
+          <div class="detail-item">
+            <div class="detail-label">Plan</div>
+            <div class="detail-value">${inferPlanType(record.plan, detailsExpiry)}</div>
+          </div>
+          <div class="detail-item">
+            <div class="detail-label">Issued</div>
+            <div class="detail-value">${formatLicenseDate(issuedAt)}</div>
+          </div>
+          <div class="detail-item">
+            <div class="detail-label">Expires</div>
+            <div class="detail-value">${formatLicenseDate(detailsExpiry)}</div>
+          </div>
+          <div class="detail-item">
+            <div class="detail-label">Seat limit</div>
+            <div class="detail-value">${record.max_devices || '&infin;'} device${record.max_devices === 1 ? '' : 's'}</div>
+          </div>
+          <div class="detail-item">
+            <div class="detail-label">Devices seen</div>
+            <div class="detail-value">${activations.rowCount}</div>
+          </div>
+          <div class="detail-item">
+            <div class="detail-label">Last seen</div>
+            <div class="detail-value">${record.last_seen_at ? fmtTime(record.last_seen_at) : 'Never'}</div>
+          </div>
+        </div>
+        <form method="post" action="/admin/licenses/${record.id}/devices" style="margin-top:18px">
           <label>Max devices</label>
           <input type="number" name="maxDevices" min="1" step="1" value="${record.max_devices || 1}" />
-          <div style="height:12px"></div>
-          <button type="submit">Save seat limit</button>
+          <div class="actions" style="margin-top:14px">
+            <button type="submit">Save seat limit</button>
+          </div>
         </form>
-        <div style="margin-top:16px" class="actions">
+        <div style="margin-top:18px" class="actions">
           ${record.status !== 'revoked' ? `<form class="inline" method="post" action="/admin/licenses/${record.id}/revoke"><button class="secondary sm" type="submit">Revoke</button></form>` : ''}
           ${record.status !== 'active' ? `<form class="inline" method="post" action="/admin/licenses/${record.id}/activate"><button class="secondary sm" type="submit">Re-activate</button></form>` : ''}
         </div>
       </div>
-      <div class="panel">
-        <h2>Extend license</h2>
-        <p class="muted" style="margin-bottom:12px">Adds time to the current expiry (or from today if perpetual). Regenerates the key and emails the customer.</p>
-        <form method="post" action="/admin/licenses/${record.id}/extend">
-          <div style="display:flex;gap:8px;align-items:flex-end">
-            <div style="flex:1">
-              <label>Amount</label>
-              <input type="number" name="amount" min="1" step="1" value="1" />
-            </div>
-            <div style="flex:1">
-              <label>Unit</label>
-              <select name="unit">
-                <option value="months">Months</option>
-                <option value="years">Years</option>
-                <option value="days">Days</option>
-              </select>
+      <div class="stack">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Extend license</h2>
+              <p class="muted">Adds time to the current expiry, regenerates the key, and emails the customer.</p>
             </div>
           </div>
-          <div style="height:12px"></div>
-          <button type="submit">Extend &amp; email customer</button>
-        </form>
+          <form method="post" action="/admin/licenses/${record.id}/extend">
+            <div class="row row-bottom">
+              <div>
+                <label>Amount</label>
+                <input type="number" name="amount" min="1" step="1" value="1" />
+              </div>
+              <div>
+                <label>Unit</label>
+                <select name="unit">
+                  <option value="months">Months</option>
+                  <option value="years">Years</option>
+                  <option value="days">Days</option>
+                </select>
+              </div>
+            </div>
+            <div class="actions" style="margin-top:14px">
+              <button type="submit">Extend and email customer</button>
+            </div>
+          </form>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Stored key</h2>
+              <p class="muted">The exact license key currently stored for this record.</p>
+            </div>
+          </div>
+          <textarea rows="8" readonly>${record.license_key}</textarea>
+        </div>
+        <div class="panel danger-zone">
+          <div class="panel-head">
+            <div>
+              <h2>Danger zone</h2>
+              <p class="muted">Delete this record only when you want to remove it entirely, including registered devices.</p>
+            </div>
+          </div>
+          <form method="post" action="/admin/licenses/${record.id}/delete" onsubmit="return confirm('Delete this license and all device activations? This cannot be undone.')">
+            <button class="danger" type="submit">Delete this license</button>
+          </form>
+        </div>
       </div>
-      <div class="panel">
-        <h2>Stored key</h2>
-        <textarea rows="8" readonly>${record.license_key}</textarea>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>Registered devices</h2>
+          <p class="muted">Per-device registration history and optional device-level expiry overrides.</p>
+        </div>
       </div>
-      <div class="panel">
-        <h2>Registered devices</h2>
-        ${activations.rowCount
-          ? `<table><thead><tr><th>Device</th><th>Device ID</th><th>First seen</th><th>Last seen</th><th>Device expiry</th><th>Actions</th></tr></thead><tbody>
+      ${activations.rowCount
+        ? `<div class="table-wrap">
+            <table class="table-stack">
+              <thead><tr><th>Device</th><th>Device ID</th><th>First seen</th><th>Last seen</th><th>Device expiry</th><th>Actions</th></tr></thead><tbody>
               ${activations.rows.map((row) => `<tr>
-                <td>${row.device_name || 'Unnamed device'}</td>
-                <td><code>${row.device_id}</code></td>
-                <td class="muted">${fmtTime(row.first_seen_at)}</td>
-                <td class="muted">${fmtTime(row.last_seen_at)}</td>
-                <td>
-                  <form class="inline" method="post" action="/admin/licenses/${record.id}/devices/${row.id}/expiry" style="display:flex;gap:6px;align-items:center">
-                    <input type="date" name="expiresAt" value="${row.expires_at ? new Date(row.expires_at).toISOString().slice(0,10) : ''}" style="width:140px;padding:5px 8px;font-size:.75rem" />
+                <td data-label="Device">${row.device_name || 'Unnamed device'}</td>
+                <td data-label="Device ID"><code>${row.device_id}</code></td>
+                <td data-label="First seen" class="muted">${fmtTime(row.first_seen_at)}</td>
+                <td data-label="Last seen" class="muted">${fmtTime(row.last_seen_at)}</td>
+                <td data-label="Device expiry">
+                  <form class="inline" method="post" action="/admin/licenses/${record.id}/devices/${row.id}/expiry" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+                    <input type="date" name="expiresAt" value="${row.expires_at ? new Date(row.expires_at).toISOString().slice(0,10) : ''}" style="width:160px;padding:9px 12px;font-size:.82rem" />
                     <button class="secondary sm" type="submit" title="Save expiry">Save</button>
                   </form>
                 </td>
-                <td>
+                <td data-label="Actions" class="cell-actions">
                   <form class="inline" method="post" action="/admin/licenses/${record.id}/devices/${row.id}/remove" onsubmit="return confirm('Remove this device from the license? It will need to re-register.')">
                     <button class="danger sm" type="submit">Remove</button>
                   </form>
                 </td>
               </tr>`).join('')}
-            </tbody></table>`
-          : '<p class="muted">No devices have activated this license yet.</p>'}
+            </tbody></table>
+          </div>`
+        : '<div class="notice"><p class="muted">No devices have activated this license yet.</p></div>'}
       </div>
-    </div>
   `));
 });
 
@@ -1392,6 +1783,11 @@ app.post('/admin/licenses/:id/revoke', authSession, async (req, res) => {
 
 app.post('/admin/licenses/:id/activate', authSession, async (req, res) => {
   await pool.query(`UPDATE license_records SET status = 'active', updated_at = NOW() WHERE id = $1`, [req.params.id]);
+  res.redirect('/admin/licenses');
+});
+
+app.post('/admin/licenses/:id/delete', authSession, async (req, res) => {
+  await pool.query('DELETE FROM license_records WHERE id = $1', [req.params.id]);
   res.redirect('/admin/licenses');
 });
 
@@ -1422,20 +1818,66 @@ app.get('/admin/releases', authSession, async (req, res) => {
     : null;
   const warnMsg = req.query.warn ? String(req.query.warn) : null;
   const warnBanner = warnMsg
-    ? '<div style="background:#7f1d1d;border:1px solid #ef4444;border-radius:8px;padding:12px 16px;margin-bottom:16px;color:#fca5a5;font-size:.85rem">Warning: ' + warnMsg + '</div>'
+    ? `<div class="notice danger" style="margin-bottom:18px"><p class="bad">Warning: ${escapeHtml(warnMsg)}</p></div>`
     : '';
+  const releaseSummary = releases.rows.reduce((acc, row) => {
+    acc.total += 1;
+    acc[row.rollout_state] = (acc[row.rollout_state] || 0) + 1;
+    acc[row.platform] = (acc[row.platform] || 0) + 1;
+    return acc;
+  }, { total: 0, live: 0, draft: 0, hidden: 0, windows: 0, macos: 0 });
   res.send(htmlPage('Releases', warnBanner + `
     <div class="hero">
       <div class="hero-copy">
         <div class="hero-kicker">Hosted Releases</div>
-        <h1>Keep the website, updater, and CI on the same latest release.</h1>
-        <p>The update feed serves the newest live release only. GitHub metadata can be synced from the repo configured in your TrueNAS environment.</p>
+        <h1>Keep release metadata tidy and easy to ship.</h1>
+        <p>The update feed serves the newest live release only. Keep draft, hidden, and live records readable while CI and GitHub metadata stay in sync.</p>
+        <div class="hero-meta">
+          <span class="hero-note">${releaseSummary.total} tracked releases</span>
+          <span class="hero-note">${releaseSummary.windows} Windows / ${releaseSummary.macos} macOS</span>
+          <span class="hero-note">${releaseSummary.live} live</span>
+        </div>
       </div>
       ${nav('releases')}
     </div>
+    <div class="cards">
+      <div class="card">
+        <div>
+          <div class="card-label">Total releases</div>
+          <div class="card-value">${releaseSummary.total}</div>
+          <div class="card-note">All stored rollout entries</div>
+        </div>
+      </div>
+      <div class="card">
+        <div>
+          <div class="card-label">Live</div>
+          <div class="card-value">${releaseSummary.live}</div>
+          <div class="card-note">Currently served by the updater</div>
+        </div>
+      </div>
+      <div class="card">
+        <div>
+          <div class="card-label">Draft</div>
+          <div class="card-value">${releaseSummary.draft}</div>
+          <div class="card-note">Waiting for manual launch</div>
+        </div>
+      </div>
+      <div class="card">
+        <div>
+          <div class="card-label">Hidden</div>
+          <div class="card-value">${releaseSummary.hidden}</div>
+          <div class="card-note">Stored but not public</div>
+        </div>
+      </div>
+    </div>
     <div class="grid">
       <div class="panel">
-        <h2>Add release</h2>
+        <div class="panel-head">
+          <div>
+            <h2>Add release</h2>
+            <p class="muted">Create a release record manually when you already know the final artifact URL.</p>
+          </div>
+        </div>
         <form method="post" action="/admin/releases">
           <div class="row">
             <div><label>Version</label><input name="version" placeholder="1.1.1" required /></div>
@@ -1449,43 +1891,71 @@ app.get('/admin/releases', authSession, async (req, res) => {
           <label>Artifact URL</label><input name="artifactUrl" placeholder="https://updates.culler.z2hs.au/artifacts/windows/PhotoImporter-Setup-1.1.1.exe" required />
           <label>Release URL <span style="font-weight:400">(optional)</span></label><input name="releaseUrl" placeholder="https://admin.culler.z2hs.au/releases/1.1.1" />
           <label>Release notes <span style="font-weight:400">(optional)</span></label><textarea name="releaseNotes" rows="4"></textarea>
-          <div style="height:16px"></div>
-          <button type="submit">Save release</button>
+          <div class="actions" style="margin-top:16px">
+            <button type="submit">Save release</button>
+          </div>
         </form>
       </div>
       <div class="panel">
-        <h2>CI automation</h2>
-        <p class="muted" style="margin-bottom:8px">Use the admin API token with <code>scripts/publish-update-release.mjs</code> from CI or your local release machine to import Windows/macOS artifacts after GitHub builds them.</p>
+        <div class="panel-head">
+          <div>
+            <h2>CI automation</h2>
+            <p class="muted">Use the admin API token with <code>scripts/publish-update-release.mjs</code> to import artifacts automatically after builds finish.</p>
+          </div>
+        </div>
         ${!hasGitHubReleaseConfig()
-          ? `<p class="muted">GitHub sync is off until you set <code>GITHUB_RELEASE_OWNER</code>, <code>GITHUB_RELEASE_REPO</code>, and <code>GITHUB_RELEASE_TOKEN</code> in TrueNAS.</p>`
+          ? `<div class="notice warning"><p class="muted">GitHub sync is off until you set <code>GITHUB_RELEASE_OWNER</code>, <code>GITHUB_RELEASE_REPO</code>, and <code>GITHUB_RELEASE_TOKEN</code> in TrueNAS.</p></div>`
           : githubRelease?.error
-            ? `<p class="bad">${githubRelease.error}</p>`
-            : `<p class="muted">GitHub repo: <code>${githubReleaseSummary()}</code> · latest ${githubRelease?.tagName || 'Unknown'} · ${Array.isArray(githubRelease?.assets) ? githubRelease.assets.length : 0} assets found.</p>
+            ? `<div class="notice danger"><p class="bad">${githubRelease.error}</p></div>`
+            : `<div class="detail-grid">
+                 <div class="detail-item">
+                   <div class="detail-label">GitHub repo</div>
+                   <div class="detail-value"><code>${githubReleaseSummary()}</code></div>
+                 </div>
+                 <div class="detail-item">
+                   <div class="detail-label">Latest tag</div>
+                   <div class="detail-value">${githubRelease?.tagName || 'Unknown'}</div>
+                 </div>
+                 <div class="detail-item">
+                   <div class="detail-label">Assets found</div>
+                   <div class="detail-value">${Array.isArray(githubRelease?.assets) ? githubRelease.assets.length : 0}</div>
+                 </div>
+               </div>
                <form method="post" action="/admin/releases/sync-github" style="margin-top:12px">
                  <button type="submit">Import latest GitHub metadata</button>
                </form>`}
-        <p class="muted">New releases are saved as <strong>Draft</strong> by default — go live explicitly when ready.</p>
+        <div class="notice" style="margin-top:14px">
+          <p class="muted">New releases are saved as <strong>Draft</strong> by default, so you can review them before going live.</p>
+        </div>
       </div>
     </div>
     <div class="panel">
-      <h2>All releases</h2>
-      <table><thead><tr><th>Release</th><th>Platform</th><th>Channel</th><th>State</th><th>Published</th><th>Actions</th></tr></thead><tbody>
-      ${releases.rows.map((row) => `<tr>
-        <td><span style="font-weight:600">${row.release_name}</span><div class="muted">v${row.version}</div></td>
-        <td class="muted">${row.platform}</td>
-        <td class="muted">${row.channel}</td>
-        <td>${statusPill(row.rollout_state)}</td>
-        <td class="muted">${fmtTime(row.published_at)}</td>
-        <td style="white-space:nowrap;width:1%">
-          <div class="actions" style="flex-wrap:nowrap;gap:6px">
-            <a href="/admin/releases/${row.id}/edit"><button class="secondary sm" type="button">Edit</button></a>
-            ${row.rollout_state !== 'live' ? `<form class="inline" method="post" action="/admin/releases/${row.id}/live"><button class="secondary sm" type="submit">Go live</button></form>` : ''}
-            ${row.rollout_state === 'live' ? `<form class="inline" method="post" action="/admin/releases/${row.id}/hide"><button class="secondary sm" type="submit">Hide</button></form>` : ''}
-            <form class="inline" method="post" action="/admin/releases/${row.id}/delete" onsubmit="return confirm('Delete ${row.release_name} (${row.version})? This cannot be undone.')"><button class="danger sm" type="submit">Delete</button></form>
-          </div>
-        </td>
-      </tr>`).join('')}
-      </tbody></table>
+      <div class="panel-head">
+        <div>
+          <h2>All releases</h2>
+          <p class="muted">Review each release record, then promote or hide it without the table overflowing every time a title gets longer.</p>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="table-stack">
+          <thead><tr><th>Release</th><th>Distribution</th><th>State</th><th>Published</th><th>Actions</th></tr></thead><tbody>
+          ${releases.rows.map((row) => `<tr>
+            <td data-label="Release"><span style="font-weight:700">${row.release_name}</span><div class="muted">v${row.version}</div></td>
+            <td data-label="Distribution" class="muted">${row.platform} · ${row.channel}${row.release_url ? `<div><a href="${row.release_url}" class="muted">Hosted page</a></div>` : ''}${row.artifact_url ? `<div><a href="${row.artifact_url}" class="muted">Artifact</a></div>` : ''}</td>
+            <td data-label="State">${statusPill(row.rollout_state)}</td>
+            <td data-label="Published" class="muted">${fmtTime(row.published_at)}</td>
+            <td data-label="Actions" class="cell-actions">
+              <div class="actions">
+                <a href="/admin/releases/${row.id}/edit"><button class="secondary sm" type="button">Edit</button></a>
+                ${row.rollout_state !== 'live' ? `<form class="inline" method="post" action="/admin/releases/${row.id}/live"><button class="secondary sm" type="submit">Go live</button></form>` : ''}
+                ${row.rollout_state === 'live' ? `<form class="inline" method="post" action="/admin/releases/${row.id}/hide"><button class="secondary sm" type="submit">Hide</button></form>` : ''}
+                <form class="inline" method="post" action="/admin/releases/${row.id}/delete" onsubmit="return confirm('Delete this release? This cannot be undone.')"><button class="danger sm" type="submit">Delete</button></form>
+              </div>
+            </td>
+          </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
     </div>
   `));
 });
@@ -1567,43 +2037,59 @@ app.get('/admin/releases/:id/edit', authSession, async (req, res) => {
       <div class="hero-copy">
         <div class="hero-kicker">Edit Release</div>
         <h1>${row.release_name}</h1>
-        <p>${row.version} &middot; ${row.platform} &middot; ${row.channel}</p>
+        <p>Update rollout state, copy, and artifact details without leaving the admin flow.</p>
+        <div class="hero-meta">
+          <span class="hero-note">v${row.version}</span>
+          <span class="hero-note">${row.platform}</span>
+          <span class="hero-note">${row.channel}</span>
+        </div>
       </div>
       ${nav('releases')}
     </div>
-    <div class="panel" style="max-width:680px">
+    <div class="panel" style="max-width:780px">
+      <div class="panel-head">
+        <div>
+          <h2>Release details</h2>
+          <p class="muted">Edit the customer-facing metadata and rollout settings for this version.</p>
+        </div>
+      </div>
       <form method="post" action="/admin/releases/${row.id}/edit">
         <label>Release name</label>
         <input name="releaseName" value="${row.release_name}" required />
-        <div style="height:10px"></div>
-        <label>Channel</label>
-        <select name="channel">
-          <option value="stable" ${row.channel === 'stable' ? 'selected' : ''}>stable</option>
-          <option value="beta" ${row.channel === 'beta' ? 'selected' : ''}>beta</option>
-        </select>
-        <div style="height:10px"></div>
-        <label>Rollout</label>
-        <select name="rolloutState">
-          <option value="live" ${row.rollout_state === 'live' ? 'selected' : ''}>live</option>
-          <option value="draft" ${row.rollout_state === 'draft' ? 'selected' : ''}>draft</option>
-          <option value="hidden" ${row.rollout_state === 'hidden' ? 'selected' : ''}>hidden</option>
-        </select>
-        <div style="height:10px"></div>
+        <div class="row">
+          <div>
+            <label>Channel</label>
+            <select name="channel">
+              <option value="stable" ${row.channel === 'stable' ? 'selected' : ''}>stable</option>
+              <option value="beta" ${row.channel === 'beta' ? 'selected' : ''}>beta</option>
+            </select>
+          </div>
+          <div>
+            <label>Rollout</label>
+            <select name="rolloutState">
+              <option value="live" ${row.rollout_state === 'live' ? 'selected' : ''}>live</option>
+              <option value="draft" ${row.rollout_state === 'draft' ? 'selected' : ''}>draft</option>
+              <option value="hidden" ${row.rollout_state === 'hidden' ? 'selected' : ''}>hidden</option>
+            </select>
+          </div>
+        </div>
         <label>Artifact URL</label>
         <input name="artifactUrl" value="${row.artifact_url}" required />
-        <div style="height:10px"></div>
         <label>Release notes</label>
         <textarea name="releaseNotes" rows="8">${row.release_notes || ''}</textarea>
-        <div style="height:14px"></div>
         <div class="actions">
           <button type="submit">Save changes</button>
           <a href="/admin/releases"><button class="secondary" type="button">Cancel</button></a>
         </div>
       </form>
     </div>
-    <div class="panel" style="max-width:680px;margin-top:16px;border-color:#4a0e0e">
-      <h2 style="color:#fca5a5">Danger zone</h2>
-      <p class="muted" style="margin-bottom:14px">Deleting a release removes it from the database and deletes the artifact file from the server if it is hosted here.</p>
+    <div class="panel danger-zone" style="max-width:780px;margin-top:16px">
+      <div class="panel-head">
+        <div>
+          <h2>Danger zone</h2>
+          <p class="muted">Deleting a release removes it from the database and also tries to clean up the hosted artifact if it lives on this server or in GitHub assets.</p>
+        </div>
+      </div>
       <form method="post" action="/admin/releases/${row.id}/delete" onsubmit="return confirm('Delete ${row.release_name} (${row.version})? This cannot be undone.')">
         <button class="danger" type="submit">Delete this release</button>
       </form>
@@ -1699,32 +2185,106 @@ app.post('/admin/releases/:id/delete', authSession, async (req, res) => {
   res.redirect('/admin/releases');
 });
 
-app.get('/admin/customers', authSession, async (_req, res) => {
-  const rows = await pool.query(`
-    SELECT fingerprint, MAX(created_at) AS last_event, MAX(detail) FILTER (WHERE detail IS NOT NULL) AS detail
-    FROM update_events
-    GROUP BY fingerprint
-    ORDER BY MAX(created_at) DESC
-    LIMIT 100
-  `);
+app.get('/admin/customers', authSession, async (req, res) => {
+  const queryValue = String(req.query.q || '').trim();
+  const params = [];
+  let whereClause = '';
+  if (queryValue) {
+    params.push(`%${queryValue}%`);
+    whereClause = `
+      WHERE fingerprint ILIKE $1
+         OR COALESCE(detail, '') ILIKE $1
+    `;
+  }
+  const [rows, summary] = await Promise.all([
+    pool.query(`
+      SELECT fingerprint, MAX(created_at) AS last_event, MAX(detail) FILTER (WHERE detail IS NOT NULL) AS detail
+      FROM update_events
+      ${whereClause}
+      GROUP BY fingerprint
+      ORDER BY MAX(created_at) DESC
+      LIMIT 150
+    `, params),
+    pool.query(`
+      SELECT COUNT(DISTINCT fingerprint)::int AS total,
+             COUNT(DISTINCT CASE WHEN created_at > NOW() - INTERVAL '24 hours' THEN fingerprint END)::int AS active_24h,
+             COUNT(DISTINCT CASE WHEN created_at > NOW() - INTERVAL '7 days' THEN fingerprint END)::int AS active_7d
+      FROM update_events
+      WHERE fingerprint IS NOT NULL
+    `),
+  ]);
+  const overview = summary.rows[0] || { total: 0, active_24h: 0, active_7d: 0 };
   res.send(htmlPage('Customers', `
     <div class="hero">
       <div class="hero-copy">
         <div class="hero-kicker">Installs</div>
-        <h1>Customers / Installs</h1>
-        <p>Latest seen update activity per install fingerprint.</p>
+        <h1>Install activity and customer fingerprints</h1>
+        <p>Use this page to see which installs have checked in recently and to inspect the latest event detail per fingerprint.</p>
+        <div class="hero-meta">
+          <span class="hero-note">${overview.total} tracked fingerprints</span>
+          <span class="hero-note">${overview.active_24h} active in 24h</span>
+          <span class="hero-note">${overview.active_7d} active in 7d</span>
+        </div>
       </div>
       ${nav('customers')}
     </div>
+    <div class="cards">
+      <div class="card">
+        <div>
+          <div class="card-label">Tracked installs</div>
+          <div class="card-value">${overview.total}</div>
+          <div class="card-note">Distinct update fingerprints seen</div>
+        </div>
+      </div>
+      <div class="card">
+        <div>
+          <div class="card-label">Active in 24h</div>
+          <div class="card-value">${overview.active_24h}</div>
+          <div class="card-note">Recent install check-ins</div>
+        </div>
+      </div>
+      <div class="card">
+        <div>
+          <div class="card-label">Active in 7d</div>
+          <div class="card-value">${overview.active_7d}</div>
+          <div class="card-note">Weekly install activity</div>
+        </div>
+      </div>
+    </div>
     <div class="panel">
-      <h2>${rows.rows.length} active installs</h2>
-      <table><thead><tr><th>Fingerprint</th><th>Last activity</th><th>Detail</th></tr></thead><tbody>
-      ${rows.rows.map((row) => `<tr>
-        <td><code style="font-size:.75rem">${row.fingerprint || 'Unknown'}</code></td>
-        <td class="muted">${row.last_event ? fmtTime(row.last_event) : 'Never'}</td>
-        <td class="muted">${row.detail || '—'}</td>
-      </tr>`).join('')}
-      </tbody></table>
+      <div class="panel-head">
+        <div>
+          <h2>Find installs</h2>
+          <p class="muted">Search by fingerprint or the latest detail string to narrow down a noisy activity list.</p>
+        </div>
+      </div>
+      <form class="toolbar" method="get" action="/admin/customers">
+        <div class="grow">
+          <label>Search</label>
+          <input name="q" value="${escapeHtml(queryValue)}" placeholder="Search fingerprint or detail" />
+        </div>
+        <div class="toolbar-actions">
+          <button type="submit">Apply filter</button>
+          ${queryValue ? `<a href="/admin/customers"><button class="secondary" type="button">Reset</button></a>` : ''}
+        </div>
+      </form>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>Latest install activity</h2>
+          <p class="muted">${queryValue ? `${rows.rows.length} matching installs` : `${rows.rows.length} most recent installs`}</p>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="table-stack"><thead><tr><th>Fingerprint</th><th>Last activity</th><th>Detail</th></tr></thead><tbody>
+        ${rows.rows.map((row) => `<tr>
+          <td data-label="Fingerprint"><code>${row.fingerprint || 'Unknown'}</code></td>
+          <td data-label="Last activity" class="muted">${row.last_event ? fmtTime(row.last_event) : 'Never'}</td>
+          <td data-label="Detail" class="muted">${row.detail || '—'}</td>
+        </tr>`).join('')}
+        </tbody></table>
+      </div>
     </div>
   `));
 });
@@ -2941,46 +3501,108 @@ app.get('/admin/pricing', authSession, async (_req, res) => {
   const result = await pool.query('SELECT key, value FROM pricing_config ORDER BY key');
   const cfg = {};
   for (const row of result.rows) cfg[row.key] = row.value;
+  const currency = String(cfg.currency || 'AUD').toUpperCase();
+  const previewMoney = (value) => Number(value || 0) > 0 ? formatMoneyFromCents(Number(value || 0), currency) : 'Not set';
   return res.send(htmlPage('Pricing Config', `
     <div class="hero">
       <div class="hero-copy">
         <div class="hero-kicker">Revenue</div>
         <h1>Pricing &amp; Plans</h1>
-        <p>Set prices and Stripe Price IDs for each plan. Stripe Price IDs override manual amounts — use them for subscriptions.</p>
+        <p>Set plan amounts, device upgrade pricing, and Stripe references without squinting through a long settings form.</p>
+        <div class="hero-meta">
+          <span class="hero-note">Currency: ${currency}</span>
+          <span class="hero-note">Trial: ${cfg.trial_days || '14'} days</span>
+          <span class="hero-note">Device upgrade: ${previewMoney(cfg.device_upgrade_price_cents)}</span>
+        </div>
       </div>
       ${nav('pricing')}
+    </div>
+    <div class="cards">
+      <div class="card">
+        <div>
+          <div class="card-label">Monthly</div>
+          <div class="card-value">${previewMoney(cfg.price_monthly_cents)}</div>
+          <div class="card-note">${cfg.stripe_price_monthly ? 'Stripe price linked' : 'Manual amount only'}</div>
+        </div>
+      </div>
+      <div class="card">
+        <div>
+          <div class="card-label">Yearly</div>
+          <div class="card-value">${previewMoney(cfg.price_yearly_cents)}</div>
+          <div class="card-note">${cfg.stripe_price_yearly ? 'Stripe price linked' : 'Manual amount only'}</div>
+        </div>
+      </div>
+      <div class="card">
+        <div>
+          <div class="card-label">Lifetime</div>
+          <div class="card-value">${previewMoney(cfg.price_lifetime_cents)}</div>
+          <div class="card-note">${cfg.stripe_price_lifetime ? 'Stripe price linked' : 'Manual amount only'}</div>
+        </div>
+      </div>
+      <div class="card">
+        <div>
+          <div class="card-label">Extensions</div>
+          <div class="card-value">${previewMoney(cfg.extend_month_price_cents)}</div>
+          <div class="card-note">Per month extension price</div>
+        </div>
+      </div>
     </div>
     <form method="post" action="/admin/pricing">
     <div class="grid">
       <div class="panel">
-        <h2>Monthly</h2>
+        <div class="panel-head">
+          <div>
+            <h2>Monthly</h2>
+            <p class="muted">Subscription or recurring monthly plan.</p>
+          </div>
+        </div>
         <label>Price (cents, e.g. 900 = $9.00)</label>
         <input type="number" name="price_monthly_cents" value="${cfg.price_monthly_cents || ''}" placeholder="900" />
         <label>Stripe Price ID <span style="font-weight:400">(optional, for subscriptions)</span></label>
         <input name="stripe_price_monthly" value="${cfg.stripe_price_monthly || ''}" placeholder="price_xxx" />
       </div>
       <div class="panel">
-        <h2>Yearly</h2>
+        <div class="panel-head">
+          <div>
+            <h2>Yearly</h2>
+            <p class="muted">Best for annual renewals and discounted long-term billing.</p>
+          </div>
+        </div>
         <label>Price (cents)</label>
         <input type="number" name="price_yearly_cents" value="${cfg.price_yearly_cents || ''}" placeholder="4900" />
         <label>Stripe Price ID</label>
         <input name="stripe_price_yearly" value="${cfg.stripe_price_yearly || ''}" placeholder="price_xxx" />
       </div>
       <div class="panel">
-        <h2>Lifetime</h2>
+        <div class="panel-head">
+          <div>
+            <h2>Lifetime</h2>
+            <p class="muted">One-time purchase with no recurring renewal.</p>
+          </div>
+        </div>
         <label>Price (cents)</label>
         <input type="number" name="price_lifetime_cents" value="${cfg.price_lifetime_cents || ''}" placeholder="4900" />
         <label>Stripe Price ID <span style="font-weight:400">(one-time payment)</span></label>
         <input name="stripe_price_lifetime" value="${cfg.stripe_price_lifetime || ''}" placeholder="price_xxx" />
       </div>
       <div class="panel">
-        <h2>Device Upgrades</h2>
+        <div class="panel-head">
+          <div>
+            <h2>Device upgrades</h2>
+            <p class="muted">Charged per additional device slot.</p>
+          </div>
+        </div>
         <label>Price per additional device (cents)</label>
         <input type="number" name="device_upgrade_price_cents" value="${cfg.device_upgrade_price_cents || ''}" placeholder="500" />
-        <p class="muted" style="font-size:0.85rem;margin-top:8px">Charged per device when upgrading from 1→2, 2→5, 5→10, etc.</p>
+        <p class="muted">Charged per device when upgrading from 1→2, 2→5, 5→10, and so on.</p>
       </div>
       <div class="panel">
-        <h2>Extension Pricing</h2>
+        <div class="panel-head">
+          <div>
+            <h2>Extension pricing</h2>
+            <p class="muted">Used when a customer adds more time to an existing timed license.</p>
+          </div>
+        </div>
         <label>Price per extra day (cents)</label>
         <input type="number" name="extend_day_price_cents" value="${cfg.extend_day_price_cents || ''}" placeholder="100" />
         <label>Price per extra month (cents)</label>
@@ -2989,7 +3611,12 @@ app.get('/admin/pricing', authSession, async (_req, res) => {
         <input type="number" name="extend_year_price_cents" value="${cfg.extend_year_price_cents || ''}" placeholder="4900" />
       </div>
       <div class="panel">
-        <h2>Global settings</h2>
+        <div class="panel-head">
+          <div>
+            <h2>Global settings</h2>
+            <p class="muted">Shared checkout defaults and read-only publishable key info.</p>
+          </div>
+        </div>
         <label>Currency code</label>
         <input name="currency" value="${cfg.currency || 'aud'}" placeholder="aud" />
         <label>Trial length (days)</label>
@@ -3006,9 +3633,16 @@ app.get('/admin/pricing', authSession, async (_req, res) => {
     </div>
     </form>
     <div class="panel">
-      <h2>How checkout works</h2>
-      <p class="muted">The app calls <code>POST /api/v1/checkout/create</code> with <code>{ plan, name, email }</code>. The server creates a Stripe Checkout Session and returns a redirect URL. After payment, Stripe calls the webhook and the license is auto-generated and emailed. For subscription plans, set a Stripe Price ID — Culler will treat the subscription as a time-limited license renewed each period.</p>
-      <p class="muted" style="margin-top:8px">Webhook URL to register in Stripe: <code>${publicUpdatesBaseUrl()}/stripe/webhook</code></p>
+      <div class="panel-head">
+        <div>
+          <h2>How checkout works</h2>
+          <p class="muted">The desktop app calls <code>POST /api/v1/checkout/create</code> with <code>{ plan, name, email }</code>. The server creates a Stripe Checkout Session and returns a redirect URL. After payment, Stripe calls the webhook and the license is generated and emailed automatically.</p>
+        </div>
+      </div>
+      <div class="notice">
+        <p class="muted">For subscription plans, set a Stripe Price ID so Culler can treat the purchase as a renewable timed license.</p>
+        <p class="muted" style="margin-top:8px">Webhook URL to register in Stripe: <code>${publicUpdatesBaseUrl()}/stripe/webhook</code></p>
+      </div>
     </div>
   `));
 });
