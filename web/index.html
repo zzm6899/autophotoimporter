@@ -1052,7 +1052,25 @@
       }
     }
     if (btnEl) {
-      btnEl.href = BASE + '/buy?plan=' + activePlan;
+      btnEl.onclick = async (e) => {
+        e.preventDefault();
+        const name = prompt('Name:');
+        if (!name) return;
+        const email = prompt('Email:');
+        if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return;
+        try {
+          const res = await fetch(BASE + '/api/v1/checkout/create', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ plan: activePlan, name, email })
+          });
+          const data = await res.json();
+          if (data.url) window.location.href = data.url;
+          else alert(data.error || 'Checkout failed');
+        } catch (err) {
+          alert('Error: ' + err.message);
+        }
+      };
     }
     // Update save badge
     const badge = document.getElementById('saveBadge');
