@@ -896,7 +896,7 @@ app.post('/admin/logout', (req, res) => {
 });
 
 app.get('/admin', authSession, async (_req, res) => {
-  const [licenseStats, releaseStats, recentEvents, errorEvents, topLicenses, deviceCount, stripeStats] = await Promise.all([
+  const [licenseStats, releaseStats, recentEvents, errorEvents, topLicenses, deviceCount, stripeStats, subStats] = await Promise.all([
     pool.query(`SELECT status, COUNT(*)::int AS count FROM license_records GROUP BY status ORDER BY status`),
     pool.query(`SELECT platform, rollout_state, COUNT(*)::int AS count FROM releases GROUP BY platform, rollout_state ORDER BY platform, rollout_state`),
     pool.query(`SELECT event_type, detail, created_at, fingerprint FROM update_events ORDER BY created_at DESC LIMIT 15`),
@@ -910,8 +910,11 @@ app.get('/admin', authSession, async (_req, res) => {
     pool.query(`SELECT 
       COUNT(DISTINCT customer_email)::int AS total_customers,
       COUNT(*)::int AS total_licenses,
-      COUNT(*) FILTER (WHERE status = 'active')::int AS active_licenses
-    FROM stripe_sessions`).catch(() => ({ rows: [{ total_customers: 0, total_licenses: 0, active_licenses: 0 }] })),
+      COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '30 days')::int AS licenses_30d
+    FROM stripe_sessions`).catch(() => ({ rows: [{ total_customers: 0, total_licenses: 0, licenses_30d: 0 }] })),
+    pool.query(`SELECT 'monthly' as plan, COUNT(*)::int AS cnt FROM stripe_sessions WHERE created_at > NOW() - INTERVAL '90 days' AND session_id ILIKE '%monthly%'
+      UNION ALL SELECT 'yearly', COUNT(*)::int FROM stripe_sessions WHERE created_at > NOW() - INTERVAL '90 days' AND session_id ILIKE '%yearly%'
+      UNION ALL SELECT 'lifetime', COUNT(*)::int FROM stripe_sessions WHERE created_at > NOW() - INTERVAL '90 days' AND session_id ILIKE '%lifetime%'`).catch(() => ({ rows: [] })),
   ]);
 
   const artifactSize = getDirSize(artifactsRoot);
@@ -919,7 +922,8 @@ app.get('/admin', authSession, async (_req, res) => {
   const diskPct = disk ? Math.round((disk.used / disk.total) * 100) : null;
   const diskBar = disk ? `<div style="margin-top:8px;background:var(--border2);border-radius:4px;height:6px;overflow:hidden"><div style="width:${diskPct}%;background:${diskPct > 85 ? '#f87171' : diskPct > 65 ? '#fdba74' : '#34d399'};height:100%;border-radius:4px"></div></div><p class="muted" style="margin-top:4px;font-size:.72rem">${formatBytes(disk.used)} used of ${formatBytes(disk.total)} (${disk.pct})</p>` : '';
 
-  const stripeRow = stripeStats.rows[0] || { total_customers: 0, total_licenses: 0, active_licenses: 0 };
+  const stripeRow = stripeStats.rows[0] || { total_customers: 0, total_licenses: 0, licenses_30d: 0 };
+  const plans = subStats.rows.reduce((acc, row) => { acc[row.plan] = row.cnt; return acc; }, { monthly: 0, yearly: 0, lifetime: 0 });
 
   res.send(htmlPage('Admin Dashboard', `
     <div class="hero">
@@ -934,9 +938,19 @@ app.get('/admin', authSession, async (_req, res) => {
       ${licenseStats.rows.map((row) => `<div class="card"><div class="card-label">Licenses · ${row.status}</div><div class="card-value">${row.count}</div></div>`).join('')}
       ${releaseStats.rows.map((row) => `<div class="card"><div class="card-label">Releases · ${row.platform} / ${row.rollout_state}</div><div class="card-value">${row.count}</div></div>`).join('')}
       <div class="card"><div class="card-label">Total devices</div><div class="card-value">${deviceCount.rows[0].count}</div></div>
-      <div class="card"><div class="card-label">Stripe customers</div><div class="card-value">${stripeRow.total_customers}</div></div>
-      <div class="card"><div class="card-label">Stripe licenses issued</div><div class="card-value">${stripeRow.total_licenses}</div></div>
     </div>
+    
+    <div class="cards">
+      <div class="card"><div class="card-label">💳 Stripe customers</div><div class="card-value">${stripeRow.total_customers}</div></div>
+      <div class="card"><div class="card-label">📦 Licenses sold</div><div class="card-value">${stripeRow.total_licenses}</div></div>
+      <div class="card"><div class="card-label">📈 Last 30 days</div><div class="card-value">${stripeRow.licenses_30d}</div></div>
+      <div class="card"><div class="card-label">🎯 Plans (90d)</div><div class="card-value" style="font-size:0.8rem;line-height:1.8">
+        <span style="color:#34d399">●</span> Monthly: ${plans.monthly}<br/>
+        <span style="color:#60a5fa">●</span> Yearly: ${plans.yearly}<br/>
+        <span style="color:#f59e0b">●</span> Lifetime: ${plans.lifetime}
+      </div></div>
+    </div>
+    
     <div class="grid">
       <div class="panel">
         <h2>Storage</h2>
@@ -976,7 +990,11 @@ app.get('/admin', authSession, async (_req, res) => {
 });
 
 app.get('/admin/licenses', authSession, async (_req, res) => {
-  const result = await pool.query('SELECT * FROM license_records ORDER BY updated_at DESC NULLS LAST, created_at DESC LIMIT 100');
+  const [licenseResult, stripeLicensesResult] = await Promise.all([
+    pool.query('SELECT * FROM license_records ORDER BY updated_at DESC NULLS LAST, created_at DESC LIMIT 100'),
+    pool.query('SELECT session_id, license_key, activation_code, customer_email, created_at FROM stripe_sessions ORDER BY created_at DESC LIMIT 50').catch(() => ({ rows: [] })),
+  ]);
+  
   const generatorEnabled = canGenerateLicenses();
 
   res.send(htmlPage('Licenses', `
@@ -1030,10 +1048,23 @@ app.get('/admin/licenses', authSession, async (_req, res) => {
         <p class="muted" style="margin-top:12px">Generated keys use the same offline format as the desktop app and keep working with your shipped EXE as long as the same private key is used.</p>
       </div>
     </div>
+    
+    ${stripeLicensesResult.rows.length > 0 ? `<div class="panel">
+      <h2>Stripe licenses (recent payments)</h2>
+      <table><thead><tr><th>Customer email</th><th>Activation code</th><th>License key</th><th>Issued</th></tr></thead><tbody>
+      ${stripeLicensesResult.rows.map((row) => `<tr>
+        <td class="muted">${row.customer_email}</td>
+        <td><code style="font-size:0.75rem">${row.activation_code}</code></td>
+        <td><code style="font-size:0.65rem;word-break:break-all">${row.license_key.substring(0, 40)}...</code></td>
+        <td class="muted">${fmtTime(row.created_at)}</td>
+      </tr>`).join('')}
+      </tbody></table>
+    </div>` : ''}
+    
     <div class="panel">
       <h2>All licenses</h2>
       <table><thead><tr><th>Customer</th><th>Status</th><th>Seats</th><th>Activation code</th><th>Expires</th><th>Last seen</th><th>Actions</th></tr></thead><tbody>
-      ${result.rows.map((row) => `<tr>
+      ${licenseResult.rows.map((row) => `<tr>
         <td><span style="font-weight:600">${row.customer_name}</span>${row.customer_email ? `<div class="muted">${row.customer_email}</div>` : ''}</td>
         <td>${statusPill(row.status)}</td>
         <td class="muted">${row.max_devices || '&infin;'} device${row.max_devices === 1 ? '' : 's'}</td>
@@ -2428,16 +2459,106 @@ app.post('/admin/licenses/:id/extend', authSession, async (req, res) => {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// Get license by session ID  GET /api/v1/license/:sessionId
+// Called by checkout-success page to display license immediately
+// ---------------------------------------------------------------------------
+app.get('/api/v1/license/:sessionId', apiCors, async (req, res) => {
+  const { sessionId } = req.params;
+  try {
+    const result = await pool.query(
+      'SELECT license_key, activation_code, customer_email FROM stripe_sessions WHERE session_id = $1',
+      [sessionId]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'License not found. It may take a few seconds to process. Please refresh.' });
+    }
+    const row = result.rows[0];
+    return res.json({
+      licenseKey: row.license_key,
+      activationCode: row.activation_code,
+      email: row.customer_email,
+    });
+  } catch (err) {
+    console.error('[license-lookup]', err);
+    return res.status(500).json({ error: 'Could not retrieve license.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Checkout success page  GET /checkout-success
 // ---------------------------------------------------------------------------
 app.get('/checkout-success', (_req, res) => {
   return res.send(htmlPage('Purchase complete', `
-    <div class="panel" style="max-width:520px;margin:80px auto;text-align:center">
+    <div class="panel" style="max-width:620px;margin:80px auto;text-align:center">
       <div style="font-size:2.5rem;margin-bottom:16px">✓</div>
       <h1 style="margin-bottom:8px">Payment confirmed</h1>
-      <p class="muted">Your license key is on its way to your inbox. Check spam if it doesn't arrive within a few minutes.</p>
-      <p class="muted" style="margin-top:12px">Once you have the code, open Culler → Settings → License and paste it in.</p>
+      <p class="muted" id="loadingMsg">Loading your license key...</p>
+      
+      <div id="licenseBox" style="display:none;margin-top:24px;text-align:left;background:var(--surface-raised);border:1px solid var(--border);border-radius:12px;padding:20px">
+        <p style="font-size:0.85rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px">Your license key</p>
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px;font-family:monospace;word-break:break-all;margin-bottom:12px;display:flex;align-items:flex-start;gap:12px">
+          <code id="licenseKey" style="font-size:0.75rem;line-height:1.6;flex:1"></code>
+          <button id="copyBtn" style="flex-shrink:0;background:var(--accent);color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:0.8rem;font-weight:500;cursor:pointer;white-space:nowrap">Copy</button>
+        </div>
+        <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:8px">Paste it into:</p>
+        <p style="font-size:0.9rem"><strong>Culler → Settings → License</strong></p>
+      </div>
+      
+      <div id="errorBox" style="display:none;margin-top:16px;background:#ff6b6b;background:rgba(255,107,107,0.1);border:1px solid rgba(255,107,107,0.3);border-radius:8px;padding:12px;color:#ff6b6b;font-size:0.9rem"></div>
+      
+      <p class="muted" style="margin-top:24px">A copy has also been sent to your email. Check spam if it doesn't arrive within a few minutes.</p>
     </div>
+
+    <script>
+      const params = new URLSearchParams(window.location.search);
+      const sessionId = params.get('session_id');
+
+      async function loadLicense() {
+        if (!sessionId) {
+          showError('No session ID found. Please check your payment link.');
+          return;
+        }
+
+        try {
+          const res = await fetch('/api/v1/license/' + sessionId);
+          const data = await res.json();
+
+          if (!res.ok) {
+            showError(data.error || 'Failed to load license.');
+            setTimeout(loadLicense, 2000);
+            return;
+          }
+
+          document.getElementById('loadingMsg').style.display = 'none';
+          const keyEl = document.getElementById('licenseKey');
+          keyEl.textContent = data.licenseKey;
+          document.getElementById('licenseBox').style.display = 'block';
+          
+          document.getElementById('copyBtn').onclick = async () => {
+            try {
+              await navigator.clipboard.writeText(data.licenseKey);
+              const btn = document.getElementById('copyBtn');
+              const old = btn.textContent;
+              btn.textContent = '✓ Copied!';
+              setTimeout(() => { btn.textContent = old; }, 2000);
+            } catch (err) {
+              alert('Failed to copy to clipboard');
+            }
+          };
+        } catch (err) {
+          showError('Error: ' + err.message);
+        }
+      }
+
+      function showError(msg) {
+        document.getElementById('loadingMsg').style.display = 'none';
+        const errorBox = document.getElementById('errorBox');
+        errorBox.textContent = msg;
+        errorBox.style.display = 'block';
+      }
+
+      loadLicense();
+    </script>
   `));
 });
 
