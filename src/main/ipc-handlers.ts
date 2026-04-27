@@ -18,6 +18,39 @@ import { getCachedFaceResult, setCachedFaceResult, clearFaceCache } from './serv
 import { detectDeviceTier, applyDeviceTier } from './services/device-tier';
 import { setRawPreviewQuality } from './services/exif-parser';
 
+function buildImportMetadata(settings: AppSettings): ImportConfig['metadata'] {
+  const keywords = settings.metadataKeywords
+    ?.split(/[\n,;]+/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const title = settings.metadataTitle?.trim();
+  const caption = settings.metadataCaption?.trim();
+  const creator = settings.metadataCreator?.trim();
+  const copyright = settings.metadataCopyright?.trim();
+  if (!keywords?.length && !title && !caption && !creator && !copyright) {
+    return undefined;
+  }
+  return {
+    keywords: keywords && keywords.length > 0 ? keywords : undefined,
+    title: title || undefined,
+    caption: caption || undefined,
+    creator: creator || undefined,
+    copyright: copyright || undefined,
+  };
+}
+
+function buildWatermarkConfig(settings: AppSettings): ImportConfig['watermark'] {
+  const text = settings.watermarkText?.trim();
+  if (!settings.watermarkEnabled || !text) return undefined;
+  return {
+    enabled: true,
+    text,
+    opacity: settings.watermarkOpacity ?? 0.3,
+    position: settings.watermarkPosition ?? 'bottom-right',
+    scale: settings.watermarkScale ?? 0.045,
+  };
+}
+
 const execFileAsync = promisify(execFile);
 
 let scannedFiles: MediaFile[] = [];
@@ -91,6 +124,17 @@ const DEFAULT_SETTINGS: AppSettings = {
   burstWindowSec: 2,
   normalizeExposure: false,
   exposureMaxStops: 2,
+  metadataKeywords: '',
+  metadataTitle: '',
+  metadataCaption: '',
+  metadataCreator: '',
+  metadataCopyright: '',
+  watermarkEnabled: false,
+  watermarkText: '',
+  watermarkOpacity: 0.3,
+  watermarkPosition: 'bottom-right',
+  watermarkScale: 0.045,
+  autoStraighten: true,
   // Performance optimizations
   gpuFaceAcceleration: true,    // Enable GPU by default if available
   rawPreviewCache: true,        // Cache RAW previews by default
@@ -182,6 +226,9 @@ async function loadSettings(): Promise<AppSettings> {
       ? {
           ...validateLicenseKey(merged.licenseKey),
           activationCode: storedActivationCode || undefined,
+          activatedAt: merged.licenseStatus?.activatedAt,
+          expiresAt: merged.licenseStatus?.expiresAt,
+          entitlement: merged.licenseStatus?.entitlement,
         }
       : { valid: false, message: 'No license activated.', status: 'unknown' as const };
     
@@ -211,9 +258,11 @@ async function loadSettings(): Promise<AppSettings> {
 
 async function saveSettings(settings: Partial<AppSettings>): Promise<void> {
   const current = await loadSettings();
-  const { licenseStatus: _currentStatus, ...safeCurrent } = current;
-  const { licenseStatus: _incomingStatus, ...safeIncoming } = settings;
-  const merged = { ...safeCurrent, ...safeIncoming };
+  const merged: AppSettings = {
+    ...current,
+    ...settings,
+    licenseStatus: settings.licenseStatus ?? current.licenseStatus,
+  };
   const dir = path.dirname(getSettingsPath());
   await mkdir(dir, { recursive: true });
   await writeFile(getSettingsPath(), JSON.stringify(merged, null, 2));
@@ -365,6 +414,9 @@ async function runAutomatedFtpSync(trigger: 'manual' | 'launch' | 'interval'): P
       verifyChecksums: settings.verifyChecksums,
       normalizeExposure: settings.normalizeExposure,
       exposureMaxStops: settings.exposureMaxStops,
+      metadata: buildImportMetadata(settings),
+      watermark: buildWatermarkConfig(settings),
+      autoStraighten: settings.autoStraighten,
     };
 
     const filesToImport = filterFilesForImport(scanned, importConfig);
@@ -434,6 +486,7 @@ async function getLicenseStatus() {
   await saveSettings({
     licenseKey: status.valid && status.key ? status.key : '',
     licenseActivationCode: status.valid ? (status.activationCode ?? storedActivationCode ?? '') : '',
+    licenseStatus: status,
   });
   return status;
 }
@@ -826,8 +879,8 @@ export function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle(IPC.SCAN_PREVIEW, async (_event, filePath: string) => {
-    return generatePreview(filePath);
+  ipcMain.handle(IPC.SCAN_PREVIEW, async (_event, filePath: string, variant?: 'preview' | 'detail') => {
+    return generatePreview(filePath, variant ?? 'preview');
   });
 
   ipcMain.handle(IPC.SCAN_CANCEL, async () => {
@@ -928,18 +981,23 @@ export function registerIpcHandlers(): void {
       await saveSettings({
         licenseKey: status.key,
         licenseActivationCode: status.activationCode ?? '',
+        licenseStatus: status,
       });
       const settings = await loadSettings();
       return settings.licenseStatus ?? status;
     }
     if (!status.valid) {
-      await saveSettings({ licenseKey: '', licenseActivationCode: '' });
+      await saveSettings({ licenseKey: '', licenseActivationCode: '', licenseStatus: status });
     }
     return status;
   });
 
   ipcMain.handle(IPC.LICENSE_CLEAR, async () => {
-    await saveSettings({ licenseKey: '', licenseActivationCode: '' });
+    await saveSettings({
+      licenseKey: '',
+      licenseActivationCode: '',
+      licenseStatus: { valid: false, message: 'License removed.', status: 'unknown' as const },
+    });
     return { valid: false, message: 'License removed.', status: 'unknown' as const };
   });
 
@@ -1478,6 +1536,9 @@ async function runAutoImport(volume: Volume): Promise<void> {
       backupDestRoot: settings.backupDestRoot || undefined,
       autoEject: settings.autoEject,
       verifyChecksums: settings.verifyChecksums,
+      metadata: buildImportMetadata(settings),
+      watermark: buildWatermarkConfig(settings),
+      autoStraighten: settings.autoStraighten,
     };
 
     const filesToImport = filterFilesForImport(scannedFiles, importConfig);

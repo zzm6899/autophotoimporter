@@ -12,6 +12,8 @@ type CompactPayload = {
   n: string;
   e?: string;
   i: string;
+  a?: string;
+  ax?: string;
   x?: string;
   t?: string;
   o?: string;
@@ -25,6 +27,8 @@ type RemoteLicensePayload = {
   message?: string;
   status?: LicenseValidation['status'];
   entitlement?: LicenseEntitlement;
+  activatedAt?: string;
+  expiresAt?: string;
   deviceId?: string;
   deviceName?: string;
   deviceSlotsUsed?: number;
@@ -81,6 +85,8 @@ function toEntitlement(payload: CompactPayload | LicenseEntitlement): LicenseEnt
     name: payload.n,
     email: payload.e,
     issuedAt: normalizeDate(payload.i) ?? payload.i,
+    activatedAt: normalizeDate(payload.a),
+    activationExpiresAt: normalizeDate(payload.ax),
     expiresAt: normalizeDate(payload.x),
     tier: payload.t || 'Full access',
     notes: payload.o,
@@ -89,8 +95,21 @@ function toEntitlement(payload: CompactPayload | LicenseEntitlement): LicenseEnt
 }
 
 function normalizeValidation(result: LicenseValidation): LicenseValidation {
+  const entitlement = result.entitlement ? toEntitlement(result.entitlement) : undefined;
+  const effectiveExpiresAt = normalizeDate(
+    result.expiresAt
+    ?? entitlement?.activationExpiresAt
+    ?? entitlement?.expiresAt,
+  );
+  const effectiveActivatedAt = normalizeDate(
+    result.activatedAt
+    ?? entitlement?.activatedAt,
+  );
   return {
     ...result,
+    entitlement,
+    activatedAt: effectiveActivatedAt,
+    expiresAt: effectiveExpiresAt,
     status: result.status ?? (result.valid ? 'active' : 'unknown'),
   };
 }
@@ -117,6 +136,8 @@ function mergeEntitlement(
   return {
     ...fallback,
     ...normalizedRemote,
+    activatedAt: normalizedRemote.activatedAt ?? fallback.activatedAt,
+    activationExpiresAt: normalizedRemote.activationExpiresAt ?? fallback.activationExpiresAt,
     issuedAt: normalizedRemote.issuedAt || fallback.issuedAt,
     expiresAt: normalizedRemote.expiresAt ?? fallback.expiresAt,
   };
@@ -156,12 +177,15 @@ export function validateLicenseKey(key: string): LicenseValidation {
       return { valid: false, key: rawKey, message: shapeError, status: 'unknown' };
     }
 
-    const expiresAt = normalizeDate(entitlement.expiresAt);
+    const activatedAt = normalizeDate(entitlement.activatedAt);
+    const expiresAt = normalizeDate(entitlement.activationExpiresAt ?? entitlement.expiresAt);
     if (expiresAt && expiresAt < currentDateStamp()) {
       return {
         valid: false,
         key: rawKey,
-        entitlement: { ...entitlement, expiresAt },
+        entitlement: { ...entitlement, activatedAt, activationExpiresAt: normalizeDate(entitlement.activationExpiresAt), expiresAt },
+        activatedAt,
+        expiresAt,
         message: `License expired on ${formatDisplayDate(expiresAt)}.`,
         status: 'expired',
       };
@@ -170,7 +194,9 @@ export function validateLicenseKey(key: string): LicenseValidation {
     return {
       valid: true,
       key: rawKey,
-      entitlement: { ...entitlement, expiresAt },
+      entitlement: { ...entitlement, activatedAt, activationExpiresAt: normalizeDate(entitlement.activationExpiresAt), expiresAt: normalizeDate(entitlement.expiresAt) },
+      activatedAt,
+      expiresAt,
       message: expiresAt
         ? `License active until ${formatDisplayDate(expiresAt)}.`
         : 'License active.',
@@ -243,6 +269,8 @@ export async function activateLicenseInput(input: string): Promise<LicenseValida
         ...local,
         activationCode: pickActivationCode(payload.activationCode, trimmed),
         entitlement: mergeEntitlement(payload.entitlement, local.entitlement),
+        activatedAt: normalizeDate(payload.activatedAt) ?? local.activatedAt,
+        expiresAt: normalizeDate(payload.expiresAt) ?? local.expiresAt,
         message: payload.message || local.message,
         status: payload.status ?? 'active',
         deviceId: payload.deviceId,
@@ -286,6 +314,8 @@ export async function checkHostedLicenseStatus(
         valid: false,
         key: local.key,
         entitlement: mergeEntitlement(payload.entitlement, local.entitlement),
+        activatedAt: normalizeDate(payload.activatedAt) ?? existing?.activatedAt ?? local.activatedAt,
+        expiresAt: normalizeDate(payload.expiresAt) ?? existing?.expiresAt ?? local.expiresAt,
         message: payload.message || 'License no longer active.',
         activationCode: pickActivationCode(payload.activationCode, existing?.activationCode),
         status: payload.status ?? 'unknown',
@@ -301,6 +331,8 @@ export async function checkHostedLicenseStatus(
       ...local,
       entitlement: mergeEntitlement(payload.entitlement, local.entitlement),
       activationCode: pickActivationCode(payload.activationCode, existing?.activationCode),
+      activatedAt: normalizeDate(payload.activatedAt) ?? existing?.activatedAt ?? local.activatedAt,
+      expiresAt: normalizeDate(payload.expiresAt) ?? existing?.expiresAt ?? local.expiresAt,
       message: payload.message || local.message,
       status: payload.status ?? 'active',
       deviceId: payload.deviceId,

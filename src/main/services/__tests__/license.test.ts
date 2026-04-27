@@ -98,7 +98,7 @@ describe('validateLicenseKey', () => {
           tier: 'Full access',
         },
       }),
-    })) as typeof fetch);
+    })) as unknown as typeof fetch);
 
     const result = await activateLicenseInput('PIC-TEST-1234-ABCD');
     expect(result.valid).toBe(true);
@@ -121,7 +121,7 @@ describe('validateLicenseKey', () => {
         allowed: true,
         status: 'active',
       }),
-    })) as typeof fetch);
+    })) as unknown as typeof fetch);
 
     const result = await checkHostedLicenseStatus(key, {
       ...validateLicenseKey(key),

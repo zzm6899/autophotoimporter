@@ -1,11 +1,11 @@
-import { copyFile, mkdir, stat } from 'node:fs/promises';
+import { copyFile, mkdir, stat, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import { constants, createReadStream } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { Client } from 'basic-ftp';
-import type { MediaFile, ImportConfig, ImportProgress, ImportResult, ImportError, SaveFormat } from '../../shared/types';
+import type { MediaFile, ImportConfig, ImportProgress, ImportResult, ImportError, SaveFormat, BatchMetadata, WatermarkConfig, WatermarkPosition } from '../../shared/types';
 import { isDuplicate } from './duplicate-detector';
 import { stopsToSafeMultiplier, clampStops } from '../../shared/exposure';
 
@@ -41,6 +41,104 @@ const FORMAT_EXT: Record<Exclude<SaveFormat, 'original'>, string> = {
   tiff: '.tiff',
   heic: '.heic',
 };
+
+type ConvertResult = {
+  normalized: boolean;
+  watermarked: boolean;
+  straightened: boolean;
+};
+
+function sidecarPathFor(destFullPath: string): string {
+  const parsed = path.parse(destFullPath);
+  return path.join(parsed.dir, `${parsed.name}.xmp`);
+}
+
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function hasMetadata(metadata: BatchMetadata | undefined): metadata is BatchMetadata {
+  return !!metadata && (
+    (metadata.keywords?.length ?? 0) > 0 ||
+    !!metadata.title?.trim() ||
+    !!metadata.caption?.trim() ||
+    !!metadata.creator?.trim() ||
+    !!metadata.copyright?.trim()
+  );
+}
+
+function buildXmpSidecar(metadata: BatchMetadata): string {
+  const keywords = metadata.keywords?.filter(Boolean) ?? [];
+  const title = metadata.title?.trim();
+  const caption = metadata.caption?.trim();
+  const creator = metadata.creator?.trim();
+  const copyright = metadata.copyright?.trim();
+  return [
+    '<?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?>',
+    '<x:xmpmeta xmlns:x="adobe:ns:meta/">',
+    '  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">',
+    '    <rdf:Description rdf:about=""',
+    '      xmlns:dc="http://purl.org/dc/elements/1.1/"',
+    '      xmlns:xmpRights="http://ns.adobe.com/xap/1.0/rights/"',
+    '      xmlns:tiff="http://ns.adobe.com/tiff/1.0/"',
+    '      xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/">',
+    title ? `      <dc:title><rdf:Alt><rdf:li xml:lang="x-default">${escapeXml(title)}</rdf:li></rdf:Alt></dc:title>` : '',
+    caption ? `      <dc:description><rdf:Alt><rdf:li xml:lang="x-default">${escapeXml(caption)}</rdf:li></rdf:Alt></dc:description>` : '',
+    creator ? `      <dc:creator><rdf:Seq><rdf:li>${escapeXml(creator)}</rdf:li></rdf:Seq></dc:creator>` : '',
+    creator ? `      <tiff:Artist>${escapeXml(creator)}</tiff:Artist>` : '',
+    copyright ? `      <dc:rights><rdf:Alt><rdf:li xml:lang="x-default">${escapeXml(copyright)}</rdf:li></rdf:Alt></dc:rights>` : '',
+    copyright ? `      <xmpRights:Marked>True</xmpRights:Marked>` : '',
+    copyright ? `      <photoshop:CopyrightFlag>True</photoshop:CopyrightFlag>` : '',
+    keywords.length > 0
+      ? `      <dc:subject><rdf:Bag>${keywords.map((keyword) => `<rdf:li>${escapeXml(keyword)}</rdf:li>`).join('')}</rdf:Bag></dc:subject>`
+      : '',
+    '    </rdf:Description>',
+    '  </rdf:RDF>',
+    '</x:xmpmeta>',
+    '<?xpacket end="w"?>',
+  ].filter(Boolean).join('\n');
+}
+
+async function writeMetadataSidecar(destFullPath: string, metadata: BatchMetadata | undefined): Promise<string | null> {
+  if (!hasMetadata(metadata)) return null;
+  const sidecarPath = sidecarPathFor(destFullPath);
+  await writeFile(sidecarPath, buildXmpSidecar(metadata), 'utf8');
+  return sidecarPath;
+}
+
+function watermarkGravity(position: WatermarkPosition): string {
+  switch (position) {
+    case 'bottom-left': return 'southwest';
+    case 'top-right': return 'northeast';
+    case 'top-left': return 'northwest';
+    case 'center': return 'center';
+    case 'bottom-right':
+    default:
+      return 'southeast';
+  }
+}
+
+function watermarkPointSize(scale = 0.045): number {
+  return Math.max(16, Math.round(scale * 1600));
+}
+
+function rotateFlipType(orientation?: number): string | null {
+  switch (orientation) {
+    case 2: return 'RotateNoneFlipX';
+    case 3: return 'Rotate180FlipNone';
+    case 4: return 'Rotate180FlipX';
+    case 5: return 'Rotate90FlipX';
+    case 6: return 'Rotate90FlipNone';
+    case 7: return 'Rotate270FlipX';
+    case 8: return 'Rotate270FlipNone';
+    default: return null;
+  }
+}
 
 async function sha256File(filePath: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -89,10 +187,12 @@ async function convertWithSips(
   destFullPath: string,
   format: Exclude<SaveFormat, 'original'>,
   jpegQuality: number,
+  autoStraighten = false,
 ): Promise<void> {
   const args = [
     '-s', 'format', format,
     ...(format === 'jpeg' ? ['-s', 'formatOptions', String(jpegQuality)] : []),
+    ...(autoStraighten ? ['-s', 'formatOptions', String(jpegQuality)] : []),
     srcPath,
     '--out', destFullPath,
   ];
@@ -109,7 +209,9 @@ async function convertWithPowerShell(
   format: Exclude<SaveFormat, 'original'>,
   jpegQuality: number,
   brightness = 1,
-): Promise<void> {
+  orientation?: number,
+  watermark?: WatermarkConfig,
+): Promise<ConvertResult> {
   const formatMap: Record<typeof format, string> = {
     jpeg: 'image/jpeg',
     tiff: 'image/tiff',
@@ -117,9 +219,23 @@ async function convertWithPowerShell(
   };
   const mime = formatMap[format];
   const needsMatrix = Math.abs(brightness - 1) > 0.001;
+  const rotateFlip = rotateFlipType(orientation);
+  const hasWatermark = !!watermark?.enabled && !!watermark.text.trim();
+  const needsRasterPass = needsMatrix || !!rotateFlip || hasWatermark;
   const b = brightness.toFixed(4);
-  const matrixBlock = needsMatrix
-    ? `
+  const opacity = Math.max(0.05, Math.min(1, watermark?.opacity ?? 0.3)).toFixed(3);
+  const shadowOpacity = Math.max(0.05, Math.min(0.6, (watermark?.opacity ?? 0.3) * 0.6)).toFixed(3);
+  const pointSize = watermarkPointSize(watermark?.scale);
+  const gravity = watermarkGravity(watermark?.position ?? 'bottom-right');
+  const margin = Math.max(12, Math.round(pointSize * 0.7));
+  const text = watermark?.text.replace(/'/g, "''") ?? '';
+  const script = `
+    Add-Type -AssemblyName System.Drawing
+    $src = [System.Drawing.Image]::FromFile(${psQuote(srcPath)})
+    try {
+      ${rotateFlip ? `$src.RotateFlip([System.Drawing.RotateFlipType]::${rotateFlip})` : ''}
+      ${needsRasterPass ? `
+      ${needsMatrix ? `
       $matrix = New-Object System.Drawing.Imaging.ColorMatrix
       $matrix.Matrix00 = ${b}
       $matrix.Matrix11 = ${b}
@@ -128,21 +244,42 @@ async function convertWithPowerShell(
       $matrix.Matrix44 = 1
       $attrs = New-Object System.Drawing.Imaging.ImageAttributes
       $attrs.SetColorMatrix($matrix)
+      ` : '$attrs = $null'}
       $bmp = New-Object System.Drawing.Bitmap $src.Width, $src.Height
       $g = [System.Drawing.Graphics]::FromImage($bmp)
+      $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
+      $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+      $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
       try {
-        $g.DrawImage($src, [System.Drawing.Rectangle]::new(0, 0, $src.Width, $src.Height), 0, 0, $src.Width, $src.Height, [System.Drawing.GraphicsUnit]::Pixel, $attrs)
+        if ($attrs -ne $null) {
+          $g.DrawImage($src, [System.Drawing.Rectangle]::new(0, 0, $src.Width, $src.Height), 0, 0, $src.Width, $src.Height, [System.Drawing.GraphicsUnit]::Pixel, $attrs)
+        } else {
+          $g.DrawImage($src, 0, 0, $src.Width, $src.Height)
+        }
+        ${hasWatermark ? `
+        $font = New-Object System.Drawing.Font('Arial', [float]${pointSize}, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
+        $shadowBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb([int](255 * ${shadowOpacity}), 0, 0, 0))
+        $textBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb([int](255 * ${opacity}), 255, 255, 255))
+        $format = New-Object System.Drawing.StringFormat
+        switch ('${gravity}') {
+          'southwest' { $format.Alignment = [System.Drawing.StringAlignment]::Near; $format.LineAlignment = [System.Drawing.StringAlignment]::Far; $x = ${margin}; $y = $bmp.Height - ${margin} }
+          'northeast' { $format.Alignment = [System.Drawing.StringAlignment]::Far; $format.LineAlignment = [System.Drawing.StringAlignment]::Near; $x = $bmp.Width - ${margin}; $y = ${margin} }
+          'northwest' { $format.Alignment = [System.Drawing.StringAlignment]::Near; $format.LineAlignment = [System.Drawing.StringAlignment]::Near; $x = ${margin}; $y = ${margin} }
+          'center' { $format.Alignment = [System.Drawing.StringAlignment]::Center; $format.LineAlignment = [System.Drawing.StringAlignment]::Center; $x = $bmp.Width / 2; $y = $bmp.Height / 2 }
+          default { $format.Alignment = [System.Drawing.StringAlignment]::Far; $format.LineAlignment = [System.Drawing.StringAlignment]::Far; $x = $bmp.Width - ${margin}; $y = $bmp.Height - ${margin} }
+        }
+        $g.DrawString('${text}', $font, $shadowBrush, [float]($x + 2), [float]($y + 2), $format)
+        $g.DrawString('${text}', $font, $textBrush, [float]$x, [float]$y, $format)
+        $textBrush.Dispose()
+        $shadowBrush.Dispose()
+        $font.Dispose()
+        $format.Dispose()
+        ` : ''}
       } finally {
         $g.Dispose()
       }
       $out = $bmp
-    `
-    : `$out = $src`;
-  const script = `
-    Add-Type -AssemblyName System.Drawing
-    $src = [System.Drawing.Image]::FromFile(${psQuote(srcPath)})
-    try {
-      ${matrixBlock}
+      ` : '$out = $src'}
       $codec = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() |
         Where-Object { $_.MimeType -eq '${mime}' }
       $params = New-Object System.Drawing.Imaging.EncoderParameters 1
@@ -159,6 +296,11 @@ async function convertWithPowerShell(
     ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
     { timeout: 60000, windowsHide: true },
   );
+  return {
+    normalized: needsMatrix,
+    watermarked: hasWatermark,
+    straightened: !!rotateFlip,
+  };
 }
 
 // Does this system have an ImageMagick binary on PATH? Cached so we don't
@@ -186,16 +328,37 @@ async function convertWithImageMagick(
   jpegQuality: number,
   brightness: number,
   binary: 'magick' | 'convert',
-): Promise<void> {
+  autoStraighten = false,
+  watermark?: WatermarkConfig,
+): Promise<ConvertResult> {
   // magick is the v7 unified entry point; `convert` is v6 legacy. Arg
   // shape is the same for our purposes.
   const args: string[] = [srcPath];
+  const hasWatermark = !!watermark?.enabled && !!watermark.text.trim();
+  if (autoStraighten) {
+    args.push('-auto-orient');
+  }
   if (Math.abs(brightness - 1) > 0.001) {
     args.push('-evaluate', 'Multiply', brightness.toFixed(4));
+  }
+  if (hasWatermark) {
+    args.push(
+      '-gravity', watermarkGravity(watermark?.position ?? 'bottom-right'),
+      '-fill', `rgba(255,255,255,${Math.max(0.05, Math.min(1, watermark?.opacity ?? 0.3)).toFixed(3)})`,
+      '-stroke', `rgba(0,0,0,${Math.max(0.05, Math.min(0.6, (watermark?.opacity ?? 0.3) * 0.6)).toFixed(3)})`,
+      '-strokewidth', '1',
+      '-pointsize', String(watermarkPointSize(watermark?.scale)),
+      '-annotate', '+24+24', watermark!.text,
+    );
   }
   if (format === 'jpeg') args.push('-quality', String(jpegQuality));
   args.push(destFullPath);
   await execFileAsync(binary, args, { timeout: 60000 });
+  return {
+    normalized: Math.abs(brightness - 1) > 0.001,
+    watermarked: hasWatermark,
+    straightened: autoStraighten,
+  };
 }
 
 async function convertAndCopy(
@@ -204,36 +367,39 @@ async function convertAndCopy(
   format: Exclude<SaveFormat, 'original'>,
   jpegQuality: number,
   brightness: number,
-): Promise<{ normalized: boolean }> {
+  orientation?: number,
+  watermark?: WatermarkConfig,
+  autoStraighten = false,
+): Promise<ConvertResult> {
   const needsBrightness = Math.abs(brightness - 1) > 0.001;
+  const wantsWatermark = !!watermark?.enabled && !!watermark.text.trim();
+  const wantsStraighten = !!autoStraighten && !!rotateFlipType(orientation);
 
   if (process.platform === 'win32') {
-    await convertWithPowerShell(srcPath, destFullPath, format, jpegQuality, brightness);
-    return { normalized: needsBrightness };
+    return convertWithPowerShell(srcPath, destFullPath, format, jpegQuality, brightness, wantsStraighten ? orientation : undefined, watermark);
   }
 
   // For darwin + linux: prefer ImageMagick when brightness matters or when
   // we're on Linux. Fall back to sips (mac) / raises otherwise.
-  if (needsBrightness) {
+  if (needsBrightness || wantsWatermark || wantsStraighten) {
     const bin = await detectImageMagick();
     if (bin) {
-      await convertWithImageMagick(srcPath, destFullPath, format, jpegQuality, brightness, bin);
-      return { normalized: true };
+      return convertWithImageMagick(srcPath, destFullPath, format, jpegQuality, brightness, bin, wantsStraighten, watermark);
     }
-    // No IM available — we can't normalize. Fall through to plain conversion
+    // No IM available — we can't run advanced transforms. Fall through to plain conversion
     // and report the miss to the caller so it can surface a warning.
     if (process.platform === 'darwin') {
-      await convertWithSips(srcPath, destFullPath, format, jpegQuality);
-      return { normalized: false };
+      await convertWithSips(srcPath, destFullPath, format, jpegQuality, false);
+      return { normalized: false, watermarked: false, straightened: false };
     }
     // Linux without IM — this would already be broken for normal conversion,
     // but throw a clearer error.
-    throw new Error('ImageMagick (magick/convert) is required for exposure normalization on Linux');
+    throw new Error('ImageMagick (magick/convert) is required for watermarking, exposure normalization, or auto-straightening on Linux');
   }
 
   if (process.platform === 'darwin') {
-    await convertWithSips(srcPath, destFullPath, format, jpegQuality);
-    return { normalized: false };
+    await convertWithSips(srcPath, destFullPath, format, jpegQuality, false);
+    return { normalized: false, watermarked: false, straightened: false };
   }
   // Linux default path — convert is the historical invocation
   await execFileAsync(
@@ -245,7 +411,7 @@ async function convertAndCopy(
     ],
     { timeout: 60000 },
   );
-  return { normalized: false };
+  return { normalized: false, watermarked: false, straightened: false };
 }
 
 export async function importFiles(
@@ -293,6 +459,8 @@ export async function importFiles(
     ? config.exposureMaxStops
     : 2;
   let normalizationMissing = 0; // how many files we couldn't normalize
+  let watermarkMissing = 0;
+  let straightenMissing = 0;
 
   function brightnessFor(file: MediaFile): number {
     const shouldNormalize = normalizeActive || perFileNormalizePaths.has(file.path);
@@ -350,13 +518,21 @@ export async function importFiles(
         await copyFile(file.path, destFullPath, constants.COPYFILE_EXCL);
       } else {
         const brightness = brightnessFor(file);
-        const { normalized } = await convertAndCopy(
-          file.path, destFullPath, saveFormat, jpegQuality, brightness,
+        const { normalized, watermarked, straightened } = await convertAndCopy(
+          file.path, destFullPath, saveFormat, jpegQuality, brightness, file.orientation, config.watermark, config.autoStraighten,
         );
         if (normalizeActive && Math.abs(brightness - 1) > 0.001 && !normalized) {
           normalizationMissing++;
         }
+        if (config.watermark?.enabled && config.watermark.text.trim() && !watermarked) {
+          watermarkMissing++;
+        }
+        if (config.autoStraighten && rotateFlipType(file.orientation) && !straightened) {
+          straightenMissing++;
+        }
       }
+
+      const primarySidecarPath = await writeMetadataSidecar(destFullPath, config.metadata);
 
       // Mirror to backup destination after primary copy succeeds. Mirror
       // failures are recorded but don't roll back the primary — the user
@@ -368,6 +544,9 @@ export async function importFiles(
           // Always copy from the (possibly converted) primary destination so
           // the backup is identical to what was written there.
           await copyFile(destFullPath, backupFullPath, constants.COPYFILE_EXCL);
+          if (primarySidecarPath) {
+            await copyFile(primarySidecarPath, sidecarPathFor(backupFullPath), constants.COPYFILE_EXCL);
+          }
         } catch (mirrorErr: unknown) {
           const e = mirrorErr as NodeJS.ErrnoException;
           if (e.code !== 'EEXIST') {
@@ -383,6 +562,15 @@ export async function importFiles(
           fileName: file.name,
           size: file.size,
         });
+        if (primarySidecarPath) {
+          const sidecarName = path.posix.basename(sidecarPathFor(finalRelPath.replace(/\\/g, '/')));
+          ftpUploads.push({
+            localPath: primarySidecarPath,
+            remoteRelPath: path.posix.join(path.posix.dirname(finalRelPath.replace(/\\/g, '/')), sidecarName),
+            fileName: `${file.name}.xmp`,
+            size: Buffer.byteLength(buildXmpSidecar(config.metadata!)),
+          });
+        }
       }
 
       imported++;
@@ -523,6 +711,18 @@ export async function importFiles(
     errors.push({
       file: 'exposure-normalize',
       error: `Skipped exposure adjustment on ${normalizationMissing} file(s). Install ImageMagick ('magick' or 'convert' on PATH) to enable.`,
+    });
+  }
+  if (watermarkMissing > 0) {
+    errors.push({
+      file: 'watermark',
+      error: `Skipped watermarking on ${watermarkMissing} file(s). Install ImageMagick ('magick' or 'convert' on PATH) to enable this on macOS/Linux.`,
+    });
+  }
+  if (straightenMissing > 0) {
+    errors.push({
+      file: 'auto-straighten',
+      error: `Skipped auto-straighten/upright conversion on ${straightenMissing} file(s). Install ImageMagick ('magick' or 'convert' on PATH) to enable this on macOS/Linux.`,
     });
   }
 

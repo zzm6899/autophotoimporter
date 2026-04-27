@@ -393,7 +393,7 @@ export function BestOfSelectionPanel({
   useEffect(() => {
     let cancelled = false;
     for (const file of ranked) {
-      void getCachedPreview(file.path, 'high').then((src) => {
+      void getCachedPreview(file.path, 'preview', 'high').then((src) => {
         if (cancelled || !src) return;
         // Measure natural dimensions for correct face-box letterbox math
         const img = new Image();

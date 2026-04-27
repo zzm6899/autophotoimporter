@@ -83,6 +83,39 @@ export function useSettings() {
       if (typeof settings.exposureMaxStops === 'number') {
         dispatch({ type: 'SET_EXPOSURE_MAX_STOPS', stops: settings.exposureMaxStops });
       }
+      if (typeof settings.metadataKeywords === 'string') {
+        dispatch({ type: 'SET_WORKFLOW_STRING', key: 'metadataKeywords', value: settings.metadataKeywords });
+      }
+      if (typeof settings.metadataTitle === 'string') {
+        dispatch({ type: 'SET_WORKFLOW_STRING', key: 'metadataTitle', value: settings.metadataTitle });
+      }
+      if (typeof settings.metadataCaption === 'string') {
+        dispatch({ type: 'SET_WORKFLOW_STRING', key: 'metadataCaption', value: settings.metadataCaption });
+      }
+      if (typeof settings.metadataCreator === 'string') {
+        dispatch({ type: 'SET_WORKFLOW_STRING', key: 'metadataCreator', value: settings.metadataCreator });
+      }
+      if (typeof settings.metadataCopyright === 'string') {
+        dispatch({ type: 'SET_WORKFLOW_STRING', key: 'metadataCopyright', value: settings.metadataCopyright });
+      }
+      if (typeof settings.watermarkEnabled === 'boolean') {
+        dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'watermarkEnabled', value: settings.watermarkEnabled });
+      }
+      if (typeof settings.watermarkText === 'string') {
+        dispatch({ type: 'SET_WORKFLOW_STRING', key: 'watermarkText', value: settings.watermarkText });
+      }
+      if (typeof settings.watermarkOpacity === 'number') {
+        dispatch({ type: 'SET_WATERMARK_NUMBER', key: 'watermarkOpacity', value: settings.watermarkOpacity });
+      }
+      if (typeof settings.watermarkScale === 'number') {
+        dispatch({ type: 'SET_WATERMARK_NUMBER', key: 'watermarkScale', value: settings.watermarkScale });
+      }
+      if (settings.watermarkPosition) {
+        dispatch({ type: 'SET_WATERMARK_POSITION', position: settings.watermarkPosition });
+      }
+      if (typeof settings.autoStraighten === 'boolean') {
+        dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'autoStraighten', value: settings.autoStraighten });
+      }
       if (Array.isArray(settings.selectionSets)) {
         dispatch({ type: 'SET_SELECTION_SETS', sets: settings.selectionSets });
       }

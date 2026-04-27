@@ -1,7 +1,7 @@
 import { memo, useRef, useEffect, useState } from 'react';
 import type { MediaFile } from '../../shared/types';
 import { formatFileSize, formatExposure } from '../utils/formatters';
-import { clampStops, stopsToSafeMultiplier } from '../../shared/exposure';
+import { buildPreviewExposureFilter, clampStops } from '../../shared/exposure';
 
 function useLazySrc(src: string | undefined, forceActive: boolean) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -101,9 +101,7 @@ function ThumbnailCardInner({
   const isRejected = file.pick === 'rejected';
   const exposureMarked = !!file.normalizeToAnchor || Math.abs(file.exposureAdjustmentStops ?? 0) >= 0.01;
   const totalPreviewStops = clampStops((file.exposureAdjustmentStops ?? 0) + exposurePreviewStops, 4);
-  const thumbBrightness = Math.abs(totalPreviewStops) >= 0.01
-    ? stopsToSafeMultiplier(totalPreviewStops)
-    : 1;
+  const previewFilter = buildPreviewExposureFilter(totalPreviewStops);
   const orientation = orientationTransform(file.orientation);
   const { containerRef, activeSrc } = useLazySrc(file.thumbnail, forceLoad || focused || selected);
 
@@ -130,7 +128,7 @@ function ThumbnailCardInner({
                 imageOrientation: 'none',
                 transform: orientation,
                 transformOrigin: 'center center',
-                filter: thumbBrightness !== 1 ? `brightness(${thumbBrightness.toFixed(3)})` : undefined,
+                filter: previewFilter,
               }}
             />
           ) : (

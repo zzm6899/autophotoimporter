@@ -31,6 +31,7 @@ export function DestinationPanel() {
     destination, skipDuplicates, saveFormat, jpegQuality, folderPreset, customPattern,
     files, phase, importProgress, selectedSource, selectedPaths, queuedPaths,
     separateProtected, protectedFolderName, backupDestRoot, ftpDestEnabled, ftpDestConfig,
+    metadataKeywords, metadataTitle, metadataCaption, watermarkEnabled, watermarkText, autoStraighten,
     licenseStatus,
   } = useAppState();
   const dispatch = useAppDispatch();
@@ -188,6 +189,7 @@ export function DestinationPanel() {
   const canImport = licenseValid && selectedSource && destination && ftpReady && importFiles.length > 0 && (phase === 'ready' || phase === 'scanning');
   const totalSize = importFiles.reduce((sum, f) => sum + f.size, 0);
   const exposureEditCount = importFiles.filter((f) => f.normalizeToAnchor || f.exposureAdjustmentStops).length;
+  const metadataCount = metadataKeywords.split(/[\n,;]+/).map((value) => value.trim()).filter(Boolean).length;
   const backupSameAsPrimary = !!backupDestRoot && !!destination && backupDestRoot === destination;
 
   // Free-space check on the destination. Re-runs when the destination or
@@ -590,6 +592,9 @@ export function DestinationPanel() {
             {exposureEditCount > 0 && saveFormat === 'original' && (
               <div className="text-[10px] text-yellow-500">Exposure edits need JPEG/TIFF/HEIC output.</div>
             )}
+            {(watermarkEnabled || autoStraighten) && saveFormat === 'original' && (
+              <div className="text-[10px] text-yellow-500">Watermark and auto-straighten need JPEG/TIFF/HEIC output.</div>
+            )}
             {backupSameAsPrimary && (
               <div className="text-[10px] text-red-400">Backup destination matches primary.</div>
             )}
@@ -615,6 +620,15 @@ export function DestinationPanel() {
             {!hasQueue && !hasClickSelection && hasPicks && <span className="text-yellow-400/70"> &middot; {pickedCount} picked</span>}
             {skipDuplicates && duplicateCount > 0 && (
               <span className="text-yellow-500/70"> &middot; {duplicateCount} already imported</span>
+            )}
+            {(metadataCount > 0 || metadataTitle.trim() || metadataCaption.trim()) && (
+              <span className="text-sky-300/80"> &middot; metadata</span>
+            )}
+            {watermarkEnabled && watermarkText.trim() && saveFormat !== 'original' && (
+              <span className="text-orange-300/80"> &middot; watermark</span>
+            )}
+            {autoStraighten && saveFormat !== 'original' && (
+              <span className="text-emerald-300/80"> &middot; upright</span>
             )}
           </div>
         )}

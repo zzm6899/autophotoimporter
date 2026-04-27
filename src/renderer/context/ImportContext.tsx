@@ -1,7 +1,8 @@
 import { createContext, useContext, useReducer, useRef, useMemo, useCallback, useState, type Dispatch, type ReactNode } from 'react';
-import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, SourceKind, FtpConfig, FtpSyncSettings, FtpSyncStatus, RatingFilter, SelectionSet, LicenseValidation } from '../../shared/types';
+import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, SourceKind, FtpConfig, FtpSyncSettings, FtpSyncStatus, RatingFilter, SelectionSet, LicenseValidation, WatermarkPosition } from '../../shared/types';
 import { FOLDER_PRESETS } from '../../shared/types';
 import { groupBursts } from '../../shared/burst';
+import { clampStops, normalizeExposureStops } from '../../shared/exposure';
 import { bestInGroup, faceQuality, groupByFaceSignature, groupByVisualHash, keeperScore, scoreReview } from '../../shared/review';
 
 export type AppPhase = 'idle' | 'scanning' | 'ready' | 'importing' | 'complete';
@@ -70,6 +71,17 @@ interface State {
   normalizeExposure: boolean;
   exposureAnchorPath: string | null;
   exposureMaxStops: number;
+  metadataKeywords: string;
+  metadataTitle: string;
+  metadataCaption: string;
+  metadataCreator: string;
+  metadataCopyright: string;
+  watermarkEnabled: boolean;
+  watermarkText: string;
+  watermarkOpacity: number;
+  watermarkPosition: WatermarkPosition;
+  watermarkScale: number;
+  autoStraighten: boolean;
   licenseStatus: LicenseValidation | null;
   licenseHydrated: boolean;
   licensePromptOpen: boolean;
@@ -136,9 +148,14 @@ export type Action =
   | { type: 'SET_WORKFLOW_OPTION'; key:
       | 'separateProtected' | 'autoEject' | 'playSoundOnComplete'
       | 'openFolderOnComplete' | 'autoImport'
-      | 'burstGrouping' | 'normalizeExposure' | 'verifyChecksums' | 'ftpDestEnabled'; value: boolean }
+      | 'burstGrouping' | 'normalizeExposure' | 'verifyChecksums' | 'ftpDestEnabled'
+      | 'watermarkEnabled' | 'autoStraighten'; value: boolean }
   | { type: 'SET_WORKFLOW_STRING'; key:
-      | 'protectedFolderName' | 'backupDestRoot' | 'autoImportDestRoot' | 'completeSoundPath'; value: string }
+      | 'protectedFolderName' | 'backupDestRoot' | 'autoImportDestRoot' | 'completeSoundPath'
+      | 'metadataKeywords' | 'metadataTitle' | 'metadataCaption' | 'metadataCreator' | 'metadataCopyright'
+      | 'watermarkText'; value: string }
+  | { type: 'SET_WATERMARK_NUMBER'; key: 'watermarkOpacity' | 'watermarkScale'; value: number }
+  | { type: 'SET_WATERMARK_POSITION'; position: WatermarkPosition }
   | { type: 'SET_FTP_DEST_CONFIG'; config: Partial<FtpConfig> }
   | { type: 'SET_BURST_WINDOW'; seconds: number }
   | { type: 'TOGGLE_BURST_COLLAPSE'; burstId: string }
@@ -268,6 +285,17 @@ const initialState: State = {
   normalizeExposure: false,
   exposureAnchorPath: null,
   exposureMaxStops: 2,
+  metadataKeywords: '',
+  metadataTitle: '',
+  metadataCaption: '',
+  metadataCreator: '',
+  metadataCopyright: '',
+  watermarkEnabled: false,
+  watermarkText: '',
+  watermarkOpacity: 0.3,
+  watermarkPosition: 'bottom-right',
+  watermarkScale: 0.045,
+  autoStraighten: true,
   licenseStatus: null,
   licenseHydrated: false,
   licensePromptOpen: false,
@@ -481,6 +509,10 @@ export function reducer(state: State, action: Action): State {
     }
     case 'SET_WORKFLOW_STRING':
       return { ...state, [action.key]: action.value } as State;
+    case 'SET_WATERMARK_NUMBER':
+      return { ...state, [action.key]: action.value } as State;
+    case 'SET_WATERMARK_POSITION':
+      return { ...state, watermarkPosition: action.position };
     case 'SET_BURST_WINDOW': {
       const seconds = Math.max(0.25, Math.min(10, action.seconds));
       return {
@@ -529,17 +561,17 @@ export function reducer(state: State, action: Action): State {
     }
     case 'SET_EXPOSURE_ADJUSTMENT': {
       const pathSet = new Set(action.filePaths);
-      const stops = Math.max(-state.exposureMaxStops, Math.min(state.exposureMaxStops, action.stops));
+      const stops = normalizeExposureStops(clampStops(action.stops, state.exposureMaxStops));
       return withFileHistory(state, state.files.map((f) =>
-        pathSet.has(f.path) ? { ...f, exposureAdjustmentStops: Math.abs(stops) < 0.01 ? undefined : stops } : f,
+        pathSet.has(f.path) ? { ...f, exposureAdjustmentStops: stops === 0 ? undefined : stops } : f,
       ));
     }
     case 'NUDGE_EXPOSURE_ADJUSTMENT': {
       const pathSet = new Set(action.filePaths);
       return withFileHistory(state, state.files.map((f) => {
         if (!pathSet.has(f.path)) return f;
-        const next = Math.max(-state.exposureMaxStops, Math.min(state.exposureMaxStops, (f.exposureAdjustmentStops ?? 0) + action.delta));
-        return { ...f, exposureAdjustmentStops: Math.abs(next) < 0.01 ? undefined : Math.round(next * 100) / 100 };
+        const next = normalizeExposureStops(clampStops((f.exposureAdjustmentStops ?? 0) + action.delta, state.exposureMaxStops));
+        return { ...f, exposureAdjustmentStops: next === 0 ? undefined : next };
       }));
     }
     case 'NORMALIZE_SELECTION_TO_FOCUSED': {

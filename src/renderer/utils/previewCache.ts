@@ -1,3 +1,5 @@
+type PreviewVariant = 'preview' | 'detail';
+
 const previewCache = new Map<string, string | undefined>();
 const previewInflight = new Map<string, Promise<string | undefined>>();
 const decodedCache = new Set<string>();
@@ -27,9 +29,14 @@ function takeNextQueuedRequest(): (() => void) | undefined {
   return undefined;
 }
 
-function rememberPreview(filePath: string, preview: string | undefined): void {
-  if (previewCache.has(filePath)) previewCache.delete(filePath);
-  previewCache.set(filePath, preview);
+function previewKey(filePath: string, variant: PreviewVariant): string {
+  return `${filePath}|${variant}`;
+}
+
+function rememberPreview(filePath: string, variant: PreviewVariant, preview: string | undefined): void {
+  const key = previewKey(filePath, variant);
+  if (previewCache.has(key)) previewCache.delete(key);
+  previewCache.set(key, preview);
   while (previewCache.size > MAX_PREVIEWS) {
     const oldest = previewCache.keys().next().value as string | undefined;
     if (!oldest) break;
@@ -66,24 +73,26 @@ function schedule<T>(task: () => Promise<T>, priority: 'high' | 'normal' | 'low'
 
 export function getCachedPreview(
   filePath: string,
+  variant: PreviewVariant = 'preview',
   priority: 'high' | 'normal' | 'low' = 'normal',
 ): Promise<string | undefined> {
-  if (previewCache.has(filePath)) {
-    return Promise.resolve(previewCache.get(filePath));
+  const key = previewKey(filePath, variant);
+  if (previewCache.has(key)) {
+    return Promise.resolve(previewCache.get(key));
   }
-  const existing = previewInflight.get(filePath);
+  const existing = previewInflight.get(key);
   if (existing) return existing;
-  const promise = schedule(() => window.electronAPI.getPreview(filePath), priority)
+  const promise = schedule(() => window.electronAPI.getPreview(filePath, variant), priority)
     .then((preview) => {
       if (preview !== undefined) {
-        rememberPreview(filePath, preview);
+        rememberPreview(filePath, variant, preview);
       }
       return preview;
     })
     .finally(() => {
-      previewInflight.delete(filePath);
+      previewInflight.delete(key);
     });
-  previewInflight.set(filePath, promise);
+  previewInflight.set(key, promise);
   return promise;
 }
 
@@ -111,8 +120,9 @@ export async function decodeImage(src: string): Promise<void> {
 
 export function warmPreview(filePath: string, priority: 'normal' | 'low' = 'low'): void {
   if (backgroundPaused) return;
-  if (previewCache.has(filePath) || previewInflight.has(filePath)) return;
-  void getCachedPreview(filePath, priority)
+  const key = previewKey(filePath, 'preview');
+  if (previewCache.has(key) || previewInflight.has(key)) return;
+  void getCachedPreview(filePath, 'preview', priority)
     .then((src) => src ? decodeImage(src) : undefined)
     .catch(() => undefined);
 }

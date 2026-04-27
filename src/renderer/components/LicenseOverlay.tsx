@@ -10,6 +10,14 @@ function formatDisplayDate(value?: string) {
   return value;
 }
 
+function getEffectiveExpiryDate(status: { expiresAt?: string; entitlement?: { activationExpiresAt?: string; expiresAt?: string } } | null | undefined) {
+  return status?.expiresAt ?? status?.entitlement?.activationExpiresAt ?? status?.entitlement?.expiresAt;
+}
+
+function getEffectiveActivationDate(status: { activatedAt?: string; entitlement?: { activatedAt?: string } } | null | undefined) {
+  return status?.activatedAt ?? status?.entitlement?.activatedAt;
+}
+
 export function LicenseOverlay() {
   const { licenseHydrated, licenseStatus, licensePromptOpen } = useAppState();
   const dispatch = useAppDispatch();
@@ -127,7 +135,10 @@ export function LicenseOverlay() {
                 Issued: <span className="text-text">{formatDisplayDate(licenseStatus.entitlement.issuedAt)}</span>
               </div>
               <div className="rounded border border-border bg-surface-alt px-3 py-2">
-                Expires: <span className="text-text">{formatDisplayDate(licenseStatus.entitlement.expiresAt)}</span>
+                Activated: <span className="text-text">{formatDisplayDate(getEffectiveActivationDate(licenseStatus))}</span>
+              </div>
+              <div className="rounded border border-border bg-surface-alt px-3 py-2">
+                Expires: <span className="text-text">{formatDisplayDate(getEffectiveExpiryDate(licenseStatus))}</span>
               </div>
               <div className="rounded border border-border bg-surface-alt px-3 py-2">
                 Seats: <span className="text-text">{licenseStatus.deviceSlotsUsed ?? 0}/{licenseStatus.deviceSlotsTotal ?? licenseStatus.entitlement.maxDevices ?? 'unlimited'}</span>

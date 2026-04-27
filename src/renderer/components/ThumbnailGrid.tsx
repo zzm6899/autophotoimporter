@@ -12,7 +12,7 @@ import { SettingsPage } from './SettingsPage';
 import { ShortcutsOverlay } from './ShortcutsOverlay';
 import { BestOfSelectionPanel, rankBestOfSelection } from './BestOfSelectionPanel';
 import { getPreviewCacheStats, setBackgroundPreviewPaused, warmPreview } from '../utils/previewCache';
-import { clampStops } from '../../shared/exposure';
+import { clampStops, normalizeExposureStops } from '../../shared/exposure';
 
 // ── Laplacian sharpness-based subject detector ────────────────────────────
 // Uses focus sharpness (Laplacian variance) instead of colour/skin tone so it
@@ -561,9 +561,11 @@ export function ThumbnailGrid() {
   const [cacheStats, setCacheStats] = useState(getPreviewCacheStats());
   const [toolbarPos, setToolbarPos] = useState<{ x: number; y: number } | null>(null);
   const [reviewLoopTick, setReviewLoopTick] = useState(0);
+  const [multiClickSelect, setMultiClickSelect] = useState(true);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const toolbarDragState = useRef<{ startMouseX: number; startMouseY: number; startLeft: number; startTop: number } | null>(null);
-  const lastClickedRef = useRef<number>(-1);
+  const lastClickedPathRef = useRef<string | null>(null);
+  const lastExposureTapRef = useRef(0);
   const sharpnessInFlightRef = useRef(false);
   const reviewBatchCounterRef = useRef(0);
   // Stable refs so the review loop effect doesn't need files/sortedFiles as deps.
@@ -592,6 +594,11 @@ export function ThumbnailGrid() {
       if (!b.has(value)) return false;
     }
     return true;
+  }, []);
+
+  const pathArraysEqual = useCallback((a: string[], b: string[]) => {
+    if (a.length !== b.length) return false;
+    return a.every((value, index) => value === b[index]);
   }, []);
 
   // Sort order (top → bottom):
@@ -692,29 +699,88 @@ export function ThumbnailGrid() {
     };
   }, [files]);
 
+  const [localSelectedPaths, setLocalSelectedPaths] = useState<string[]>(selectedPaths);
+
   useEffect(() => {
-    dispatch({ type: 'SET_SELECTED_PATHS', paths: [] });
-  }, [dispatch, selectedSource]);
+    setLocalSelectedPaths([]);
+  }, [selectedSource]);
+
+  useEffect(() => {
+    if (files.length === 0) setLocalSelectedPaths([]);
+  }, [files.length]);
+
+  useEffect(() => {
+    if (pathArraysEqual(localSelectedPaths, selectedPaths)) return;
+    dispatch({ type: 'SET_SELECTED_PATHS', paths: localSelectedPaths });
+  }, [dispatch, localSelectedPaths, pathArraysEqual, selectedPaths]);
 
   const selectedIndices = useMemo(() => {
-    if (selectedPaths.length === 0) return new Set<number>();
-    const pathSet = new Set(selectedPaths);
+    if (localSelectedPaths.length === 0) return new Set<number>();
+    const pathSet = new Set(localSelectedPaths);
     const next = new Set<number>();
     sortedFiles.forEach((file, index) => {
       if (pathSet.has(file.path)) next.add(index);
     });
     return next;
-  }, [selectedPaths, sortedFiles]);
+  }, [localSelectedPaths, sortedFiles]);
+
+  // Keep a ref so click handlers always read the latest selection, even when
+  // the user clicks again before React has flushed effects from the last click.
+  const selectedIndicesRef = useRef(selectedIndices);
+  const selectedPathSetRef = useRef(new Set(localSelectedPaths));
+  useEffect(() => {
+    selectedIndicesRef.current = selectedIndices;
+  }, [selectedIndices]);
+  useEffect(() => {
+    selectedPathSetRef.current = new Set(localSelectedPaths);
+  }, [localSelectedPaths]);
+
+  const orderedPathsFromSet = useCallback((paths: Set<string>) => (
+    sortedFiles
+      .map((file) => file.path)
+      .filter((path) => paths.has(path))
+  ), [sortedFiles]);
 
   const setSelectedIndices = useCallback((next: Set<number>) => {
+    selectedIndicesRef.current = next;
     const paths = Array.from(next)
       .filter((i) => i >= 0 && i < sortedFiles.length)
       .map((i) => sortedFiles[i].path);
-    if (paths.length === selectedPaths.length && paths.every((pathValue, index) => pathValue === selectedPaths[index])) {
-      return;
-    }
-    dispatch({ type: 'SET_SELECTED_PATHS', paths });
-  }, [dispatch, selectedPaths, sortedFiles]);
+    selectedPathSetRef.current = new Set(paths);
+    setLocalSelectedPaths(paths);
+  }, [sortedFiles]);
+
+  const selectAllVisible = useCallback(() => {
+    if (sortedFiles.length === 0) return;
+    const next = new Set<number>();
+    for (let i = 0; i < sortedFiles.length; i++) next.add(i);
+    setSelectedIndices(next);
+    if (focusedIndex < 0) dispatch({ type: 'SET_FOCUSED', index: 0 });
+  }, [dispatch, focusedIndex, setSelectedIndices, sortedFiles.length]);
+
+  const clearSelection = useCallback(() => {
+    setSelectedIndices(new Set<number>());
+  }, [setSelectedIndices]);
+
+  const selectFocused = useCallback(() => {
+    if (focusedIndex < 0 || focusedIndex >= sortedFiles.length) return;
+    const path = sortedFiles[focusedIndex].path;
+    selectedPathSetRef.current = new Set([path]);
+    setLocalSelectedPaths([path]);
+    lastClickedPathRef.current = path;
+  }, [focusedIndex, sortedFiles]);
+
+  const toggleFocusedSelection = useCallback(() => {
+    if (focusedIndex < 0 || focusedIndex >= sortedFiles.length) return;
+    const path = sortedFiles[focusedIndex].path;
+    const next = new Set(selectedPathSetRef.current);
+    if (next.has(path)) next.delete(path);
+    else next.add(path);
+    const ordered = orderedPathsFromSet(next);
+    selectedPathSetRef.current = new Set(ordered);
+    setLocalSelectedPaths(ordered);
+    lastClickedPathRef.current = path;
+  }, [focusedIndex, orderedPathsFromSet, sortedFiles, sortedFiles.length]);
 
   // Keep stable refs in sync so the review loop can read current values without
   // having them as deps (which would restart the loop on every score update).
@@ -1001,37 +1067,54 @@ export function ThumbnailGrid() {
     dispatch({ type: 'QUEUE_ADD_PATHS', paths });
   }, [dispatch]);
 
-  // Keep a ref so handleCardClick/handleGridDoubleClick/handleBurstToggle stay
-  // Sync during render so event handlers never observe a stale Set.
-  // Required for React.memo on ThumbnailCard to bail out across renders.
-  const selectedIndicesRef = useRef(selectedIndices);
-  useEffect(() => {
-    selectedIndicesRef.current = selectedIndices;
-  }, [selectedIndices]);
-
   const handleCardClick = useCallback((index: number, e: React.MouseEvent) => {
-    const sel = selectedIndicesRef.current;
+    const clickedFile = sortedFiles[index];
+    if (!clickedFile) return;
+    const clickedPath = clickedFile.path;
+    const sel = selectedPathSetRef.current;
     const metaKey = e.metaKey || e.ctrlKey;
 
-    if (e.shiftKey && lastClickedRef.current >= 0) {
-      const start = Math.min(lastClickedRef.current, index);
-      const end = Math.max(lastClickedRef.current, index);
-      const next = new Set(metaKey ? sel : new Set<number>());
-      for (let i = start; i <= end; i++) next.add(i);
-      setSelectedIndices(next);
+    if (e.shiftKey && lastClickedPathRef.current) {
+      const anchorIndex = sortedFiles.findIndex((file) => file.path === lastClickedPathRef.current);
+      if (anchorIndex >= 0) {
+        const start = Math.min(anchorIndex, index);
+        const end = Math.max(anchorIndex, index);
+        const next = new Set(metaKey ? sel : new Set<string>());
+        for (let i = start; i <= end; i++) next.add(sortedFiles[i].path);
+        const ordered = orderedPathsFromSet(next);
+        selectedPathSetRef.current = new Set(ordered);
+        setLocalSelectedPaths(ordered);
+      } else {
+        selectedPathSetRef.current = new Set([clickedPath]);
+        setLocalSelectedPaths([clickedPath]);
+      }
       setFocused(index);
     } else if (metaKey) {
       const next = new Set(sel);
-      if (next.has(index)) { next.delete(index); } else { next.add(index); }
-      setSelectedIndices(next);
+      if (next.has(clickedPath)) { next.delete(clickedPath); } else { next.add(clickedPath); }
+      const ordered = orderedPathsFromSet(next);
+      selectedPathSetRef.current = new Set(ordered);
+      setLocalSelectedPaths(ordered);
       setFocused(index);
-      lastClickedRef.current = index;
+      lastClickedPathRef.current = clickedPath;
     } else {
-      setSelectedIndices(new Set());
+      if (!multiClickSelect) {
+        selectedPathSetRef.current = new Set([clickedPath]);
+        setLocalSelectedPaths([clickedPath]);
+      } else if (sel.size === 0) {
+        selectedPathSetRef.current = new Set([clickedPath]);
+        setLocalSelectedPaths([clickedPath]);
+      } else if (!sel.has(clickedPath)) {
+        const next = new Set(sel);
+        next.add(clickedPath);
+        const ordered = orderedPathsFromSet(next);
+        selectedPathSetRef.current = new Set(ordered);
+        setLocalSelectedPaths(ordered);
+      }
       setFocused(index);
-      lastClickedRef.current = index;
+      lastClickedPathRef.current = clickedPath;
     }
-  }, [setFocused]); // stable — reads selectedIndices via ref
+  }, [multiClickSelect, orderedPathsFromSet, setFocused, sortedFiles]); // stable — reads selected selection via refs
 
   const handleGridDoubleClick = useCallback((index: number) => {
     setFocused(index);
@@ -1224,11 +1307,9 @@ export function ThumbnailGrid() {
       const cols = viewMode === 'single' || viewMode === 'split' || viewMode === 'compare' ? 1 : getColumnsCount();
 
       // Cmd/Ctrl+A: select all
-      if ((e.metaKey || e.ctrlKey) && e.key === 'a' && viewMode !== 'single') {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a' && viewMode !== 'single') {
         e.preventDefault();
-        const all = new Set<number>();
-        for (let i = 0; i < sortedFiles.length; i++) all.add(i);
-        setSelectedIndices(all);
+        selectAllVisible();
         return;
       }
 
@@ -1264,8 +1345,11 @@ export function ThumbnailGrid() {
             if (showBestOfSelection) openAdjacentBatch(1);
           } else if (e.shiftKey) {
             openAdjacentBurst(1);
+          } else if (selectedIndices.size > 0) {
+            const anchor = focusedIndex >= 0 ? focusedIndex : Math.min(...selectedIndices);
+            const nextIndex = Math.min(anchor + 1, sortedFiles.length - 1);
+            setFocused(nextIndex);
           } else {
-            setSelectedIndices(new Set());
             setFocused(Math.min(focusedIndex + 1, sortedFiles.length - 1));
           }
           break;
@@ -1276,14 +1360,16 @@ export function ThumbnailGrid() {
             if (showBestOfSelection) openAdjacentBatch(-1);
           } else if (e.shiftKey) {
             openAdjacentBurst(-1);
+          } else if (selectedIndices.size > 0) {
+            const anchor = focusedIndex >= 0 ? focusedIndex : Math.min(...selectedIndices);
+            const nextIndex = Math.max(anchor - 1, 0);
+            setFocused(nextIndex);
           } else {
-            setSelectedIndices(new Set());
             setFocused(Math.max(focusedIndex - 1, 0));
           }
           break;
         case 'ArrowDown':
           e.preventDefault();
-          setSelectedIndices(new Set());
           if (viewMode === 'single' || viewMode === 'split') {
             setFocused(Math.min(focusedIndex + 1, sortedFiles.length - 1));
           } else {
@@ -1292,7 +1378,6 @@ export function ThumbnailGrid() {
           break;
         case 'ArrowUp':
           e.preventDefault();
-          setSelectedIndices(new Set());
           if (viewMode === 'single' || viewMode === 'split') {
             setFocused(Math.max(focusedIndex - 1, 0));
           } else {
@@ -1302,26 +1387,32 @@ export function ThumbnailGrid() {
         case 'p':
         case 'P':
           e.preventDefault();
-          if (e.shiftKey && focusedIndex >= 0 && lastClickedRef.current >= 0) {
-            const start = Math.min(focusedIndex, lastClickedRef.current);
-            const end = Math.max(focusedIndex, lastClickedRef.current);
-            const paths = sortedFiles.slice(start, end + 1).map((f) => f.path);
-            dispatch({ type: 'SET_PICK_BATCH', filePaths: paths, pick: 'selected' });
-            setSelectedIndices(new Set(paths.map((_, offset) => start + offset)));
-            break;
+          if (e.shiftKey && focusedIndex >= 0 && lastClickedPathRef.current) {
+            const anchorIndex = sortedFiles.findIndex((file) => file.path === lastClickedPathRef.current);
+            if (anchorIndex >= 0) {
+              const start = Math.min(focusedIndex, anchorIndex);
+              const end = Math.max(focusedIndex, anchorIndex);
+              const paths = sortedFiles.slice(start, end + 1).map((f) => f.path);
+              dispatch({ type: 'SET_PICK_BATCH', filePaths: paths, pick: 'selected' });
+              setSelectedIndices(new Set(paths.map((_, offset) => start + offset)));
+              break;
+            }
           }
           pickFile('selected', true);
           break;
         case 'x':
         case 'X':
           e.preventDefault();
-          if (e.shiftKey && focusedIndex >= 0 && lastClickedRef.current >= 0) {
-            const start = Math.min(focusedIndex, lastClickedRef.current);
-            const end = Math.max(focusedIndex, lastClickedRef.current);
-            const paths = sortedFiles.slice(start, end + 1).map((f) => f.path);
-            dispatch({ type: 'SET_PICK_BATCH', filePaths: paths, pick: 'rejected' });
-            setSelectedIndices(new Set(paths.map((_, offset) => start + offset)));
-            break;
+          if (e.shiftKey && focusedIndex >= 0 && lastClickedPathRef.current) {
+            const anchorIndex = sortedFiles.findIndex((file) => file.path === lastClickedPathRef.current);
+            if (anchorIndex >= 0) {
+              const start = Math.min(focusedIndex, anchorIndex);
+              const end = Math.max(focusedIndex, anchorIndex);
+              const paths = sortedFiles.slice(start, end + 1).map((f) => f.path);
+              dispatch({ type: 'SET_PICK_BATCH', filePaths: paths, pick: 'rejected' });
+              setSelectedIndices(new Set(paths.map((_, offset) => start + offset)));
+              break;
+            }
           }
           pickFile('rejected', true);
           break;
@@ -1415,6 +1506,19 @@ export function ThumbnailGrid() {
         case 'A': {
           if (e.metaKey || e.ctrlKey) break;
           e.preventDefault();
+          if (e.altKey) {
+            const targets = selectedIndices.size > 0
+              ? Array.from(selectedIndices)
+                  .filter((i) => i >= 0 && i < sortedFiles.length)
+                  .map((i) => sortedFiles[i].path)
+              : focusedIndex >= 0 && focusedIndex < sortedFiles.length
+                ? [sortedFiles[focusedIndex].path]
+                : [];
+            if (targets.length >= 2) {
+              dispatch({ type: 'NORMALIZE_SELECTION_TO_MEDIAN', filePaths: targets });
+            }
+            break;
+          }
           // Shift+A: select all photos in the focused file's burst/visual group
           if (e.shiftKey) {
             if (focusedIndex >= 0 && focusedIndex < sortedFiles.length) {
@@ -1468,7 +1572,7 @@ export function ThumbnailGrid() {
         case 'Escape':
           if (selectedIndices.size > 0) {
             e.preventDefault();
-            setSelectedIndices(new Set());
+            clearSelection();
           } else if (viewMode === 'settings') {
             e.preventDefault();
             dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' });
@@ -1485,7 +1589,7 @@ export function ThumbnailGrid() {
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [focusedIndex, sortedFiles, viewMode, getColumnsCount, setFocused, pickFile, dispatch, selectedIndices, cullMode, files, openBestOfSelection, openAdjacentBatch, openAdjacentBurst, queuePaths, showBestOfSelection, showShortcuts]);
+  }, [focusedIndex, sortedFiles, viewMode, getColumnsCount, setFocused, pickFile, dispatch, selectedIndices, cullMode, files, openBestOfSelection, openAdjacentBatch, openAdjacentBurst, queuePaths, showBestOfSelection, showShortcuts, selectAllVisible, clearSelection]);
 
   useEffect(() => {
     const open = () => setShowShortcuts(true);
@@ -1542,10 +1646,13 @@ export function ThumbnailGrid() {
   const anchorHasEV = typeof anchorFile?.exposureValue === 'number';
   const canNormalize = anchorHasEV && saveFormat !== 'original';
   const getThumbnailExposureStops = useCallback((file: typeof files[number]): number => {
-    if (!file.normalizeToAnchor || !anchorHasEV || typeof anchorFile?.exposureValue !== 'number' || typeof file.exposureValue !== 'number') {
-      return 0;
-    }
-    return clampStops(file.exposureValue - anchorFile.exposureValue, exposureMaxStops);
+    void file;
+    void anchorHasEV;
+    void anchorFile;
+    void exposureMaxStops;
+    // Grid / filmstrip cards stay on the original photo for auto-normalize.
+    // Manual EV remains live-previewed via file.exposureAdjustmentStops.
+    return 0;
   }, [anchorFile?.exposureValue, anchorHasEV, exposureMaxStops]);
   const normalizeTargetPaths = hasBatchSelection
     ? Array.from(selectedIndices).filter((i) => i >= 0 && i < sortedFiles.length).map((i) => sortedFiles[i].path)
@@ -1554,6 +1661,17 @@ export function ThumbnailGrid() {
     ? Array.from(selectedIndices).filter((i) => i >= 0 && i < sortedFiles.length).map((i) => sortedFiles[i])
     : focusedFile ? [focusedFile] : []
   ).slice(0, 4);
+  const compareDisplayFiles = compareFiles.length >= 2
+    ? compareFiles
+    : sortedFiles.slice(Math.max(0, focusedIndex), Math.max(0, focusedIndex) + 2);
+  const comparePreviewStopsByPath = useMemo(() => (
+    Object.fromEntries(
+      compareDisplayFiles.map((file) => [
+        file.path,
+        clampStops((file.exposureAdjustmentStops ?? 0) + getThumbnailExposureStops(file), exposureMaxStops),
+      ]),
+    )
+  ), [compareDisplayFiles, exposureMaxStops, getThumbnailExposureStops]);
   const selectedFiles = useMemo(() => (
     hasBatchSelection
       ? Array.from(selectedIndices)
@@ -1561,6 +1679,7 @@ export function ThumbnailGrid() {
           .map((i) => sortedFiles[i])
       : focusedFile ? [focusedFile] : []
   ), [focusedFile, hasBatchSelection, selectedIndices, sortedFiles]);
+  const focusedIsSelected = focusedIndex >= 0 && selectedIndices.has(focusedIndex);
   const bestPanelFiles = useMemo(() => {
     if (!bestScope) return selectedFiles;
     const byPath = new Map(files.map((f) => [f.path, f]));
@@ -1679,6 +1798,38 @@ export function ThumbnailGrid() {
     if (exposureClipboard === null || normalizeTargetPaths.length === 0) return;
     dispatch({ type: 'SET_EXPOSURE_ADJUSTMENT', filePaths: normalizeTargetPaths, stops: exposureClipboard });
   }, [dispatch, exposureClipboard, normalizeTargetPaths]);
+
+  const openCustomExposureEditor = useCallback(() => {
+    if (saveFormat === 'original' || normalizeTargetPaths.length === 0) return;
+    const defaultValue = normalizeExposureStops(avgManualStops, 0.01).toFixed(2);
+    const subjectLabel = normalizeTargetPaths.length === 1
+      ? (focusedFile?.name ?? 'this photo')
+      : `${normalizeTargetPaths.length} selected photos`;
+    const input = window.prompt(`Set custom exposure adjustment (EV) for ${subjectLabel}`, defaultValue);
+    if (input === null) return;
+    const cleaned = input.trim().replace(/\s*ev$/i, '');
+    if (!cleaned) {
+      dispatch({ type: 'SET_EXPOSURE_ADJUSTMENT', filePaths: normalizeTargetPaths, stops: 0 });
+      return;
+    }
+    const parsed = Number(cleaned);
+    if (!Number.isFinite(parsed)) {
+      window.alert('Enter a valid EV number, for example 0, 0.33, or -0.67.');
+      return;
+    }
+    dispatch({ type: 'SET_EXPOSURE_ADJUSTMENT', filePaths: normalizeTargetPaths, stops: parsed });
+  }, [avgManualStops, dispatch, focusedFile?.name, normalizeTargetPaths, saveFormat]);
+
+  const handleExposureValueTap = useCallback(() => {
+    if (saveFormat === 'original') return;
+    const now = Date.now();
+    if (now - lastExposureTapRef.current <= 360) {
+      lastExposureTapRef.current = 0;
+      openCustomExposureEditor();
+      return;
+    }
+    lastExposureTapRef.current = now;
+  }, [openCustomExposureEditor, saveFormat]);
 
   const handleToolbarDragStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -1860,6 +2011,7 @@ export function ThumbnailGrid() {
       {hasBatchSelection && (
         <>
           <span className="px-2.5 py-1.5 text-[11px] text-blue-400 font-medium">{selectedIndices.size}</span>
+          <span className="px-2 py-1.5 text-[10px] text-text-muted">Click more photos to add them. Use Just this to reset.</span>
           <div className="w-px h-4 bg-border" />
         </>
       )}
@@ -1938,9 +2090,15 @@ export function ThumbnailGrid() {
           >
             -
           </button>
-          <span className="px-2 py-1.5 text-[10px] font-mono text-sky-300" title="Average manual exposure offset">
+          <button
+            type="button"
+            onClick={handleExposureValueTap}
+            onDoubleClick={openCustomExposureEditor}
+            className="rounded px-2 py-1.5 text-[10px] font-mono text-sky-300 transition-colors hover:bg-sky-500/10 hover:text-sky-200"
+            title="Average manual exposure offset. Double-click or double-tap to type a custom EV."
+          >
             {avgManualStops >= 0 ? '+' : ''}{avgManualStops.toFixed(2)}
-          </span>
+          </button>
           <button
             onClick={() => dispatch({ type: 'NUDGE_EXPOSURE_ADJUSTMENT', filePaths: normalizeTargetPaths, delta: 0.33 })}
             className="px-2 py-1.5 text-[11px] text-text-secondary hover:text-sky-300 hover:bg-sky-500/10 transition-colors"
@@ -1991,9 +2149,9 @@ export function ThumbnailGrid() {
             <button
               onClick={handleMatchToMedian}
               className="px-3 py-1.5 text-[11px] text-text-secondary hover:text-orange-400 hover:bg-orange-500/10 transition-colors"
-              title="Pick the median-exposure shot as the anchor and flag the rest for normalization"
+              title="Auto-normalize this batch by picking the median-exposure shot as the anchor and flagging the rest for normalization (Alt+A)"
             >
-              Match
+              Auto-norm
             </button>
           )}
         </>
@@ -2298,6 +2456,35 @@ export function ThumbnailGrid() {
         {/* Pick actions — batch vs single */}
         {sortedFiles.length > 0 && phase !== 'scanning' && (
           <div className="flex items-center gap-px ml-2 shrink-0">
+            {focusedFile && (
+              <>
+                <button
+                  onClick={() => setMultiClickSelect((value) => !value)}
+                  title={multiClickSelect ? 'Plain clicks add more photos to the current selection' : 'Plain clicks keep just one photo selected'}
+                  className={`px-2 py-0.5 text-[11px] rounded border transition-colors ${
+                    multiClickSelect
+                      ? 'border-blue-500/40 bg-blue-500/15 text-blue-300'
+                      : 'border-border/80 text-text-muted hover:text-text hover:bg-surface-raised'
+                  }`}
+                >Multi {multiClickSelect ? 'On' : 'Off'}</button>
+                <button
+                  onClick={selectFocused}
+                  title="Replace the current selection with the focused photo"
+                  className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-blue-300 hover:bg-blue-500/10 rounded transition-colors"
+                >Just this</button>
+                <button
+                  onClick={toggleFocusedSelection}
+                  title={focusedIsSelected ? 'Remove the focused photo from the current selection' : 'Add the focused photo to the current selection'}
+                  className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-blue-300 hover:bg-blue-500/10 rounded transition-colors"
+                >{focusedIsSelected ? 'Remove' : 'Add'}</button>
+                <button
+                  onClick={clearSelection}
+                  title="Deselect all (Esc)"
+                  className="px-2 py-0.5 text-[11px] text-text-muted hover:text-text hover:bg-surface-raised rounded transition-colors"
+                >Clear</button>
+                <div className="w-px h-3 bg-border mx-1" />
+              </>
+            )}
             {hasBatchSelection ? (
               <>
                 <button onClick={() => pickFile('selected', false)} title="Pick selected (P)" className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-yellow-400 hover:bg-yellow-400/10 rounded transition-colors">Pick</button>
@@ -2306,7 +2493,7 @@ export function ThumbnailGrid() {
                 <button onClick={() => queuePaths(normalizeTargetPaths)} title="Add selected to import queue" className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-emerald-400 hover:bg-emerald-500/10 rounded transition-colors">Queue</button>
                 <button onClick={openBestOfSelection} title="If the focused photo is in a burst, rank that whole burst. Otherwise rank the selected candidates. Shortcut: Shift+B." className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-yellow-300 hover:bg-yellow-500/10 rounded transition-colors">Best</button>
                 <div className="w-px h-3 bg-border mx-1" />
-                <button onClick={() => setSelectedIndices(new Set())} title="Deselect all (Esc)" className="px-2 py-0.5 text-[11px] text-text-muted hover:text-text hover:bg-surface-raised rounded transition-colors">Deselect</button>
+                <button onClick={selectAllVisible} title="Select all visible files (Ctrl/Cmd+A)" className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-blue-300 hover:bg-blue-500/10 rounded transition-colors">Select all</button>
               </>
             ) : (
               <>
@@ -2439,7 +2626,7 @@ export function ThumbnailGrid() {
           <button onClick={() => { dispatch({ type: 'SET_VIEW_MODE', mode: 'single' }); if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0); }} className={`p-0.5 rounded transition-colors ${viewMode === 'single' ? 'text-text bg-surface-raised' : 'text-text-muted hover:text-text'}`} title="Detail view (double-click a photo)">
             <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M1 4.75C1 3.784 1.784 3 2.75 3h14.5c.966 0 1.75.784 1.75 1.75v10.515a1.75 1.75 0 01-1.75 1.75H2.75A1.75 1.75 0 011 15.265V4.75zm1.5 0a.25.25 0 01.25-.25h14.5a.25.25 0 01.25.25v10.515a.25.25 0 01-.25.25H2.75a.25.25 0 01-.25-.25V4.75z" clipRule="evenodd" /></svg>
           </button>
-          <button onClick={() => { dispatch({ type: 'SET_VIEW_MODE', mode: 'compare' }); if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0); }} className={`p-0.5 rounded transition-colors ${viewMode === 'compare' ? 'text-text bg-surface-raised' : 'text-text-muted hover:text-text'}`} title="Compare view (select 2–4 photos)">
+          <button onClick={() => { dispatch({ type: 'SET_VIEW_MODE', mode: 'compare' }); if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0); }} className={`p-0.5 rounded transition-colors ${viewMode === 'compare' ? 'text-text bg-surface-raised' : 'text-text-muted hover:text-text'}`} title="Compare view (select 2+ photos, shows up to 4 at once)">
             <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path d="M2 4.5A2.5 2.5 0 014.5 2h4A2.5 2.5 0 0111 4.5v11A2.5 2.5 0 018.5 18h-4A2.5 2.5 0 012 15.5v-11zM12 4.5A2.5 2.5 0 0114.5 2h1A2.5 2.5 0 0118 4.5v11a2.5 2.5 0 01-2.5 2.5h-1a2.5 2.5 0 01-2.5-2.5v-11z" /></svg>
           </button>
           <button
@@ -2488,7 +2675,11 @@ export function ThumbnailGrid() {
       <div className="flex-1 min-h-0">
         {viewMode === 'compare' ? (
           <div className="h-full relative">
-            <CompareView files={compareFiles.length >= 2 ? compareFiles : sortedFiles.slice(Math.max(0, focusedIndex), Math.max(0, focusedIndex) + 2)} />
+            <CompareView
+              files={compareDisplayFiles}
+              previewStopsByPath={comparePreviewStopsByPath}
+              selectionCount={compareFiles.length >= 2 ? selectedIndices.size : 0}
+            />
             {floatingToolbar}
           </div>
         ) : viewMode === 'single' && focusedFile ? (

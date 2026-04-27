@@ -146,11 +146,31 @@ export interface SelectionSet {
   createdAt: string;
 }
 
+export type WatermarkPosition = 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left' | 'center';
+
+export interface BatchMetadata {
+  keywords?: string[];
+  title?: string;
+  caption?: string;
+  creator?: string;
+  copyright?: string;
+}
+
+export interface WatermarkConfig {
+  enabled: boolean;
+  text: string;
+  opacity: number;
+  position: WatermarkPosition;
+  scale: number;
+}
+
 export interface LicenseEntitlement {
   product: string;
   name: string;
   email?: string;
   issuedAt: string;
+  activatedAt?: string;
+  activationExpiresAt?: string;
   expiresAt?: string;
   tier?: string;
   notes?: string;
@@ -163,6 +183,8 @@ export interface LicenseValidation {
   message: string;
   entitlement?: LicenseEntitlement;
   activationCode?: string;
+  activatedAt?: string;
+  expiresAt?: string;
   status?: 'active' | 'revoked' | 'expired' | 'disabled' | 'unknown';
   deviceId?: string;
   deviceName?: string;
@@ -244,6 +266,15 @@ export interface ImportConfig {
   normalizeAnchorPaths?: string[];
   /** Manual exposure offsets in stops, keyed by source path. */
   exposureAdjustments?: Record<string, number>;
+  /** Optional batch metadata written as XMP sidecars next to imported files. */
+  metadata?: BatchMetadata;
+  /** Optional text watermark overlay for transcoded outputs. */
+  watermark?: WatermarkConfig;
+  /**
+   * When true, converted outputs are auto-oriented upright from EXIF
+   * orientation metadata. Originals are copied untouched.
+   */
+  autoStraighten?: boolean;
   /** When true and copying originals, compare SHA-256 source/destination bytes after copy. */
   verifyChecksums?: boolean;
 }
@@ -310,6 +341,18 @@ export interface AppSettings {
   // Exposure normalization
   normalizeExposure: boolean;
   exposureMaxStops: number;
+  // Batch metadata + output transforms
+  metadataKeywords?: string;
+  metadataTitle?: string;
+  metadataCaption?: string;
+  metadataCreator?: string;
+  metadataCopyright?: string;
+  watermarkEnabled?: boolean;
+  watermarkText?: string;
+  watermarkOpacity?: number;
+  watermarkPosition?: WatermarkPosition;
+  watermarkScale?: number;
+  autoStraighten?: boolean;
   // Performance optimizations
   gpuFaceAcceleration?: boolean;  // Enable GPU for face detection (default: true if available)
   rawPreviewCache?: boolean;       // Cache RAW preview extractions (default: true)

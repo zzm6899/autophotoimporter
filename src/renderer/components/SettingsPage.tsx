@@ -39,6 +39,17 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     burstWindowSec,
     normalizeExposure,
     exposureMaxStops,
+    metadataKeywords,
+    metadataTitle,
+    metadataCaption,
+    metadataCreator,
+    metadataCopyright,
+    watermarkEnabled,
+    watermarkText,
+    watermarkOpacity,
+    watermarkPosition,
+    watermarkScale,
+    autoStraighten,
     selectionSets,
     licenseStatus,
     gpuFaceAcceleration,
@@ -104,6 +115,9 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     const diff = expiry.getTime() - now.getTime();
     return Math.ceil(diff / (1000 * 60 * 60 * 24));
   };
+
+  const effectiveActivatedAt = licenseStatus?.activatedAt ?? licenseStatus?.entitlement?.activatedAt;
+  const effectiveExpiresAt = licenseStatus?.expiresAt ?? licenseStatus?.entitlement?.activationExpiresAt ?? licenseStatus?.entitlement?.expiresAt;
 
   const openLicenseManagement = async () => {
     const code = activationCode;
@@ -171,7 +185,8 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
 
   const handleWorkflowBool = (
     key: 'separateProtected' | 'autoEject' | 'playSoundOnComplete' | 'openFolderOnComplete'
-      | 'autoImport' | 'burstGrouping' | 'normalizeExposure' | 'verifyChecksums',
+      | 'autoImport' | 'burstGrouping' | 'normalizeExposure' | 'verifyChecksums'
+      | 'watermarkEnabled' | 'autoStraighten',
     value: boolean,
   ) => {
     dispatch({ type: 'SET_WORKFLOW_OPTION', key, value });
@@ -184,6 +199,24 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   ) => {
     dispatch({ type: 'SET_WORKFLOW_STRING', key, value });
     set(key, value);
+  };
+
+  const handleMetadataString = (
+    key: 'metadataKeywords' | 'metadataTitle' | 'metadataCaption' | 'metadataCreator' | 'metadataCopyright' | 'watermarkText',
+    value: string,
+  ) => {
+    dispatch({ type: 'SET_WORKFLOW_STRING', key, value });
+    set(key, value);
+  };
+
+  const handleWatermarkNumber = (key: 'watermarkOpacity' | 'watermarkScale', value: number) => {
+    dispatch({ type: 'SET_WATERMARK_NUMBER', key, value });
+    set(key, value);
+  };
+
+  const handleWatermarkPosition = (position: 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left' | 'center') => {
+    dispatch({ type: 'SET_WATERMARK_POSITION', position });
+    set('watermarkPosition', position);
   };
 
   const handleBurstWindow = (seconds: number) => {
@@ -363,8 +396,8 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     }
   };
 
-  const expiryDaysRemaining = getDaysUntilExpiry(licenseStatus?.entitlement?.expiresAt);
-  const isTimedLicense = Boolean(licenseStatus?.entitlement?.expiresAt);
+  const expiryDaysRemaining = getDaysUntilExpiry(effectiveExpiresAt);
+  const isTimedLicense = Boolean(effectiveExpiresAt);
   const showExpiryWarning = isTimedLicense && expiryDaysRemaining != null && expiryDaysRemaining <= 14;
 
   const handleRequestTrial = async () => {
@@ -542,11 +575,14 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                 </div>
                 <div className="grid grid-cols-2 gap-1 text-[10px] text-text-muted">
                   <div className="bg-surface-alt border border-border rounded px-2 py-1">
-                    Expires: <span className="text-text-secondary">{formatDisplayDate(licenseStatus.entitlement?.expiresAt)}</span>
+                    Activated: <span className="text-text-secondary">{formatDisplayDate(effectiveActivatedAt)}</span>
                   </div>
                   <div className="bg-surface-alt border border-border rounded px-2 py-1">
-                    Type: <span className="text-text-secondary">{isTimedLicense ? 'Timed' : 'Lifetime'}</span>
+                    Expires: <span className="text-text-secondary">{formatDisplayDate(effectiveExpiresAt)}</span>
                   </div>
+                </div>
+                <div className="text-[10px] text-text-muted">
+                  Type: <span className="text-text-secondary">{isTimedLicense ? 'Timed' : 'Lifetime'}</span>
                 </div>
                 {showExpiryWarning && (
                   <div className="rounded border border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-[10px] text-amber-100">
@@ -1263,6 +1299,132 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                 />
               </div>
             )}
+          </section>
+
+          <section>
+            <h3 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-2">Metadata</h3>
+            <div className="space-y-2">
+              <textarea
+                rows={3}
+                value={metadataKeywords}
+                onChange={(e) => handleMetadataString('metadataKeywords', e.target.value)}
+                placeholder="Keywords, separated by commas or new lines"
+                className="w-full resize-y rounded border border-border bg-surface-raised px-2 py-1 text-xs text-text placeholder-text-muted focus:border-text focus:outline-none"
+              />
+              <input
+                value={metadataTitle}
+                onChange={(e) => handleMetadataString('metadataTitle', e.target.value)}
+                placeholder="Title / headline"
+                className="w-full rounded border border-border bg-surface-raised px-2 py-1 text-xs text-text placeholder-text-muted focus:border-text focus:outline-none"
+              />
+              <textarea
+                rows={2}
+                value={metadataCaption}
+                onChange={(e) => handleMetadataString('metadataCaption', e.target.value)}
+                placeholder="Caption / description"
+                className="w-full resize-y rounded border border-border bg-surface-raised px-2 py-1 text-xs text-text placeholder-text-muted focus:border-text focus:outline-none"
+              />
+              <div className="grid grid-cols-2 gap-1.5">
+                <input
+                  value={metadataCreator}
+                  onChange={(e) => handleMetadataString('metadataCreator', e.target.value)}
+                  placeholder="Creator / photographer"
+                  className="w-full rounded border border-border bg-surface-raised px-2 py-1 text-xs text-text placeholder-text-muted focus:border-text focus:outline-none"
+                />
+                <input
+                  value={metadataCopyright}
+                  onChange={(e) => handleMetadataString('metadataCopyright', e.target.value)}
+                  placeholder="Copyright notice"
+                  className="w-full rounded border border-border bg-surface-raised px-2 py-1 text-xs text-text placeholder-text-muted focus:border-text focus:outline-none"
+                />
+              </div>
+              <p className="text-[10px] text-text-muted">
+                Applied in bulk as XMP sidecars next to imported files, including RAW originals.
+              </p>
+            </div>
+          </section>
+
+          <section>
+            <h3 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-2">Watermark & Straighten</h3>
+            <div className="space-y-2">
+              <label className={`flex items-center gap-2 ${saveFormat === 'original' ? 'opacity-50' : 'cursor-pointer'}`}>
+                <input
+                  type="checkbox"
+                  checked={autoStraighten}
+                  onChange={(e) => handleWorkflowBool('autoStraighten', e.target.checked)}
+                  disabled={saveFormat === 'original'}
+                />
+                <span className="text-xs text-text">Auto-upright RAW/JPEG outputs from EXIF orientation</span>
+              </label>
+              <label className={`flex items-center gap-2 ${saveFormat === 'original' ? 'opacity-50' : 'cursor-pointer'}`}>
+                <input
+                  type="checkbox"
+                  checked={watermarkEnabled}
+                  onChange={(e) => handleWorkflowBool('watermarkEnabled', e.target.checked)}
+                  disabled={saveFormat === 'original'}
+                />
+                <span className="text-xs text-text">Add text watermark to converted outputs</span>
+              </label>
+              {saveFormat === 'original' && (
+                <p className="text-[10px] text-text-muted ml-5">
+                  Watermarking and straighten/upright transforms require JPEG / TIFF / HEIC output.
+                </p>
+              )}
+              {watermarkEnabled && saveFormat !== 'original' && (
+                <div className="ml-5 space-y-2">
+                  <input
+                    value={watermarkText}
+                    onChange={(e) => handleMetadataString('watermarkText', e.target.value)}
+                    placeholder="Watermark text"
+                    className="w-full rounded border border-border bg-surface-raised px-2 py-1 text-xs text-text placeholder-text-muted focus:border-text focus:outline-none"
+                  />
+                  <div className="grid grid-cols-[1fr_auto] gap-2 items-center">
+                    <span className="text-[10px] text-text-secondary">Position</span>
+                    <select
+                      value={watermarkPosition}
+                      onChange={(e) => handleWatermarkPosition(e.target.value as typeof watermarkPosition)}
+                      className="rounded border border-border bg-surface-raised px-2 py-1 text-xs text-text focus:border-text focus:outline-none"
+                    >
+                      <option value="bottom-right">Bottom right</option>
+                      <option value="bottom-left">Bottom left</option>
+                      <option value="top-right">Top right</option>
+                      <option value="top-left">Top left</option>
+                      <option value="center">Center</option>
+                    </select>
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between mb-0.5">
+                      <span className="text-[10px] text-text-secondary">Opacity</span>
+                      <span className="text-[10px] text-text-secondary font-mono">{Math.round(watermarkOpacity * 100)}%</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.1}
+                      max={0.9}
+                      step={0.05}
+                      value={watermarkOpacity}
+                      onChange={(e) => handleWatermarkNumber('watermarkOpacity', Number(e.target.value))}
+                      className="w-full h-1 bg-surface-raised rounded appearance-none cursor-pointer accent-accent"
+                    />
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between mb-0.5">
+                      <span className="text-[10px] text-text-secondary">Size</span>
+                      <span className="text-[10px] text-text-secondary font-mono">{(watermarkScale * 100).toFixed(1)}%</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.02}
+                      max={0.1}
+                      step={0.005}
+                      value={watermarkScale}
+                      onChange={(e) => handleWatermarkNumber('watermarkScale', Number(e.target.value))}
+                      className="w-full h-1 bg-surface-raised rounded appearance-none cursor-pointer accent-accent"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
           </section>
 
           <section>

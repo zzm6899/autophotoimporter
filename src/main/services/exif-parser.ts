@@ -59,6 +59,8 @@ const RAW_EXTENSIONS = new Set([
 const THUMB_WIDTH = 320;
 const PREVIEW_WIDTH = 1920;
 const PREVIEW_QUALITY = 85;
+const DETAIL_PREVIEW_WIDTH = 3840;
+const DETAIL_PREVIEW_QUALITY = 92;
 // Most cameras embed their full preview within the first 3MB of the RAW file.
 // We try 3MB first; if no large JPEG is found we extend to 12MB as a fallback.
 const MAX_RAW_SCAN_BYTES_FAST = 3 * 1024 * 1024;
@@ -470,6 +472,8 @@ function findJpegEnd(buf: Buffer, start: number): number {
 async function embeddedFallback(
   filePath: string,
   extension: string,
+  width: number,
+  quality: number,
   outPath?: string,
 ): Promise<string | undefined> {
   if (!EXIFR_SUPPORTED.has(extension)) return undefined;
@@ -478,7 +482,7 @@ async function embeddedFallback(
     const big = await extractLargestEmbeddedJpeg(filePath);
     if (big && big.length > 32 * 1024) {
       if (outPath && big.length > MAX_DIRECT_PREVIEW_BYTES) {
-        const resized = await resizeEmbeddedJpegToDataUri(big, outPath, PREVIEW_WIDTH, PREVIEW_QUALITY);
+        const resized = await resizeEmbeddedJpegToDataUri(big, outPath, width, quality);
         if (resized) return resized;
       }
       return `data:image/jpeg;base64,${big.toString('base64')}`;
@@ -575,15 +579,22 @@ async function cacheKeyFor(filePath: string): Promise<string> {
 
 const inflightPreviews = new Map<string, Promise<string | undefined>>();
 
-export async function generatePreview(filePath: string): Promise<string | undefined> {
-  const existing = inflightPreviews.get(filePath);
+export async function generatePreview(
+  filePath: string,
+  variant: 'preview' | 'detail' = 'preview',
+): Promise<string | undefined> {
+  const inflightKey = `${filePath}|${variant}`;
+  const existing = inflightPreviews.get(inflightKey);
   if (existing) return existing;
 
   const promise = (async () => {
     try {
       const dir = await getThumbDir();
       const key = await cacheKeyFor(filePath);
-      const outPath = path.join(dir, `${key}_preview.jpg`);
+      const width = variant === 'detail' ? DETAIL_PREVIEW_WIDTH : PREVIEW_WIDTH;
+      const quality = variant === 'detail' ? DETAIL_PREVIEW_QUALITY : rawPreviewQuality;
+      const suffix = variant === 'detail' ? 'detail' : 'preview';
+      const outPath = path.join(dir, `${key}_${suffix}.jpg`);
       const ext = path.extname(filePath).toLowerCase();
 
       try {
@@ -595,26 +606,26 @@ export async function generatePreview(filePath: string): Promise<string | undefi
       }
 
       if (RAW_EXTENSIONS.has(ext) && process.platform !== 'darwin') {
-        const fallback = await embeddedFallback(filePath, ext, outPath);
+        const fallback = await embeddedFallback(filePath, ext, width, quality, outPath);
         if (fallback) return fallback;
       }
 
       try {
-        await platformResize(filePath, outPath, PREVIEW_WIDTH, rawPreviewQuality, 30000);
+        await platformResize(filePath, outPath, width, quality, 30000);
         return readJpegDataUri(outPath);
       } catch {
-        return embeddedFallback(filePath, ext, outPath);
+        return embeddedFallback(filePath, ext, width, quality, outPath);
       }
     } catch {
       return undefined;
     }
   })();
 
-  inflightPreviews.set(filePath, promise);
+  inflightPreviews.set(inflightKey, promise);
   try {
     return await promise;
   } finally {
-    inflightPreviews.delete(filePath);
+    inflightPreviews.delete(inflightKey);
   }
 }
 

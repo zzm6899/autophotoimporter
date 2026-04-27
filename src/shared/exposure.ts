@@ -36,6 +36,16 @@ export function formatEVDelta(delta: number): string {
   return `${sign}${delta.toFixed(2)} EV`;
 }
 
+export function roundExposureStops(stops: number): number {
+  if (!Number.isFinite(stops)) return 0;
+  return Math.round(stops * 100) / 100;
+}
+
+export function normalizeExposureStops(stops: number, zeroSnap = 0.025): number {
+  const rounded = roundExposureStops(stops);
+  return Math.abs(rounded) < zeroSnap ? 0 : rounded;
+}
+
 /**
  * Convert a delta in stops to a linear brightness multiplier.
  *   +1 stop  = 2x brighter
@@ -58,10 +68,29 @@ export function stopsToSafeMultiplier(stops: number): number {
   const direction = stops >= 0 ? 1 : -1;
   const magnitude = Math.abs(stops);
   const compressedStops = direction > 0
-    ? magnitude / (1 + magnitude * 0.58)
-    : magnitude / (1 + magnitude * 0.34);
+    ? magnitude / (1 + magnitude * 0.82)
+    : magnitude / (1 + magnitude * 0.4);
   const multiplier = Math.pow(2, compressedStops * direction);
-  return Math.max(0.44, Math.min(1.95, multiplier));
+  return Math.max(0.48, Math.min(1.72, multiplier));
+}
+
+/**
+ * Build a CSS preview filter that keeps EV changes looking photographic
+ * instead of flat and washed-out. Brightening gets a little contrast/saturation
+ * back so rendered previews stay natural.
+ */
+export function buildPreviewExposureFilter(stops: number): string | undefined {
+  const normalized = normalizeExposureStops(stops, 0.01);
+  if (normalized === 0) return undefined;
+  const magnitude = Math.min(Math.abs(normalized), 4);
+  const brightness = stopsToSafeMultiplier(normalized);
+  const contrast = normalized > 0
+    ? 1 + Math.min(0.14, magnitude * 0.045)
+    : 1 + Math.min(0.08, magnitude * 0.025);
+  const saturate = normalized > 0
+    ? 1 + Math.min(0.08, magnitude * 0.025)
+    : 1 + Math.min(0.05, magnitude * 0.018);
+  return `brightness(${brightness.toFixed(3)}) contrast(${contrast.toFixed(3)}) saturate(${saturate.toFixed(3)})`;
 }
 
 /**

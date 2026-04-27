@@ -72,7 +72,26 @@ vi.mock('../services/license', () => ({
       : { valid: false, key, message: 'Signature check failed.' }),
   activateLicenseInput: vi.fn(async (key: string) =>
     key === 'valid-key'
-      ? { valid: true, key, message: 'License active.', entitlement: { product: 'photo-importer', name: 'Test', issuedAt: '2026-04-24', tier: 'Full access' } }
+      ? {
+          valid: true,
+          key,
+          activationCode: 'PIC-TEST-1234-ABCD',
+          activatedAt: '2026-04-27',
+          expiresAt: '2026-05-27',
+          deviceSlotsUsed: 1,
+          deviceSlotsTotal: 2,
+          currentDeviceRegistered: true,
+          message: 'License active until 27-05-2026.',
+          entitlement: {
+            product: 'photo-importer',
+            name: 'Test',
+            issuedAt: '2026-04-24',
+            activatedAt: '2026-04-27',
+            activationExpiresAt: '2026-05-27',
+            tier: 'Full access',
+            maxDevices: 2,
+          },
+        }
       : { valid: false, key, message: 'Signature check failed.' }),
   checkHostedLicenseStatus: vi.fn(async (_key: string, existing: any) => existing ?? { valid: false, message: 'No license activated.' }),
 }));
@@ -80,11 +99,12 @@ vi.mock('../services/license', () => ({
 import { registerIpcHandlers } from '../ipc-handlers';
 import { importFiles } from '../services/import-engine';
 import { scanFiles } from '../services/file-scanner';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 
 const mockImportFiles = vi.mocked(importFiles);
 const mockScanFiles = vi.mocked(scanFiles);
 const mockReadFile = vi.mocked(readFile);
+const mockWriteFile = vi.mocked(writeFile);
 
 // Helper: register all handlers, then extract the handler function for a given channel
 function getHandler(channel: string): (...args: unknown[]) => Promise<unknown> {
@@ -98,6 +118,9 @@ describe('IPC Handlers', () => {
   beforeEach(() => {
     mockHandle.mockClear();
     mockOn.mockClear();
+    mockReadFile.mockReset();
+    mockReadFile.mockRejectedValue(new Error('ENOENT'));
+    mockWriteFile.mockClear();
   });
 
   describe('IMPORT_START', () => {
@@ -212,6 +235,51 @@ describe('IPC Handlers', () => {
       const generate = getHandler('license:activate');
       const result = await generate({}, 'not-a-real-key') as any;
       expect(result.valid).toBe(false);
+    });
+
+    it('persists hosted license status metadata on activation', async () => {
+      mockReadFile
+        .mockRejectedValueOnce(new Error('ENOENT'))
+        .mockResolvedValueOnce(JSON.stringify({
+          licenseKey: 'valid-key',
+          licenseActivationCode: 'PIC-TEST-1234-ABCD',
+          licenseStatus: {
+            valid: true,
+            key: 'valid-key',
+            activationCode: 'PIC-TEST-1234-ABCD',
+            activatedAt: '2026-04-27',
+            expiresAt: '2026-05-27',
+            deviceSlotsUsed: 1,
+            deviceSlotsTotal: 2,
+            currentDeviceRegistered: true,
+            message: 'License active until 27-05-2026.',
+            entitlement: {
+              product: 'photo-importer',
+              name: 'Test',
+              issuedAt: '2026-04-24',
+              activatedAt: '2026-04-27',
+              activationExpiresAt: '2026-05-27',
+              tier: 'Full access',
+              maxDevices: 2,
+            },
+          },
+        }) as any);
+
+      const activate = getHandler('license:activate');
+      const result = await activate({}, 'valid-key') as any;
+
+      expect(mockWriteFile).toHaveBeenCalled();
+      const savedJson = String(mockWriteFile.mock.calls.at(-1)?.[1] ?? '');
+      const saved = JSON.parse(savedJson);
+      expect(saved.licenseStatus).toEqual(expect.objectContaining({
+        valid: true,
+        key: 'valid-key',
+        activationCode: 'PIC-TEST-1234-ABCD',
+        activatedAt: '2026-04-27',
+        expiresAt: '2026-05-27',
+        deviceSlotsUsed: 1,
+        deviceSlotsTotal: 2,
+      }));
     });
   });
 });

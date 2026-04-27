@@ -58,8 +58,8 @@ const api = {
     ipcRenderer.on(IPC.SCAN_DUPLICATE, handler);
     return () => ipcRenderer.removeListener(IPC.SCAN_DUPLICATE, handler);
   },
-  getPreview: (filePath: string): Promise<string | undefined> =>
-    ipcRenderer.invoke(IPC.SCAN_PREVIEW, filePath),
+  getPreview: (filePath: string, variant?: 'preview' | 'detail'): Promise<string | undefined> =>
+    ipcRenderer.invoke(IPC.SCAN_PREVIEW, filePath, variant),
   cancelScan: (): Promise<void> =>
     ipcRenderer.invoke(IPC.SCAN_CANCEL),
   pauseScan: (): Promise<void> =>

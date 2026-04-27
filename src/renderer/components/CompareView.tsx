@@ -2,12 +2,15 @@ import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import type { MediaFile } from '../../shared/types';
 import { buildExposure } from '../utils/formatters';
 import { decodeImage, getCachedPreview } from '../utils/previewCache';
+import { buildPreviewExposureFilter } from '../../shared/exposure';
 
 interface CompareViewProps {
   files: MediaFile[];
+  previewStopsByPath?: Record<string, number>;
+  selectionCount?: number;
 }
 
-export function CompareView({ files }: CompareViewProps) {
+export function CompareView({ files, previewStopsByPath, selectionCount = files.length }: CompareViewProps) {
   const visible = useMemo(() => files.slice(0, 4), [files]);
   const [previews, setPreviews] = useState<Record<string, string | undefined>>({});
   const [zoom, setZoom] = useState(1);
@@ -31,7 +34,7 @@ export function CompareView({ files }: CompareViewProps) {
     for (const file of visible) {
       if (loadedRef.current.has(file.path)) continue;
       loadedRef.current.add(file.path);
-      void getCachedPreview(file.path, 'high').then(async (preview) => {
+      void getCachedPreview(file.path, 'preview', 'high').then(async (preview) => {
         if (preview) await decodeImage(preview).catch(() => undefined);
         setPreviews((p) => ({ ...p, [file.path]: preview }));
       }).catch(() => undefined);
@@ -45,13 +48,19 @@ export function CompareView({ files }: CompareViewProps) {
   return (
     <div
       ref={gridRef}
-      className={`h-full grid gap-px bg-border ${visible.length <= 2 ? 'grid-cols-2' : 'grid-cols-2 grid-rows-2'}`}
+      className={`relative h-full grid gap-px bg-border ${visible.length <= 2 ? 'grid-cols-2' : 'grid-cols-2 grid-rows-2'}`}
       onDoubleClick={() => setZoom((z) => z > 1 ? 1 : 2)}
       title="Compare view. Ctrl/Cmd + wheel zooms all images together; double-click toggles 200%."
     >
+      {selectionCount > visible.length && (
+        <div className="pointer-events-none absolute left-3 top-3 z-20 rounded bg-black/60 px-2.5 py-1 text-[10px] font-mono text-white/85">
+          Showing {visible.length} of {selectionCount}
+        </div>
+      )}
       {visible.map((file) => {
         const src = previews[file.path] || file.thumbnail;
         const exposure = buildExposure(file);
+        const previewFilter = buildPreviewExposureFilter(previewStopsByPath?.[file.path] ?? 0);
         return (
           <div key={file.path} className="relative bg-black flex items-center justify-center overflow-hidden">
             {src ? (
@@ -60,7 +69,7 @@ export function CompareView({ files }: CompareViewProps) {
                 alt={file.name}
                 className="max-w-full max-h-full object-contain transition-transform duration-100"
                 draggable={false}
-                style={{ transform: `scale(${zoom})` }}
+                style={{ transform: `scale(${zoom})`, filter: previewFilter }}
               />
             ) : (
               <div className="text-xs text-text-muted">No preview</div>

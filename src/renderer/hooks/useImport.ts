@@ -12,6 +12,8 @@ export function useImport() {
     autoEject, playSoundOnComplete, completeSoundPath, openFolderOnComplete,
     verifyChecksums,
     normalizeExposure, exposureAnchorPath, exposureMaxStops,
+    metadataKeywords, metadataTitle, metadataCaption, metadataCreator, metadataCopyright,
+    watermarkEnabled, watermarkText, watermarkOpacity, watermarkPosition, watermarkScale, autoStraighten,
     licenseStatus,
   } = useAppState();
   const dispatch = useAppDispatch();
@@ -74,6 +76,10 @@ export function useImport() {
           .filter((f) => typeof f.exposureAdjustmentStops === 'number' && Math.abs(f.exposureAdjustmentStops) >= 0.01)
           .map((f) => [f.path, f.exposureAdjustmentStops as number]))
       : {};
+    const metadataKeywordList = metadataKeywords
+      .split(/[\n,;]+/)
+      .map((value) => value.trim())
+      .filter(Boolean);
 
     const runId = ++latestImportRunId;
     dispatch({ type: 'IMPORT_START' });
@@ -97,6 +103,25 @@ export function useImport() {
         exposureMaxStops,
         normalizeAnchorPaths: normalizeAnchorPaths.length > 0 ? normalizeAnchorPaths : undefined,
         exposureAdjustments: Object.keys(exposureAdjustments).length > 0 ? exposureAdjustments : undefined,
+        metadata: metadataKeywordList.length > 0 || metadataTitle.trim() || metadataCaption.trim() || metadataCreator.trim() || metadataCopyright.trim()
+          ? {
+              keywords: metadataKeywordList.length > 0 ? metadataKeywordList : undefined,
+              title: metadataTitle.trim() || undefined,
+              caption: metadataCaption.trim() || undefined,
+              creator: metadataCreator.trim() || undefined,
+              copyright: metadataCopyright.trim() || undefined,
+            }
+          : undefined,
+        watermark: watermarkEnabled && watermarkText.trim()
+          ? {
+              enabled: true,
+              text: watermarkText.trim(),
+              opacity: watermarkOpacity,
+              position: watermarkPosition,
+              scale: watermarkScale,
+            }
+          : undefined,
+        autoStraighten,
       });
       if (runId !== latestImportRunId) return;
       dispatch({ type: 'IMPORT_COMPLETE', result });
@@ -130,7 +155,10 @@ export function useImport() {
     separateProtected, protectedFolderName, backupDestRoot,
     ftpDestEnabled, ftpDestConfig,
     autoEject, playSoundOnComplete, completeSoundPath, openFolderOnComplete, verifyChecksums,
-    normalizeExposure, exposureAnchorPath, exposureMaxStops, licenseStatus,
+    normalizeExposure, exposureAnchorPath, exposureMaxStops,
+    metadataKeywords, metadataTitle, metadataCaption, metadataCreator, metadataCopyright,
+    watermarkEnabled, watermarkText, watermarkOpacity, watermarkPosition, watermarkScale, autoStraighten,
+    licenseStatus,
   ]);
 
   const cancelImport = useCallback(async () => {

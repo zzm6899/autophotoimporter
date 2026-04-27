@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import type { MediaFile } from '../../shared/types';
 import { buildExposure, formatFileSize } from '../utils/formatters';
 import { useAppState, useAppDispatch, useMergedFiles } from '../context/ImportContext';
-import { formatEVDelta, stopsToSafeMultiplier, clampStops, estimateClippingPercent } from '../../shared/exposure';
+import { buildPreviewExposureFilter, formatEVDelta, stopsToSafeMultiplier, clampStops, estimateClippingPercent } from '../../shared/exposure';
 import { Histogram } from './Histogram';
 import { decodeImage, getCachedPreview } from '../utils/previewCache';
 
@@ -52,6 +52,7 @@ function orientationQuarterTurns(orientation?: number) {
 
 export function SingleView({ file, index, total }: SingleViewProps) {
   const [preview, setPreview] = useState<string | undefined>(undefined);
+  const [detailPreview, setDetailPreview] = useState<string | undefined>(undefined);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const isPicked = file.pick === 'selected';
@@ -84,11 +85,18 @@ export function SingleView({ file, index, total }: SingleViewProps) {
   useEffect(() => {
     setZoom(1);
     setPan({ x: 0, y: 0 });
-    setPreviewNormalized(!!file.normalizeToAnchor);
+    setPreviewNormalized(false);
     setHoldOriginal(false);
     setManualQuarterTurns(0);
     setImageNatural(null);
+    setDetailPreview(undefined);
   }, [file.path]);
+
+  useEffect(() => {
+    if (Math.abs(file.exposureAdjustmentStops ?? 0) >= 0.01) {
+      setPreviewNormalized(true);
+    }
+  }, [file.exposureAdjustmentStops, file.normalizeToAnchor]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -133,7 +141,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
 
     const timer = window.setTimeout(() => {
       setLoading(true);
-      void getCachedPreview(file.path, 'high').then(async (result) => {
+      void getCachedPreview(file.path, 'preview', 'high').then(async (result) => {
         if (cancelled) return;
         if (result) {
           try {
@@ -161,6 +169,24 @@ export function SingleView({ file, index, total }: SingleViewProps) {
       window.clearTimeout(timer);
     };
   }, [file.path, file.thumbnail, rawPreview]);
+
+  useEffect(() => {
+    if (zoom < 1.5) return;
+    if (detailPreview) return;
+    let cancelled = false;
+    void getCachedPreview(file.path, 'detail', 'high').then(async (result) => {
+      if (cancelled || !result) return;
+      try {
+        await decodeImage(result);
+      } catch {
+        // Keep the higher-res source even if eager decode fails.
+      }
+      if (!cancelled) setDetailPreview(result);
+    }).catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [detailPreview, file.path, zoom]);
 
   useEffect(() => {
     if (!file.thumbnail) return;
@@ -258,7 +284,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
     decoded. On slower laptops this makes detail navigation feel immediate,
     even when the platform preview converter takes a beat.
   */
-  const imageSrc = preview || file.thumbnail;
+  const imageSrc = (zoom >= 1.5 ? detailPreview : undefined) || preview || file.thumbnail;
   const showingThumbnailOnly = !!file.thumbnail && !preview && loading;
 
   const handleWheel = useCallback((e: WheelEvent) => {
@@ -319,16 +345,18 @@ export function SingleView({ file, index, total }: SingleViewProps) {
     canPreviewNorm && typeof evDelta === 'number' && typeof file.exposureValue === 'number' && anchor
       ? clampStops(-evDelta, exposureMaxStops)
       : 0;
+  const matchCorrection = canPreviewNorm ? normalizedEvDelta : undefined;
   const manualStops = file.exposureAdjustmentStops ?? 0;
-  const previewStops = previewNormalized && !holdOriginal
-    ? clampStops(normalizedEvDelta + manualStops, exposureMaxStops)
-    : 0;
+  const previewStops = holdOriginal
+    ? 0
+    : clampStops((previewNormalized ? normalizedEvDelta : 0) + manualStops, exposureMaxStops);
   const brightnessMultiplier = previewStops !== 0
     ? stopsToSafeMultiplier(previewStops)
     : 1;
+  const exposurePreviewFilter = buildPreviewExposureFilter(previewStops);
   const imageFilter = [
     showingThumbnailOnly ? 'blur(0.35px)' : '',
-    brightnessMultiplier !== 1 ? `brightness(${brightnessMultiplier.toFixed(3)})` : '',
+    exposurePreviewFilter ?? '',
   ].filter(Boolean).join(' ');
   const orientation = orientationTransform(file.orientation);
   const manualRotation = manualQuarterTurns ? `rotate(${manualQuarterTurns * 90}deg)` : undefined;
@@ -348,7 +376,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
         };
       })()
     : null;
-  const canPreviewAdjust = imageSrc && (canPreviewNorm || Math.abs(manualStops) >= 0.01);
+  const canPreviewAdjust = imageSrc && canPreviewNorm;
   const clippingRisk = Math.abs(previewStops) >= exposureMaxStops - 0.01 || brightnessMultiplier >= 2.25 || brightnessMultiplier <= 0.4;
 
   useEffect(() => {
@@ -606,6 +634,20 @@ export function SingleView({ file, index, total }: SingleViewProps) {
                 Δ {formatEVDelta(evDelta)}
               </span>
             )}
+            {matchCorrection !== undefined && (
+              <span
+                className={`text-[9px] font-mono px-1.5 py-0.5 rounded ${
+                  Math.abs(matchCorrection) < 0.17
+                    ? 'bg-emerald-500/30 text-emerald-300'
+                    : Math.abs(matchCorrection) < 1
+                    ? 'bg-sky-500/25 text-sky-200'
+                    : 'bg-orange-500/25 text-orange-200'
+                }`}
+                title={`Exposure correction needed to match anchor (${anchor?.name}) on import`}
+              >
+                Match {formatEVDelta(matchCorrection)}
+              </span>
+            )}
             {Math.abs(manualStops) >= 0.01 && (
               <span className="text-[9px] font-mono text-sky-300 bg-sky-500/30 px-1.5 py-0.5 rounded" title="Manual exposure offset">
                 EV {manualStops > 0 ? '+' : ''}{manualStops.toFixed(2)}
@@ -687,10 +729,10 @@ export function SingleView({ file, index, total }: SingleViewProps) {
                     : 'text-white/80 bg-black/70 backdrop-blur-sm hover:bg-black/80 hover:text-sky-300'
                 }`}
                 title={previewNormalized
-                  ? `Showing adjusted preview (${formatEVDelta(previewStops)}). Hold Space for original`
-                  : `Preview exposure adjustment (${formatEVDelta(clampStops(normalizedEvDelta + manualStops, exposureMaxStops))})`}
+                  ? `Previewing anchor match (${formatEVDelta(normalizedEvDelta)}). Hold Space for original`
+                  : `Preview the anchor-match correction (${formatEVDelta(normalizedEvDelta)}). Manual EV remains live.`}
               >
-                {previewNormalized ? (holdOriginal ? 'Original' : 'Adjusted') : 'Preview EV'}
+                {previewNormalized ? (holdOriginal ? 'Original' : 'Previewing Match') : 'Preview Match'}
               </button>
             )}
             {typeof file.reviewScore === 'number' && (
