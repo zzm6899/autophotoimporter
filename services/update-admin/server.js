@@ -2259,30 +2259,44 @@ app.post(
       // Handle payment_intent.succeeded (alternative to checkout.session.completed)
       const paymentIntent = event.data.object;
       const sessionId = paymentIntent.payment_details?.order_reference; // Session ID stored in order_reference
-      let customerEmail = paymentIntent.receipt_email || ''; // May not be set here
       const amountTotal = paymentIntent.amount; // cents
       const currency = (paymentIntent.currency || 'aud').toUpperCase();
 
       console.log(`[stripe] payment_intent.succeeded — session: ${sessionId} — amount: ${amountTotal / 100} ${currency}`);
 
-      // If we don't have customer email, we need to look it up from the payment method or skip
       if (!sessionId) {
         console.warn('[stripe] payment_intent.succeeded has no order_reference (session ID) — skipping license generation');
         return res.json({ received: true });
       }
 
-      if (!customerEmail) {
-        console.warn('[stripe] payment_intent.succeeded has no receipt_email — fetching from payment metadata');
-        // Try to get from metadata
-        const metadata = paymentIntent.metadata || {};
-        customerEmail = metadata.customer_email || metadata.email;
-        if (!customerEmail) {
-          console.warn('[stripe] Could not determine customer email from payment_intent — skipping');
-          return res.json({ received: true });
+      // Fetch checkout session from Stripe to get customer details
+      let checkoutSession;
+      try {
+        console.log(`[stripe] Fetching checkout session details from Stripe: ${sessionId}`);
+        const stripeRes = await fetch(`https://api.stripe.com/v1/checkout/sessions/${sessionId}`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Basic ${Buffer.from(stripeSecretKey + ':').toString('base64')}`,
+          },
+        });
+        checkoutSession = await stripeRes.json();
+        if (!stripeRes.ok) {
+          throw new Error(`Stripe API error: ${checkoutSession.error?.message || 'Unknown error'}`);
         }
+        console.log(`[stripe] ✓ Retrieved checkout session`);
+      } catch (err) {
+        console.error('[stripe] ✗ Failed to fetch checkout session from Stripe:', err.message);
+        console.error('[stripe] Proceeding with payment_intent metadata only');
+        checkoutSession = null;
       }
 
-      const customerName = paymentIntent.metadata?.customer_name || 'Culler Customer';
+      let customerEmail = checkoutSession?.customer_details?.email || paymentIntent.receipt_email || '';
+      let customerName = checkoutSession?.customer_details?.name || paymentIntent.metadata?.customer_name || 'Culler Customer';
+
+      if (!customerEmail) {
+        console.warn('[stripe] Could not determine customer email from checkout session or payment_intent — skipping');
+        return res.json({ received: true });
+      }
 
       try {
         console.log(`[stripe] Generating license for: ${customerName} (${customerEmail})`);
@@ -2306,8 +2320,6 @@ app.post(
           console.log(`[stripe] ✓ Session stored in stripe_sessions — session: ${sessionId}`);
         } catch (dbErr) {
           console.error('[stripe] ✗ Database error storing session:');
-          console.error('  Query:', 'INSERT INTO stripe_sessions...');
-          console.error('  Params:', [sessionId, '***', '***', customerEmail]);
           console.error('  Error:', dbErr.message);
           console.error('  Detail:', dbErr.detail);
           console.error('  Code:', dbErr.code);
