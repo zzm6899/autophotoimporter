@@ -574,6 +574,7 @@ export function ThumbnailGrid() {
   // race each other, ref resets cancel in-flight work, and the loop stalls after 1 image.
   const filesRef = useRef(files);
   const sortedFilesRef = useRef<typeof files>([]);
+  const multiClickSelectRef = useRef(false);
   const reviewPausedRef = useRef(false);
   const reviewWaitingRef = useRef(false);
   const fastKeeperModeRef = useRef(fastKeeperMode);
@@ -763,6 +764,7 @@ export function ThumbnailGrid() {
   // having them as deps (which would restart the loop on every score update).
   useEffect(() => { filesRef.current = files; });
   useEffect(() => { sortedFilesRef.current = sortedFiles; });
+  useEffect(() => { multiClickSelectRef.current = multiClickSelect; }, [multiClickSelect]);
   useEffect(() => { reviewPausedRef.current = reviewPaused; }, [reviewPaused]);
   useEffect(() => { reviewWaitingRef.current = reviewWaitingForThumbnails; }, [reviewWaitingForThumbnails]);
   useEffect(() => { fastKeeperModeRef.current = fastKeeperMode; }, [fastKeeperMode]);
@@ -1042,18 +1044,20 @@ export function ThumbnailGrid() {
   }, [dispatch]);
 
   const handleCardClick = useCallback((index: number, e: React.MouseEvent) => {
-    const clickedFile = sortedFiles[index];
+    const currentSortedFiles = sortedFilesRef.current;
+    const clickedFile = currentSortedFiles[index];
     if (!clickedFile) return;
     const clickedPath = clickedFile.path;
     const sel = selectedPathSetRef.current;
     const metaKey = e.metaKey || e.ctrlKey;
+    const multiSelectEnabled = multiClickSelectRef.current;
 
     if (e.shiftKey && lastClickedPathRef.current) {
-      const anchorIndex = sortedFiles.findIndex((file) => file.path === lastClickedPathRef.current);
+      const anchorIndex = currentSortedFiles.findIndex((file) => file.path === lastClickedPathRef.current);
       if (anchorIndex >= 0) {
         const start = Math.min(anchorIndex, index);
         const end = Math.max(anchorIndex, index);
-        const rangePaths = sortedFiles.slice(start, end + 1).map((file) => file.path);
+        const rangePaths = currentSortedFiles.slice(start, end + 1).map((file) => file.path);
         if (metaKey) {
           const next = [...selectedPathsRef.current];
           for (const path of rangePaths) {
@@ -1077,7 +1081,7 @@ export function ThumbnailGrid() {
       setFocused(index);
       lastClickedPathRef.current = clickedPath;
     } else {
-      if (multiClickSelect) {
+      if (multiSelectEnabled) {
         if (sel.size === 0) {
           applySelectedPaths([clickedPath]);
         } else if (!sel.has(clickedPath)) {
@@ -1091,10 +1095,11 @@ export function ThumbnailGrid() {
       setFocused(index);
       lastClickedPathRef.current = clickedPath;
     }
-  }, [applySelectedPaths, clearSelection, multiClickSelect, setFocused, sortedFiles]); // stable — reads selected selection via refs
+  }, [applySelectedPaths, clearSelection, setFocused]); // stable — reads selected selection via refs
 
   const handleMultiToggle = useCallback(() => {
     const nextMultiSelect = !multiClickSelect;
+    multiClickSelectRef.current = nextMultiSelect;
     setMultiClickSelect(nextMultiSelect);
     if (!nextMultiSelect) clearSelection();
   }, [clearSelection, multiClickSelect]);

@@ -331,6 +331,9 @@ export const ThumbnailCard = memo(ThumbnailCardInner, (prev, next) => {
     a.blurRisk === b.blurRisk &&
     a.visualGroupId === b.visualGroupId &&
     a.visualGroupSize === b.visualGroupSize &&
+    prev.onClickCard === next.onClickCard &&
+    prev.onDoubleClickCard === next.onDoubleClickCard &&
+    prev.onBurstToggle === next.onBurstToggle &&
     prev.focused === next.focused &&
     prev.selected === next.selected &&
     prev.queued === next.queued &&
