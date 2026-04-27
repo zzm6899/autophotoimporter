@@ -2413,21 +2413,6 @@ app.post('/admin/licenses/:id/extend', authSession, async (req, res) => {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Public pricing endpoint  GET /api/v1/pricing
-// Returns current plan prices so the app/website can display them dynamically.
-// ---------------------------------------------------------------------------
-app.get('/api/v1/pricing', async (_req, res) => {
-  const cfg = await getStripePricing();
-  return res.json({
-    monthly: { cents: Number(cfg.price_monthly_cents || 0), currency: cfg.currency || 'aud' },
-    yearly:  { cents: Number(cfg.price_yearly_cents  || 0), currency: cfg.currency || 'aud' },
-    lifetime: { cents: Number(cfg.price_lifetime_cents || 0), currency: cfg.currency || 'aud' },
-    trialDays: Number(cfg.trial_days || 14),
-    publishableKey: stripePublishableKey,
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Checkout success page  GET /checkout-success
 // ---------------------------------------------------------------------------
 app.get('/checkout-success', (_req, res) => {
