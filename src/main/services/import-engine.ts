@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { Client } from 'basic-ftp';
 import type { MediaFile, ImportConfig, ImportProgress, ImportResult, ImportError, SaveFormat, BatchMetadata, WatermarkConfig, WatermarkPosition } from '../../shared/types';
 import { isDuplicate } from './duplicate-detector';
-import { stopsToSafeMultiplier, clampStops } from '../../shared/exposure';
+import { stopsToSafeMultiplier, getEffectiveExposureStops } from '../../shared/exposure';
 
 const execFileAsync = promisify(execFile);
 
@@ -464,17 +464,13 @@ export async function importFiles(
 
   function brightnessFor(file: MediaFile): number {
     const shouldNormalize = normalizeActive || perFileNormalizePaths.has(file.path);
-    const manualStops = config.exposureAdjustments?.[file.path] ?? file.exposureAdjustmentStops ?? 0;
-    let normalizeStops = 0;
-    if (shouldNormalize && typeof file.exposureValue === 'number') {
-      const anchor = config.exposureAnchorEV as number;
-      // Higher EV100 means more exposure captured (brighter image).
-      // To bring this file's brightness up to the anchor, apply
-      // (anchor - fileEV): positive when the file is darker than the anchor
-      // (needs brightening), negative when brighter (needs darkening).
-      normalizeStops = anchor - file.exposureValue;
-    }
-    const correctionStops = clampStops(normalizeStops + manualStops, maxStops);
+    const correctionStops = getEffectiveExposureStops(
+      config.exposureAdjustments?.[file.path] ?? file.exposureAdjustmentStops,
+      file.exposureValue,
+      shouldNormalize ? config.exposureAnchorEV : undefined,
+      shouldNormalize,
+      maxStops,
+    );
     return stopsToSafeMultiplier(correctionStops);
   }
 

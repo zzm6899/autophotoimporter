@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import type { MediaFile } from '../../shared/types';
 import { buildExposure, formatFileSize } from '../utils/formatters';
 import { useAppState, useAppDispatch, useMergedFiles } from '../context/ImportContext';
-import { buildPreviewExposureFilter, formatEVDelta, stopsToSafeMultiplier, clampStops, estimateClippingPercent } from '../../shared/exposure';
+import { buildPreviewExposureFilter, formatEVDelta, stopsToSafeMultiplier, clampStops, estimateClippingPercent, getNormalizedExposureStops } from '../../shared/exposure';
 import { Histogram } from './Histogram';
 import { decodeImage, getCachedPreview } from '../utils/previewCache';
 
@@ -343,7 +343,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
     evDelta !== undefined && !isAnchor && Math.abs(evDelta) >= 0.05 && imageSrc;
   const normalizedEvDelta =
     canPreviewNorm && typeof evDelta === 'number' && typeof file.exposureValue === 'number' && anchor
-      ? clampStops(-evDelta, exposureMaxStops)
+      ? getNormalizedExposureStops(file.exposureValue, anchor.exposureValue, exposureMaxStops)
       : 0;
   const matchCorrection = canPreviewNorm ? normalizedEvDelta : undefined;
   const manualStops = file.exposureAdjustmentStops ?? 0;

@@ -12,7 +12,7 @@ import { SettingsPage } from './SettingsPage';
 import { ShortcutsOverlay } from './ShortcutsOverlay';
 import { BestOfSelectionPanel, rankBestOfSelection } from './BestOfSelectionPanel';
 import { getPreviewCacheStats, setBackgroundPreviewPaused, warmPreview } from '../utils/previewCache';
-import { clampStops, normalizeExposureStops } from '../../shared/exposure';
+import { clampStops, getEffectiveExposureStops, getNormalizedExposureStops, normalizeExposureStops } from '../../shared/exposure';
 
 // ── Laplacian sharpness-based subject detector ────────────────────────────
 // Uses focus sharpness (Laplacian variance) instead of colour/skin tone so it
@@ -21,6 +21,12 @@ import { clampStops, normalizeExposureStops } from '../../shared/exposure';
 // text banners) that are near the frame edges.
 
 interface SubjectBox { x: number; y: number; w: number; h: number; score: number }
+
+type ExposureClipboard = {
+  manualStops: number;
+  normalizeToAnchor: boolean;
+  anchorPath: string | null;
+};
 
 /**
  * Detect subject regions by finding the sharpest (in-focus) areas of the image.
@@ -554,7 +560,7 @@ export function ThumbnailGrid() {
   const [batchOffset, setBatchOffset] = useState(0); // for Best of Batch page navigation
   const [reviewPaused, setReviewPaused] = useState(false);
   const [backgroundLoadingPaused, setBackgroundLoadingPaused] = useState(false);
-  const [exposureClipboard, setExposureClipboard] = useState<number | null>(null);
+  const [exposureClipboard, setExposureClipboard] = useState<ExposureClipboard | null>(null);
   const [groupByFolder, setGroupByFolder] = useState(false);
   const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
   const [showAdvancedTools, setShowAdvancedTools] = useState(false);
@@ -1299,17 +1305,21 @@ export function ThumbnailGrid() {
         return;
       }
 
-      // Ctrl+C: copy EV adjustment from focused file
+      // Ctrl+C: copy exposure recipe from focused file
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'c') {
         const source = focusedFile ?? selectedFiles[0];
         if (source) {
           e.preventDefault();
-          setExposureClipboard(source.exposureAdjustmentStops ?? 0);
+          setExposureClipboard({
+            manualStops: source.exposureAdjustmentStops ?? 0,
+            normalizeToAnchor: !!source.normalizeToAnchor,
+            anchorPath: exposureAnchorPath,
+          });
           return;
         }
       }
 
-      // Ctrl+V: paste EV adjustment to selected/focused
+      // Ctrl+V: paste exposure recipe to selected/focused
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'v') {
         if (exposureClipboard !== null) {
           e.preventDefault();
@@ -1317,7 +1327,29 @@ export function ThumbnailGrid() {
             ? selectedPaths
             : focusedIndex >= 0 ? [sortedFiles[focusedIndex].path] : [];
           if (targets.length > 0) {
-            dispatch({ type: 'SET_EXPOSURE_ADJUSTMENT', filePaths: targets, stops: exposureClipboard });
+            if (
+              exposureClipboard.normalizeToAnchor &&
+              exposureClipboard.anchorPath &&
+              files.some((file) => file.path === exposureClipboard.anchorPath)
+            ) {
+              dispatch({ type: 'SET_EXPOSURE_ANCHOR', path: exposureClipboard.anchorPath });
+              dispatch({
+                type: 'SET_NORMALIZE_TO_ANCHOR',
+                filePaths: targets,
+                value: true,
+              });
+            } else {
+              dispatch({
+                type: 'SET_NORMALIZE_TO_ANCHOR',
+                filePaths: targets,
+                value: false,
+              });
+            }
+            dispatch({
+              type: 'SET_EXPOSURE_ADJUSTMENT',
+              filePaths: targets,
+              stops: exposureClipboard.manualStops,
+            });
             return;
           }
         }
@@ -1630,13 +1662,12 @@ export function ThumbnailGrid() {
   const anchorHasEV = typeof anchorFile?.exposureValue === 'number';
   const canNormalize = anchorHasEV && saveFormat !== 'original';
   const getThumbnailExposureStops = useCallback((file: typeof files[number]): number => {
-    void file;
-    void anchorHasEV;
-    void anchorFile;
-    void exposureMaxStops;
-    // Grid / filmstrip cards stay on the original photo for auto-normalize.
-    // Manual EV remains live-previewed via file.exposureAdjustmentStops.
-    return 0;
+    if (!file.normalizeToAnchor || !anchorHasEV) return 0;
+    return getNormalizedExposureStops(
+      file.exposureValue,
+      anchorFile?.exposureValue,
+      exposureMaxStops,
+    );
   }, [anchorFile?.exposureValue, anchorHasEV, exposureMaxStops]);
   const normalizeTargetPaths = hasBatchSelection
     ? selectedPaths
@@ -1737,6 +1768,20 @@ export function ThumbnailGrid() {
   const avgManualStops = normalizeTargetPaths.length > 0
     ? normalizeTargetPaths.reduce((sum, p) => sum + (files.find((f) => f.path === p)?.exposureAdjustmentStops ?? 0), 0) / normalizeTargetPaths.length
     : 0;
+  const avgEffectiveStops = normalizeTargetPaths.length > 0
+    ? normalizeTargetPaths.reduce((sum, p) => {
+      const file = files.find((entry) => entry.path === p);
+      return sum + (file
+        ? getEffectiveExposureStops(
+            file.exposureAdjustmentStops,
+            file.exposureValue,
+            anchorFile?.exposureValue,
+            file.normalizeToAnchor,
+            exposureMaxStops,
+          )
+        : 0);
+    }, 0) / normalizeTargetPaths.length
+    : 0;
 
   // Burst collapse/expand state (useMemo must be before early returns to
   // satisfy the Rules of Hooks).
@@ -1764,16 +1809,40 @@ export function ThumbnailGrid() {
     dispatch({ type: 'NORMALIZE_SELECTION_TO_MEDIAN', filePaths: normalizeTargetPaths });
   }, [dispatch, normalizeTargetPaths]);
 
+  const clearExposureAdjustments = useCallback(() => {
+    if (normalizeTargetPaths.length === 0) return;
+    dispatch({ type: 'SET_NORMALIZE_TO_ANCHOR', filePaths: normalizeTargetPaths, value: false });
+    dispatch({ type: 'SET_EXPOSURE_ADJUSTMENT', filePaths: normalizeTargetPaths, stops: 0 });
+  }, [dispatch, normalizeTargetPaths]);
+
   const copyExposureAdjustment = useCallback(() => {
     const source = focusedFile ?? selectedFiles[0];
     if (!source) return;
-    setExposureClipboard(source.exposureAdjustmentStops ?? 0);
-  }, [focusedFile, selectedFiles]);
+    setExposureClipboard({
+      manualStops: source.exposureAdjustmentStops ?? 0,
+      normalizeToAnchor: !!source.normalizeToAnchor,
+      anchorPath: exposureAnchorPath,
+    });
+  }, [exposureAnchorPath, focusedFile, selectedFiles]);
 
   const pasteExposureAdjustment = useCallback(() => {
     if (exposureClipboard === null || normalizeTargetPaths.length === 0) return;
-    dispatch({ type: 'SET_EXPOSURE_ADJUSTMENT', filePaths: normalizeTargetPaths, stops: exposureClipboard });
-  }, [dispatch, exposureClipboard, normalizeTargetPaths]);
+    if (
+      exposureClipboard.normalizeToAnchor &&
+      exposureClipboard.anchorPath &&
+      files.some((file) => file.path === exposureClipboard.anchorPath)
+    ) {
+      dispatch({ type: 'SET_EXPOSURE_ANCHOR', path: exposureClipboard.anchorPath });
+      dispatch({ type: 'SET_NORMALIZE_TO_ANCHOR', filePaths: normalizeTargetPaths, value: true });
+    } else {
+      dispatch({ type: 'SET_NORMALIZE_TO_ANCHOR', filePaths: normalizeTargetPaths, value: false });
+    }
+    dispatch({
+      type: 'SET_EXPOSURE_ADJUSTMENT',
+      filePaths: normalizeTargetPaths,
+      stops: exposureClipboard.manualStops,
+    });
+  }, [dispatch, exposureClipboard, files, normalizeTargetPaths]);
 
   const openCustomExposureEditor = useCallback(() => {
     if (saveFormat === 'original' || normalizeTargetPaths.length === 0) return;
@@ -2066,9 +2135,9 @@ export function ThumbnailGrid() {
             onClick={handleExposureValueTap}
             onDoubleClick={openCustomExposureEditor}
             className="rounded px-2 py-1.5 text-[10px] font-mono text-sky-300 transition-colors hover:bg-sky-500/10 hover:text-sky-200"
-            title="Average manual exposure offset. Double-click or double-tap to type a custom EV."
+            title="Average final exposure change for the current target. Double-click or double-tap to type a custom manual EV."
           >
-            {avgManualStops >= 0 ? '+' : ''}{avgManualStops.toFixed(2)}
+            {avgEffectiveStops >= 0 ? '+' : ''}{avgEffectiveStops.toFixed(2)}
           </button>
           <button
             onClick={() => dispatch({ type: 'NUDGE_EXPOSURE_ADJUSTMENT', filePaths: normalizeTargetPaths, delta: 0.33 })}
@@ -2078,16 +2147,16 @@ export function ThumbnailGrid() {
             +
           </button>
           <button
-            onClick={() => dispatch({ type: 'SET_EXPOSURE_ADJUSTMENT', filePaths: normalizeTargetPaths, stops: 0 })}
+            onClick={clearExposureAdjustments}
             className="px-2 py-1.5 text-[11px] text-text-muted hover:text-text hover:bg-surface-raised transition-colors"
-            title="Reset manual exposure offset (\\)"
+            title="Reset exposure recipe for current target (clear manual EV and auto-normalize)"
           >
             0
           </button>
           <button
             onClick={copyExposureAdjustment}
             className="px-2 py-1.5 text-[11px] text-text-muted hover:text-sky-300 hover:bg-sky-500/10 transition-colors"
-            title="Copy the focused file's manual EV offset"
+            title="Copy the focused photo's exposure recipe"
           >
             Copy EV
           </button>
@@ -2095,7 +2164,9 @@ export function ThumbnailGrid() {
             onClick={pasteExposureAdjustment}
             disabled={exposureClipboard === null}
             className="px-2 py-1.5 text-[11px] text-text-muted hover:text-sky-300 hover:bg-sky-500/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-            title={exposureClipboard === null ? 'Copy an EV offset first' : `Paste ${exposureClipboard >= 0 ? '+' : ''}${exposureClipboard.toFixed(2)} EV to current target`}
+            title={exposureClipboard === null
+              ? 'Copy an EV offset first'
+              : `Paste ${exposureClipboard.manualStops >= 0 ? '+' : ''}${exposureClipboard.manualStops.toFixed(2)} EV${exposureClipboard.normalizeToAnchor ? ' with auto-normalize' : ''} to current target`}
           >
             Paste
           </button>

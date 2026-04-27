@@ -556,7 +556,14 @@ export function reducer(state: State, action: Action): State {
     case 'SET_NORMALIZE_TO_ANCHOR': {
       const pathSet = new Set(action.filePaths);
       return withFileHistory(state, state.files.map((f) =>
-        pathSet.has(f.path) ? { ...f, normalizeToAnchor: action.value } : f,
+        pathSet.has(f.path)
+          ? {
+              ...f,
+              normalizeToAnchor: action.value &&
+                f.path !== state.exposureAnchorPath &&
+                typeof f.exposureValue === 'number',
+            }
+          : f,
       ));
     }
     case 'SET_EXPOSURE_ADJUSTMENT': {
@@ -580,7 +587,12 @@ export function reducer(state: State, action: Action): State {
       const pathSet = new Set(action.filePaths);
       return {
         ...withFileHistory(state, state.files.map((f) =>
-          pathSet.has(f.path) ? { ...f, normalizeToAnchor: f.path !== anchor.path } : f,
+          pathSet.has(f.path)
+            ? {
+                ...f,
+                normalizeToAnchor: f.path !== anchor.path && typeof f.exposureValue === 'number',
+              }
+            : f,
         )),
         exposureAnchorPath: anchor.path,
       };
@@ -859,7 +871,7 @@ export function reducer(state: State, action: Action): State {
             // The anchor itself never needs normalizing.
             return { ...f, normalizeToAnchor: false };
           }
-          return { ...f, normalizeToAnchor: true };
+          return { ...f, normalizeToAnchor: typeof f.exposureValue === 'number' };
         })),
         exposureAnchorPath: anchor.path,
       };

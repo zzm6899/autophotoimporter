@@ -16,7 +16,7 @@ const shortcuts = [
   ['Shift+B', 'Best of focused burst'],
   ['A', 'Normalize selection to focused anchor'],
   ['[ / ] / \\', 'Manual exposure down, up, reset'],
-  ['Ctrl+C / V', 'Copy/paste EV adjustment'],
+  ['Ctrl+C / V', 'Copy/paste exposure recipe'],
   ['Space', 'Hold original in detail preview'],
   ['Ctrl+Wheel', 'Zoom compare view together'],
   ['C', 'Cull mode'],

@@ -46,6 +46,33 @@ export function normalizeExposureStops(stops: number, zeroSnap = 0.025): number 
   return Math.abs(rounded) < zeroSnap ? 0 : rounded;
 }
 
+export function getNormalizedExposureStops(
+  fileExposureValue: number | undefined,
+  anchorExposureValue: number | undefined,
+  maxStops: number,
+): number {
+  if (typeof fileExposureValue !== 'number' || typeof anchorExposureValue !== 'number') {
+    return 0;
+  }
+  return normalizeExposureStops(clampStops(anchorExposureValue - fileExposureValue, maxStops), 0.01);
+}
+
+export function getEffectiveExposureStops(
+  manualStops: number | undefined,
+  fileExposureValue: number | undefined,
+  anchorExposureValue: number | undefined,
+  normalizeToAnchor: boolean | undefined,
+  maxStops: number,
+): number {
+  const normalizedStops = normalizeToAnchor
+    ? getNormalizedExposureStops(fileExposureValue, anchorExposureValue, maxStops)
+    : 0;
+  return normalizeExposureStops(
+    clampStops(normalizedStops + (manualStops ?? 0), maxStops),
+    0.01,
+  );
+}
+
 /**
  * Convert a delta in stops to a linear brightness multiplier.
  *   +1 stop  = 2x brighter
@@ -68,10 +95,10 @@ export function stopsToSafeMultiplier(stops: number): number {
   const direction = stops >= 0 ? 1 : -1;
   const magnitude = Math.abs(stops);
   const compressedStops = direction > 0
-    ? magnitude / (1 + magnitude * 0.82)
-    : magnitude / (1 + magnitude * 0.4);
+    ? magnitude / (1 + magnitude * 1.18)
+    : magnitude / (1 + magnitude * 0.52);
   const multiplier = Math.pow(2, compressedStops * direction);
-  return Math.max(0.48, Math.min(1.72, multiplier));
+  return Math.max(0.5, Math.min(1.64, multiplier));
 }
 
 /**
@@ -85,11 +112,11 @@ export function buildPreviewExposureFilter(stops: number): string | undefined {
   const magnitude = Math.min(Math.abs(normalized), 4);
   const brightness = stopsToSafeMultiplier(normalized);
   const contrast = normalized > 0
-    ? 1 + Math.min(0.14, magnitude * 0.045)
-    : 1 + Math.min(0.08, magnitude * 0.025);
+    ? 1 + Math.min(0.08, magnitude * 0.024)
+    : 1 + Math.min(0.07, magnitude * 0.022);
   const saturate = normalized > 0
-    ? 1 + Math.min(0.08, magnitude * 0.025)
-    : 1 + Math.min(0.05, magnitude * 0.018);
+    ? 1 + Math.min(0.04, magnitude * 0.012)
+    : 1 + Math.min(0.04, magnitude * 0.014);
   return `brightness(${brightness.toFixed(3)}) contrast(${contrast.toFixed(3)}) saturate(${saturate.toFixed(3)})`;
 }
 
