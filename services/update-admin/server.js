@@ -2158,13 +2158,6 @@ start().catch((err) => {
   process.exit(1);
 });
 
-    <div class="panel" style="max-width:480px;margin:40px auto;text-align:center">
-      <h1>Purchase not configured</h1>
-      <p class="muted">Set <code>STRIPE_SECRET_KEY</code> to enable purchases.</p>
-    </div>
-  `));
-});
-
 // ---------------------------------------------------------------------------
 // Stripe checkout session  POST /api/v1/checkout/create
 // Body: { plan: 'monthly'|'yearly'|'lifetime', name, email, extensionCode? }
