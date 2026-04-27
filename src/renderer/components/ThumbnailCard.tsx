@@ -309,6 +309,7 @@ export const ThumbnailCard = memo(ThumbnailCardInner, (prev, next) => {
   const a = prev.file;
   const b = next.file;
   return (
+    prev.index === next.index &&
     a.path === b.path &&
     a.thumbnail === b.thumbnail &&
     a.pick === b.pick &&
