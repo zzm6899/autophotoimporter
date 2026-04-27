@@ -51,6 +51,7 @@ const defaultMaxDevices = Math.max(1, Number.parseInt(process.env.DEFAULT_MAX_DE
 const stripeSecretKey = process.env.STRIPE_SECRET_KEY || '';
 const stripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET || '';
 const stripePublishableKey = process.env.STRIPE_PUBLISHABLE_KEY || '';
+const stripePaymentLink = process.env.STRIPE_PAYMENT_LINK || '';
 
 // --- SMTP email config ---
 // Uses nodemailer with any SMTP server (Gmail, Mailgun, etc.).
