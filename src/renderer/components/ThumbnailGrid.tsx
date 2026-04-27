@@ -561,7 +561,7 @@ export function ThumbnailGrid() {
   const [cacheStats, setCacheStats] = useState(getPreviewCacheStats());
   const [toolbarPos, setToolbarPos] = useState<{ x: number; y: number } | null>(null);
   const [reviewLoopTick, setReviewLoopTick] = useState(0);
-  const [multiClickSelect, setMultiClickSelect] = useState(true);
+  const [multiClickSelect, setMultiClickSelect] = useState(false);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const toolbarDragState = useRef<{ startMouseX: number; startMouseY: number; startLeft: number; startTop: number } | null>(null);
   const lastClickedPathRef = useRef<string | null>(null);
@@ -701,19 +701,6 @@ export function ThumbnailGrid() {
 
   const [localSelectedPaths, setLocalSelectedPaths] = useState<string[]>(selectedPaths);
 
-  useEffect(() => {
-    setLocalSelectedPaths([]);
-  }, [selectedSource]);
-
-  useEffect(() => {
-    if (files.length === 0) setLocalSelectedPaths([]);
-  }, [files.length]);
-
-  useEffect(() => {
-    if (pathArraysEqual(localSelectedPaths, selectedPaths)) return;
-    dispatch({ type: 'SET_SELECTED_PATHS', paths: localSelectedPaths });
-  }, [dispatch, localSelectedPaths, pathArraysEqual, selectedPaths]);
-
   const selectedIndices = useMemo(() => {
     if (localSelectedPaths.length === 0) return new Set<number>();
     const pathSet = new Set(localSelectedPaths);
@@ -726,11 +713,7 @@ export function ThumbnailGrid() {
 
   // Keep a ref so click handlers always read the latest selection, even when
   // the user clicks again before React has flushed effects from the last click.
-  const selectedIndicesRef = useRef(selectedIndices);
   const selectedPathSetRef = useRef(new Set(localSelectedPaths));
-  useEffect(() => {
-    selectedIndicesRef.current = selectedIndices;
-  }, [selectedIndices]);
   useEffect(() => {
     selectedPathSetRef.current = new Set(localSelectedPaths);
   }, [localSelectedPaths]);
@@ -741,14 +724,38 @@ export function ThumbnailGrid() {
       .filter((path) => paths.has(path))
   ), [sortedFiles]);
 
+  const applySelectedPaths = useCallback((paths: string[]) => {
+    const ordered = orderedPathsFromSet(new Set(paths));
+    selectedPathSetRef.current = new Set(ordered);
+    setLocalSelectedPaths(ordered);
+    if (!pathArraysEqual(ordered, selectedPaths)) {
+      dispatch({ type: 'SET_SELECTED_PATHS', paths: ordered });
+    }
+  }, [dispatch, orderedPathsFromSet, pathArraysEqual, selectedPaths]);
+
+  useEffect(() => {
+    if (files.length === 0) {
+      if (localSelectedPaths.length > 0 || selectedPaths.length > 0) applySelectedPaths([]);
+      return;
+    }
+
+    const normalized = orderedPathsFromSet(new Set(selectedPaths));
+    if (!pathArraysEqual(normalized, selectedPaths)) {
+      dispatch({ type: 'SET_SELECTED_PATHS', paths: normalized });
+      return;
+    }
+    if (!pathArraysEqual(localSelectedPaths, normalized)) {
+      selectedPathSetRef.current = new Set(normalized);
+      setLocalSelectedPaths(normalized);
+    }
+  }, [applySelectedPaths, dispatch, files.length, localSelectedPaths, orderedPathsFromSet, pathArraysEqual, selectedPaths]);
+
   const setSelectedIndices = useCallback((next: Set<number>) => {
-    selectedIndicesRef.current = next;
     const paths = Array.from(next)
       .filter((i) => i >= 0 && i < sortedFiles.length)
       .map((i) => sortedFiles[i].path);
-    selectedPathSetRef.current = new Set(paths);
-    setLocalSelectedPaths(paths);
-  }, [sortedFiles]);
+    applySelectedPaths(paths);
+  }, [applySelectedPaths, sortedFiles]);
 
   const selectAllVisible = useCallback(() => {
     if (sortedFiles.length === 0) return;
@@ -759,28 +766,8 @@ export function ThumbnailGrid() {
   }, [dispatch, focusedIndex, setSelectedIndices, sortedFiles.length]);
 
   const clearSelection = useCallback(() => {
-    setSelectedIndices(new Set<number>());
-  }, [setSelectedIndices]);
-
-  const selectFocused = useCallback(() => {
-    if (focusedIndex < 0 || focusedIndex >= sortedFiles.length) return;
-    const path = sortedFiles[focusedIndex].path;
-    selectedPathSetRef.current = new Set([path]);
-    setLocalSelectedPaths([path]);
-    lastClickedPathRef.current = path;
-  }, [focusedIndex, sortedFiles]);
-
-  const toggleFocusedSelection = useCallback(() => {
-    if (focusedIndex < 0 || focusedIndex >= sortedFiles.length) return;
-    const path = sortedFiles[focusedIndex].path;
-    const next = new Set(selectedPathSetRef.current);
-    if (next.has(path)) next.delete(path);
-    else next.add(path);
-    const ordered = orderedPathsFromSet(next);
-    selectedPathSetRef.current = new Set(ordered);
-    setLocalSelectedPaths(ordered);
-    lastClickedPathRef.current = path;
-  }, [focusedIndex, orderedPathsFromSet, sortedFiles, sortedFiles.length]);
+    applySelectedPaths([]);
+  }, [applySelectedPaths]);
 
   // Keep stable refs in sync so the review loop can read current values without
   // having them as deps (which would restart the loop on every score update).
@@ -1081,40 +1068,49 @@ export function ThumbnailGrid() {
         const end = Math.max(anchorIndex, index);
         const next = new Set(metaKey ? sel : new Set<string>());
         for (let i = start; i <= end; i++) next.add(sortedFiles[i].path);
-        const ordered = orderedPathsFromSet(next);
-        selectedPathSetRef.current = new Set(ordered);
-        setLocalSelectedPaths(ordered);
+        applySelectedPaths([...next]);
       } else {
-        selectedPathSetRef.current = new Set([clickedPath]);
-        setLocalSelectedPaths([clickedPath]);
+        applySelectedPaths([clickedPath]);
       }
       setFocused(index);
     } else if (metaKey) {
       const next = new Set(sel);
       if (next.has(clickedPath)) { next.delete(clickedPath); } else { next.add(clickedPath); }
-      const ordered = orderedPathsFromSet(next);
-      selectedPathSetRef.current = new Set(ordered);
-      setLocalSelectedPaths(ordered);
+      applySelectedPaths([...next]);
       setFocused(index);
       lastClickedPathRef.current = clickedPath;
     } else {
       if (!multiClickSelect) {
-        selectedPathSetRef.current = new Set([clickedPath]);
-        setLocalSelectedPaths([clickedPath]);
+        applySelectedPaths([clickedPath]);
       } else if (sel.size === 0) {
-        selectedPathSetRef.current = new Set([clickedPath]);
-        setLocalSelectedPaths([clickedPath]);
+        applySelectedPaths([clickedPath]);
       } else if (!sel.has(clickedPath)) {
         const next = new Set(sel);
         next.add(clickedPath);
-        const ordered = orderedPathsFromSet(next);
-        selectedPathSetRef.current = new Set(ordered);
-        setLocalSelectedPaths(ordered);
+        applySelectedPaths([...next]);
       }
       setFocused(index);
       lastClickedPathRef.current = clickedPath;
     }
-  }, [multiClickSelect, orderedPathsFromSet, setFocused, sortedFiles]); // stable — reads selected selection via refs
+  }, [applySelectedPaths, multiClickSelect, setFocused, sortedFiles]); // stable — reads selected selection via refs
+
+  const handleMultiToggle = useCallback(() => {
+    const nextMultiSelect = !multiClickSelect;
+    setMultiClickSelect(nextMultiSelect);
+    if (nextMultiSelect) return;
+
+    if (focusedIndex >= 0 && focusedIndex < sortedFiles.length) {
+      const focusedPath = sortedFiles[focusedIndex].path;
+      applySelectedPaths([focusedPath]);
+      lastClickedPathRef.current = focusedPath;
+      return;
+    }
+
+    if (localSelectedPaths.length > 1) {
+      applySelectedPaths([localSelectedPaths[0]]);
+      lastClickedPathRef.current = localSelectedPaths[0];
+    }
+  }, [applySelectedPaths, focusedIndex, localSelectedPaths, multiClickSelect, sortedFiles]);
 
   const handleGridDoubleClick = useCallback((index: number) => {
     setFocused(index);
@@ -1679,7 +1675,6 @@ export function ThumbnailGrid() {
           .map((i) => sortedFiles[i])
       : focusedFile ? [focusedFile] : []
   ), [focusedFile, hasBatchSelection, selectedIndices, sortedFiles]);
-  const focusedIsSelected = focusedIndex >= 0 && selectedIndices.has(focusedIndex);
   const bestPanelFiles = useMemo(() => {
     if (!bestScope) return selectedFiles;
     const byPath = new Map(files.map((f) => [f.path, f]));
@@ -2011,7 +2006,7 @@ export function ThumbnailGrid() {
       {hasBatchSelection && (
         <>
           <span className="px-2.5 py-1.5 text-[11px] text-blue-400 font-medium">{selectedIndices.size}</span>
-          <span className="px-2 py-1.5 text-[10px] text-text-muted">Click more photos to add them. Use Just this to reset.</span>
+          <span className="px-2 py-1.5 text-[10px] text-text-muted">Click more photos while Multi is on. Turn it off to go back to single-photo selection.</span>
           <div className="w-px h-4 bg-border" />
         </>
       )}
@@ -2459,7 +2454,7 @@ export function ThumbnailGrid() {
             {focusedFile && (
               <>
                 <button
-                  onClick={() => setMultiClickSelect((value) => !value)}
+                  onClick={handleMultiToggle}
                   title={multiClickSelect ? 'Plain clicks add more photos to the current selection' : 'Plain clicks keep just one photo selected'}
                   className={`px-2 py-0.5 text-[11px] rounded border transition-colors ${
                     multiClickSelect
@@ -2467,16 +2462,6 @@ export function ThumbnailGrid() {
                       : 'border-border/80 text-text-muted hover:text-text hover:bg-surface-raised'
                   }`}
                 >Multi {multiClickSelect ? 'On' : 'Off'}</button>
-                <button
-                  onClick={selectFocused}
-                  title="Replace the current selection with the focused photo"
-                  className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-blue-300 hover:bg-blue-500/10 rounded transition-colors"
-                >Just this</button>
-                <button
-                  onClick={toggleFocusedSelection}
-                  title={focusedIsSelected ? 'Remove the focused photo from the current selection' : 'Add the focused photo to the current selection'}
-                  className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-blue-300 hover:bg-blue-500/10 rounded transition-colors"
-                >{focusedIsSelected ? 'Remove' : 'Add'}</button>
                 <button
                   onClick={clearSelection}
                   title="Deselect all (Esc)"
