@@ -699,6 +699,8 @@ export function ThumbnailGrid() {
     };
   }, [files]);
 
+  const filePathSet = useMemo(() => new Set(files.map((file) => file.path)), [files]);
+
   const selectedIndices = useMemo(() => {
     if (selectedPaths.length === 0) return new Set<number>();
     const pathSet = new Set(selectedPaths);
@@ -711,24 +713,32 @@ export function ThumbnailGrid() {
 
   // Keep a ref so click handlers always read the latest selection, even when
   // the user clicks again before React has flushed effects from the last click.
+  const selectedPathsRef = useRef(selectedPaths);
   const selectedPathSetRef = useRef(new Set(selectedPaths));
   useEffect(() => {
+    selectedPathsRef.current = selectedPaths;
     selectedPathSetRef.current = new Set(selectedPaths);
   }, [selectedPaths]);
 
-  const orderedPathsFromSet = useCallback((paths: Set<string>) => (
-    sortedFiles
-      .map((file) => file.path)
-      .filter((path) => paths.has(path))
-  ), [sortedFiles]);
+  const normalizeSelectedPaths = useCallback((paths: string[]) => {
+    const seen = new Set<string>();
+    const normalized: string[] = [];
+    for (const path of paths) {
+      if (!filePathSet.has(path) || seen.has(path)) continue;
+      seen.add(path);
+      normalized.push(path);
+    }
+    return normalized;
+  }, [filePathSet]);
 
   const applySelectedPaths = useCallback((paths: string[]) => {
-    const ordered = orderedPathsFromSet(new Set(paths));
-    selectedPathSetRef.current = new Set(ordered);
-    if (!pathArraysEqual(ordered, selectedPaths)) {
-      dispatch({ type: 'SET_SELECTED_PATHS', paths: ordered });
+    const normalized = normalizeSelectedPaths(paths);
+    selectedPathsRef.current = normalized;
+    selectedPathSetRef.current = new Set(normalized);
+    if (!pathArraysEqual(normalized, selectedPaths)) {
+      dispatch({ type: 'SET_SELECTED_PATHS', paths: normalized });
     }
-  }, [dispatch, orderedPathsFromSet, pathArraysEqual, selectedPaths]);
+  }, [dispatch, normalizeSelectedPaths, pathArraysEqual, selectedPaths]);
 
   const setSelectedIndices = useCallback((next: Set<number>) => {
     const paths = Array.from(next)
@@ -1013,11 +1023,8 @@ export function ThumbnailGrid() {
 
   const pickFile = useCallback((pick: 'selected' | 'rejected' | undefined, advance: boolean) => {
     // Batch mode: apply to all selected files
-    if (selectedIndices.size > 0) {
-      const paths = Array.from(selectedIndices)
-        .filter((i) => i >= 0 && i < sortedFiles.length)
-        .map((i) => sortedFiles[i].path);
-      dispatch({ type: 'SET_PICK_BATCH', filePaths: paths, pick });
+    if (selectedPaths.length > 0) {
+      dispatch({ type: 'SET_PICK_BATCH', filePaths: selectedPaths, pick });
       return;
     }
     // Single mode
@@ -1028,7 +1035,7 @@ export function ThumbnailGrid() {
     if (advance && newPick !== undefined && focusedIndex < sortedFiles.length - 1) {
       setFocused(focusedIndex + 1);
     }
-  }, [focusedIndex, sortedFiles, dispatch, setFocused, selectedIndices]);
+  }, [focusedIndex, selectedPaths, sortedFiles, dispatch, setFocused]);
 
   const queuePaths = useCallback((paths: string[]) => {
     dispatch({ type: 'QUEUE_ADD_PATHS', paths });
@@ -1046,51 +1053,51 @@ export function ThumbnailGrid() {
       if (anchorIndex >= 0) {
         const start = Math.min(anchorIndex, index);
         const end = Math.max(anchorIndex, index);
-        const next = new Set(metaKey ? sel : new Set<string>());
-        for (let i = start; i <= end; i++) next.add(sortedFiles[i].path);
-        applySelectedPaths([...next]);
+        const rangePaths = sortedFiles.slice(start, end + 1).map((file) => file.path);
+        if (metaKey) {
+          const next = [...selectedPathsRef.current];
+          for (const path of rangePaths) {
+            if (!sel.has(path)) next.push(path);
+          }
+          applySelectedPaths(next);
+        } else {
+          applySelectedPaths(rangePaths);
+        }
       } else {
         applySelectedPaths([clickedPath]);
       }
       setFocused(index);
+      lastClickedPathRef.current = clickedPath;
     } else if (metaKey) {
       const next = new Set(sel);
       if (next.has(clickedPath)) { next.delete(clickedPath); } else { next.add(clickedPath); }
-      applySelectedPaths([...next]);
+      const ordered = selectedPathsRef.current.filter((path) => next.has(path));
+      if (!sel.has(clickedPath)) ordered.push(clickedPath);
+      applySelectedPaths(ordered);
       setFocused(index);
       lastClickedPathRef.current = clickedPath;
     } else {
-      if (!multiClickSelect) {
-        applySelectedPaths([clickedPath]);
+      if (multiClickSelect) {
+        if (sel.size === 0) {
+          applySelectedPaths([clickedPath]);
+        } else if (!sel.has(clickedPath)) {
+          applySelectedPaths([...selectedPathsRef.current, clickedPath]);
+        }
       } else if (sel.size === 0) {
-        applySelectedPaths([clickedPath]);
-      } else if (!sel.has(clickedPath)) {
-        const next = new Set(sel);
-        next.add(clickedPath);
-        applySelectedPaths([...next]);
+        clearSelection();
+      } else {
+        clearSelection();
       }
       setFocused(index);
       lastClickedPathRef.current = clickedPath;
     }
-  }, [applySelectedPaths, multiClickSelect, setFocused, sortedFiles]); // stable — reads selected selection via refs
+  }, [applySelectedPaths, clearSelection, multiClickSelect, setFocused, sortedFiles]); // stable — reads selected selection via refs
 
   const handleMultiToggle = useCallback(() => {
     const nextMultiSelect = !multiClickSelect;
     setMultiClickSelect(nextMultiSelect);
-    if (nextMultiSelect) return;
-
-    if (focusedIndex >= 0 && focusedIndex < sortedFiles.length) {
-      const focusedPath = sortedFiles[focusedIndex].path;
-      applySelectedPaths([focusedPath]);
-      lastClickedPathRef.current = focusedPath;
-      return;
-    }
-
-    if (selectedPaths.length > 1) {
-      applySelectedPaths([selectedPaths[0]]);
-      lastClickedPathRef.current = selectedPaths[0];
-    }
-  }, [applySelectedPaths, focusedIndex, multiClickSelect, selectedPaths, sortedFiles]);
+    if (!nextMultiSelect) clearSelection();
+  }, [clearSelection, multiClickSelect]);
 
   const handleGridDoubleClick = useCallback((index: number) => {
     setFocused(index);
@@ -1157,10 +1164,8 @@ export function ThumbnailGrid() {
       sortedFiles.forEach((f, i) => { if (facePaths.has(f.path)) visibleIndices.add(i); });
       setSelectedIndices(visibleIndices);
       setBestScope({ paths: panelPaths, title: 'Best Face Group', subtitle: `${faceFiles.length} similar face shots` });
-    } else if (selectedIndices.size >= 2) {
-      panelPaths = Array.from(selectedIndices)
-        .filter((i) => i >= 0 && i < sortedFiles.length)
-        .map((i) => sortedFiles[i].path);
+    } else if (selectedPaths.length >= 2) {
+      panelPaths = selectedPaths;
       setBestScope({ paths: panelPaths, title: 'Best of Selection' });
     } else if (sortedFiles.length > 0) {
       const start = Math.max(0, focusedIndex);
@@ -1171,7 +1176,7 @@ export function ThumbnailGrid() {
     }
     if (panelPaths.length > 0) scanUnscannedPanelFiles(panelPaths);
     setShowBestOfSelection(true);
-  }, [files, focusedIndex, selectedIndices, sortedFiles, scanUnscannedPanelFiles]);
+  }, [files, focusedIndex, selectedPaths, sortedFiles, scanUnscannedPanelFiles]);
 
   const BATCH_PAGE_SIZE = 120;
 
@@ -1303,8 +1308,8 @@ export function ThumbnailGrid() {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'v') {
         if (exposureClipboard !== null) {
           e.preventDefault();
-          const targets = selectedIndices.size > 0
-            ? Array.from(selectedIndices).filter((i) => i >= 0 && i < sortedFiles.length).map((i) => sortedFiles[i].path)
+          const targets = selectedPaths.length > 0
+            ? selectedPaths
             : focusedIndex >= 0 ? [sortedFiles[focusedIndex].path] : [];
           if (targets.length > 0) {
             dispatch({ type: 'SET_EXPOSURE_ADJUSTMENT', filePaths: targets, stops: exposureClipboard });
@@ -1321,7 +1326,7 @@ export function ThumbnailGrid() {
             if (showBestOfSelection) openAdjacentBatch(1);
           } else if (e.shiftKey) {
             openAdjacentBurst(1);
-          } else if (selectedIndices.size > 0) {
+          } else if (selectedPaths.length > 0) {
             const anchor = focusedIndex >= 0 ? focusedIndex : Math.min(...selectedIndices);
             const nextIndex = Math.min(anchor + 1, sortedFiles.length - 1);
             setFocused(nextIndex);
@@ -1336,7 +1341,7 @@ export function ThumbnailGrid() {
             if (showBestOfSelection) openAdjacentBatch(-1);
           } else if (e.shiftKey) {
             openAdjacentBurst(-1);
-          } else if (selectedIndices.size > 0) {
+          } else if (selectedPaths.length > 0) {
             const anchor = focusedIndex >= 0 ? focusedIndex : Math.min(...selectedIndices);
             const nextIndex = Math.max(anchor - 1, 0);
             setFocused(nextIndex);
@@ -1405,11 +1410,9 @@ export function ThumbnailGrid() {
         case '5': {
           e.preventDefault();
           const rating = parseInt(e.key, 10);
-          if (selectedIndices.size > 0) {
-            Array.from(selectedIndices).forEach((i) => {
-              if (i >= 0 && i < sortedFiles.length) {
-                dispatch({ type: 'SET_RATING', filePath: sortedFiles[i].path, rating });
-              }
+          if (selectedPaths.length > 0) {
+            selectedPaths.forEach((path) => {
+              dispatch({ type: 'SET_RATING', filePath: path, rating });
             });
           } else if (focusedIndex >= 0 && focusedIndex < sortedFiles.length) {
             dispatch({ type: 'SET_RATING', filePath: sortedFiles[focusedIndex].path, rating });
@@ -1430,10 +1433,8 @@ export function ThumbnailGrid() {
         case 'Q': {
           if (e.metaKey || e.ctrlKey) break;
           e.preventDefault();
-          const targets = selectedIndices.size > 0
-            ? Array.from(selectedIndices)
-                .filter((i) => i >= 0 && i < sortedFiles.length)
-                .map((i) => sortedFiles[i].path)
+          const targets = selectedPaths.length > 0
+            ? selectedPaths
             : focusedIndex >= 0 && focusedIndex < sortedFiles.length
               ? [sortedFiles[focusedIndex].path]
               : [];
@@ -1483,10 +1484,8 @@ export function ThumbnailGrid() {
           if (e.metaKey || e.ctrlKey) break;
           e.preventDefault();
           if (e.altKey) {
-            const targets = selectedIndices.size > 0
-              ? Array.from(selectedIndices)
-                  .filter((i) => i >= 0 && i < sortedFiles.length)
-                  .map((i) => sortedFiles[i].path)
+            const targets = selectedPaths.length > 0
+              ? selectedPaths
               : focusedIndex >= 0 && focusedIndex < sortedFiles.length
                 ? [sortedFiles[focusedIndex].path]
                 : [];
@@ -1513,10 +1512,8 @@ export function ThumbnailGrid() {
             }
             break;
           }
-          const targets = selectedIndices.size > 0
-            ? Array.from(selectedIndices)
-                .filter((i) => i >= 0 && i < sortedFiles.length)
-                .map((i) => sortedFiles[i].path)
+          const targets = selectedPaths.length > 0
+            ? selectedPaths
             : focusedIndex >= 0 && focusedIndex < sortedFiles.length
               ? [sortedFiles[focusedIndex].path]
               : [];
@@ -1530,8 +1527,8 @@ export function ThumbnailGrid() {
         case ']':
           e.preventDefault();
           {
-            const targets = selectedIndices.size > 0
-              ? Array.from(selectedIndices).filter((i) => i >= 0 && i < sortedFiles.length).map((i) => sortedFiles[i].path)
+            const targets = selectedPaths.length > 0
+              ? selectedPaths
               : focusedIndex >= 0 && focusedIndex < sortedFiles.length ? [sortedFiles[focusedIndex].path] : [];
             dispatch({ type: 'NUDGE_EXPOSURE_ADJUSTMENT', filePaths: targets, delta: e.key === '[' ? -0.33 : 0.33 });
           }
@@ -1539,14 +1536,14 @@ export function ThumbnailGrid() {
         case '\\':
           e.preventDefault();
           {
-            const targets = selectedIndices.size > 0
-              ? Array.from(selectedIndices).filter((i) => i >= 0 && i < sortedFiles.length).map((i) => sortedFiles[i].path)
+            const targets = selectedPaths.length > 0
+              ? selectedPaths
               : focusedIndex >= 0 && focusedIndex < sortedFiles.length ? [sortedFiles[focusedIndex].path] : [];
             dispatch({ type: 'SET_EXPOSURE_ADJUSTMENT', filePaths: targets, stops: 0 });
           }
           break;
         case 'Escape':
-          if (selectedIndices.size > 0) {
+          if (selectedPaths.length > 0) {
             e.preventDefault();
             clearSelection();
           } else if (viewMode === 'settings') {
@@ -1565,7 +1562,7 @@ export function ThumbnailGrid() {
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [focusedIndex, sortedFiles, viewMode, getColumnsCount, setFocused, pickFile, dispatch, selectedIndices, cullMode, files, openBestOfSelection, openAdjacentBatch, openAdjacentBurst, queuePaths, showBestOfSelection, showShortcuts, selectAllVisible, clearSelection]);
+  }, [focusedIndex, sortedFiles, viewMode, getColumnsCount, setFocused, pickFile, dispatch, selectedIndices, selectedPaths, cullMode, files, openBestOfSelection, openAdjacentBatch, openAdjacentBurst, queuePaths, showBestOfSelection, showShortcuts, selectAllVisible, clearSelection]);
 
   useEffect(() => {
     const open = () => setShowShortcuts(true);
@@ -1617,7 +1614,13 @@ export function ThumbnailGrid() {
   // Expose-normalize button state (computed before early returns so the
   // handleNormalizeToggle useCallback is always called unconditionally).
   const focusedFile = focusedIndex >= 0 && focusedIndex < sortedFiles.length ? sortedFiles[focusedIndex] : null;
-  const hasBatchSelection = selectedIndices.size > 0;
+  const selectedFileMap = useMemo(() => new Map(files.map((file) => [file.path, file])), [files]);
+  const selectedFiles = useMemo(() => (
+    selectedPaths
+      .map((path) => selectedFileMap.get(path))
+      .filter((file): file is NonNullable<typeof file> => !!file)
+  ), [selectedFileMap, selectedPaths]);
+  const hasBatchSelection = selectedPaths.length > 0;
   const anchorFile = exposureAnchorPath ? files.find((f) => f.path === exposureAnchorPath) : null;
   const anchorHasEV = typeof anchorFile?.exposureValue === 'number';
   const canNormalize = anchorHasEV && saveFormat !== 'original';
@@ -1631,10 +1634,10 @@ export function ThumbnailGrid() {
     return 0;
   }, [anchorFile?.exposureValue, anchorHasEV, exposureMaxStops]);
   const normalizeTargetPaths = hasBatchSelection
-    ? Array.from(selectedIndices).filter((i) => i >= 0 && i < sortedFiles.length).map((i) => sortedFiles[i].path)
+    ? selectedPaths
     : focusedFile ? [focusedFile.path] : [];
   const compareFiles = (hasBatchSelection
-    ? Array.from(selectedIndices).filter((i) => i >= 0 && i < sortedFiles.length).map((i) => sortedFiles[i])
+    ? selectedFiles
     : focusedFile ? [focusedFile] : []
   ).slice(0, 4);
   const compareDisplayFiles = compareFiles.length >= 2
@@ -1648,13 +1651,6 @@ export function ThumbnailGrid() {
       ]),
     )
   ), [compareDisplayFiles, exposureMaxStops, getThumbnailExposureStops]);
-  const selectedFiles = useMemo(() => (
-    hasBatchSelection
-      ? Array.from(selectedIndices)
-          .filter((i) => i >= 0 && i < sortedFiles.length)
-          .map((i) => sortedFiles[i])
-      : focusedFile ? [focusedFile] : []
-  ), [focusedFile, hasBatchSelection, selectedIndices, sortedFiles]);
   const bestPanelFiles = useMemo(() => {
     if (!bestScope) return selectedFiles;
     const byPath = new Map(files.map((f) => [f.path, f]));
@@ -1852,14 +1848,10 @@ export function ThumbnailGrid() {
   const applySelectionSet = useCallback((name: string) => {
     const set = selectionSets.find((s) => s.name === name);
     if (!set) return;
-    const pathSet = new Set(set.paths);
-    const next = new Set<number>();
-    sortedFiles.forEach((f, i) => {
-      if (pathSet.has(f.path)) next.add(i);
-    });
-    setSelectedIndices(next);
     dispatch({ type: 'SELECTION_SET_APPLY', name });
-  }, [dispatch, selectionSets, sortedFiles]);
+    const firstVisibleIndex = sortedFiles.findIndex((file) => set.paths.includes(file.path));
+    if (firstVisibleIndex >= 0) setFocused(firstVisibleIndex);
+  }, [dispatch, selectionSets, setFocused, sortedFiles]);
 
   const deleteSelectionSet = useCallback((name: string) => {
     const next = selectionSets.filter((s) => s.name !== name);
@@ -1985,7 +1977,7 @@ export function ThumbnailGrid() {
       )}
       {hasBatchSelection && (
         <>
-          <span className="px-2.5 py-1.5 text-[11px] text-blue-400 font-medium">{selectedIndices.size}</span>
+          <span className="px-2.5 py-1.5 text-[11px] text-blue-400 font-medium">{selectedPaths.length}</span>
           <div className="w-px h-4 bg-border" />
         </>
       )}
@@ -2408,7 +2400,7 @@ export function ThumbnailGrid() {
         {/* File count / selection label */}
         <div className="flex items-center gap-1.5 min-w-0 shrink-0">
           {hasBatchSelection ? (
-            <span className="text-xs text-blue-400 font-medium">{selectedIndices.size} selected</span>
+            <span className="text-xs text-blue-400 font-medium">{selectedPaths.length} selected</span>
           ) : isSingle ? (
             <>
               <span className="text-xs font-mono text-text truncate max-w-[120px]">{focusedFile.name}</span>
@@ -2642,7 +2634,7 @@ export function ThumbnailGrid() {
             <CompareView
               files={compareDisplayFiles}
               previewStopsByPath={comparePreviewStopsByPath}
-              selectionCount={compareFiles.length >= 2 ? selectedIndices.size : 0}
+              selectionCount={compareFiles.length >= 2 ? selectedPaths.length : 0}
             />
             {floatingToolbar}
           </div>
