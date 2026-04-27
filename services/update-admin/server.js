@@ -510,6 +510,7 @@ async function ensureRuntimeSchema() {
     )
   `);
   await pool.query('ALTER TABLE license_records ADD COLUMN IF NOT EXISTS activation_code TEXT');
+  await pool.query('ALTER TABLE license_records ADD COLUMN IF NOT EXISTS plan TEXT');
   await pool.query('ALTER TABLE license_records ADD COLUMN IF NOT EXISTS max_devices INTEGER');
   await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_license_records_activation_code ON license_records(activation_code)');
   await pool.query(`
@@ -575,16 +576,17 @@ async function assignActivationCode(fingerprint) {
   throw new Error('Could not assign an activation code.');
 }
 
-async function upsertLicenseRecord(validated, notes) {
+async function upsertLicenseRecord(validated, notes, plan = null) {
   await pool.query(
-    `INSERT INTO license_records (fingerprint, license_key, customer_name, customer_email, issued_at, expires_at, max_devices, status, notes, last_seen_at, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,'active',$8,NOW(),NOW())
+    `INSERT INTO license_records (fingerprint, license_key, customer_name, customer_email, issued_at, expires_at, plan, max_devices, status, notes, last_seen_at, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'active',$9,NOW(),NOW())
      ON CONFLICT (fingerprint) DO UPDATE
      SET license_key = EXCLUDED.license_key,
          customer_name = EXCLUDED.customer_name,
          customer_email = EXCLUDED.customer_email,
          issued_at = EXCLUDED.issued_at,
          expires_at = EXCLUDED.expires_at,
+         plan = COALESCE(EXCLUDED.plan, license_records.plan),
          max_devices = EXCLUDED.max_devices,
          status = 'active',
          notes = EXCLUDED.notes,
@@ -596,11 +598,49 @@ async function upsertLicenseRecord(validated, notes) {
       validated.entitlement.email || null,
       validated.entitlement.issuedAt || null,
       validated.entitlement.expiresAt || null,
+      plan || null,
       validated.entitlement.maxDevices || null,
       notes || validated.entitlement.notes || null,
     ],
   );
   return assignActivationCode(validated.fingerprint);
+}
+
+async function getLicenseRecordByActivationCode(activationCode) {
+  const result = await pool.query(
+    `SELECT lr.id,
+            lr.fingerprint,
+            lr.activation_code,
+            lr.customer_name,
+            lr.customer_email,
+            COALESCE(NULLIF(lr.plan, ''), ss.plan) AS plan,
+            lr.max_devices,
+            lr.expires_at
+     FROM license_records lr
+     LEFT JOIN LATERAL (
+       SELECT plan
+       FROM stripe_sessions
+       WHERE activation_code = lr.activation_code
+         AND plan IS NOT NULL
+         AND plan <> ''
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1
+     ) ss ON TRUE
+     WHERE lr.activation_code = $1`,
+    [activationCode],
+  );
+
+  const row = result.rows[0];
+  if (row && row.plan) {
+    await pool.query(
+      `UPDATE license_records
+       SET plan = $1, updated_at = NOW()
+       WHERE id = $2 AND (plan IS NULL OR plan = '')`,
+      [row.plan, row.id],
+    );
+  }
+
+  return row || null;
 }
 
 async function activationSummary(fingerprint, deviceId) {
@@ -2059,13 +2099,31 @@ async function ensureStripeSessionsSchema() {
 // ---------------------------------------------------------------------------
 // Shared: generate a license and return { licenseKey, activationCode, expiresLabel }
 // ---------------------------------------------------------------------------
-async function generateAndStoreLicense({ name, email, expiry, notes, maxDevices }) {
+async function generateAndStoreLicense({ name, email, expiry, notes, maxDevices, plan }) {
   const licenseKey = createLicenseKey({ name, email, expiry, notes, maxDevices });
   const validated = validateLicenseKey(licenseKey, licensePublicKeyPem);
   if (!validated.valid) throw new Error(validated.message || 'Generated key did not validate.');
-  const activationCode = await upsertLicenseRecord(validated, notes);
+  const activationCode = await upsertLicenseRecord(validated, notes, plan);
   const expiresLabel = expiry ? expiry.split('-').reverse().join('/') : null; // DD-MM-YYYY → DD/MM/YYYY
   return { licenseKey, activationCode, expiresLabel };
+}
+
+function calculatePlanExpiryDate(plan, now = new Date()) {
+  if (plan === 'monthly') {
+    return new Date(now.getFullYear(), now.getMonth() + 1, now.getDate());
+  }
+  if (plan === 'yearly') {
+    return new Date(now.getFullYear() + 1, now.getMonth(), now.getDate());
+  }
+  return null;
+}
+
+function formatExpiryForLicense(expiryDate) {
+  return expiryDate ? expiryDate.toISOString().split('T')[0].split('-').reverse().join('-') : undefined;
+}
+
+function formatExpiryLabel(expiryDate) {
+  return expiryDate ? expiryDate.toISOString().split('T')[0].split('-').reverse().join('/') : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -2105,6 +2163,7 @@ app.post('/api/v1/trial/request', async (req, res) => {
       expiry,
       notes: `Trial (${trialDays} days)`,
       maxDevices: trialMaxDevices,
+      plan: 'trial',
     });
 
     // Record trial so we can enforce cooldown
@@ -2176,6 +2235,7 @@ app.post('/stripe/webhook/test', authSession, async (req, res) => {
       expiry: undefined,
       notes: `Stripe test ${session_id}`,
       maxDevices: defaultMaxDevices,
+      plan: 'lifetime',
     });
 
     console.log(`[stripe-test] ✓ License generated — activation: ${activationCode.substring(0, 20)}...`);
@@ -2237,6 +2297,10 @@ app.post(
       const customerName = session.customer_details?.name || 'Culler Customer';
       const amountTotal = session.amount_total; // cents
       const currency = (session.currency || 'aud').toUpperCase();
+      const plan = session.metadata?.plan || 'lifetime';
+      const expiryDate = calculatePlanExpiryDate(plan);
+      const expiryString = formatExpiryForLicense(expiryDate);
+      const expiresLabel = formatExpiryLabel(expiryDate);
 
       console.log(`[stripe] checkout.session.completed — session: ${sessionId} — email: ${customerEmail} — amount: ${amountTotal / 100} ${currency}`);
 
@@ -2244,18 +2308,19 @@ app.post(
         const { licenseKey, activationCode } = await generateAndStoreLicense({
           name: customerName,
           email: customerEmail,
-          expiry: undefined, // perpetual
-          notes: `Stripe purchase ${sessionId} (${amountTotal / 100} ${currency})`,
+          expiry: expiryString,
+          notes: `Stripe ${plan} purchase ${sessionId} (${amountTotal / 100} ${currency})`,
           maxDevices: defaultMaxDevices,
+          plan,
         });
 
         console.log(`[stripe] ✓ License generated — activation: ${activationCode.substring(0, 20)}...`);
 
         // Store session-to-license mapping for success page retrieval
         try {
-          const insertResult = await pool.query(
-            'INSERT INTO stripe_sessions (session_id, license_key, activation_code, customer_email) VALUES ($1, $2, $3, $4) ON CONFLICT (session_id) DO UPDATE SET license_key=$2, activation_code=$3',
-            [sessionId, licenseKey, activationCode, customerEmail]
+          await pool.query(
+            'INSERT INTO stripe_sessions (session_id, license_key, activation_code, customer_email, plan, max_devices, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (session_id) DO UPDATE SET license_key=$2, activation_code=$3, customer_email=$4, plan=$5, max_devices=$6, expires_at=$7',
+            [sessionId, licenseKey, activationCode, customerEmail, plan, defaultMaxDevices, expiryDate]
           );
           console.log(`[stripe] ✓ Session stored in stripe_sessions — session: ${sessionId}`);
         } catch (dbErr) {
@@ -2266,7 +2331,7 @@ app.post(
         await sendEmail({
           to: customerEmail,
           subject: 'Your Culler license — thank you!',
-          html: licenseEmailHtml({ customerName, licenseKey, activationCode, expiresLabel: null }),
+          html: licenseEmailHtml({ customerName, licenseKey, activationCode, expiresLabel }),
         });
 
         console.log(`[stripe] ✓ License email sent to ${customerEmail}`);
@@ -2322,16 +2387,10 @@ app.post(
       // Calculate expiry date based on plan
       let expiryDate = null;
       const maxDevices = defaultMaxDevices;
-      const now = new Date();
-      
-      if (plan === 'monthly') {
-        // Expires 1 month from now
-        expiryDate = new Date(now.getFullYear(), now.getMonth() + 1, now.getDate());
-        console.log(`[stripe] Monthly plan — expires: ${expiryDate.toISOString().split('T')[0]}`);
-      } else if (plan === 'yearly') {
-        // Expires 1 year from now
-        expiryDate = new Date(now.getFullYear() + 1, now.getMonth(), now.getDate());
-        console.log(`[stripe] Yearly plan — expires: ${expiryDate.toISOString().split('T')[0]}`);
+      expiryDate = calculatePlanExpiryDate(plan);
+
+      if (expiryDate) {
+        console.log(`[stripe] ${plan} plan — expires: ${expiryDate.toISOString().split('T')[0]}`);
       } else {
         // Lifetime — no expiry
         console.log(`[stripe] Lifetime plan — no expiration`);
@@ -2339,13 +2398,15 @@ app.post(
 
       try {
         console.log(`[stripe] Generating license for: ${customerName} (${customerEmail})`);
-        const expiryString = expiryDate ? expiryDate.toISOString().split('T')[0].split('-').reverse().join('-') : undefined;
+        const expiryString = formatExpiryForLicense(expiryDate);
+        const expiresLabel = formatExpiryLabel(expiryDate);
         const { licenseKey, activationCode } = await generateAndStoreLicense({
           name: customerName,
           email: customerEmail,
           expiry: expiryString, // DD-MM-YYYY format or undefined for lifetime
           notes: `Stripe ${plan} purchase ${sessionId} (${amountTotal / 100} ${currency})`,
           maxDevices,
+          plan,
         });
 
 
@@ -2371,7 +2432,7 @@ app.post(
         await sendEmail({
           to: customerEmail,
           subject: 'Your Culler license — thank you!',
-          html: licenseEmailHtml({ customerName, licenseKey, activationCode, expiresLabel: null }),
+          html: licenseEmailHtml({ customerName, licenseKey, activationCode, expiresLabel }),
         });
 
         console.log(`[stripe] ✓ License email sent to ${customerEmail}`);
@@ -2956,16 +3017,12 @@ app.get('/api/v1/license-info/:code', apiCors, async (req, res) => {
   if (!code) return res.status(400).json({ error: 'Activation code required.' });
   
   try {
-    const result = await pool.query(
-      'SELECT id, activation_code, customer_name, customer_email, plan, max_devices, expires_at FROM license_records WHERE activation_code = $1',
-      [code]
-    );
-    
-    if (!result.rows.length) {
+    const row = await getLicenseRecordByActivationCode(code);
+
+    if (!row) {
       return res.status(404).json({ error: 'License not found.' });
     }
-    
-    const row = result.rows[0];
+
     return res.json({
       id: row.id,
       activationCode: row.activation_code,
@@ -3003,16 +3060,15 @@ app.post('/api/v1/extend-license', apiCors, async (req, res) => {
     const currency = (cfg.currency || 'aud').toLowerCase();
     
     // Look up license
-    const licenseResult = await pool.query(
-      'SELECT id, activation_code, customer_name, customer_email, plan FROM license_records WHERE activation_code = $1',
-      [activationCode]
-    );
-    
-    if (!licenseResult.rows.length) {
+    const license = await getLicenseRecordByActivationCode(activationCode);
+
+    if (!license) {
       return res.status(404).json({ error: 'License not found.' });
     }
-    
-    const license = licenseResult.rows[0];
+
+    if (!license.plan || !['monthly', 'yearly', 'lifetime'].includes(license.plan)) {
+      return res.status(409).json({ error: 'License plan could not be determined for this key yet. Please contact support.' });
+    }
     
     // Get price based on plan
     const priceKey = `price_${license.plan}_cents`;
@@ -3366,9 +3422,10 @@ app.get('/manage-license', (_req, res) => {
     
     <script>
       let currentLicense = null;
-      
-      document.getElementById('lookupBtn').onclick = async () => {
-        const code = document.getElementById('activationCodeInput').value.trim();
+      const activationCodeInput = document.getElementById('activationCodeInput');
+
+      async function lookupLicense() {
+        const code = activationCodeInput.value.trim();
         if (!code) {
           showError('Please enter an activation code');
           return;
@@ -3389,6 +3446,10 @@ app.get('/manage-license', (_req, res) => {
         } catch (err) {
           showError('Error: ' + err.message);
         }
+      }
+
+      document.getElementById('lookupBtn').onclick = () => {
+        void lookupLicense();
       };
       
       function showLoading() {
@@ -3473,6 +3534,13 @@ app.get('/manage-license', (_req, res) => {
       document.getElementById('upgradeBtn').onclick = () => {
         window.location.href = '/upgrade-license?code=' + encodeURIComponent(currentLicense.activationCode);
       };
+
+      const params = new URLSearchParams(window.location.search);
+      const initialCode = params.get('code');
+      if (initialCode) {
+        activationCodeInput.value = initialCode;
+        void lookupLicense();
+      }
     </script>
   `));
 });

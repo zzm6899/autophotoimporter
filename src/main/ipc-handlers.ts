@@ -76,6 +76,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   jobPresets: [],
   selectionSets: [],
   licenseKey: '',
+  licenseActivationCode: '',
   licenseStatus: { valid: false, message: 'No license activated.' },
   perfTier: 'auto',
   fastKeeperMode: false,
@@ -199,19 +200,26 @@ async function saveSettings(settings: Partial<AppSettings>): Promise<void> {
 
 async function getLicenseStatus() {
   const settings = await loadSettings();
+  const storedActivationCode = settings.licenseActivationCode?.trim();
   const storedKey = settings.licenseKey?.trim();
-  if (!storedKey) {
+  if (!storedActivationCode && !storedKey) {
     return settings.licenseStatus ?? { valid: false, message: 'No license activated.', status: 'unknown' as const };
   }
 
-  const status = await checkHostedLicenseStatus(storedKey, settings.licenseStatus ?? undefined);
-  await saveSettings({ licenseKey: status.valid && status.key ? status.key : '' });
+  const status = storedActivationCode
+    ? await activateLicenseInput(storedActivationCode)
+    : await checkHostedLicenseStatus(storedKey!, settings.licenseStatus ?? undefined);
+
+  await saveSettings({
+    licenseKey: status.valid && status.key ? status.key : '',
+    licenseActivationCode: status.valid ? (status.activationCode ?? storedActivationCode ?? '') : '',
+  });
   return status;
 }
 
 async function getStoredLicenseKey() {
-  const settings = await loadSettings();
-  return settings.licenseKey?.trim() || undefined;
+  const status = await getLicenseStatus();
+  return status.valid ? status.key?.trim() || undefined : undefined;
 }
 
 async function refreshUpdateState() {
@@ -683,18 +691,21 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IPC.LICENSE_ACTIVATE, async (_event, key: string) => {
     const status = await activateLicenseInput(key);
     if (status.valid && status.key) {
-      await saveSettings({ licenseKey: status.key });
+      await saveSettings({
+        licenseKey: status.key,
+        licenseActivationCode: status.activationCode ?? '',
+      });
       const settings = await loadSettings();
       return settings.licenseStatus ?? status;
     }
     if (!status.valid) {
-      await saveSettings({ licenseKey: '' });
+      await saveSettings({ licenseKey: '', licenseActivationCode: '' });
     }
     return status;
   });
 
   ipcMain.handle(IPC.LICENSE_CLEAR, async () => {
-    await saveSettings({ licenseKey: '' });
+    await saveSettings({ licenseKey: '', licenseActivationCode: '' });
     return { valid: false, message: 'License removed.', status: 'unknown' as const };
   });
 

@@ -111,8 +111,9 @@ export function useSettings() {
       }
 
       dispatch({ type: 'HYDRATE_LICENSE_STATUS', status: settings.licenseStatus ?? null });
-      if (settings.licenseKey) {
-        window.electronAPI.activateLicense(settings.licenseKey).then((status) => {
+      const savedLicenseInput = settings.licenseActivationCode || settings.licenseKey;
+      if (savedLicenseInput) {
+        window.electronAPI.activateLicense(savedLicenseInput).then((status) => {
           dispatch({ type: 'SET_LICENSE_STATUS', status });
         }).catch(() => undefined);
       }

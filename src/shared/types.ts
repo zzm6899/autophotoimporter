@@ -299,6 +299,7 @@ export interface AppSettings {
   jobPresets: JobPreset[];
   selectionSets: SelectionSet[];
   licenseKey?: string;
+  licenseActivationCode?: string;
   licenseStatus?: LicenseValidation;
 }
 

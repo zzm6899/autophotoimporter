@@ -93,6 +93,23 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     }).format(date);
   };
 
+  const getDaysUntilExpiry = (value?: string) => {
+    if (!value) return null;
+    const expiry = new Date(`${value}T23:59:59`);
+    if (Number.isNaN(expiry.getTime())) return null;
+    const now = new Date();
+    const diff = expiry.getTime() - now.getTime();
+    return Math.ceil(diff / (1000 * 60 * 60 * 24));
+  };
+
+  const openLicenseManagement = async () => {
+    const code = (licenseStatus?.activationCode ?? '').trim();
+    const url = code
+      ? `${BASE_URL}/manage-license?code=${encodeURIComponent(code)}`
+      : `${BASE_URL}/manage-license`;
+    await window.electronAPI.openExternal(url);
+  };
+
   useEffect(() => {
     // Poll GPU status — ONNX warms up 5s after startup, so retry a few times
     const fetchGpuStatus = async () => {
@@ -321,6 +338,10 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     }
   };
 
+  const expiryDaysRemaining = getDaysUntilExpiry(licenseStatus?.entitlement?.expiresAt);
+  const isTimedLicense = Boolean(licenseStatus?.entitlement?.expiresAt);
+  const showExpiryWarning = isTimedLicense && expiryDaysRemaining != null && expiryDaysRemaining <= 14;
+
   const handleRequestTrial = async () => {
     const name = trialNameInput.trim();
     const email = trialEmailInput.trim();
@@ -494,13 +515,34 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                     <span className="text-[10px] text-text-muted ml-auto">{licenseStatus.deviceSlotsUsed}/{licenseStatus.deviceSlotsTotal ?? licenseStatus.entitlement?.maxDevices ?? '∞'} seats</span>
                   )}
                 </div>
+                <div className="grid grid-cols-2 gap-1 text-[10px] text-text-muted">
+                  <div className="bg-surface-alt border border-border rounded px-2 py-1">
+                    Expires: <span className="text-text-secondary">{formatDisplayDate(licenseStatus.entitlement?.expiresAt)}</span>
+                  </div>
+                  <div className="bg-surface-alt border border-border rounded px-2 py-1">
+                    Type: <span className="text-text-secondary">{isTimedLicense ? 'Timed' : 'Lifetime'}</span>
+                  </div>
+                </div>
+                {showExpiryWarning && (
+                  <div className="rounded border border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-[10px] text-amber-100">
+                    {expiryDaysRemaining != null && expiryDaysRemaining > 0
+                      ? `Your license expires in ${expiryDaysRemaining} day${expiryDaysRemaining === 1 ? '' : 's'}. Renew or upgrade before it lapses.`
+                      : 'Your license has reached its expiry date. Renew or upgrade to keep using Pro features.'}
+                  </div>
+                )}
                 {(licenseStatus.activationCode ?? licenseStatus.key) && (
                   <div className="flex items-center gap-1.5">
                     <span className="text-[10px] text-text-muted">Code:</span>
                     <code className="text-[10px] font-mono text-text-secondary bg-surface-raised px-1.5 py-0.5 rounded truncate max-w-[160px]">
                       {(licenseStatus.activationCode ?? licenseStatus.key ?? '').slice(0, 20)}&hellip;
                     </code>
-                    <button onClick={handleClearLicense} disabled={licenseBusy} className="text-[10px] text-text-muted hover:text-text ml-auto">Deactivate</button>
+                    <button
+                      onClick={() => { void openLicenseManagement(); }}
+                      className="text-[10px] text-text-muted hover:text-text ml-auto"
+                    >
+                      Manage
+                    </button>
+                    <button onClick={handleClearLicense} disabled={licenseBusy} className="text-[10px] text-text-muted hover:text-text">Deactivate</button>
                   </div>
                 )}
               </div>

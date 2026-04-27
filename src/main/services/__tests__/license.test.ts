@@ -1,7 +1,8 @@
-import { beforeAll, describe, it, expect, vi } from 'vitest';
+import { beforeAll, afterEach, describe, it, expect, vi } from 'vitest';
 import { generateKeyPairSync, sign } from 'node:crypto';
 
 let validateLicenseKey: typeof import('../license').validateLicenseKey;
+let activateLicenseInput: typeof import('../license').activateLicenseInput;
 const { privateKey, publicKey } = generateKeyPairSync('ed25519');
 const publicPem = publicKey.export({ type: 'spki', format: 'pem' }).toString();
 
@@ -16,7 +17,14 @@ beforeAll(async () => {
   vi.doMock('../../../shared/license-public-key', () => ({
     LICENSE_PUBLIC_KEY_PEM: publicPem,
   }));
-  ({ validateLicenseKey } = await import('../license'));
+  vi.doMock('../device-id', () => ({
+    getDeviceIdentity: vi.fn(async () => ({ id: 'device-1', name: 'Test Machine' })),
+  }));
+  ({ validateLicenseKey, activateLicenseInput } = await import('../license'));
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe('validateLicenseKey', () => {
@@ -62,5 +70,38 @@ describe('validateLicenseKey', () => {
     const result = validateLicenseKey(`PI1-${tamperedBody}.${sig}`);
     expect(result.valid).toBe(false);
     expect(result.message).toContain('Signature');
+  });
+
+  it('keeps normalized expiry data when activating with an activation code', async () => {
+    const key = makeLicense({
+      n: 'Trial Customer',
+      e: 'trial@example.com',
+      i: '24-04-2026',
+      x: '11-05-2026',
+      t: 'Full access',
+    });
+
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        allowed: true,
+        licenseKey: key,
+        activationCode: 'PIC-TEST-1234-ABCD',
+        status: 'active',
+        entitlement: {
+          product: 'photo-importer',
+          name: 'Trial Customer',
+          email: 'trial@example.com',
+          issuedAt: '2026-04-24T00:00:00.000Z',
+          expiresAt: '2026-05-11T00:00:00.000Z',
+          tier: 'Full access',
+        },
+      }),
+    })) as typeof fetch);
+
+    const result = await activateLicenseInput('PIC-TEST-1234-ABCD');
+    expect(result.valid).toBe(true);
+    expect(result.entitlement?.expiresAt).toBe('2026-05-11');
+    expect(result.message).toContain('active');
   });
 });

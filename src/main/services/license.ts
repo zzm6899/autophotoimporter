@@ -45,6 +45,7 @@ function normalizeDate(value: string | undefined): string | undefined {
     return `${year}-${month}-${day}`;
   }
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  if (/^\d{4}-\d{2}-\d{2}T/.test(value)) return value.slice(0, 10);
   return undefined;
 }
 
@@ -91,6 +92,23 @@ function normalizeValidation(result: LicenseValidation): LicenseValidation {
   return {
     ...result,
     status: result.status ?? (result.valid ? 'active' : 'unknown'),
+  };
+}
+
+function mergeEntitlement(
+  remote: LicenseEntitlement | undefined,
+  fallback: LicenseEntitlement | undefined,
+): LicenseEntitlement | undefined {
+  if (!remote) return fallback;
+
+  const normalizedRemote = toEntitlement(remote);
+  if (!fallback) return normalizedRemote;
+
+  return {
+    ...fallback,
+    ...normalizedRemote,
+    issuedAt: normalizedRemote.issuedAt || fallback.issuedAt,
+    expiresAt: normalizedRemote.expiresAt ?? fallback.expiresAt,
   };
 }
 
@@ -214,7 +232,7 @@ export async function activateLicenseInput(input: string): Promise<LicenseValida
       return normalizeValidation({
         ...local,
         activationCode: payload.activationCode ?? trimmed,
-        entitlement: payload.entitlement ?? local.entitlement,
+        entitlement: mergeEntitlement(payload.entitlement, local.entitlement),
         message: payload.message || local.message,
         status: payload.status ?? 'active',
         deviceId: payload.deviceId,
@@ -257,7 +275,7 @@ export async function checkHostedLicenseStatus(
       return {
         valid: false,
         key: local.key,
-        entitlement: payload.entitlement ?? local.entitlement,
+        entitlement: mergeEntitlement(payload.entitlement, local.entitlement),
         message: payload.message || 'License no longer active.',
         activationCode: payload.activationCode,
         status: payload.status ?? 'unknown',
@@ -271,7 +289,7 @@ export async function checkHostedLicenseStatus(
 
     return normalizeValidation({
       ...local,
-      entitlement: payload.entitlement ?? local.entitlement,
+      entitlement: mergeEntitlement(payload.entitlement, local.entitlement),
       activationCode: payload.activationCode,
       message: payload.message || local.message,
       status: payload.status ?? 'active',
