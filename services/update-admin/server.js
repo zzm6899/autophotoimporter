@@ -2108,6 +2108,79 @@ app.post('/api/v1/trial/request', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Stripe webhook diagnostic endpoint (for debugging)  GET /stripe/webhook/status
+// ---------------------------------------------------------------------------
+app.get('/stripe/webhook/status', authSession, async (_req, res) => {
+  const config = await pool.query('SELECT key, value FROM pricing_config WHERE key LIKE \'stripe_%\'');
+  const stripeConfig = {};
+  for (const row of config.rows) {
+    stripeConfig[row.key] = row.value ? `${row.value.substring(0, 10)}...` : '(not set)';
+  }
+  
+  const sessionsCount = await pool.query('SELECT COUNT(*)::int AS cnt FROM stripe_sessions');
+  const recentSessions = await pool.query(`
+    SELECT session_id, license_key, customer_email, created_at FROM stripe_sessions 
+    ORDER BY created_at DESC LIMIT 5
+  `);
+  
+  return res.json({
+    timestamp: new Date().toISOString(),
+    stripeConfig,
+    sessionsCount: sessionsCount.rows[0].cnt,
+    recentSessions: recentSessions.rows.map(r => ({
+      sessionId: r.session_id.substring(0, 30) + '...',
+      email: r.customer_email,
+      hasLicense: !!r.license_key,
+      createdAt: r.created_at,
+    })),
+    webhookUrl: `${publicUpdatesBaseUrl()}/stripe/webhook`,
+    diagnosticUrl: `${publicUpdatesBaseUrl()}/stripe/webhook/test?session_id=test_abc123&email=test@example.com`,
+    notes: 'Make sure this webhook URL is registered in your Stripe dashboard under Developers → Webhooks. Subscribe to checkout.session.completed event.',
+  });
+});
+
+// Manual test endpoint to simulate a webhook (for debugging)
+app.post('/stripe/webhook/test', authSession, async (req, res) => {
+  const { session_id, email, name } = req.query;
+  
+  if (!session_id || !email) {
+    return res.status(400).json({ error: 'Requires: session_id and email query params' });
+  }
+
+  console.log(`[stripe-test] Manual webhook test: session=${session_id}, email=${email}`);
+
+  try {
+    const { licenseKey, activationCode } = await generateAndStoreLicense({
+      name: name || 'Test User',
+      email: email,
+      expiry: undefined,
+      notes: `Stripe test ${session_id}`,
+      maxDevices: defaultMaxDevices,
+    });
+
+    console.log(`[stripe-test] ✓ License generated — activation: ${activationCode.substring(0, 20)}...`);
+
+    await pool.query(
+      'INSERT INTO stripe_sessions (session_id, license_key, activation_code, customer_email) VALUES ($1, $2, $3, $4) ON CONFLICT (session_id) DO UPDATE SET license_key=$2, activation_code=$3',
+      [session_id, licenseKey, activationCode, email]
+    );
+
+    console.log(`[stripe-test] ✓ Session stored — session: ${session_id}`);
+
+    return res.json({ 
+      ok: true, 
+      sessionId: session_id,
+      licenseKey: licenseKey.substring(0, 50) + '...',
+      activationCode,
+      message: 'Test license created successfully'
+    });
+  } catch (err) {
+    console.error('[stripe-test] Error:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Stripe webhook  POST /stripe/webhook
 // Must be registered as a raw-body route (before express.json parses it).
 // In your Stripe dashboard point the webhook at: https://updates.culler.z2hs.au/stripe/webhook
@@ -2156,13 +2229,19 @@ app.post(
           maxDevices: defaultMaxDevices,
         });
 
-        // Store session-to-license mapping for success page retrieval
-        await pool.query(
-          'INSERT INTO stripe_sessions (session_id, license_key, activation_code, customer_email) VALUES ($1, $2, $3, $4) ON CONFLICT (session_id) DO UPDATE SET license_key=$2, activation_code=$3',
-          [sessionId, licenseKey, activationCode, customerEmail]
-        );
+        console.log(`[stripe] ✓ License generated — activation: ${activationCode.substring(0, 20)}...`);
 
-        console.log(`[stripe] ✓ License issued to ${customerEmail} — activation: ${activationCode.substring(0, 20)}...`);
+        // Store session-to-license mapping for success page retrieval
+        try {
+          const insertResult = await pool.query(
+            'INSERT INTO stripe_sessions (session_id, license_key, activation_code, customer_email) VALUES ($1, $2, $3, $4) ON CONFLICT (session_id) DO UPDATE SET license_key=$2, activation_code=$3',
+            [sessionId, licenseKey, activationCode, customerEmail]
+          );
+          console.log(`[stripe] ✓ Session stored in stripe_sessions — session: ${sessionId}`);
+        } catch (dbErr) {
+          console.error('[stripe] ✗ Failed to store session in stripe_sessions:', dbErr.message, dbErr.detail);
+          throw dbErr;
+        }
 
         await sendEmail({
           to: customerEmail,
@@ -2172,7 +2251,8 @@ app.post(
 
         console.log(`[stripe] ✓ License email sent to ${customerEmail}`);
       } catch (err) {
-        console.error('[stripe] ✗ Failed to generate license after payment:', err.message);
+        console.error('[stripe] ✗ Failed to generate license after payment:');
+        console.error(err);
         // Return 200 so Stripe doesn't retry — but log for manual follow-up
       }
     }
@@ -2521,14 +2601,33 @@ app.get('/checkout-success', (_req, res) => {
       
       <div id="errorBox" style="display:none;margin-top:16px;background:#ff6b6b;background:rgba(255,107,107,0.1);border:1px solid rgba(255,107,107,0.3);border-radius:8px;padding:12px;color:#ff6b6b;font-size:0.9rem"></div>
       
+      <div id="helpBox" style="display:none;margin-top:24px;background:rgba(100,150,200,0.1);border:1px solid rgba(100,150,200,0.3);border-radius:8px;padding:16px;font-size:0.85rem;line-height:1.6">
+        <p style="margin-bottom:8px"><strong>License taking longer than expected?</strong></p>
+        <p style="margin-bottom:8px">Usually arrives within 10 seconds. If it doesn't appear soon, please:</p>
+        <ol style="margin-left:20px;margin-bottom:8px">
+          <li>Check your email (spam folder too)</li>
+          <li>Wait another minute and refresh this page</li>
+          <li>Contact support if the issue persists</li>
+        </ol>
+      </div>
+      
       <p class="muted" style="margin-top:24px">A copy has also been sent to your email. Check spam if it doesn't arrive within a few minutes.</p>
     </div>
 
     <script>
       const params = new URLSearchParams(window.location.search);
-      const sessionId = params.get('session_id');
+      let sessionId = params.get('session_id');
+      let retryCount = 0;
+      const MAX_RETRIES = 30; // ~60 seconds with 2s intervals
+
+      // Clean up session ID if it has metadata appended (e.g., cs_live_...:150)
+      if (sessionId && sessionId.includes(':')) {
+        sessionId = sessionId.split(':')[0];
+      }
 
       async function loadLicense() {
+        retryCount++;
+        
         if (!sessionId) {
           showError('No session ID found. Please check your payment link.');
           return;
@@ -2539,12 +2638,21 @@ app.get('/checkout-success', (_req, res) => {
           const data = await res.json();
 
           if (!res.ok) {
-            showError(data.error || 'Failed to load license.');
+            if (retryCount >= MAX_RETRIES) {
+              // Give up after 60 seconds
+              document.getElementById('loadingMsg').style.display = 'none';
+              document.getElementById('helpBox').style.display = 'block';
+              return;
+            }
+            
+            // Still retrying
             setTimeout(loadLicense, 2000);
             return;
           }
 
+          // Success!
           document.getElementById('loadingMsg').style.display = 'none';
+          document.getElementById('helpBox').style.display = 'none';
           const keyEl = document.getElementById('licenseKey');
           keyEl.textContent = data.licenseKey;
           document.getElementById('licenseBox').style.display = 'block';
