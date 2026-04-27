@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Checkout — Culler</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0d0d0f; --surface: #141416; --surface-raised: #1c1c1f;
+      --border: #2a2a2e; --text: #f0f0f0; --text-muted: #888; --text-faint: #555;
+      --accent: #6c63ff; --accent-hover: #7b73ff; --green: #34d399; --red: #ff6b6b;
+      --radius: 12px;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    }
+    html { scroll-behavior: smooth; }
+    body { font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.6; -webkit-font-smoothing: antialiased; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    
+    .container { max-width: 480px; margin: 60px auto; padding: 2rem; }
+    .header { text-align: center; margin-bottom: 2.5rem; }
+    .header h1 { font-size: 2rem; font-weight: 700; margin-bottom: 0.5rem; }
+    .header p { color: var(--text-muted); font-size: 0.9rem; }
+    
+    .checkout-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 2rem; }
+    .plan-summary { background: var(--surface-raised); border: 1px solid var(--border); border-radius: 10px; padding: 1rem; margin-bottom: 2rem; }
+    .plan-name { font-size: 0.85rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+    .plan-price { font-size: 1.5rem; font-weight: 700; margin-top: 0.25rem; }
+    
+    .form-group { margin-bottom: 1.5rem; }
+    label { display: block; font-size: 0.9rem; font-weight: 500; margin-bottom: 0.5rem; color: var(--text); }
+    input, select { width: 100%; padding: 0.75rem; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 0.9rem; font-family: inherit; }
+    input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(108,99,255,0.1); }
+    input::placeholder { color: var(--text-faint); }
+    
+    .button { width: 100%; padding: 0.85rem; background: var(--accent); color: #fff; border: none; border-radius: 8px; font-size: 0.95rem; font-weight: 600; cursor: pointer; transition: background 0.2s; }
+    .button:hover:not(:disabled) { background: var(--accent-hover); }
+    .button:disabled { opacity: 0.6; cursor: not-allowed; }
+    
+    .error { color: var(--red); font-size: 0.85rem; padding: 0.75rem; background: rgba(255,107,107,0.1); border-radius: 6px; margin-bottom: 1.5rem; display: none; }
+    .error.show { display: block; }
+    
+    .success { color: var(--green); font-size: 0.85rem; padding: 0.75rem; background: rgba(52,211,153,0.1); border-radius: 6px; margin-bottom: 1.5rem; display: none; }
+    .success.show { display: block; }
+    
+    .back-link { text-align: center; margin-top: 1.5rem; }
+    .back-link a { color: var(--text-muted); font-size: 0.9rem; }
+    .back-link a:hover { color: var(--text); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>Checkout</h1>
+      <p>Secure payment via Stripe</p>
+    </div>
+
+    <div class="checkout-card">
+      <div class="plan-summary">
+        <div class="plan-name" id="planName">Loading...</div>
+        <div class="plan-price" id="planPrice">—</div>
+      </div>
+
+      <div class="error" id="error"></div>
+      <div class="success" id="success"></div>
+
+      <form id="checkoutForm">
+        <div class="form-group">
+          <label for="name">Full Name *</label>
+          <input type="text" id="name" name="name" required placeholder="John Doe" />
+        </div>
+
+        <div class="form-group">
+          <label for="email">Email Address *</label>
+          <input type="email" id="email" name="email" required placeholder="john@example.com" />
+        </div>
+
+        <button type="submit" class="button" id="submitBtn">Proceed to Payment</button>
+      </form>
+
+      <div class="back-link">
+        <a href="/#pricing">← Back to Pricing</a>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const BASE = window.location.origin;
+    const params = new URLSearchParams(window.location.search);
+    const plan = params.get('plan') || 'monthly';
+
+    let pricingData = null;
+
+    async function loadPricing() {
+      try {
+        const res = await fetch(BASE + '/api/v1/pricing');
+        if (!res.ok) throw new Error('Failed to load pricing');
+        pricingData = await res.json();
+        updatePlanDisplay();
+      } catch (err) {
+        showError('Failed to load pricing: ' + err.message);
+      }
+    }
+
+    function updatePlanDisplay() {
+      if (!pricingData || !pricingData.plans) return;
+      
+      const planData = pricingData.plans[plan];
+      if (!planData) return;
+
+      const planNames = { monthly: 'Monthly Plan', yearly: 'Yearly Plan', lifetime: 'Lifetime License' };
+      const currency = (pricingData.currency || 'aud').toUpperCase();
+      
+      document.getElementById('planName').textContent = planNames[plan] || plan;
+      document.getElementById('planPrice').textContent = 
+        '$' + planData.price.toFixed(2) + ' ' + currency + (planData.period ? ' ' + planData.period : '');
+    }
+
+    function showError(msg) {
+      const errorEl = document.getElementById('error');
+      errorEl.textContent = msg;
+      errorEl.classList.add('show');
+      document.getElementById('success').classList.remove('show');
+    }
+
+    function showSuccess(msg) {
+      const successEl = document.getElementById('success');
+      successEl.textContent = msg;
+      successEl.classList.add('show');
+      document.getElementById('error').classList.remove('show');
+    }
+
+    document.getElementById('checkoutForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      
+      const name = document.getElementById('name').value.trim();
+      const email = document.getElementById('email').value.trim();
+      const btn = document.getElementById('submitBtn');
+
+      if (!name || !email) {
+        showError('Please fill in all fields');
+        return;
+      }
+
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        showError('Please enter a valid email');
+        return;
+      }
+
+      btn.disabled = true;
+      btn.textContent = 'Processing...';
+
+      try {
+        const res = await fetch(BASE + '/api/v1/checkout/create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ plan, name, email })
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || 'Checkout failed');
+        }
+
+        if (data.url) {
+          showSuccess('Redirecting to payment...');
+          setTimeout(() => {
+            window.location.href = data.url;
+          }, 500);
+        } else {
+          throw new Error('No checkout URL returned');
+        }
+      } catch (err) {
+        showError(err.message);
+        btn.disabled = false;
+        btn.textContent = 'Proceed to Payment';
+      }
+    });
+
+    // Load pricing on page load
+    loadPricing();
+  </script>
+</body>
+</html>

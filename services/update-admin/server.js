@@ -896,7 +896,7 @@ app.post('/admin/logout', (req, res) => {
 });
 
 app.get('/admin', authSession, async (_req, res) => {
-  const [licenseStats, releaseStats, recentEvents, errorEvents, topLicenses, deviceCount] = await Promise.all([
+  const [licenseStats, releaseStats, recentEvents, errorEvents, topLicenses, deviceCount, stripeStats] = await Promise.all([
     pool.query(`SELECT status, COUNT(*)::int AS count FROM license_records GROUP BY status ORDER BY status`),
     pool.query(`SELECT platform, rollout_state, COUNT(*)::int AS count FROM releases GROUP BY platform, rollout_state ORDER BY platform, rollout_state`),
     pool.query(`SELECT event_type, detail, created_at, fingerprint FROM update_events ORDER BY created_at DESC LIMIT 15`),
@@ -907,12 +907,19 @@ app.get('/admin', authSession, async (_req, res) => {
       GROUP BY lr.fingerprint, lr.customer_name, lr.status, lr.last_seen_at
       ORDER BY lr.last_seen_at DESC NULLS LAST LIMIT 5`),
     pool.query(`SELECT COUNT(*)::int AS count FROM license_activations`),
+    pool.query(`SELECT 
+      COUNT(DISTINCT customer_email)::int AS total_customers,
+      COUNT(*)::int AS total_licenses,
+      COUNT(*) FILTER (WHERE status = 'active')::int AS active_licenses
+    FROM stripe_sessions`).catch(() => ({ rows: [{ total_customers: 0, total_licenses: 0, active_licenses: 0 }] })),
   ]);
 
   const artifactSize = getDirSize(artifactsRoot);
   const disk = getDiskStats(artifactsRoot);
   const diskPct = disk ? Math.round((disk.used / disk.total) * 100) : null;
   const diskBar = disk ? `<div style="margin-top:8px;background:var(--border2);border-radius:4px;height:6px;overflow:hidden"><div style="width:${diskPct}%;background:${diskPct > 85 ? '#f87171' : diskPct > 65 ? '#fdba74' : '#34d399'};height:100%;border-radius:4px"></div></div><p class="muted" style="margin-top:4px;font-size:.72rem">${formatBytes(disk.used)} used of ${formatBytes(disk.total)} (${disk.pct})</p>` : '';
+
+  const stripeRow = stripeStats.rows[0] || { total_customers: 0, total_licenses: 0, active_licenses: 0 };
 
   res.send(htmlPage('Admin Dashboard', `
     <div class="hero">
@@ -927,6 +934,8 @@ app.get('/admin', authSession, async (_req, res) => {
       ${licenseStats.rows.map((row) => `<div class="card"><div class="card-label">Licenses · ${row.status}</div><div class="card-value">${row.count}</div></div>`).join('')}
       ${releaseStats.rows.map((row) => `<div class="card"><div class="card-label">Releases · ${row.platform} / ${row.rollout_state}</div><div class="card-value">${row.count}</div></div>`).join('')}
       <div class="card"><div class="card-label">Total devices</div><div class="card-value">${deviceCount.rows[0].count}</div></div>
+      <div class="card"><div class="card-label">Stripe customers</div><div class="card-value">${stripeRow.total_customers}</div></div>
+      <div class="card"><div class="card-label">Stripe licenses issued</div><div class="card-value">${stripeRow.total_licenses}</div></div>
     </div>
     <div class="grid">
       <div class="panel">
@@ -1983,6 +1992,19 @@ async function ensureTrialSchema() {
   await pool.query('CREATE INDEX IF NOT EXISTS idx_trial_requests_email ON trial_requests(email, created_at DESC)');
 }
 
+async function ensureStripeSessionsSchema() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS stripe_sessions (
+      session_id TEXT PRIMARY KEY,
+      license_key TEXT NOT NULL,
+      activation_code TEXT NOT NULL,
+      customer_email TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_stripe_sessions_email ON stripe_sessions(customer_email)');
+}
+
 // ---------------------------------------------------------------------------
 // Shared: generate a license and return { licenseKey, activationCode, expiresLabel }
 // ---------------------------------------------------------------------------
@@ -2097,6 +2119,12 @@ app.post(
           notes: `Stripe purchase ${session.id} (${amountTotal / 100} ${currency})`,
           maxDevices: defaultMaxDevices,
         });
+
+        // Store session-to-license mapping for success page retrieval
+        await pool.query(
+          'INSERT INTO stripe_sessions (session_id, license_key, activation_code, customer_email) VALUES ($1, $2, $3, $4) ON CONFLICT (session_id) DO UPDATE SET license_key=$2, activation_code=$3',
+          [session.id, licenseKey, activationCode, customerEmail]
+        );
 
         await sendEmail({
           to: customerEmail,
@@ -2431,6 +2459,7 @@ async function start() {
   await ensureRuntimeSchema();
   await ensureTrialSchema();
   await ensurePricingSchema();
+  await ensureStripeSessionsSchema();
   await ensureAdminUser();
   app.listen(port, '0.0.0.0', () => {
     console.log(`[update-admin] Listening on 0.0.0.0:${port}`);
