@@ -699,24 +699,22 @@ export function ThumbnailGrid() {
     };
   }, [files]);
 
-  const [localSelectedPaths, setLocalSelectedPaths] = useState<string[]>(selectedPaths);
-
   const selectedIndices = useMemo(() => {
-    if (localSelectedPaths.length === 0) return new Set<number>();
-    const pathSet = new Set(localSelectedPaths);
+    if (selectedPaths.length === 0) return new Set<number>();
+    const pathSet = new Set(selectedPaths);
     const next = new Set<number>();
     sortedFiles.forEach((file, index) => {
       if (pathSet.has(file.path)) next.add(index);
     });
     return next;
-  }, [localSelectedPaths, sortedFiles]);
+  }, [selectedPaths, sortedFiles]);
 
   // Keep a ref so click handlers always read the latest selection, even when
   // the user clicks again before React has flushed effects from the last click.
-  const selectedPathSetRef = useRef(new Set(localSelectedPaths));
+  const selectedPathSetRef = useRef(new Set(selectedPaths));
   useEffect(() => {
-    selectedPathSetRef.current = new Set(localSelectedPaths);
-  }, [localSelectedPaths]);
+    selectedPathSetRef.current = new Set(selectedPaths);
+  }, [selectedPaths]);
 
   const orderedPathsFromSet = useCallback((paths: Set<string>) => (
     sortedFiles
@@ -727,28 +725,10 @@ export function ThumbnailGrid() {
   const applySelectedPaths = useCallback((paths: string[]) => {
     const ordered = orderedPathsFromSet(new Set(paths));
     selectedPathSetRef.current = new Set(ordered);
-    setLocalSelectedPaths(ordered);
     if (!pathArraysEqual(ordered, selectedPaths)) {
       dispatch({ type: 'SET_SELECTED_PATHS', paths: ordered });
     }
   }, [dispatch, orderedPathsFromSet, pathArraysEqual, selectedPaths]);
-
-  useEffect(() => {
-    if (files.length === 0) {
-      if (localSelectedPaths.length > 0 || selectedPaths.length > 0) applySelectedPaths([]);
-      return;
-    }
-
-    const normalized = orderedPathsFromSet(new Set(selectedPaths));
-    if (!pathArraysEqual(normalized, selectedPaths)) {
-      dispatch({ type: 'SET_SELECTED_PATHS', paths: normalized });
-      return;
-    }
-    if (!pathArraysEqual(localSelectedPaths, normalized)) {
-      selectedPathSetRef.current = new Set(normalized);
-      setLocalSelectedPaths(normalized);
-    }
-  }, [applySelectedPaths, dispatch, files.length, localSelectedPaths, orderedPathsFromSet, pathArraysEqual, selectedPaths]);
 
   const setSelectedIndices = useCallback((next: Set<number>) => {
     const paths = Array.from(next)
@@ -1106,11 +1086,11 @@ export function ThumbnailGrid() {
       return;
     }
 
-    if (localSelectedPaths.length > 1) {
-      applySelectedPaths([localSelectedPaths[0]]);
-      lastClickedPathRef.current = localSelectedPaths[0];
+    if (selectedPaths.length > 1) {
+      applySelectedPaths([selectedPaths[0]]);
+      lastClickedPathRef.current = selectedPaths[0];
     }
-  }, [applySelectedPaths, focusedIndex, localSelectedPaths, multiClickSelect, sortedFiles]);
+  }, [applySelectedPaths, focusedIndex, multiClickSelect, selectedPaths, sortedFiles]);
 
   const handleGridDoubleClick = useCallback((index: number) => {
     setFocused(index);
@@ -2006,7 +1986,6 @@ export function ThumbnailGrid() {
       {hasBatchSelection && (
         <>
           <span className="px-2.5 py-1.5 text-[11px] text-blue-400 font-medium">{selectedIndices.size}</span>
-          <span className="px-2 py-1.5 text-[10px] text-text-muted">Click more photos while Multi is on. Turn it off to go back to single-photo selection.</span>
           <div className="w-px h-4 bg-border" />
         </>
       )}
