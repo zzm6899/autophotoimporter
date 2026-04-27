@@ -2130,34 +2130,6 @@ app.get('/buy', (_req, res) => {
   `));
 });
 
-async function waitForDatabase(maxAttempts = 20, delayMs = 1500) {
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      await pool.query('SELECT 1');
-      return;
-    } catch (error) {
-      if (attempt === maxAttempts) throw error;
-      console.warn(`[update-admin] Database not ready yet (${attempt}/${maxAttempts}). Retrying...`);
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-    }
-  }
-}
-
-async function start() {
-  await waitForDatabase();
-  await ensureRuntimeSchema();
-  await ensureTrialSchema();
-  await ensureAdminUser();
-  app.listen(port, '0.0.0.0', () => {
-    console.log(`[update-admin] Listening on 0.0.0.0:${port}`);
-  });
-}
-
-start().catch((err) => {
-  console.error('[update-admin] Failed to start:', err);
-  process.exit(1);
-});
-
 // ---------------------------------------------------------------------------
 // Stripe checkout session  POST /api/v1/checkout/create
 // Body: { plan: 'monthly'|'yearly'|'lifetime', name, email, extensionCode? }
