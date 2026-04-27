@@ -2115,21 +2115,7 @@ app.post(
   },
 );
 
-// ---------------------------------------------------------------------------
-// Buy redirect  GET /buy
-// Redirects to the Stripe Payment Link (or shows instructions if not configured).
-// ---------------------------------------------------------------------------
-app.get('/buy', (_req, res) => {
-  if (stripePaymentLink) {
-    return res.redirect(302, stripePaymentLink);
-  }
-  return res.status(503).send(htmlPage('Purchase', `
-    <div class="panel" style="max-width:480px;margin:40px auto">
-      <h1>Purchase not yet configured</h1>
-      <p class="muted">Set the <code>STRIPE_PAYMENT_LINK</code> environment variable to enable purchases.</p>
-    </div>
-  `));
-});
+
 
 // ---------------------------------------------------------------------------
 // Stripe checkout session  POST /api/v1/checkout/create
