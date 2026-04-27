@@ -2262,29 +2262,37 @@ app.post('/api/v1/checkout/create', async (req, res) => {
 // Pricing schema + admin page
 // ---------------------------------------------------------------------------
 async function ensurePricingSchema() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS pricing_config (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL,
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
-  // Seed defaults if empty
-  const defaults = [
-    ['price_monthly_cents', '900'],
-    ['price_yearly_cents', '4900'],
-    ['price_lifetime_cents', '4900'],
-    ['stripe_price_monthly', ''],
-    ['stripe_price_yearly', ''],
-    ['stripe_price_lifetime', ''],
-    ['currency', 'aud'],
-    ['trial_days', '14'],
-  ];
-  for (const [key, value] of defaults) {
-    await pool.query(
-      `INSERT INTO pricing_config (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING`,
-      [key, value],
-    );
+  // Use an advisory lock so concurrent restarts don't race on CREATE TABLE.
+  const client = await pool.connect();
+  try {
+    await client.query('SELECT pg_advisory_lock(8675309)');
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS pricing_config (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    // Seed defaults if empty
+    const defaults = [
+      ['price_monthly_cents', '900'],
+      ['price_yearly_cents', '4900'],
+      ['price_lifetime_cents', '4900'],
+      ['stripe_price_monthly', ''],
+      ['stripe_price_yearly', ''],
+      ['stripe_price_lifetime', ''],
+      ['currency', 'aud'],
+      ['trial_days', '14'],
+    ];
+    for (const [key, value] of defaults) {
+      await client.query(
+        `INSERT INTO pricing_config (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING`,
+        [key, value],
+      );
+    }
+  } finally {
+    await client.query('SELECT pg_advisory_unlock(8675309)');
+    client.release();
   }
 }
 
