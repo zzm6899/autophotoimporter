@@ -35,6 +35,7 @@ export function Layout({ left, center, right }: LayoutProps) {
     files,
     queuedPaths,
     phase,
+    ftpSyncStatus,
   } = useAppState();
   const dispatch = useAppDispatch();
 
@@ -150,6 +151,12 @@ export function Layout({ left, center, right }: LayoutProps) {
           {phase === 'scanning' && <span>Scanning...</span>}
           {phase === 'importing' && <span>Importing...</span>}
           {phase === 'complete' && <span>Done</span>}
+          {ftpSyncStatus.state === 'running' && (
+            <span className="flex items-center gap-1 rounded bg-blue-500/15 px-2 py-0.5 text-blue-300" title={ftpSyncStatus.message}>
+              <span className="h-1.5 w-1.5 rounded-full bg-blue-300 animate-pulse" />
+              FTP sync
+            </span>
+          )}
           {/* Face model background download indicator */}
           {modelDl && modelDl.status === 'downloading' && (
             <span className="flex items-center gap-1 rounded bg-violet-500/15 px-2 py-0.5 text-violet-300" title="Downloading face recognition models in background">

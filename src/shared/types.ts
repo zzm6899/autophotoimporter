@@ -113,6 +113,30 @@ export interface FtpConfig {
   remotePath: string; // e.g. /DCIM
 }
 
+export interface FtpSyncSettings {
+  enabled: boolean;
+  runOnLaunch: boolean;
+  intervalMinutes: number;
+  localDestRoot: string;
+  reuploadToFtpDest: boolean;
+}
+
+export interface FtpSyncStatus {
+  state: 'idle' | 'running' | 'success' | 'error';
+  trigger?: 'manual' | 'launch' | 'interval';
+  stage?: 'idle' | 'probing' | 'mirroring' | 'scanning' | 'importing' | 'complete';
+  message: string;
+  startedAt?: string;
+  lastRunAt?: string;
+  lastSuccessAt?: string;
+  currentFile?: string;
+  done?: number;
+  total?: number;
+  imported?: number;
+  skipped?: number;
+  errors?: number;
+}
+
 export type SaveFormat = 'original' | 'jpeg' | 'tiff' | 'heic';
 export type RatingFilter = 'rating-1' | 'rating-2' | 'rating-3' | 'rating-4' | 'rating-5';
 
@@ -265,8 +289,10 @@ export interface AppSettings {
   separateProtected: boolean;
   protectedFolderName: string;
   backupDestRoot: string;        // empty string = disabled
+  ftpConfig: FtpConfig;
   ftpDestEnabled: boolean;
   ftpDestConfig: FtpConfig;
+  ftpSync: FtpSyncSettings;
   autoEject: boolean;
   playSoundOnComplete: boolean;
   completeSoundPath: string;
@@ -469,6 +495,8 @@ export const IPC = {
   FTP_MIRROR_START: 'ftp:mirror-start',
   FTP_MIRROR_PROGRESS: 'ftp:mirror-progress',
   FTP_MIRROR_CANCEL: 'ftp:mirror-cancel',
+  FTP_SYNC_RUN: 'ftp:sync-run',
+  FTP_SYNC_STATUS: 'ftp:sync-status',
 
   // Workflow — manifest export
   EXPORT_MANIFEST: 'export:manifest',

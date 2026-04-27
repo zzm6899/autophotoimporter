@@ -1,5 +1,5 @@
 import { createContext, useContext, useReducer, useRef, useMemo, useCallback, useState, type Dispatch, type ReactNode } from 'react';
-import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, SourceKind, FtpConfig, RatingFilter, SelectionSet, LicenseValidation } from '../../shared/types';
+import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, SourceKind, FtpConfig, FtpSyncSettings, FtpSyncStatus, RatingFilter, SelectionSet, LicenseValidation } from '../../shared/types';
 import { FOLDER_PRESETS } from '../../shared/types';
 import { groupBursts } from '../../shared/burst';
 import { bestInGroup, faceQuality, groupByFaceSignature, groupByVisualHash, keeperScore, scoreReview } from '../../shared/review';
@@ -33,6 +33,8 @@ interface State {
   ftpStatus: 'idle' | 'probing' | 'mirroring' | 'error';
   ftpMessage: string | null;
   ftpProgress: { done: number; total: number; name: string } | null;
+  ftpSyncSettings: FtpSyncSettings;
+  ftpSyncStatus: FtpSyncStatus;
   filter: FilterMode;
   cullMode: boolean;
   /**
@@ -119,6 +121,8 @@ export type Action =
   | { type: 'SET_FTP_CONFIG'; config: Partial<FtpConfig> }
   | { type: 'SET_FTP_STATUS'; status: 'idle' | 'probing' | 'mirroring' | 'error'; message?: string | null }
   | { type: 'SET_FTP_PROGRESS'; progress: { done: number; total: number; name: string } | null }
+  | { type: 'SET_FTP_SYNC_SETTINGS'; settings: Partial<FtpSyncSettings> }
+  | { type: 'SET_FTP_SYNC_STATUS'; status: FtpSyncStatus }
   | { type: 'SET_FILTER'; filter: FilterMode }
   | { type: 'TOGGLE_CULL_MODE' }
   | { type: 'SET_SELECTED_PATHS'; paths: string[] }
@@ -219,6 +223,18 @@ const initialState: State = {
   ftpStatus: 'idle',
   ftpMessage: null,
   ftpProgress: null,
+  ftpSyncSettings: {
+    enabled: false,
+    runOnLaunch: true,
+    intervalMinutes: 15,
+    localDestRoot: '',
+    reuploadToFtpDest: false,
+  },
+  ftpSyncStatus: {
+    state: 'idle',
+    stage: 'idle',
+    message: 'FTP sync is idle.',
+  },
   filter: 'all',
   cullMode: false,
   selectedPaths: [],
@@ -402,6 +418,10 @@ export function reducer(state: State, action: Action): State {
       };
     case 'SET_FTP_PROGRESS':
       return { ...state, ftpProgress: action.progress };
+    case 'SET_FTP_SYNC_SETTINGS':
+      return { ...state, ftpSyncSettings: { ...state.ftpSyncSettings, ...action.settings } };
+    case 'SET_FTP_SYNC_STATUS':
+      return { ...state, ftpSyncStatus: action.status };
     case 'SET_FILTER':
       return { ...state, filter: action.filter };
     case 'TOGGLE_CULL_MODE':

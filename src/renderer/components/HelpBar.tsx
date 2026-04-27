@@ -17,7 +17,7 @@ function getContextTip(phase: string, fileCount: number, picked: number, queued:
 export function HelpBar() {
   const {
     phase, scanPaused, filter, viewMode, selectedPaths, queuedPaths,
-    focusedIndex, importProgress,
+    focusedIndex, importProgress, ftpSyncStatus,
   } = useAppState();
   const files = useMergedFiles();
   const dispatch = useAppDispatch();
@@ -148,6 +148,11 @@ export function HelpBar() {
             {faceFiles > 0 ? ` | faces ${faceFiles}` : ''}
             {faceGroups > 0 ? ` | groups ${faceGroups}` : ''}
             {blurRisk > 0 ? ` | blur ${blurRisk}` : ''}
+          </span>
+        )}
+        {ftpSyncStatus.state === 'running' && (
+          <span className="shrink-0 text-blue-300" title={ftpSyncStatus.message}>
+            FTP sync {ftpSyncStatus.done && ftpSyncStatus.total ? `${ftpSyncStatus.done}/${ftpSyncStatus.total}` : 'running'}
           </span>
         )}
 

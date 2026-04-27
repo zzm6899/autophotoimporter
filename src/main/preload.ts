@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC } from '../shared/types';
-import type { ImportConfig, AppSettings, MediaFile, Volume, ImportProgress, ImportResult, UpdateInfo, UpdateReleaseSummary, UpdateState, FtpConfig, ImportError, LicenseValidation } from '../shared/types';
+import type { ImportConfig, AppSettings, MediaFile, Volume, ImportProgress, ImportResult, UpdateInfo, UpdateReleaseSummary, UpdateState, FtpConfig, FtpSyncStatus, ImportError, LicenseValidation } from '../shared/types';
 import type { FaceBox } from './services/face-engine';
 import type { ModelDownloadProgress } from './services/model-downloader';
 
@@ -129,6 +129,13 @@ const api = {
     const handler = (_event: Electron.IpcRendererEvent, p: FtpMirrorProgress) => cb(p);
     ipcRenderer.on(IPC.FTP_MIRROR_PROGRESS, handler);
     return () => ipcRenderer.removeListener(IPC.FTP_MIRROR_PROGRESS, handler);
+  },
+  runFtpSync: (): Promise<{ ok: boolean; status: FtpSyncStatus }> =>
+    ipcRenderer.invoke(IPC.FTP_SYNC_RUN),
+  onFtpSyncStatus: (cb: (status: FtpSyncStatus) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, status: FtpSyncStatus) => cb(status);
+    ipcRenderer.on(IPC.FTP_SYNC_STATUS, handler);
+    return () => ipcRenderer.removeListener(IPC.FTP_SYNC_STATUS, handler);
   },
 
   // Export manifest

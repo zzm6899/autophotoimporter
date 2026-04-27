@@ -4,7 +4,7 @@ import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import { IPC } from '../shared/types';
-import type { ImportConfig, ImportResult, AppSettings, MediaFile, FtpConfig, Volume, UpdateState } from '../shared/types';
+import type { ImportConfig, ImportResult, AppSettings, MediaFile, FtpConfig, FtpSyncStatus, Volume, UpdateState } from '../shared/types';
 import { listVolumes, startWatching, stopWatching } from './services/volume-watcher';
 import { scanFiles, cancelScan, pauseScan, resumeScan } from './services/file-scanner';
 import { importFiles, cancelImport } from './services/import-engine';
@@ -31,6 +31,14 @@ let autoUpdaterReady = false;
 let downloadedInstallerPath: string | null = null;
 let downloadedInstallerVersion: string | null = null;
 let downloadedUpdateKind: 'installer' | 'native' | null = null;
+let ftpSyncAbort: AbortController | null = null;
+let ftpSyncRunning = false;
+let ftpSyncTimer: NodeJS.Timeout | null = null;
+let lastFtpSyncStatus: FtpSyncStatus = {
+  state: 'idle',
+  stage: 'idle',
+  message: 'FTP sync is idle.',
+};
 
 function getSettingsPath(): string {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -47,6 +55,14 @@ const DEFAULT_SETTINGS: AppSettings = {
   separateProtected: false,
   protectedFolderName: '_Protected',
   backupDestRoot: '',
+  ftpConfig: {
+    host: '',
+    port: 21,
+    user: '',
+    password: '',
+    secure: false,
+    remotePath: '/DCIM',
+  },
   ftpDestEnabled: false,
   ftpDestConfig: {
     host: '',
@@ -55,6 +71,13 @@ const DEFAULT_SETTINGS: AppSettings = {
     password: '',
     secure: false,
     remotePath: '/PhotoImporter',
+  },
+  ftpSync: {
+    enabled: false,
+    runOnLaunch: true,
+    intervalMinutes: 15,
+    localDestRoot: '',
+    reuploadToFtpDest: false,
   },
   autoEject: false,
   playSoundOnComplete: false,
@@ -200,6 +223,200 @@ async function saveSettings(settings: Partial<AppSettings>): Promise<void> {
   configureCpuOptimization(merged.cpuOptimization ?? false);
   setRawPreviewQuality(merged.rawPreviewQuality ?? 70);
   setFaceConcurrency(merged.faceConcurrency ?? 1);
+}
+
+function publishFtpSyncStatus(status: FtpSyncStatus): FtpSyncStatus {
+  lastFtpSyncStatus = status;
+  sendToRenderer(IPC.FTP_SYNC_STATUS, status);
+  return status;
+}
+
+function clearFtpSyncTimer(): void {
+  if (ftpSyncTimer) {
+    clearTimeout(ftpSyncTimer);
+    ftpSyncTimer = null;
+  }
+}
+
+async function scheduleFtpSync(settings?: AppSettings): Promise<void> {
+  clearFtpSyncTimer();
+  const resolved = settings ?? await loadSettings();
+  if (!resolved.ftpSync?.enabled) return;
+  const intervalMinutes = Math.max(5, resolved.ftpSync.intervalMinutes || 15);
+  ftpSyncTimer = setTimeout(() => {
+    void runAutomatedFtpSync('interval');
+  }, intervalMinutes * 60 * 1000);
+}
+
+async function runAutomatedFtpSync(trigger: 'manual' | 'launch' | 'interval'): Promise<FtpSyncStatus> {
+  if (ftpSyncRunning) {
+    return publishFtpSyncStatus({
+      ...lastFtpSyncStatus,
+      message: 'FTP sync is already running.',
+    });
+  }
+
+  const settings = await loadSettings();
+  const sync = settings.ftpSync;
+  if (!sync) {
+    return publishFtpSyncStatus({
+      state: 'error',
+      stage: 'idle',
+      trigger,
+      message: 'FTP sync settings are missing.',
+      lastRunAt: new Date().toISOString(),
+    });
+  }
+
+  if (!settings.ftpConfig.host || !settings.ftpConfig.remotePath) {
+    return publishFtpSyncStatus({
+      state: 'error',
+      stage: 'probing',
+      trigger,
+      message: 'FTP source needs a host and remote path.',
+      lastRunAt: new Date().toISOString(),
+    });
+  }
+
+  if (!sync.localDestRoot) {
+    return publishFtpSyncStatus({
+      state: 'error',
+      stage: 'idle',
+      trigger,
+      message: 'Choose a local destination for automated FTP sync.',
+      lastRunAt: new Date().toISOString(),
+    });
+  }
+
+  const licenseStatus = await getLicenseStatus();
+  if (!licenseStatus.valid) {
+    return publishFtpSyncStatus({
+      state: 'error',
+      stage: 'idle',
+      trigger,
+      message: licenseStatus.message || 'A valid license is required for automated FTP sync.',
+      lastRunAt: new Date().toISOString(),
+    });
+  }
+
+  ftpSyncRunning = true;
+  ftpSyncAbort?.abort();
+  ftpSyncAbort = new AbortController();
+  const startedAt = new Date().toISOString();
+  const publish = (status: Omit<FtpSyncStatus, 'trigger' | 'startedAt' | 'lastRunAt'>) =>
+    publishFtpSyncStatus({
+      trigger,
+      startedAt,
+      lastRunAt: startedAt,
+      ...status,
+    });
+
+  try {
+    publish({
+      state: 'running',
+      stage: 'probing',
+      message: 'Checking FTP source...',
+    });
+
+    const stagingDir = await mirrorFtp(
+      settings.ftpConfig,
+      (done, total, name) => {
+        publish({
+          state: 'running',
+          stage: 'mirroring',
+          message: total > 0 ? `Mirroring ${done}/${total} files...` : 'Mirroring FTP source...',
+          done,
+          total,
+          currentFile: name,
+        });
+      },
+      ftpSyncAbort.signal,
+    );
+
+    publish({
+      state: 'running',
+      stage: 'scanning',
+      message: 'Indexing mirrored files...',
+    });
+
+    const scanned: MediaFile[] = [];
+    const pattern = settings.folderPreset === 'custom' ? settings.customPattern : undefined;
+    await scanFiles(
+      stagingDir,
+      (batch) => {
+        scanned.push(...batch);
+      },
+      () => undefined,
+      pattern,
+      { generateThumbnails: false },
+    );
+
+    const importConfig: ImportConfig = {
+      sourcePath: stagingDir,
+      destRoot: sync.localDestRoot,
+      skipDuplicates: settings.skipDuplicates,
+      saveFormat: settings.saveFormat,
+      jpegQuality: settings.jpegQuality,
+      separateProtected: settings.separateProtected,
+      protectedFolderName: settings.protectedFolderName,
+      backupDestRoot: settings.backupDestRoot || undefined,
+      ftpDestEnabled: sync.reuploadToFtpDest && settings.ftpDestEnabled,
+      ftpDestConfig: sync.reuploadToFtpDest ? settings.ftpDestConfig : undefined,
+      verifyChecksums: settings.verifyChecksums,
+      normalizeExposure: settings.normalizeExposure,
+      exposureMaxStops: settings.exposureMaxStops,
+    };
+
+    const filesToImport = filterFilesForImport(scanned, importConfig);
+    if (filesToImport.length === 0) {
+      return publish({
+        state: 'success',
+        stage: 'complete',
+        message: 'FTP sync checked for changes. No new files were needed.',
+        total: scanned.length,
+        imported: 0,
+        skipped: 0,
+        errors: 0,
+        lastSuccessAt: new Date().toISOString(),
+      });
+    }
+
+    const result = await importFiles(filesToImport, importConfig, (progress) => {
+      publish({
+        state: 'running',
+        stage: 'importing',
+        message: `Importing ${progress.currentIndex}/${progress.totalFiles} files...`,
+        done: progress.currentIndex,
+        total: progress.totalFiles,
+        currentFile: progress.currentFile,
+        skipped: progress.skipped,
+        errors: progress.errors,
+      });
+    });
+
+    return publish({
+      state: result.errors.length > 0 ? 'error' : 'success',
+      stage: 'complete',
+      message: result.errors.length > 0
+        ? `FTP sync finished with ${result.errors.length} issue${result.errors.length === 1 ? '' : 's'}.`
+        : `FTP sync finished. Imported ${result.imported} file${result.imported === 1 ? '' : 's'}.`,
+      imported: result.imported,
+      skipped: result.skipped,
+      errors: result.errors.length,
+      total: filesToImport.length,
+      lastSuccessAt: result.errors.length > 0 ? lastFtpSyncStatus.lastSuccessAt : new Date().toISOString(),
+    });
+  } catch (err) {
+    return publish({
+      state: 'error',
+      stage: 'complete',
+      message: err instanceof Error ? err.message : 'FTP sync failed.',
+    });
+  } finally {
+    ftpSyncRunning = false;
+    ftpSyncAbort = null;
+    await scheduleFtpSync(settings).catch(() => undefined);
+  }
 }
 
 async function getLicenseStatus() {
@@ -545,8 +762,19 @@ export function registerIpcHandlers(): void {
     knownVolumePaths = new Set();
   });
 
+  void loadSettings().then((settings) => {
+    void scheduleFtpSync(settings);
+    if (settings.ftpSync?.enabled && settings.ftpSync.runOnLaunch) {
+      setTimeout(() => {
+        void runAutomatedFtpSync('launch');
+      }, 2500);
+    }
+  }).catch(() => undefined);
+
   app.on('before-quit', () => {
     stopWatching();
+    clearFtpSyncTimer();
+    ftpSyncAbort?.abort();
   });
 
   // Scanning
@@ -690,6 +918,8 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC.SETTINGS_SET, async (_event, settings: Partial<AppSettings>) => {
     await saveSettings(settings);
+    const merged = await loadSettings();
+    await scheduleFtpSync(merged);
   });
 
   ipcMain.handle(IPC.LICENSE_ACTIVATE, async (_event, key: string) => {
@@ -889,6 +1119,11 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IPC.FTP_MIRROR_CANCEL, async () => {
     ftpAbort?.abort();
     ftpAbort = null;
+  });
+
+  ipcMain.handle(IPC.FTP_SYNC_RUN, async () => {
+    const status = await runAutomatedFtpSync('manual');
+    return { ok: status.state !== 'error', status };
   });
 
   // Eject

@@ -31,11 +31,6 @@ export function DestinationPanel() {
     destination, skipDuplicates, saveFormat, jpegQuality, folderPreset, customPattern,
     files, phase, importProgress, selectedSource, selectedPaths, queuedPaths,
     separateProtected, protectedFolderName, backupDestRoot, ftpDestEnabled, ftpDestConfig,
-    autoEject, playSoundOnComplete, completeSoundPath, openFolderOnComplete,
-    verifyChecksums,
-    autoImport, autoImportDestRoot,
-    burstGrouping, burstWindowSec,
-    normalizeExposure, exposureAnchorPath, exposureMaxStops,
     licenseStatus,
   } = useAppState();
   const dispatch = useAppDispatch();
@@ -69,30 +64,6 @@ export function DestinationPanel() {
     window.electronAPI.setSettings({ backupDestRoot: '' });
   };
 
-  const handleChooseAutoImportDest = async () => {
-    const folder = await window.electronAPI.selectFolder('Select Auto-Import Destination');
-    if (folder) {
-      dispatch({ type: 'SET_WORKFLOW_STRING', key: 'autoImportDestRoot', value: folder });
-      window.electronAPI.setSettings({ autoImportDestRoot: folder });
-    }
-  };
-
-  const handleChooseCompleteSound = async () => {
-    const file = await window.electronAPI.selectFile('Select Completion Sound', [
-      { name: 'Audio', extensions: ['wav', 'mp3', 'm4a', 'aac', 'ogg', 'flac'] },
-      { name: 'All Files', extensions: ['*'] },
-    ]);
-    if (!file) return;
-    dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'playSoundOnComplete', value: true });
-    dispatch({ type: 'SET_WORKFLOW_STRING', key: 'completeSoundPath', value: file });
-    window.electronAPI.setSettings({ playSoundOnComplete: true, completeSoundPath: file });
-  };
-
-  const handleClearCompleteSound = () => {
-    dispatch({ type: 'SET_WORKFLOW_STRING', key: 'completeSoundPath', value: '' });
-    window.electronAPI.setSettings({ completeSoundPath: '' });
-  };
-
   const handleToggleDuplicates = () => {
     const value = !skipDuplicates;
     dispatch({ type: 'SET_SKIP_DUPLICATES', value });
@@ -120,22 +91,11 @@ export function DestinationPanel() {
   };
 
   const handleWorkflowBool = (
-    key: 'separateProtected' | 'autoEject' | 'playSoundOnComplete' | 'openFolderOnComplete'
-      | 'autoImport' | 'burstGrouping' | 'normalizeExposure' | 'verifyChecksums' | 'ftpDestEnabled',
+    key: 'separateProtected' | 'ftpDestEnabled',
     value: boolean,
   ) => {
     dispatch({ type: 'SET_WORKFLOW_OPTION', key, value });
     window.electronAPI.setSettings({ [key]: value } as Record<string, unknown>);
-  };
-
-  const handleBurstWindow = (seconds: number) => {
-    dispatch({ type: 'SET_BURST_WINDOW', seconds });
-    window.electronAPI.setSettings({ burstWindowSec: seconds });
-  };
-
-  const handleMaxStops = (stops: number) => {
-    dispatch({ type: 'SET_EXPOSURE_MAX_STOPS', stops });
-    window.electronAPI.setSettings({ exposureMaxStops: stops });
   };
 
   const handleFtpDestConfig = (config: Partial<typeof ftpDestConfig>) => {
@@ -187,13 +147,6 @@ export function DestinationPanel() {
     setJobPresets(next);
     window.electronAPI.setSettings({ jobPresets: next });
   };
-
-  const anchorFile = exposureAnchorPath ? files.find((f) => f.path === exposureAnchorPath) : null;
-  const burstCount = useMemo(() => {
-    const ids = new Set<string>();
-    for (const f of files) if (f.burstId) ids.add(f.burstId);
-    return ids.size;
-  }, [files]);
 
   const handleProtectedFolderName = (value: string) => {
     dispatch({ type: 'SET_WORKFLOW_STRING', key: 'protectedFolderName', value });
@@ -500,42 +453,33 @@ export function DestinationPanel() {
           <span className="text-text-muted">{showAdvanced ? '-' : '+'}</span>
         </button>
         {showAdvanced && (
-          <div className="mt-1.5 space-y-1.5">
-            {/* Backup destination */}
-            <div>
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] text-text">Backup copy</span>
-                {backupDestRoot && (
-                  <button
-                    onClick={handleClearBackup}
-                    className="text-[10px] text-text-muted hover:text-text"
-                  >
-                    clear
-                  </button>
-                )}
+          <>
+            <div className="mt-1.5 space-y-1.5">
+              {/* Backup destination */}
+              <div>
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] text-text">Backup copy</span>
+                  {backupDestRoot && (
+                    <button
+                      onClick={handleClearBackup}
+                      className="text-[10px] text-text-muted hover:text-text"
+                    >
+                      clear
+                    </button>
+                  )}
+                </div>
+                <button
+                  onClick={handleChooseBackup}
+                  className="w-full mt-0.5 px-1.5 py-1 text-[11px] bg-surface-raised hover:bg-border rounded text-text-secondary transition-colors text-left"
+                  title={backupDestRoot || 'Pick a second folder — each imported file will be copied there too'}
+                >
+                  {backupDestRoot
+                    ? <span className="truncate block">{backupDestRoot.split(/[/\\]/).pop()}</span>
+                    : 'Choose backup folder...'}
+                </button>
               </div>
-              <button
-                onClick={handleChooseBackup}
-                className="w-full mt-0.5 px-1.5 py-1 text-[11px] bg-surface-raised hover:bg-border rounded text-text-secondary transition-colors text-left"
-                title={backupDestRoot || 'Pick a second folder — each imported file will be copied there too'}
-              >
-                {backupDestRoot
-                  ? <span className="truncate block">{backupDestRoot.split(/[/\\]/).pop()}</span>
-                  : 'Choose backup folder...'}
-              </button>
-            </div>
 
-            {/* Toggles */}
-            <label className="flex items-center gap-1.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={autoEject}
-                onChange={(e) => handleWorkflowBool('autoEject', e.target.checked)}
-              />
-              <span className="text-xs text-text">Eject source when done</span>
-            </label>
-
-            <div className="pt-1 border-t border-border">
+              {/* Current-import FTP output */}
               <label className="flex items-center gap-1.5 cursor-pointer">
                 <input
                   type="checkbox"
@@ -595,171 +539,21 @@ export function DestinationPanel() {
               )}
             </div>
 
-            <label className="flex items-center gap-1.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={playSoundOnComplete}
-                onChange={(e) => handleWorkflowBool('playSoundOnComplete', e.target.checked)}
-              />
-              <span className="text-xs text-text">Play sound on complete</span>
-            </label>
-            {playSoundOnComplete && (
-              <div className="ml-5 flex items-center gap-1">
+            <div className="pt-1 border-t border-border rounded bg-surface-alt px-2 py-2">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-[11px] text-text">Automation and post-import</div>
+                  <div className="text-[10px] text-text-muted">FTP workflow, auto-import, sounds, burst grouping, and exposure defaults live in Settings.</div>
+                </div>
                 <button
-                  onClick={handleChooseCompleteSound}
-                  className="min-w-0 flex-1 px-1.5 py-1 text-[10px] bg-surface-raised hover:bg-border rounded text-text-secondary transition-colors text-left"
-                  title={completeSoundPath || 'Choose a custom completion sound'}
+                  onClick={() => dispatch({ type: 'SET_VIEW_MODE', mode: 'settings' })}
+                  className="shrink-0 px-2 py-1 text-[10px] bg-surface-raised hover:bg-border rounded text-text-secondary"
                 >
-                  <span className="truncate block">
-                    {completeSoundPath ? completeSoundPath.split(/[/\\]/).pop() : 'Choose custom sound...'}
-                  </span>
+                  Open settings
                 </button>
-                {completeSoundPath && (
-                  <button
-                    onClick={handleClearCompleteSound}
-                    className="text-[10px] text-text-muted hover:text-text"
-                  >
-                    clear
-                  </button>
-                )}
               </div>
-            )}
-            <label className="flex items-center gap-1.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={openFolderOnComplete}
-                onChange={(e) => handleWorkflowBool('openFolderOnComplete', e.target.checked)}
-              />
-              <span className="text-xs text-text">Open folder on complete</span>
-            </label>
-            <label className="flex items-center gap-1.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={verifyChecksums}
-                onChange={(e) => handleWorkflowBool('verifyChecksums', e.target.checked)}
-              />
-              <span className="text-xs text-text">Full checksum verify</span>
-            </label>
-
-            {/* Auto-import */}
-            <div className="pt-1 border-t border-border">
-              <label className="flex items-center gap-1.5 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={autoImport}
-                  onChange={(e) => handleWorkflowBool('autoImport', e.target.checked)}
-                />
-                <span className="text-xs text-text">Auto-import on card insert</span>
-              </label>
-              {autoImport && (
-                <div className="mt-1 ml-5">
-                  <button
-                    onClick={handleChooseAutoImportDest}
-                    className="w-full px-1.5 py-1 text-[11px] bg-surface-raised hover:bg-border rounded text-text-secondary transition-colors text-left"
-                  >
-                    {autoImportDestRoot
-                      ? <span className="truncate block">{autoImportDestRoot.split(/[/\\]/).pop()}</span>
-                      : 'Choose auto-import folder...'}
-                  </button>
-                  <p className="text-[10px] text-text-muted mt-0.5">
-                    When a card with a DCIM folder is inserted, it will import automatically using your saved settings.
-                  </p>
-                </div>
-              )}
             </div>
-
-            {/* Burst grouping */}
-            <div className="pt-1 border-t border-border">
-              <label className="flex items-center gap-1.5 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={burstGrouping}
-                  onChange={(e) => handleWorkflowBool('burstGrouping', e.target.checked)}
-                />
-                <span className="text-xs text-text">Group burst shots</span>
-              </label>
-              {burstGrouping && (
-                <div className="mt-1 ml-5">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] text-text-secondary">Window</span>
-                    <span className="text-[10px] text-text-secondary font-mono">{burstWindowSec.toFixed(2)}s</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={0.5}
-                    max={5}
-                    step={0.25}
-                    value={burstWindowSec}
-                    onChange={(e) => handleBurstWindow(Number(e.target.value))}
-                    className="w-full h-1 bg-surface-raised rounded appearance-none cursor-pointer accent-accent"
-                    title="Max gap between consecutive shots to count as one burst"
-                  />
-                  <p className="text-[10px] text-text-muted mt-0.5">
-                    {burstCount > 0
-                      ? <>Found <span className="text-text">{burstCount}</span> burst{burstCount !== 1 ? 's' : ''} &middot; B = select burst &middot; G = collapse</>
-                      : <>B = select burst &middot; G = collapse/expand in the grid</>}
-                  </p>
-                </div>
-              )}
-            </div>
-
-            {/* Exposure normalization */}
-            <div className="pt-1 border-t border-border">
-              <label className="flex items-center gap-1.5 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={normalizeExposure}
-                  onChange={(e) => handleWorkflowBool('normalizeExposure', e.target.checked)}
-                  disabled={saveFormat === 'original'}
-                />
-                <span className={`text-xs ${saveFormat === 'original' ? 'text-text-muted' : 'text-text'}`}>
-                  Normalize exposure to anchor
-                </span>
-              </label>
-              {saveFormat === 'original' && (
-                <p className="text-[10px] text-text-muted mt-0.5 ml-5">
-                  Requires a non-original save format (JPEG / TIFF / HEIC) so pixels can be rewritten.
-                </p>
-              )}
-              {normalizeExposure && saveFormat !== 'original' && (
-                <div className="mt-1 ml-5 space-y-1">
-                  {anchorFile ? (
-                    <div className="flex items-center justify-between gap-1">
-                      <span className="text-[10px] font-mono text-text truncate" title={anchorFile.path}>
-                        {anchorFile.name}
-                      </span>
-                      <button
-                        onClick={() => dispatch({ type: 'CLEAR_EXPOSURE_ANCHOR' })}
-                        className="text-[10px] text-text-muted hover:text-text shrink-0"
-                      >
-                        clear
-                      </button>
-                    </div>
-                  ) : (
-                    <p className="text-[10px] text-text-muted">
-                      Open a photo in detail view and click "Set as anchor".
-                    </p>
-                  )}
-                  <div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-[10px] text-text-secondary">Max adjust</span>
-                      <span className="text-[10px] text-text-secondary font-mono">±{exposureMaxStops.toFixed(2)} stops</span>
-                    </div>
-                    <input
-                      type="range"
-                      min={0.33}
-                      max={4}
-                      step={0.33}
-                      value={exposureMaxStops}
-                      onChange={(e) => handleMaxStops(Number(e.target.value))}
-                      className="w-full h-1 bg-surface-raised rounded appearance-none cursor-pointer accent-accent"
-                      title="Hard clamp on how far we'll push brightness"
-                    />
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
+          </>
         )}
       </div>
 

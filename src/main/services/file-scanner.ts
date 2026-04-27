@@ -93,6 +93,7 @@ export async function scanFiles(
   onBatch: (files: MediaFile[]) => void,
   onThumbnail: (filePath: string, thumbnail: string) => void,
   folderPattern?: string,
+  options?: { generateThumbnails?: boolean },
 ): Promise<number> {
   currentAbortController?.abort();
   currentAbortController = new AbortController();
@@ -120,7 +121,9 @@ export async function scanFiles(
   }
 
   // Thumbnails load in the background — don't block scan completion
-  generateThumbnailsInBackground(allFiles, onThumbnail, signal);
+  if (options?.generateThumbnails !== false) {
+    generateThumbnailsInBackground(allFiles, onThumbnail, signal);
+  }
 
   return allFiles.length;
 }

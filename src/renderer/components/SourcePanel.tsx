@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import { useFileScanner } from '../hooks/useFileScanner';
 import { VolumeItem } from './VolumeItem';
@@ -14,6 +14,12 @@ export function SourcePanel() {
   const { startScan, pauseScan, resumeScan } = useFileScanner();
 
   const [dragOver, setDragOver] = useState(false);
+
+  useEffect(() => {
+    const openFtpSource = () => dispatch({ type: 'SET_SOURCE_KIND', kind: 'ftp' });
+    window.addEventListener('photo-importer:open-ftp-source', openFtpSource);
+    return () => window.removeEventListener('photo-importer:open-ftp-source', openFtpSource);
+  }, [dispatch]);
 
   const handleSelectVolume = (volumePath: string) => {
     dispatch({ type: 'SELECT_SOURCE', path: volumePath });

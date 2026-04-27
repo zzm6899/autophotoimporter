@@ -38,11 +38,17 @@ export function useSettings() {
       if (typeof settings.backupDestRoot === 'string') {
         dispatch({ type: 'SET_WORKFLOW_STRING', key: 'backupDestRoot', value: settings.backupDestRoot });
       }
+      if (settings.ftpConfig) {
+        dispatch({ type: 'SET_FTP_CONFIG', config: settings.ftpConfig });
+      }
       if (typeof settings.ftpDestEnabled === 'boolean') {
         dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'ftpDestEnabled', value: settings.ftpDestEnabled });
       }
       if (settings.ftpDestConfig) {
         dispatch({ type: 'SET_FTP_DEST_CONFIG', config: settings.ftpDestConfig });
+      }
+      if (settings.ftpSync) {
+        dispatch({ type: 'SET_FTP_SYNC_SETTINGS', settings: settings.ftpSync });
       }
       if (typeof settings.autoEject === 'boolean') {
         dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'autoEject', value: settings.autoEject });

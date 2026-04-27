@@ -36,6 +36,18 @@ function makeState(overrides: Record<string, unknown> = {}) {
     ftpStatus: 'idle' as const,
     ftpMessage: null as string | null,
     ftpProgress: null as { done: number; total: number; name: string } | null,
+    ftpSyncSettings: {
+      enabled: false,
+      runOnLaunch: true,
+      intervalMinutes: 15,
+      localDestRoot: '',
+      reuploadToFtpDest: false,
+    },
+    ftpSyncStatus: {
+      state: 'idle' as const,
+      stage: 'idle' as const,
+      message: 'FTP sync is idle.',
+    },
     // Workflow filters + selection
     filter: 'all' as const,
     cullMode: false,

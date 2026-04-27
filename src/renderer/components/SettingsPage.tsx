@@ -22,8 +22,10 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     separateProtected,
     protectedFolderName,
     backupDestRoot,
+    ftpConfig,
     ftpDestEnabled,
     ftpDestConfig,
+    ftpSyncSettings,
     autoEject,
     playSoundOnComplete,
     completeSoundPath,
@@ -266,6 +268,28 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     const next = { ...ftpDestConfig, ...config };
     dispatch({ type: 'SET_FTP_DEST_CONFIG', config });
     set('ftpDestConfig', next);
+  };
+
+  const handleFtpSourceConfig = (config: Partial<typeof ftpConfig>) => {
+    const next = { ...ftpConfig, ...config };
+    dispatch({ type: 'SET_FTP_CONFIG', config });
+    set('ftpConfig', next);
+  };
+
+  const handleFtpSyncSettings = (patch: Partial<typeof ftpSyncSettings>) => {
+    const next = { ...ftpSyncSettings, ...patch };
+    dispatch({ type: 'SET_FTP_SYNC_SETTINGS', settings: patch });
+    set('ftpSync', next);
+  };
+
+  const handleChooseFtpSyncDest = async () => {
+    const folder = await window.electronAPI.selectFolder('Select FTP Sync Destination');
+    if (folder) handleFtpSyncSettings({ localDestRoot: folder });
+  };
+
+  const handleRunFtpWorkflowNow = async () => {
+    const result = await window.electronAPI.runFtpSync();
+    dispatch({ type: 'SET_FTP_SYNC_STATUS', status: result.status });
   };
 
   const handleChooseCompleteSound = async () => {
@@ -1017,6 +1041,132 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                 </label>
               </div>
             )}
+          </section>
+
+          <section>
+            <h3 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-2">FTP Workflow</h3>
+            <div className="space-y-2">
+              <div className="rounded border border-border bg-surface-alt px-3 py-2">
+                <div className="text-[10px] text-text-secondary uppercase tracking-wider mb-2">Source</div>
+                <div className="grid grid-cols-[1fr_4.5rem] gap-1.5">
+                  <input
+                    value={ftpConfig.host}
+                    onChange={(e) => handleFtpSourceConfig({ host: e.target.value })}
+                    placeholder="ftp.example.com"
+                    className="min-w-0 px-2 py-1 text-xs bg-surface-raised border border-border rounded text-text placeholder-text-muted focus:border-text focus:outline-none"
+                  />
+                  <input
+                    type="number"
+                    min={1}
+                    max={65535}
+                    value={ftpConfig.port}
+                    onChange={(e) => handleFtpSourceConfig({ port: Number(e.target.value) || 21 })}
+                    className="px-2 py-1 text-xs bg-surface-raised border border-border rounded text-text focus:border-text focus:outline-none"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-1.5 mt-1.5">
+                  <input
+                    value={ftpConfig.user}
+                    onChange={(e) => handleFtpSourceConfig({ user: e.target.value })}
+                    placeholder="user"
+                    className="min-w-0 px-2 py-1 text-xs bg-surface-raised border border-border rounded text-text placeholder-text-muted focus:border-text focus:outline-none"
+                  />
+                  <input
+                    type="password"
+                    value={ftpConfig.password}
+                    onChange={(e) => handleFtpSourceConfig({ password: e.target.value })}
+                    placeholder="password"
+                    className="min-w-0 px-2 py-1 text-xs bg-surface-raised border border-border rounded text-text placeholder-text-muted focus:border-text focus:outline-none"
+                  />
+                </div>
+                <input
+                  value={ftpConfig.remotePath}
+                  onChange={(e) => handleFtpSourceConfig({ remotePath: e.target.value })}
+                  placeholder="/DCIM"
+                  className="w-full mt-1.5 px-2 py-1 text-xs font-mono bg-surface-raised border border-border rounded text-text placeholder-text-muted focus:border-text focus:outline-none"
+                />
+                <label className="flex items-center gap-2 cursor-pointer mt-1.5">
+                  <input
+                    type="checkbox"
+                    checked={ftpConfig.secure}
+                    onChange={(e) => handleFtpSourceConfig({ secure: e.target.checked })}
+                  />
+                  <span className="text-xs text-text">Use FTPS</span>
+                </label>
+              </div>
+
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={ftpSyncSettings.enabled}
+                  onChange={(e) => handleFtpSyncSettings({ enabled: e.target.checked })}
+                />
+                <span className="text-xs text-text">Enable automated FTP workflow</span>
+              </label>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleChooseFtpSyncDest}
+                  className="min-w-0 flex-1 px-2 py-1 text-xs bg-surface-raised hover:bg-border rounded text-text-secondary transition-colors text-left truncate"
+                  title={ftpSyncSettings.localDestRoot || 'Choose local sync destination'}
+                >
+                  {ftpSyncSettings.localDestRoot || 'Choose local sync destination...'}
+                </button>
+                {ftpSyncSettings.localDestRoot && (
+                  <button
+                    onClick={() => handleFtpSyncSettings({ localDestRoot: '' })}
+                    className="text-[10px] text-text-muted hover:text-text"
+                  >
+                    clear
+                  </button>
+                )}
+              </div>
+
+              <div className="grid grid-cols-[1fr_5rem] gap-1.5 items-end">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={ftpSyncSettings.runOnLaunch}
+                    onChange={(e) => handleFtpSyncSettings({ runOnLaunch: e.target.checked })}
+                  />
+                  <span className="text-xs text-text">Run on launch and repeat</span>
+                </label>
+                <label className="block">
+                  <span className="text-[10px] text-text-secondary">Minutes</span>
+                  <input
+                    type="number"
+                    min={5}
+                    max={720}
+                    value={ftpSyncSettings.intervalMinutes}
+                    onChange={(e) => handleFtpSyncSettings({ intervalMinutes: Math.max(5, Number(e.target.value) || 15) })}
+                    className="w-full px-2 py-1 text-xs bg-surface-raised border border-border rounded text-text focus:border-text focus:outline-none"
+                  />
+                </label>
+              </div>
+
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={ftpSyncSettings.reuploadToFtpDest}
+                  onChange={(e) => handleFtpSyncSettings({ reuploadToFtpDest: e.target.checked })}
+                />
+                <span className="text-xs text-text">
+                  Re-upload imported files to FTP output
+                  <span className="block mt-0.5 text-[10px] text-text-muted">
+                    Uses the FTP Output section above after the local import finishes.
+                  </span>
+                </span>
+              </label>
+
+              <div className="flex justify-end">
+                <button
+                  onClick={handleRunFtpWorkflowNow}
+                  className="px-2 py-1 text-[10px] bg-surface-raised hover:bg-border rounded text-text-secondary transition-colors"
+                >
+                  Run now
+                </button>
+              </div>
+            </div>
           </section>
 
           {/* Auto-import */}
