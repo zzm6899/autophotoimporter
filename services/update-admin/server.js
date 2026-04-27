@@ -2255,6 +2255,69 @@ app.post(
         console.error(err);
         // Return 200 so Stripe doesn't retry — but log for manual follow-up
       }
+    } else if (event.type === 'payment_intent.succeeded') {
+      // Handle payment_intent.succeeded (alternative to checkout.session.completed)
+      const paymentIntent = event.data.object;
+      const sessionId = paymentIntent.payment_details?.order_reference; // Session ID stored in order_reference
+      let customerEmail = paymentIntent.receipt_email || ''; // May not be set here
+      const amountTotal = paymentIntent.amount; // cents
+      const currency = (paymentIntent.currency || 'aud').toUpperCase();
+
+      console.log(`[stripe] payment_intent.succeeded — session: ${sessionId} — amount: ${amountTotal / 100} ${currency}`);
+
+      // If we don't have customer email, we need to look it up from the payment method or skip
+      if (!sessionId) {
+        console.warn('[stripe] payment_intent.succeeded has no order_reference (session ID) — skipping license generation');
+        return res.json({ received: true });
+      }
+
+      if (!customerEmail) {
+        console.warn('[stripe] payment_intent.succeeded has no receipt_email — fetching from payment metadata');
+        // Try to get from metadata
+        const metadata = paymentIntent.metadata || {};
+        customerEmail = metadata.customer_email || metadata.email;
+        if (!customerEmail) {
+          console.warn('[stripe] Could not determine customer email from payment_intent — skipping');
+          return res.json({ received: true });
+        }
+      }
+
+      const customerName = paymentIntent.metadata?.customer_name || 'Culler Customer';
+
+      try {
+        const { licenseKey, activationCode } = await generateAndStoreLicense({
+          name: customerName,
+          email: customerEmail,
+          expiry: undefined, // perpetual
+          notes: `Stripe purchase ${sessionId} (${amountTotal / 100} ${currency})`,
+          maxDevices: defaultMaxDevices,
+        });
+
+        console.log(`[stripe] ✓ License generated — activation: ${activationCode.substring(0, 20)}...`);
+
+        // Store session-to-license mapping for success page retrieval
+        try {
+          await pool.query(
+            'INSERT INTO stripe_sessions (session_id, license_key, activation_code, customer_email) VALUES ($1, $2, $3, $4) ON CONFLICT (session_id) DO UPDATE SET license_key=$2, activation_code=$3',
+            [sessionId, licenseKey, activationCode, customerEmail]
+          );
+          console.log(`[stripe] ✓ Session stored in stripe_sessions — session: ${sessionId}`);
+        } catch (dbErr) {
+          console.error('[stripe] ✗ Failed to store session:', dbErr.message, dbErr.detail);
+          throw dbErr;
+        }
+
+        await sendEmail({
+          to: customerEmail,
+          subject: 'Your Culler license — thank you!',
+          html: licenseEmailHtml({ customerName, licenseKey, activationCode, expiresLabel: null }),
+        });
+
+        console.log(`[stripe] ✓ License email sent to ${customerEmail}`);
+      } catch (err) {
+        console.error('[stripe] ✗ Failed to generate license after payment_intent.succeeded:');
+        console.error(err);
+      }
     }
 
     return res.json({ received: true });
@@ -2328,6 +2391,7 @@ app.post('/api/v1/checkout/create', async (req, res) => {
       'cancel_url': cancelUrl,
       'metadata[plan]': plan,
       'metadata[customer_name]': (name || '').trim(),
+      'metadata[customer_email]': email.trim(),
       'metadata[extension_code]': extensionCode || '',
     });
 
