@@ -1,6 +1,6 @@
 import { createContext, useContext, useReducer, useRef, useMemo, useCallback, useState, type Dispatch, type ReactNode } from 'react';
-import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, SourceKind, FtpConfig, FtpSyncSettings, FtpSyncStatus, RatingFilter, SelectionSet, LicenseValidation, WatermarkPosition } from '../../shared/types';
-import { FOLDER_PRESETS } from '../../shared/types';
+import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, SourceKind, FtpConfig, FtpSyncSettings, FtpSyncStatus, RatingFilter, SelectionSet, LicenseValidation, WatermarkPosition, WatermarkMode, KeybindMap, MetadataExportFlags } from '../../shared/types';
+import { FOLDER_PRESETS, DEFAULT_KEYBINDS, DEFAULT_METADATA_EXPORT } from '../../shared/types';
 import { groupBursts } from '../../shared/burst';
 import { clampStops, normalizeExposureStops } from '../../shared/exposure';
 import { bestInGroup, faceQuality, groupByFaceSignature, groupByVisualHash, keeperScore, scoreReview } from '../../shared/review';
@@ -71,15 +71,19 @@ interface State {
   normalizeExposure: boolean;
   exposureAnchorPath: string | null;
   exposureMaxStops: number;
+  exposureAdjustmentStep: number;
   metadataKeywords: string;
   metadataTitle: string;
   metadataCaption: string;
   metadataCreator: string;
   metadataCopyright: string;
   watermarkEnabled: boolean;
+  watermarkMode: WatermarkMode;
   watermarkText: string;
+  watermarkImagePath: string;
   watermarkOpacity: number;
-  watermarkPosition: WatermarkPosition;
+  watermarkPositionLandscape: WatermarkPosition;
+  watermarkPositionPortrait: WatermarkPosition;
   watermarkScale: number;
   autoStraighten: boolean;
   licenseStatus: LicenseValidation | null;
@@ -95,6 +99,10 @@ interface State {
   fastKeeperMode: boolean;
   previewConcurrency: number;
   faceConcurrency: number;
+  // Keybind customization
+  keybinds: KeybindMap;
+  // Metadata export control
+  metadataExport: MetadataExportFlags;
 }
 
 export type Action =
@@ -153,9 +161,10 @@ export type Action =
   | { type: 'SET_WORKFLOW_STRING'; key:
       | 'protectedFolderName' | 'backupDestRoot' | 'autoImportDestRoot' | 'completeSoundPath'
       | 'metadataKeywords' | 'metadataTitle' | 'metadataCaption' | 'metadataCreator' | 'metadataCopyright'
-      | 'watermarkText'; value: string }
+      | 'watermarkText' | 'watermarkImagePath'; value: string }
   | { type: 'SET_WATERMARK_NUMBER'; key: 'watermarkOpacity' | 'watermarkScale'; value: number }
-  | { type: 'SET_WATERMARK_POSITION'; position: WatermarkPosition }
+  | { type: 'SET_WATERMARK_POSITION'; orientation: 'landscape' | 'portrait'; position: WatermarkPosition }
+  | { type: 'SET_WATERMARK_MODE'; mode: WatermarkMode }
   | { type: 'SET_FTP_DEST_CONFIG'; config: Partial<FtpConfig> }
   | { type: 'SET_BURST_WINDOW'; seconds: number }
   | { type: 'TOGGLE_BURST_COLLAPSE'; burstId: string }
@@ -168,6 +177,7 @@ export type Action =
    */
   | { type: 'CLEAR_EXPOSURE_ANCHOR' }
   | { type: 'SET_EXPOSURE_MAX_STOPS'; stops: number }
+  | { type: 'SET_EXPOSURE_ADJUSTMENT_STEP'; step: number }
   | { type: 'SET_NORMALIZE_TO_ANCHOR'; filePaths: string[]; value: boolean }
   | { type: 'SET_EXPOSURE_ADJUSTMENT'; filePaths: string[]; stops: number }
   | { type: 'NUDGE_EXPOSURE_ADJUSTMENT'; filePaths: string[]; delta: number }
@@ -205,7 +215,11 @@ export type Action =
   | { type: 'SET_PERF_TIER'; tier: 'auto' | 'low' | 'balanced' | 'high' }
   | { type: 'SET_FAST_KEEPER_MODE'; enabled: boolean }
   | { type: 'SET_PREVIEW_CONCURRENCY'; concurrency: number }
-  | { type: 'SET_FACE_CONCURRENCY'; concurrency: number };
+  | { type: 'SET_FACE_CONCURRENCY'; concurrency: number }
+  | { type: 'SET_KEYBIND'; action: keyof KeybindMap; key: string }
+  | { type: 'SET_KEYBINDS'; keybinds: Partial<KeybindMap> }
+  | { type: 'RESET_KEYBINDS' }
+  | { type: 'SET_METADATA_EXPORT'; flags: Partial<MetadataExportFlags> };
 
 const systemDark = typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches;
 
@@ -285,15 +299,19 @@ const initialState: State = {
   normalizeExposure: false,
   exposureAnchorPath: null,
   exposureMaxStops: 2,
+  exposureAdjustmentStep: 0.33,
   metadataKeywords: '',
   metadataTitle: '',
   metadataCaption: '',
   metadataCreator: '',
   metadataCopyright: '',
   watermarkEnabled: false,
+  watermarkMode: 'text',
   watermarkText: '',
+  watermarkImagePath: '',
   watermarkOpacity: 0.3,
-  watermarkPosition: 'bottom-right',
+  watermarkPositionLandscape: 'bottom-right',
+  watermarkPositionPortrait: 'bottom-right',
   watermarkScale: 0.045,
   autoStraighten: true,
   licenseStatus: null,
@@ -308,6 +326,8 @@ const initialState: State = {
   fastKeeperMode: false,
   previewConcurrency: 2,
   faceConcurrency: 1,
+  keybinds: { ...DEFAULT_KEYBINDS },
+  metadataExport: { ...DEFAULT_METADATA_EXPORT },
 };
 
 function withFileHistory(state: State, files: MediaFile[]): State {
@@ -512,7 +532,11 @@ export function reducer(state: State, action: Action): State {
     case 'SET_WATERMARK_NUMBER':
       return { ...state, [action.key]: action.value } as State;
     case 'SET_WATERMARK_POSITION':
-      return { ...state, watermarkPosition: action.position };
+      return action.orientation === 'portrait'
+        ? { ...state, watermarkPositionPortrait: action.position }
+        : { ...state, watermarkPositionLandscape: action.position };
+    case 'SET_WATERMARK_MODE':
+      return { ...state, watermarkMode: action.mode };
     case 'SET_BURST_WINDOW': {
       const seconds = Math.max(0.25, Math.min(10, action.seconds));
       return {
@@ -553,6 +577,8 @@ export function reducer(state: State, action: Action): State {
       };
     case 'SET_EXPOSURE_MAX_STOPS':
       return { ...state, exposureMaxStops: Math.max(0.33, Math.min(4, action.stops)) };
+    case 'SET_EXPOSURE_ADJUSTMENT_STEP':
+      return { ...state, exposureAdjustmentStep: Math.max(0.1, Math.min(2, action.step)) };
     case 'SET_NORMALIZE_TO_ANCHOR': {
       const pathSet = new Set(action.filePaths);
       return withFileHistory(state, state.files.map((f) =>
@@ -563,7 +589,9 @@ export function reducer(state: State, action: Action): State {
                 f.path !== state.exposureAnchorPath &&
                 typeof f.exposureValue === 'number',
             }
-          : f,
+          : action.value && f.normalizeToAnchor
+            ? { ...f, normalizeToAnchor: false }
+            : f,
       ));
     }
     case 'SET_EXPOSURE_ADJUSTMENT': {
@@ -592,7 +620,7 @@ export function reducer(state: State, action: Action): State {
                 ...f,
                 normalizeToAnchor: f.path !== anchor.path && typeof f.exposureValue === 'number',
               }
-            : f,
+            : f.normalizeToAnchor ? { ...f, normalizeToAnchor: false } : f,
         )),
         exposureAnchorPath: anchor.path,
       };
@@ -866,7 +894,9 @@ export function reducer(state: State, action: Action): State {
       const anchor = candidates[Math.floor((candidates.length - 1) / 2)];
       return {
         ...withFileHistory(state, state.files.map((f) => {
-          if (!pathSet.has(f.path)) return f;
+          if (!pathSet.has(f.path)) {
+            return f.normalizeToAnchor ? { ...f, normalizeToAnchor: false } : f;
+          }
           if (f.path === anchor.path) {
             // The anchor itself never needs normalizing.
             return { ...f, normalizeToAnchor: false };
@@ -933,6 +963,14 @@ export function reducer(state: State, action: Action): State {
       return { ...state, previewConcurrency: action.concurrency };
     case 'SET_FACE_CONCURRENCY':
       return { ...state, faceConcurrency: action.concurrency };
+    case 'SET_KEYBIND':
+      return { ...state, keybinds: { ...state.keybinds, [action.action]: action.key } };
+    case 'SET_KEYBINDS':
+      return { ...state, keybinds: { ...state.keybinds, ...action.keybinds } };
+    case 'RESET_KEYBINDS':
+      return { ...state, keybinds: { ...DEFAULT_KEYBINDS } };
+    case 'SET_METADATA_EXPORT':
+      return { ...state, metadataExport: { ...state.metadataExport, ...action.flags } };
     default:
       return state;
   }

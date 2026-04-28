@@ -5,7 +5,8 @@ import path from 'node:path';
 import { constants, createReadStream } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { Client } from 'basic-ftp';
-import type { MediaFile, ImportConfig, ImportProgress, ImportResult, ImportError, SaveFormat, BatchMetadata, WatermarkConfig, WatermarkPosition } from '../../shared/types';
+import type { MediaFile, ImportConfig, ImportProgress, ImportResult, ImportError, SaveFormat, BatchMetadata, WatermarkConfig, WatermarkPosition, MetadataExportFlags } from '../../shared/types';
+import { DEFAULT_METADATA_EXPORT } from '../../shared/types';
 import { isDuplicate } from './duplicate-detector';
 import { stopsToSafeMultiplier, getEffectiveExposureStops } from '../../shared/exposure';
 
@@ -62,41 +63,77 @@ function escapeXml(value: string): string {
     .replace(/'/g, '&apos;');
 }
 
-function hasMetadata(metadata: BatchMetadata | undefined): metadata is BatchMetadata {
-  return !!metadata && (
-    (metadata.keywords?.length ?? 0) > 0 ||
-    !!metadata.title?.trim() ||
-    !!metadata.caption?.trim() ||
-    !!metadata.creator?.trim() ||
-    !!metadata.copyright?.trim()
+/** Resolve effective export flags, merging user overrides onto defaults. */
+function resolveFlags(flags: Partial<MetadataExportFlags> | undefined): MetadataExportFlags {
+  return { ...DEFAULT_METADATA_EXPORT, ...flags };
+}
+
+function hasMetadata(
+  metadata: BatchMetadata | undefined,
+  flags: MetadataExportFlags,
+  rating: number | undefined,
+  pick: 'selected' | 'rejected' | undefined,
+): boolean {
+  if (flags.rating && typeof rating === 'number' && rating > 0) return true;
+  if (flags.pickLabel && pick !== undefined) return true;
+  if (!metadata) return false;
+  return (
+    (flags.keywords && (metadata.keywords?.length ?? 0) > 0) ||
+    (flags.title && !!metadata.title?.trim()) ||
+    (flags.caption && !!metadata.caption?.trim()) ||
+    (flags.creator && !!metadata.creator?.trim()) ||
+    (flags.copyright && !!metadata.copyright?.trim())
   );
 }
 
-function buildXmpSidecar(metadata: BatchMetadata): string {
-  const keywords = metadata.keywords?.filter(Boolean) ?? [];
-  const title = metadata.title?.trim();
-  const caption = metadata.caption?.trim();
-  const creator = metadata.creator?.trim();
-  const copyright = metadata.copyright?.trim();
+/**
+ * XMP Label values used by Lightroom / Capture One for pick/reject.
+ * Pick = "Green" (Lightroom "Pick" label), Reject = "Red".
+ * photoshop:Urgency: 1 = highest (pick), 8 = lowest (reject).
+ */
+function pickToXmpLabel(pick: 'selected' | 'rejected'): { label: string; urgency: number } {
+  return pick === 'selected'
+    ? { label: 'Green', urgency: 1 }
+    : { label: 'Red', urgency: 8 };
+}
+
+function buildXmpSidecar(
+  metadata: BatchMetadata | undefined,
+  flags: MetadataExportFlags,
+  rating?: number,
+  pick?: 'selected' | 'rejected',
+): string {
+  const keywords  = flags.keywords  ? (metadata?.keywords?.filter(Boolean) ?? []) : [];
+  const title     = flags.title     ? metadata?.title?.trim()      : undefined;
+  const caption   = flags.caption   ? metadata?.caption?.trim()    : undefined;
+  const creator   = flags.creator   ? metadata?.creator?.trim()    : undefined;
+  const copyright = flags.copyright ? metadata?.copyright?.trim()  : undefined;
+  const ratingVal = flags.rating && typeof rating === 'number' && rating > 0 ? Math.min(5, rating) : undefined;
+  const pickInfo  = flags.pickLabel && pick !== undefined ? pickToXmpLabel(pick) : undefined;
+
   return [
     '<?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?>',
     '<x:xmpmeta xmlns:x="adobe:ns:meta/">',
     '  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">',
     '    <rdf:Description rdf:about=""',
     '      xmlns:dc="http://purl.org/dc/elements/1.1/"',
+    '      xmlns:xmp="http://ns.adobe.com/xap/1.0/"',
     '      xmlns:xmpRights="http://ns.adobe.com/xap/1.0/rights/"',
     '      xmlns:tiff="http://ns.adobe.com/tiff/1.0/"',
     '      xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/">',
-    title ? `      <dc:title><rdf:Alt><rdf:li xml:lang="x-default">${escapeXml(title)}</rdf:li></rdf:Alt></dc:title>` : '',
-    caption ? `      <dc:description><rdf:Alt><rdf:li xml:lang="x-default">${escapeXml(caption)}</rdf:li></rdf:Alt></dc:description>` : '',
-    creator ? `      <dc:creator><rdf:Seq><rdf:li>${escapeXml(creator)}</rdf:li></rdf:Seq></dc:creator>` : '',
-    creator ? `      <tiff:Artist>${escapeXml(creator)}</tiff:Artist>` : '',
+    title    ? `      <dc:title><rdf:Alt><rdf:li xml:lang="x-default">${escapeXml(title)}</rdf:li></rdf:Alt></dc:title>` : '',
+    caption  ? `      <dc:description><rdf:Alt><rdf:li xml:lang="x-default">${escapeXml(caption)}</rdf:li></rdf:Alt></dc:description>` : '',
+    creator  ? `      <dc:creator><rdf:Seq><rdf:li>${escapeXml(creator)}</rdf:li></rdf:Seq></dc:creator>` : '',
+    creator  ? `      <tiff:Artist>${escapeXml(creator)}</tiff:Artist>` : '',
     copyright ? `      <dc:rights><rdf:Alt><rdf:li xml:lang="x-default">${escapeXml(copyright)}</rdf:li></rdf:Alt></dc:rights>` : '',
     copyright ? `      <xmpRights:Marked>True</xmpRights:Marked>` : '',
     copyright ? `      <photoshop:CopyrightFlag>True</photoshop:CopyrightFlag>` : '',
     keywords.length > 0
-      ? `      <dc:subject><rdf:Bag>${keywords.map((keyword) => `<rdf:li>${escapeXml(keyword)}</rdf:li>`).join('')}</rdf:Bag></dc:subject>`
+      ? `      <dc:subject><rdf:Bag>${keywords.map((kw) => `<rdf:li>${escapeXml(kw)}</rdf:li>`).join('')}</rdf:Bag></dc:subject>`
       : '',
+    ratingVal !== undefined ? `      <xmp:Rating>${ratingVal}</xmp:Rating>` : '',
+    pickInfo  ? `      <xmp:Label>${escapeXml(pickInfo.label)}</xmp:Label>` : '',
+    pickInfo  ? `      <photoshop:Urgency>${pickInfo.urgency}</photoshop:Urgency>` : '',
     '    </rdf:Description>',
     '  </rdf:RDF>',
     '</x:xmpmeta>',
@@ -104,10 +141,16 @@ function buildXmpSidecar(metadata: BatchMetadata): string {
   ].filter(Boolean).join('\n');
 }
 
-async function writeMetadataSidecar(destFullPath: string, metadata: BatchMetadata | undefined): Promise<string | null> {
-  if (!hasMetadata(metadata)) return null;
+async function writeMetadataSidecar(
+  destFullPath: string,
+  metadata: BatchMetadata | undefined,
+  flags: MetadataExportFlags,
+  rating?: number,
+  pick?: 'selected' | 'rejected',
+): Promise<string | null> {
+  if (!hasMetadata(metadata, flags, rating, pick)) return null;
   const sidecarPath = sidecarPathFor(destFullPath);
-  await writeFile(sidecarPath, buildXmpSidecar(metadata), 'utf8');
+  await writeFile(sidecarPath, buildXmpSidecar(metadata, flags, rating, pick), 'utf8');
   return sidecarPath;
 }
 
@@ -125,6 +168,30 @@ function watermarkGravity(position: WatermarkPosition): string {
 
 function watermarkPointSize(scale = 0.045): number {
   return Math.max(16, Math.round(scale * 1600));
+}
+
+function hasRenderableWatermark(watermark?: WatermarkConfig): boolean {
+  if (!watermark?.enabled) return false;
+  if (watermark.mode === 'image') return !!watermark.imagePath?.trim();
+  return !!watermark.text?.trim();
+}
+
+function isPortraitOrientation(orientation?: number): boolean {
+  return orientation === 5 || orientation === 6 || orientation === 7 || orientation === 8;
+}
+
+function watermarkPositionForOrientation(
+  watermark: WatermarkConfig | undefined,
+  orientation?: number,
+): WatermarkPosition {
+  if (!watermark) return 'bottom-right';
+  return isPortraitOrientation(orientation)
+    ? watermark.positionPortrait
+    : watermark.positionLandscape;
+}
+
+function watermarkImageScalePercent(scale = 0.045): number {
+  return Math.max(8, Math.min(28, Math.round(scale * 420)));
 }
 
 function rotateFlipType(orientation?: number): string | null {
@@ -220,15 +287,17 @@ async function convertWithPowerShell(
   const mime = formatMap[format];
   const needsMatrix = Math.abs(brightness - 1) > 0.001;
   const rotateFlip = rotateFlipType(orientation);
-  const hasWatermark = !!watermark?.enabled && !!watermark.text.trim();
+  const hasWatermark = hasRenderableWatermark(watermark);
   const needsRasterPass = needsMatrix || !!rotateFlip || hasWatermark;
   const b = brightness.toFixed(4);
   const opacity = Math.max(0.05, Math.min(1, watermark?.opacity ?? 0.3)).toFixed(3);
   const shadowOpacity = Math.max(0.05, Math.min(0.6, (watermark?.opacity ?? 0.3) * 0.6)).toFixed(3);
   const pointSize = watermarkPointSize(watermark?.scale);
-  const gravity = watermarkGravity(watermark?.position ?? 'bottom-right');
+  const gravity = watermarkGravity(watermarkPositionForOrientation(watermark, orientation));
   const margin = Math.max(12, Math.round(pointSize * 0.7));
-  const text = watermark?.text.replace(/'/g, "''") ?? '';
+  const text = watermark?.text?.replace(/'/g, "''") ?? '';
+  const watermarkImagePath = watermark?.imagePath ?? '';
+  const watermarkScalePercent = watermarkImageScalePercent(watermark?.scale);
   const script = `
     Add-Type -AssemblyName System.Drawing
     $src = [System.Drawing.Image]::FromFile(${psQuote(srcPath)})
@@ -257,10 +326,6 @@ async function convertWithPowerShell(
           $g.DrawImage($src, 0, 0, $src.Width, $src.Height)
         }
         ${hasWatermark ? `
-        $font = New-Object System.Drawing.Font('Arial', [float]${pointSize}, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
-        $shadowBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb([int](255 * ${shadowOpacity}), 0, 0, 0))
-        $textBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb([int](255 * ${opacity}), 255, 255, 255))
-        $format = New-Object System.Drawing.StringFormat
         switch ('${gravity}') {
           'southwest' { $format.Alignment = [System.Drawing.StringAlignment]::Near; $format.LineAlignment = [System.Drawing.StringAlignment]::Far; $x = ${margin}; $y = $bmp.Height - ${margin} }
           'northeast' { $format.Alignment = [System.Drawing.StringAlignment]::Far; $format.LineAlignment = [System.Drawing.StringAlignment]::Near; $x = $bmp.Width - ${margin}; $y = ${margin} }
@@ -268,12 +333,42 @@ async function convertWithPowerShell(
           'center' { $format.Alignment = [System.Drawing.StringAlignment]::Center; $format.LineAlignment = [System.Drawing.StringAlignment]::Center; $x = $bmp.Width / 2; $y = $bmp.Height / 2 }
           default { $format.Alignment = [System.Drawing.StringAlignment]::Far; $format.LineAlignment = [System.Drawing.StringAlignment]::Far; $x = $bmp.Width - ${margin}; $y = $bmp.Height - ${margin} }
         }
+        ${watermark?.mode === 'image' ? `
+        $format = New-Object System.Drawing.StringFormat
+        $wm = [System.Drawing.Image]::FromFile(${psQuote(watermarkImagePath)})
+        try {
+          $targetWidth = [Math]::Max(48, [int]($bmp.Width * (${watermarkScalePercent} / 100.0)))
+          $ratio = $wm.Height / [Math]::Max(1, $wm.Width)
+          $targetHeight = [Math]::Max(24, [int]($targetWidth * $ratio))
+          $destRect = switch ('${gravity}') {
+            'southwest' { [System.Drawing.RectangleF]::new(${margin}, $bmp.Height - $targetHeight - ${margin}, $targetWidth, $targetHeight) }
+            'northeast' { [System.Drawing.RectangleF]::new($bmp.Width - $targetWidth - ${margin}, ${margin}, $targetWidth, $targetHeight) }
+            'northwest' { [System.Drawing.RectangleF]::new(${margin}, ${margin}, $targetWidth, $targetHeight) }
+            'center' { [System.Drawing.RectangleF]::new(($bmp.Width - $targetWidth) / 2, ($bmp.Height - $targetHeight) / 2, $targetWidth, $targetHeight) }
+            default { [System.Drawing.RectangleF]::new($bmp.Width - $targetWidth - ${margin}, $bmp.Height - $targetHeight - ${margin}, $targetWidth, $targetHeight) }
+          }
+          $wmMatrix = New-Object System.Drawing.Imaging.ColorMatrix
+          $wmMatrix.Matrix33 = ${opacity}
+          $wmAttrs = New-Object System.Drawing.Imaging.ImageAttributes
+          $wmAttrs.SetColorMatrix($wmMatrix)
+          $g.DrawImage($wm, $destRect, 0, 0, $wm.Width, $wm.Height, [System.Drawing.GraphicsUnit]::Pixel, $wmAttrs)
+          $wmAttrs.Dispose()
+        } finally {
+          $wm.Dispose()
+          $format.Dispose()
+        }
+        ` : `
+        $font = New-Object System.Drawing.Font('Arial', [float]${pointSize}, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
+        $shadowBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb([int](255 * ${shadowOpacity}), 0, 0, 0))
+        $textBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb([int](255 * ${opacity}), 255, 255, 255))
+        $format = New-Object System.Drawing.StringFormat
         $g.DrawString('${text}', $font, $shadowBrush, [float]($x + 2), [float]($y + 2), $format)
         $g.DrawString('${text}', $font, $textBrush, [float]$x, [float]$y, $format)
         $textBrush.Dispose()
         $shadowBrush.Dispose()
         $font.Dispose()
         $format.Dispose()
+        `}
         ` : ''}
       } finally {
         $g.Dispose()
@@ -334,7 +429,7 @@ async function convertWithImageMagick(
   // magick is the v7 unified entry point; `convert` is v6 legacy. Arg
   // shape is the same for our purposes.
   const args: string[] = [srcPath];
-  const hasWatermark = !!watermark?.enabled && !!watermark.text.trim();
+  const hasWatermark = hasRenderableWatermark(watermark);
   if (autoStraighten) {
     args.push('-auto-orient');
   }
@@ -342,14 +437,30 @@ async function convertWithImageMagick(
     args.push('-evaluate', 'Multiply', brightness.toFixed(4));
   }
   if (hasWatermark) {
-    args.push(
-      '-gravity', watermarkGravity(watermark?.position ?? 'bottom-right'),
-      '-fill', `rgba(255,255,255,${Math.max(0.05, Math.min(1, watermark?.opacity ?? 0.3)).toFixed(3)})`,
-      '-stroke', `rgba(0,0,0,${Math.max(0.05, Math.min(0.6, (watermark?.opacity ?? 0.3) * 0.6)).toFixed(3)})`,
-      '-strokewidth', '1',
-      '-pointsize', String(watermarkPointSize(watermark?.scale)),
-      '-annotate', '+24+24', watermark!.text,
-    );
+    const gravity = watermarkGravity(watermarkPositionForOrientation(watermark, autoStraighten ? undefined : undefined));
+    if (watermark?.mode === 'image' && watermark.imagePath?.trim()) {
+      args.push(
+        '(',
+        watermark.imagePath,
+        '-resize', `${watermarkImageScalePercent(watermark.scale)}%`,
+        '-alpha', 'set',
+        '-channel', 'A',
+        '-evaluate', 'Multiply', Math.max(0.05, Math.min(1, watermark.opacity ?? 0.3)).toFixed(3),
+        ')',
+        '-gravity', gravity,
+        '-geometry', '+24+24',
+        '-composite',
+      );
+    } else if (watermark?.text?.trim()) {
+      args.push(
+        '-gravity', gravity,
+        '-fill', `rgba(255,255,255,${Math.max(0.05, Math.min(1, watermark?.opacity ?? 0.3)).toFixed(3)})`,
+        '-stroke', `rgba(0,0,0,${Math.max(0.05, Math.min(0.6, (watermark?.opacity ?? 0.3) * 0.6)).toFixed(3)})`,
+        '-strokewidth', '1',
+        '-pointsize', String(watermarkPointSize(watermark?.scale)),
+        '-annotate', '+24+24', watermark.text,
+      );
+    }
   }
   if (format === 'jpeg') args.push('-quality', String(jpegQuality));
   args.push(destFullPath);
@@ -372,7 +483,7 @@ async function convertAndCopy(
   autoStraighten = false,
 ): Promise<ConvertResult> {
   const needsBrightness = Math.abs(brightness - 1) > 0.001;
-  const wantsWatermark = !!watermark?.enabled && !!watermark.text.trim();
+  const wantsWatermark = hasRenderableWatermark(watermark);
   const wantsStraighten = !!autoStraighten && !!rotateFlipType(orientation);
 
   if (process.platform === 'win32') {
@@ -520,7 +631,7 @@ export async function importFiles(
         if (normalizeActive && Math.abs(brightness - 1) > 0.001 && !normalized) {
           normalizationMissing++;
         }
-        if (config.watermark?.enabled && config.watermark.text.trim() && !watermarked) {
+        if (hasRenderableWatermark(config.watermark) && !watermarked) {
           watermarkMissing++;
         }
         if (config.autoStraighten && rotateFlipType(file.orientation) && !straightened) {
@@ -528,7 +639,8 @@ export async function importFiles(
         }
       }
 
-      const primarySidecarPath = await writeMetadataSidecar(destFullPath, config.metadata);
+      const flags = resolveFlags(config.metadataExportFlags);
+      const primarySidecarPath = await writeMetadataSidecar(destFullPath, config.metadata, flags, file.rating, file.pick);
 
       // Mirror to backup destination after primary copy succeeds. Mirror
       // failures are recorded but don't roll back the primary — the user
@@ -564,7 +676,7 @@ export async function importFiles(
             localPath: primarySidecarPath,
             remoteRelPath: path.posix.join(path.posix.dirname(finalRelPath.replace(/\\/g, '/')), sidecarName),
             fileName: `${file.name}.xmp`,
-            size: Buffer.byteLength(buildXmpSidecar(config.metadata!)),
+            size: Buffer.byteLength(buildXmpSidecar(config.metadata, resolveFlags(config.metadataExportFlags), file.rating, file.pick)),
           });
         }
       }

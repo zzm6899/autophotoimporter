@@ -7,13 +7,12 @@
   <meta name="description" content="Download the latest stable Culler release for macOS or Windows." />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
     :root {
       --bg: #0b0d11;
-      --surface: rgba(17, 20, 26, 0.92);
-      --surface-raised: rgba(24, 29, 37, 0.94);
-      --surface-soft: rgba(108, 99, 255, 0.08);
+      --surface: rgba(17, 20, 26, 0.95);
+      --surface-raised: rgba(24, 29, 37, 0.96);
       --border: rgba(255, 255, 255, 0.08);
+      --border-strong: rgba(255, 255, 255, 0.13);
       --text: #f4f6fb;
       --text-muted: #a0abc0;
       --text-faint: #6f7890;
@@ -21,293 +20,156 @@
       --accent-hover: #7c74ff;
       --green: #34d399;
       --green-soft: rgba(52, 211, 153, 0.12);
-      --radius-xl: 28px;
-      --radius-lg: 20px;
-      --radius-md: 14px;
-      --shadow-xl: 0 32px 90px rgba(0, 0, 0, 0.38);
-      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      --radius: 20px;
       --mono: "SF Mono", "Fira Code", Consolas, monospace;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
     }
-
-    html { scroll-behavior: smooth; }
     body {
       font-family: var(--font);
       color: var(--text);
       background:
-        radial-gradient(circle at top left, rgba(108, 99, 255, 0.22), transparent 30%),
-        radial-gradient(circle at top right, rgba(52, 211, 153, 0.12), transparent 22%),
-        linear-gradient(180deg, #0a0c10 0%, #0b0d11 42%, #10131a 100%);
+        radial-gradient(circle at top left, rgba(108, 99, 255, 0.15), transparent 30%),
+        linear-gradient(180deg, #0a0c10 0%, #0b0d11 100%);
       min-height: 100vh;
       line-height: 1.6;
       -webkit-font-smoothing: antialiased;
-      overflow-x: hidden;
-    }
-    body::before {
-      content: "";
-      position: fixed;
-      inset: 0;
-      pointer-events: none;
-      background:
-        linear-gradient(90deg, rgba(255,255,255,0.028) 1px, transparent 1px),
-        linear-gradient(rgba(255,255,255,0.022) 1px, transparent 1px);
-      background-size: 44px 44px;
-      mask-image: linear-gradient(180deg, rgba(0,0,0,0.45), transparent 78%);
     }
     a { color: inherit; text-decoration: none; }
 
     .shell {
-      width: min(1120px, calc(100% - 32px));
+      width: min(640px, calc(100% - 32px));
       margin: 0 auto;
-      padding: 24px 0 48px;
-      position: relative;
-      z-index: 1;
+      padding: 32px 0 56px;
     }
+
     .topbar {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 1rem;
-      margin-bottom: 24px;
-      padding: 14px 18px;
-      border-radius: 18px;
-      background: rgba(10, 12, 16, 0.78);
-      border: 1px solid var(--border);
-      backdrop-filter: blur(16px);
+      margin-bottom: 28px;
+      flex-wrap: wrap;
     }
     .brand {
       display: inline-flex;
       align-items: center;
-      gap: 10px;
+      gap: 9px;
       font-weight: 700;
+      font-size: 1rem;
       letter-spacing: -0.02em;
     }
-    .brand svg { width: 28px; height: 28px; flex-shrink: 0; }
-    .topbar-links {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-      flex-wrap: wrap;
-      justify-content: flex-end;
-    }
+    .brand svg { width: 26px; height: 26px; flex-shrink: 0; }
+    .topbar-links { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .topbar-link {
-      padding: 0.65rem 0.9rem;
+      padding: 6px 12px;
       border-radius: 999px;
       border: 1px solid var(--border);
-      background: rgba(255,255,255,0.03);
       color: var(--text-muted);
-      font-size: 0.86rem;
-      transition: color 0.15s ease, background 0.15s ease;
+      font-size: 0.83rem;
+      transition: color 0.15s, background 0.15s;
     }
-    .topbar-link:hover { color: var(--text); background: rgba(255,255,255,0.06); }
+    .topbar-link:hover { color: var(--text); background: rgba(255,255,255,0.05); }
 
-    .hero {
-      display: grid;
-      grid-template-columns: minmax(0, 1.05fr) minmax(320px, 0.95fr);
-      gap: 24px;
-      align-items: stretch;
-      margin-bottom: 24px;
-    }
-    .hero-copy,
-    .hero-side,
-    .download-panel,
-    .info-card {
-      border: 1px solid var(--border);
-      border-radius: var(--radius-xl);
+    .card {
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius);
       background: var(--surface);
-      backdrop-filter: blur(18px);
-      box-shadow: var(--shadow-xl);
+      padding: 24px;
+      margin-bottom: 16px;
     }
-    .hero-copy,
-    .hero-side,
-    .download-panel,
-    .info-card {
-      padding: clamp(1.3rem, 3vw, 2rem);
-    }
-    .eyebrow {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 0.45rem 0.8rem;
-      border-radius: 999px;
-      border: 1px solid var(--border);
-      background: rgba(255,255,255,0.03);
-      color: var(--text-muted);
-      font-size: 0.75rem;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      margin-bottom: 1.1rem;
-    }
-    .eyebrow-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 999px;
-      background: var(--green);
-      box-shadow: 0 0 0 6px rgba(52, 211, 153, 0.14);
-    }
-    h1 {
-      font-size: clamp(2.2rem, 5vw, 4rem);
-      line-height: 1.02;
-      letter-spacing: -0.05em;
-      margin-bottom: 1rem;
-      max-width: 10ch;
-    }
-    .hero-copy p {
-      color: var(--text-muted);
-      font-size: 1rem;
-      max-width: 54ch;
-      margin-bottom: 1.45rem;
-    }
-    .hero-proof {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 12px;
-    }
-    .proof-card {
-      padding: 1rem;
-      border-radius: var(--radius-lg);
-      background: rgba(255,255,255,0.035);
-      border: 1px solid var(--border);
-    }
-    .proof-card strong {
-      display: block;
-      font-size: 0.84rem;
-      margin-bottom: 0.15rem;
-    }
-    .proof-card span {
-      color: var(--text-muted);
-      font-size: 0.82rem;
-      line-height: 1.5;
-    }
-    .hero-side {
-      display: grid;
-      gap: 14px;
-      align-content: start;
-    }
-    .side-card {
-      padding: 1rem 1.05rem;
-      border-radius: var(--radius-lg);
-      border: 1px solid var(--border);
-      background: linear-gradient(145deg, rgba(108, 99, 255, 0.12), rgba(255,255,255,0.03));
-    }
-    .side-card strong {
-      display: block;
-      margin-bottom: 0.25rem;
-      font-size: 0.92rem;
-    }
-    .side-card span {
-      color: var(--text-muted);
-      font-size: 0.85rem;
-      line-height: 1.55;
-    }
+    .card-title { font-size: 1rem; font-weight: 700; margin-bottom: 4px; }
+    .card-sub { color: var(--text-muted); font-size: 0.87rem; margin-bottom: 18px; }
 
     .platform-tabs {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 10px;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
       margin-bottom: 18px;
     }
     .platform-tab {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      gap: 10px;
-      width: 100%;
-      padding: 0.95rem 1rem;
-      border-radius: 16px;
+      gap: 8px;
+      padding: 10px;
+      border-radius: 14px;
       border: 1px solid var(--border);
       background: rgba(255,255,255,0.03);
       color: var(--text-muted);
-      font-size: 0.95rem;
+      font-size: 0.9rem;
       font-weight: 600;
       cursor: pointer;
-      transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, transform 0.1s ease;
+      font-family: inherit;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
     }
-    .platform-tab:hover { color: var(--text); transform: translateY(-1px); }
+    .platform-tab:hover { color: var(--text); }
     .platform-tab.active {
-      background: linear-gradient(135deg, rgba(108,99,255,0.25), rgba(108,99,255,0.08));
-      border-color: rgba(108,99,255,0.42);
+      background: rgba(108,99,255,0.18);
+      border-color: rgba(108,99,255,0.38);
       color: var(--text);
     }
 
-    .download-panel h2 {
-      font-size: 1.25rem;
-      letter-spacing: -0.03em;
-      margin-bottom: 0.35rem;
-    }
-    .download-panel p {
-      color: var(--text-muted);
-      font-size: 0.9rem;
-      margin-bottom: 1.15rem;
-    }
-
-    .release-list {
-      display: grid;
-      gap: 14px;
-    }
     .release-card {
-      padding: 1.2rem;
-      border-radius: 22px;
-      border: 1px solid rgba(108, 99, 255, 0.22);
-      background: linear-gradient(145deg, rgba(108, 99, 255, 0.16), rgba(108, 99, 255, 0.05) 48%, rgba(255,255,255,0.03) 100%);
+      padding: 18px;
+      border-radius: 16px;
+      border: 1px solid rgba(108, 99, 255, 0.20);
+      background: rgba(108, 99, 255, 0.08);
     }
     .release-top {
       display: flex;
       align-items: flex-start;
       justify-content: space-between;
       gap: 1rem;
-      margin-bottom: 1rem;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
     }
     .release-badge {
       display: inline-flex;
       align-items: center;
-      gap: 0.45rem;
-      padding: 0.45rem 0.7rem;
+      gap: 5px;
+      padding: 4px 9px;
       border-radius: 999px;
-      background: rgba(52, 211, 153, 0.14);
-      border: 1px solid rgba(52, 211, 153, 0.22);
+      background: var(--green-soft);
+      border: 1px solid rgba(52,211,153,0.2);
       color: var(--green);
-      font-size: 0.74rem;
+      font-size: 0.7rem;
       font-weight: 700;
       text-transform: uppercase;
-      letter-spacing: 0.05em;
+      letter-spacing: 0.06em;
+      margin-bottom: 6px;
     }
-    .release-name {
-      font-size: 1.15rem;
-      font-weight: 700;
-      letter-spacing: -0.03em;
-      margin-bottom: 0.2rem;
-    }
+    .release-name { font-size: 1.1rem; font-weight: 700; letter-spacing: -0.02em; }
     .release-meta {
       display: flex;
       flex-wrap: wrap;
-      gap: 0.75rem;
+      gap: 10px;
       color: var(--text-muted);
-      font-size: 0.84rem;
+      font-size: 0.82rem;
+      font-family: var(--mono);
+      margin-top: 3px;
     }
     .release-notes {
-      margin-top: 0.9rem;
       color: var(--text-muted);
-      font-size: 0.88rem;
+      font-size: 0.86rem;
       white-space: pre-wrap;
-      line-height: 1.7;
+      line-height: 1.65;
+      margin-bottom: 14px;
     }
-    .release-actions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      margin-top: 1rem;
-    }
+    .release-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
     .btn {
       display: inline-flex;
       align-items: center;
-      justify-content: center;
-      gap: 0.55rem;
-      padding: 0.8rem 1.05rem;
-      border-radius: 14px;
+      gap: 6px;
+      padding: 9px 16px;
+      border-radius: 12px;
       border: 1px solid var(--border);
-      font-size: 0.9rem;
+      font-size: 0.88rem;
       font-weight: 700;
-      transition: transform 0.12s ease, background 0.15s ease;
+      font-family: inherit;
+      cursor: pointer;
+      transition: transform 0.12s, background 0.15s;
+      text-decoration: none;
     }
     .btn:hover { transform: translateY(-1px); }
     .btn.primary {
@@ -316,127 +178,77 @@
       color: #fff;
     }
     .btn.primary:hover { background: linear-gradient(135deg, var(--accent-hover), #918aff); }
-    .btn.secondary {
-      background: rgba(255,255,255,0.04);
-      color: var(--text);
-    }
-    .release-summary {
-      margin-top: 1rem;
-      padding: 0.95rem 1rem;
-      border-radius: var(--radius-md);
-      border: 1px solid var(--border);
-      background: rgba(255,255,255,0.03);
-      color: var(--text-muted);
-      font-size: 0.84rem;
-      line-height: 1.55;
-    }
+    .btn.secondary { background: rgba(255,255,255,0.04); color: var(--text); }
+    .btn.secondary:hover { background: rgba(255,255,255,0.07); }
 
     .state-block {
-      padding: 2.6rem 1.5rem;
-      border-radius: 22px;
+      padding: 36px 20px;
+      border-radius: 16px;
       border: 1px dashed rgba(255,255,255,0.1);
       text-align: center;
       color: var(--text-faint);
-      font-size: 0.92rem;
+      font-size: 0.9rem;
       background: rgba(255,255,255,0.02);
     }
     .spinner {
-      width: 22px;
-      height: 22px;
-      border: 2px solid rgba(255,255,255,0.12);
+      width: 20px; height: 20px;
+      border: 2px solid rgba(255,255,255,0.1);
       border-top-color: var(--accent);
       border-radius: 50%;
       animation: spin 0.7s linear infinite;
-      margin: 0 auto 1rem;
+      margin: 0 auto 12px;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    .info-grid {
-      display: grid;
-      grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
-      gap: 24px;
-      margin-top: 24px;
-    }
-    .card-kicker {
-      color: var(--text-muted);
-      font-size: 0.75rem;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      margin-bottom: 0.7rem;
-    }
-    .info-card h3 {
-      font-size: 1.2rem;
-      letter-spacing: -0.03em;
-      margin-bottom: 0.9rem;
-    }
-    .steps {
-      display: grid;
-      gap: 0.85rem;
-    }
-    .step {
-      display: flex;
-      align-items: flex-start;
-      gap: 0.85rem;
-      padding: 0.95rem 1rem;
-      border-radius: 16px;
-      border: 1px solid var(--border);
-      background: rgba(255,255,255,0.03);
-    }
-    .step-index {
-      width: 28px;
-      height: 28px;
-      flex-shrink: 0;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      border-radius: 10px;
-      background: rgba(108,99,255,0.16);
-      color: #dcdfff;
-      font-size: 0.82rem;
-      font-weight: 700;
-    }
-    .step strong {
-      display: block;
-      font-size: 0.9rem;
-      margin-bottom: 0.12rem;
-    }
-    .step span {
-      color: var(--text-muted);
-      font-size: 0.84rem;
-      line-height: 1.55;
-    }
-
-    .requirements-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 14px;
-    }
+    .req-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     .req-card {
-      padding: 1rem;
-      border-radius: 18px;
+      padding: 14px;
+      border-radius: 14px;
       border: 1px solid var(--border);
       background: rgba(255,255,255,0.03);
     }
     .req-card h4 {
-      font-size: 0.84rem;
+      font-size: 0.72rem;
+      font-weight: 700;
       text-transform: uppercase;
-      letter-spacing: 0.08em;
+      letter-spacing: 0.1em;
       color: var(--text-muted);
-      margin-bottom: 0.7rem;
+      margin-bottom: 10px;
     }
-    .req-list {
-      list-style: none;
-      display: grid;
-      gap: 0.5rem;
-    }
+    .req-list { list-style: none; display: grid; gap: 5px; }
     .req-list li {
       color: var(--text-muted);
-      font-size: 0.86rem;
+      font-size: 0.84rem;
       display: flex;
-      gap: 0.55rem;
+      gap: 7px;
       line-height: 1.5;
     }
-    .req-list li::before { content: "•"; color: var(--green); }
+    .req-list li::before { content: "·"; color: var(--green); flex-shrink: 0; }
+
+    .steps { display: grid; gap: 8px; }
+    .step {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.025);
+    }
+    .step-n {
+      width: 26px; height: 26px;
+      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 9px;
+      background: rgba(108,99,255,0.16);
+      color: #dcdfff;
+      font-size: 0.78rem;
+      font-weight: 700;
+    }
+    .step strong { display: block; font-size: 0.88rem; margin-bottom: 2px; }
+    .step span { color: var(--text-muted); font-size: 0.83rem; line-height: 1.5; }
 
     .footer {
       display: flex;
@@ -444,72 +256,27 @@
       justify-content: space-between;
       gap: 1rem;
       flex-wrap: wrap;
-      margin-top: 28px;
-      padding: 1.15rem 0 0;
+      margin-top: 20px;
+      padding-top: 16px;
       border-top: 1px solid var(--border);
-      color: var(--text-muted);
-      font-size: 0.84rem;
+      color: var(--text-faint);
+      font-size: 0.82rem;
     }
 
-    @media (max-width: 980px) {
-      .hero,
-      .info-grid {
-        grid-template-columns: 1fr;
-      }
-      h1 { max-width: none; }
+    @media (max-width: 560px) {
+      .shell { width: calc(100% - 24px); padding-top: 20px; }
+      .card { padding: 16px; border-radius: 16px; }
+      .req-grid, .platform-tabs { grid-template-columns: 1fr; }
+      .release-top, .release-actions { flex-direction: column; align-items: flex-start; }
+      .btn { width: 100%; justify-content: center; }
     }
-
-    @media (max-width: 640px) {
-      .shell {
-        width: min(100%, calc(100% - 24px));
-        padding-top: 12px;
-      }
-      .topbar {
-        flex-direction: column;
-        align-items: flex-start;
-        padding: 12px 14px;
-      }
-      .topbar-links {
-        width: 100%;
-        justify-content: flex-start;
-      }
-      .hero-copy,
-      .hero-side,
-      .download-panel,
-      .info-card {
-        padding: 1.15rem;
-        border-radius: 22px;
-      }
-      .hero-proof,
-      .requirements-grid {
-        grid-template-columns: 1fr;
-      }
-      .release-top,
-      .release-actions,
-      .footer {
-        flex-direction: column;
-        align-items: flex-start;
-      }
-      .platform-tabs {
-        grid-template-columns: 1fr;
-      }
-      .btn { width: 100%; }
-    }
-
-    @media (prefers-reduced-motion: reduce) {
-      *, *::before, *::after {
-        animation-duration: 0.01ms !important;
-        animation-iteration-count: 1 !important;
-        transition: none !important;
-        scroll-behavior: auto !important;
-      }
-    }
+    @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
   </style>
 </head>
 <body>
   <div class="shell">
     <div class="topbar">
-      <a href="/" class="brand" aria-label="Back to Culler home">
+      <a href="/" class="brand" aria-label="Culler home">
         <svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path fill-rule="evenodd" clip-rule="evenodd" d="M128 252C196.483 252 252 196.483 252 128C252 59.5167 196.483 4 128 4C59.5167 4 4 59.5167 4 128C4 196.483 59.5167 252 128 252ZM128 226.694C182.507 226.694 226.694 182.507 226.694 128C226.694 73.4929 182.507 29.3061 128 29.3061C73.4929 29.3061 29.3061 73.4929 29.3061 128C29.3061 182.507 73.4929 226.694 128 226.694ZM188.633 131.549C181.333 137.253 172.145 140.653 162.163 140.653C138.404 140.653 119.143 121.392 119.143 97.6327C119.143 85.8325 123.894 75.1419 131.587 67.3695C130.4 67.3004 129.204 67.2653 128 67.2653C94.4572 67.2653 67.2653 94.4572 67.2653 128C67.2653 161.543 94.4572 188.735 128 188.735C160.352 188.735 186.795 163.44 188.633 131.549ZM117.878 148.245C123.468 148.245 128 143.713 128 138.122C128 132.532 123.468 128 117.878 128C112.287 128 107.755 132.532 107.755 138.122C107.755 143.713 112.287 148.245 117.878 148.245ZM107.755 153.306C107.755 156.101 105.489 158.367 102.694 158.367C99.8986 158.367 97.6327 156.101 97.6327 153.306C97.6327 150.511 99.8986 148.245 102.694 148.245C105.489 148.245 107.755 150.511 107.755 153.306ZM177.347 97.6326C177.347 106.018 170.549 112.816 162.163 112.816C161.21 112.816 160.278 112.729 159.373 112.561C163.87 111.53 167.225 107.503 167.225 102.694C167.225 97.1034 162.693 92.5714 157.102 92.5714C152.292 92.5714 148.266 95.9258 147.235 100.423C147.067 99.5183 146.98 98.5857 146.98 97.6326C146.98 89.2469 153.778 82.449 162.163 82.449C170.549 82.449 177.347 89.2469 177.347 97.6326Z" fill="white"/>
         </svg>
@@ -518,269 +285,176 @@
       <div class="topbar-links">
         <a href="/#pricing" class="topbar-link">Pricing</a>
         <a href="https://updates.culler.z2hs.au/manage-license" class="topbar-link">Manage license</a>
-        <a href="/" class="topbar-link">Back to home</a>
       </div>
     </div>
 
-    <div class="hero">
-      <section class="hero-copy">
-        <div class="eyebrow">
-          <span class="eyebrow-dot"></span>
-          Stable downloads
-        </div>
-        <h1>Download the release you can actually use.</h1>
-        <p>
-          This page only shows the current stable Culler build for your platform. It is the same hosted feed the desktop app checks for updates, so the website and in-app updater stay aligned.
-        </p>
-        <div class="hero-proof">
-          <div class="proof-card">
-            <strong>Latest stable only</strong>
-            <span>No cluttered release list and no guessing which build is safe.</span>
-          </div>
-          <div class="proof-card">
-            <strong>Mac and Windows</strong>
-            <span>Switch platforms instantly and grab the right installer without leaving the page.</span>
-          </div>
-          <div class="proof-card">
-            <strong>Release notes attached</strong>
-            <span>When notes exist, you can inspect what changed before you click download.</span>
-          </div>
-          <div class="proof-card">
-            <strong>Setup stays quick</strong>
-            <span>Install, open Culler, and start culling or activate Pro when you are ready.</span>
-          </div>
-        </div>
-      </section>
-
-      <aside class="hero-side">
-        <div class="side-card">
-          <strong>Fresh but not risky</strong>
-          <span>The page is pinned to the latest stable channel, not every beta or partial rollout.</span>
-        </div>
-        <div class="side-card">
-          <strong>Good on phones too</strong>
-          <span>Need to send the installer link from your phone while you are on a shoot? This page stays readable there too.</span>
-        </div>
-        <div class="side-card">
-          <strong>Same feed as the app</strong>
-          <span>If the updater says a version is live, this page should show that same stable version.</span>
-        </div>
-      </aside>
-    </div>
-
-    <section class="download-panel">
-      <h2>Pick your platform</h2>
-      <p>We will show the latest stable release for the platform you choose, plus any release notes that came with it.</p>
+    <div class="card">
+      <div class="card-title">Download</div>
+      <div class="card-sub">Latest stable build. Same version the in-app updater tracks.</div>
 
       <div class="platform-tabs">
         <button class="platform-tab active" id="tab-mac" onclick="switchPlatform('mac')">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg>
           macOS
         </button>
         <button class="platform-tab" id="tab-win" onclick="switchPlatform('windows')">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.557l7.357-1.002.003 7.096-7.354.042L3 5.557zm7.354 6.913l.004 7.098L3.003 18.56l-.002-6.14 7.353.05zm.892-8.046L21 2.5v8.402l-9.754.077V4.424zm9.758 8.048l-.002 8.31L11.246 19.44v-7.022l9.758.054z"/></svg>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.557l7.357-1.002.003 7.096-7.354.042L3 5.557zm7.354 6.913l.004 7.098L3.003 18.56l-.002-6.14 7.353.05zm.892-8.046L21 2.5v8.402l-9.754.077V4.424zm9.758 8.048l-.002 8.31L11.246 19.44v-7.022l9.758.054z"/></svg>
           Windows
         </button>
       </div>
 
-      <div class="release-list" id="release-list">
-        <div class="state-block">
-          <div class="spinner"></div>
-          Loading latest release...
+      <div id="release-list">
+        <div class="state-block"><div class="spinner"></div>Loading release…</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Quick start</div>
+      <div class="card-sub" style="margin-bottom:14px">From download to first card in three steps.</div>
+      <div class="steps">
+        <div class="step">
+          <div class="step-n">1</div>
+          <div><strong>Install</strong><span>Run the installer for your platform. No account needed.</span></div>
+        </div>
+        <div class="step">
+          <div class="step-n">2</div>
+          <div><strong>Open Culler and plug in a card</strong><span>Free workflow works immediately. Pro unlocks after activation.</span></div>
+        </div>
+        <div class="step">
+          <div class="step-n">3</div>
+          <div><strong>Activate Pro (optional)</strong><span>Paste your code into <strong>Settings → License</strong>.</span></div>
         </div>
       </div>
-    </section>
+    </div>
 
-    <div class="info-grid">
-      <section class="info-card">
-        <div class="card-kicker">Quick start</div>
-        <h3>Get from download to first card fast</h3>
-        <div class="steps">
-          <div class="step">
-            <div class="step-index">1</div>
-            <div>
-              <strong>Install the app</strong>
-              <span>Grab the latest stable build above and run the installer for your platform.</span>
-            </div>
-          </div>
-          <div class="step">
-            <div class="step-index">2</div>
-            <div>
-              <strong>Open Culler and plug in a card</strong>
-              <span>You can use the free workflow immediately, or unlock Pro later from the license screen.</span>
-            </div>
-          </div>
-          <div class="step">
-            <div class="step-index">3</div>
-            <div>
-              <strong>Activate when you are ready</strong>
-              <span>If you bought Pro, paste your activation code into <strong>Settings → License</strong> to enable the paid features.</span>
-            </div>
-          </div>
+    <div class="card">
+      <div class="card-title" style="margin-bottom:14px">Requirements</div>
+      <div class="req-grid">
+        <div class="req-card" id="req-mac">
+          <h4>macOS</h4>
+          <ul class="req-list">
+            <li>macOS 12 Monterey or later</li>
+            <li>Apple Silicon or Intel</li>
+            <li>~80 MB disk space</li>
+          </ul>
         </div>
-      </section>
-
-      <section class="info-card">
-        <div class="card-kicker">Requirements</div>
-        <h3>What you need</h3>
-        <div class="requirements-grid">
-          <div class="req-card" id="req-mac">
-            <h4>macOS</h4>
-            <ul class="req-list">
-              <li>macOS 12 Monterey or later</li>
-              <li>Apple Silicon or Intel</li>
-              <li>About 80 MB of disk space</li>
-            </ul>
-          </div>
-          <div class="req-card" id="req-win" style="display:none">
-            <h4>Windows</h4>
-            <ul class="req-list">
-              <li>Windows 10 or 11, 64-bit</li>
-              <li>About 120 MB of disk space</li>
-              <li>Auto-updates via Squirrel</li>
-            </ul>
-          </div>
-          <div class="req-card">
-            <h4>Both platforms</h4>
-            <ul class="req-list">
-              <li>No internet needed after install</li>
-              <li>Works with SD, CF, and XQD cards</li>
-              <li>Camera USB-C and USB-A connections</li>
-              <li>FTP and FTPS output are optional</li>
-            </ul>
-          </div>
-          <div class="req-card">
-            <h4>Good to know</h4>
-            <ul class="req-list">
-              <li>Your photos stay on your machine</li>
-              <li>Free mode works without a credit card</li>
-              <li>Pro activation codes are emailed after purchase</li>
-              <li>Licenses can be renewed or upgraded later</li>
-            </ul>
-          </div>
+        <div class="req-card" id="req-win" style="display:none">
+          <h4>Windows</h4>
+          <ul class="req-list">
+            <li>Windows 10 or 11, 64-bit</li>
+            <li>~120 MB disk space</li>
+            <li>Auto-updates via Squirrel</li>
+          </ul>
         </div>
-      </section>
+        <div class="req-card">
+          <h4>Both platforms</h4>
+          <ul class="req-list">
+            <li>No internet needed after install</li>
+            <li>SD, CF, XQD, USB-C/A cameras</li>
+            <li>FTP/FTPS output optional</li>
+          </ul>
+        </div>
+        <div class="req-card">
+          <h4>Good to know</h4>
+          <ul class="req-list">
+            <li>Photos stay on your machine</li>
+            <li>Free mode — no credit card</li>
+            <li>License codes emailed after purchase</li>
+          </ul>
+        </div>
+      </div>
     </div>
 
     <div class="footer">
       <span>© 2025 Culler</span>
-      <a href="/" style="color:var(--text-muted)">Back to home</a>
+      <a href="/" style="color:var(--text-faint)">Home</a>
     </div>
   </div>
 
   <script>
-    const API_BASE = "https://updates.culler.z2hs.au";
-
-    let currentPlatform = "mac";
-    let releases = [];
+    const API_BASE = 'https://updates.culler.z2hs.au';
+    let currentPlatform = 'mac';
     let dataLoaded = false;
+    let releases = [];
 
     window.switchPlatform = function(platform) {
       currentPlatform = platform;
-      document.getElementById("tab-mac").classList.toggle("active", platform === "mac");
-      document.getElementById("tab-win").classList.toggle("active", platform === "windows");
-      document.getElementById("req-mac").style.display = platform === "mac" ? "" : "none";
-      document.getElementById("req-win").style.display = platform === "windows" ? "" : "none";
+      document.getElementById('tab-mac').classList.toggle('active', platform === 'mac');
+      document.getElementById('tab-win').classList.toggle('active', platform === 'windows');
+      document.getElementById('req-mac').style.display = platform === 'mac' ? '' : 'none';
+      document.getElementById('req-win').style.display = platform === 'windows' ? '' : 'none';
+      dataLoaded = false; releases = [];
       loadReleases();
     };
 
     async function loadReleases() {
-      dataLoaded = false;
       renderReleases();
       try {
-        const url = `${API_BASE}/api/v1/app/releases?platform=${encodeURIComponent(currentPlatform === "mac" ? "macos" : "windows")}&channel=stable&latest=true&limit=1`;
-        const res = await fetch(url, { headers: { Accept: "application/json" } });
+        const apiPlatform = currentPlatform === 'mac' ? 'macos' : 'windows';
+        const url = `${API_BASE}/api/v1/app/releases?platform=${encodeURIComponent(apiPlatform)}&channel=stable&latest=true&limit=1`;
+        const res = await fetch(url, { headers: { Accept: 'application/json' } });
         if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
         const data = await res.json();
         releases = Array.isArray(data) ? data : (data.releases || []);
         dataLoaded = true;
         renderReleases();
-      } catch (err) {
-        showError(err.message);
-      }
+      } catch (err) { showError(err.message); }
     }
 
-    function formatDate(iso) {
-      if (!iso) return "";
-      try {
-        return new Intl.DateTimeFormat("en-AU", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(iso));
-      } catch {
-        return iso;
-      }
+    function fmtDate(iso) {
+      if (!iso) return '';
+      try { return new Intl.DateTimeFormat('en-AU', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(iso)); }
+      catch { return iso; }
+    }
+
+    function esc(v) {
+      return String(v || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
     }
 
     function renderReleases() {
-      const list = document.getElementById("release-list");
-
-      if (!dataLoaded) {
-        list.innerHTML = '<div class="state-block"><div class="spinner"></div>Loading latest release...</div>';
-        return;
-      }
-
-      const release = releases[0];
-      if (!release) {
-        list.innerHTML = `<div class="state-block">No ${currentPlatform === "mac" ? "macOS" : "Windows"} stable release is live yet.</div>`;
-        return;
-      }
-
-      const artifactUrl = release.artifactUrl || release.downloadUrl || "";
-      const notes = release.notes || release.releaseNotes || "";
-      const platformLabel = currentPlatform === "mac" ? "macOS" : "Windows";
-
+      const list = document.getElementById('release-list');
+      if (!dataLoaded) { list.innerHTML = '<div class="state-block"><div class="spinner"></div>Loading release…</div>'; return; }
+      const r = releases[0];
+      const pLabel = currentPlatform === 'mac' ? 'macOS' : 'Windows';
+      if (!r) { list.innerHTML = `<div class="state-block">No ${pLabel} stable release available yet.</div>`; return; }
+      const artifactUrl = r.artifactUrl || r.downloadUrl || '';
+      const notes = r.notes || r.releaseNotes || '';
       list.innerHTML = `
         <div class="release-card">
           <div class="release-top">
             <div>
               <div class="release-badge">Latest stable</div>
-              <div class="release-name">${escHtml(release.releaseName || `Culler ${release.version}`)}</div>
+              <div class="release-name">${esc(r.releaseName || `Culler ${r.version}`)}</div>
               <div class="release-meta">
-                <span>v${escHtml(release.version)}</span>
-                ${release.publishedAt ? `<span>${formatDate(release.publishedAt)}</span>` : ""}
-                <span>${platformLabel}</span>
+                <span>v${esc(r.version)}</span>
+                ${r.publishedAt ? `<span>${fmtDate(r.publishedAt)}</span>` : ''}
+                <span>${pLabel}</span>
               </div>
             </div>
           </div>
-
-          ${notes ? `<div class="release-notes">${escHtml(notes)}</div>` : ""}
-
+          ${notes ? `<div class="release-notes">${esc(notes)}</div>` : ''}
           <div class="release-actions">
             ${artifactUrl
-              ? `<a href="${escHtml(artifactUrl)}" class="btn primary">
-                   <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path d="M10 2a.75.75 0 01.75.75v8.69l2.97-2.97a.75.75 0 111.06 1.06l-4.25 4.25a.75.75 0 01-1.06 0L5.22 9.53a.75.75 0 011.06-1.06l2.97 2.97V2.75A.75.75 0 0110 2z"/><path d="M3 15.75a.75.75 0 000 1.5h14a.75.75 0 000-1.5H3z"/></svg>
-                   Download ${platformLabel}
-                 </a>`
-              : `<span class="btn secondary" style="cursor:default;opacity:.55">No installer uploaded yet</span>`
+              ? `<a href="${esc(artifactUrl)}" class="btn primary">
+                  <svg width="13" height="13" viewBox="0 0 20 20" fill="currentColor"><path d="M10 2a.75.75 0 01.75.75v8.69l2.97-2.97a.75.75 0 111.06 1.06l-4.25 4.25a.75.75 0 01-1.06 0L5.22 9.53a.75.75 0 011.06-1.06l2.97 2.97V2.75A.75.75 0 0110 2z"/><path d="M3 15.75a.75.75 0 000 1.5h14a.75.75 0 000-1.5H3z"/></svg>
+                  Download for ${pLabel}
+                </a>`
+              : `<span class="btn secondary" style="cursor:default;opacity:.5">No installer uploaded yet</span>`
             }
-            ${release.releaseUrl ? `<a href="${escHtml(release.releaseUrl)}" class="btn secondary">View release notes</a>` : ""}
-          </div>
-
-          <div class="release-summary">
-            The desktop updater checks the same hosted stable feed, so the app and website stay on the same version track.
+            ${r.releaseUrl ? `<a href="${esc(r.releaseUrl)}" class="btn secondary">Release notes</a>` : ''}
           </div>
         </div>`;
     }
 
     function showError(msg) {
-      document.getElementById("release-list").innerHTML = `
-        <div class="state-block" style="color:var(--text-muted)">
-          <div style="margin-bottom:.5rem">Could not load releases</div>
-          <div style="font-size:.78rem;font-family:var(--mono);color:var(--text-faint)">${escHtml(msg)}</div>
-        </div>`;
-    }
-
-    function escHtml(value) {
-      return String(value || "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#39;");
+      document.getElementById('release-list').innerHTML = `
+        <div class="state-block">Could not load releases<br>
+        <span style="font-size:.78rem;font-family:var(--mono);color:var(--text-faint)">${esc(msg)}</span></div>`;
     }
 
     (function detectPlatform() {
-      const ua = navigator.userAgent;
-      const isWin = !ua.includes("Mac") && (ua.includes("Win") || ua.includes("Windows"));
-      switchPlatform(isWin ? "windows" : "mac");
+      const isWin = !navigator.userAgent.includes('Mac') && navigator.userAgent.includes('Win');
+      switchPlatform(isWin ? 'windows' : 'mac');
     })();
   </script>
 </body>

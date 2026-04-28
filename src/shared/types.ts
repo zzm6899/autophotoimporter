@@ -147,6 +147,7 @@ export interface SelectionSet {
 }
 
 export type WatermarkPosition = 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left' | 'center';
+export type WatermarkMode = 'text' | 'image';
 
 export interface BatchMetadata {
   keywords?: string[];
@@ -158,9 +159,12 @@ export interface BatchMetadata {
 
 export interface WatermarkConfig {
   enabled: boolean;
-  text: string;
+  mode: WatermarkMode;
+  text?: string;
+  imagePath?: string;
   opacity: number;
-  position: WatermarkPosition;
+  positionLandscape: WatermarkPosition;
+  positionPortrait: WatermarkPosition;
   scale: number;
 }
 
@@ -268,6 +272,11 @@ export interface ImportConfig {
   exposureAdjustments?: Record<string, number>;
   /** Optional batch metadata written as XMP sidecars next to imported files. */
   metadata?: BatchMetadata;
+  /**
+   * Controls which metadata fields are written into the XMP sidecar on import.
+   * When omitted, defaults apply (all enabled except stripGps).
+   */
+  metadataExportFlags?: Partial<MetadataExportFlags>;
   /** Optional text watermark overlay for transcoded outputs. */
   watermark?: WatermarkConfig;
   /**
@@ -308,6 +317,75 @@ export interface ImportError {
   error: string;
 }
 
+/**
+ * Which culling actions the user can remap. Each value is a KeyboardEvent.key string.
+ * Defaults are the original hardcoded keys.
+ */
+export interface KeybindMap {
+  pick: string;           // default: 'p'
+  reject: string;         // default: 'x'
+  unflag: string;         // default: 'u'
+  nextPhoto: string;      // default: 'ArrowRight'
+  prevPhoto: string;      // default: 'ArrowLeft'
+  rateOne: string;        // default: '1'
+  rateTwo: string;        // default: '2'
+  rateThree: string;      // default: '3'
+  rateFour: string;       // default: '4'
+  rateFive: string;       // default: '5'
+  clearRating: string;    // default: '0'
+  compareMode: string;    // default: 'c'
+  burstSelect: string;    // default: 'b'
+  burstCollapse: string;  // default: 'g'
+  queuePhoto: string;     // default: 'q'
+  jumpUnreviewed: string; // default: 'Tab'
+  batchRejectBurst: string; // default: 'r' (when in single/split view)
+}
+
+export const DEFAULT_KEYBINDS: KeybindMap = {
+  pick: 'p',
+  reject: 'x',
+  unflag: 'u',
+  nextPhoto: 'ArrowRight',
+  prevPhoto: 'ArrowLeft',
+  rateOne: '1',
+  rateTwo: '2',
+  rateThree: '3',
+  rateFour: '4',
+  rateFive: '5',
+  clearRating: '0',
+  compareMode: 'c',
+  burstSelect: 'b',
+  burstCollapse: 'g',
+  queuePhoto: 'q',
+  jumpUnreviewed: 'Tab',
+  batchRejectBurst: 'r',
+};
+
+/**
+ * Controls which metadata fields get written into files on import.
+ */
+export interface MetadataExportFlags {
+  keywords: boolean;
+  title: boolean;
+  caption: boolean;
+  creator: boolean;
+  copyright: boolean;
+  rating: boolean;       // embed star rating as XMP Rating
+  pickLabel: boolean;    // embed pick/reject as XMP Label / ColorClass
+  stripGps: boolean;     // remove GPS data on export
+}
+
+export const DEFAULT_METADATA_EXPORT: MetadataExportFlags = {
+  keywords: true,
+  title: true,
+  caption: true,
+  creator: true,
+  copyright: true,
+  rating: true,
+  pickLabel: true,
+  stripGps: false,
+};
+
 export interface AppSettings {
   lastDestination: string;
   skipDuplicates: boolean;
@@ -341,6 +419,7 @@ export interface AppSettings {
   // Exposure normalization
   normalizeExposure: boolean;
   exposureMaxStops: number;
+  exposureAdjustmentStep?: number;
   // Batch metadata + output transforms
   metadataKeywords?: string;
   metadataTitle?: string;
@@ -348,9 +427,12 @@ export interface AppSettings {
   metadataCreator?: string;
   metadataCopyright?: string;
   watermarkEnabled?: boolean;
+  watermarkMode?: WatermarkMode;
   watermarkText?: string;
+  watermarkImagePath?: string;
   watermarkOpacity?: number;
-  watermarkPosition?: WatermarkPosition;
+  watermarkPositionLandscape?: WatermarkPosition;
+  watermarkPositionPortrait?: WatermarkPosition;
   watermarkScale?: number;
   autoStraighten?: boolean;
   // Performance optimizations
@@ -367,6 +449,10 @@ export interface AppSettings {
   faceConcurrency?: number;
   jobPresets: JobPreset[];
   selectionSets: SelectionSet[];
+  // Keybind customization
+  keybinds?: Partial<KeybindMap>;
+  // Metadata export control
+  metadataExport?: Partial<MetadataExportFlags>;
   licenseKey?: string;
   licenseActivationCode?: string;
   licenseStatus?: LicenseValidation;

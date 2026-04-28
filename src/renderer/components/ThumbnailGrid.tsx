@@ -544,7 +544,7 @@ async function visualHash(src: string): Promise<string> {
 }
 
 export function ThumbnailGrid() {
-  const { phase, selectedSource, scanError, focusedIndex, viewMode, showLeftPanel, showRightPanel, filter, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused, fastKeeperMode, faceConcurrency, gpuFaceAcceleration } = useAppState();
+  const { phase, selectedSource, scanError, focusedIndex, viewMode, showLeftPanel, showRightPanel, filter, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, exposureAdjustmentStep, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused, fastKeeperMode, faceConcurrency, gpuFaceAcceleration, keybinds, metadataKeywords } = useAppState();
   // useMergedFiles() overlays face/review scores without re-running the full
   // reducer map — O(n) only when scores.size > 0, otherwise returns the same array.
   const files = useMergedFiles();
@@ -568,6 +568,10 @@ export function ThumbnailGrid() {
   const [toolbarPos, setToolbarPos] = useState<{ x: number; y: number } | null>(null);
   const [reviewLoopTick, setReviewLoopTick] = useState(0);
   const [multiClickSelect, setMultiClickSelect] = useState(false);
+  // Multi-select tag bar
+  const [tagInput, setTagInput] = useState('');
+  const [sessionTags, setSessionTags] = useState<string[]>([]);
+  const [showTagSuggestions, setShowTagSuggestions] = useState(false);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const toolbarDragState = useRef<{ startMouseX: number; startMouseY: number; startLeft: number; startTop: number } | null>(null);
   const lastClickedPathRef = useRef<string | null>(null);
@@ -1355,6 +1359,148 @@ export function ThumbnailGrid() {
         }
       }
 
+      // ── Remappable keybind actions ────────────────────────────────────
+      // Check each customisable binding before falling through to the static
+      // switch. Modifier keys (Shift, Ctrl, Meta) still work as before for
+      // the bulk-pick shortcuts — we only intercept the plain key.
+      if (!e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (e.key === keybinds.pick) {
+          e.preventDefault();
+          pickFile('selected', true);
+          return;
+        }
+        if (e.key === keybinds.reject) {
+          e.preventDefault();
+          pickFile('rejected', true);
+          return;
+        }
+        if (e.key === keybinds.unflag) {
+          e.preventDefault();
+          pickFile(undefined, false);
+          return;
+        }
+        if (e.key === keybinds.compareMode) {
+          e.preventDefault();
+          dispatch({ type: 'TOGGLE_CULL_MODE' });
+          return;
+        }
+        if (e.key === keybinds.queuePhoto) {
+          e.preventDefault();
+          const targets = selectedPaths.length > 0
+            ? selectedPaths
+            : focusedIndex >= 0 && focusedIndex < sortedFiles.length
+              ? [sortedFiles[focusedIndex].path]
+              : [];
+          if (targets.length > 0) queuePaths(targets);
+          return;
+        }
+        if (e.key === keybinds.nextPhoto) {
+          e.preventDefault();
+          if (selectedPaths.length > 0) {
+            const anchor = focusedIndex >= 0 ? focusedIndex : Math.min(...selectedIndices);
+            setFocused(Math.min(anchor + 1, sortedFiles.length - 1));
+          } else {
+            setFocused(Math.min(focusedIndex + 1, sortedFiles.length - 1));
+          }
+          return;
+        }
+        if (e.key === keybinds.prevPhoto) {
+          e.preventDefault();
+          if (selectedPaths.length > 0) {
+            const anchor = focusedIndex >= 0 ? focusedIndex : Math.min(...selectedIndices);
+            setFocused(Math.max(anchor - 1, 0));
+          } else {
+            setFocused(Math.max(focusedIndex - 1, 0));
+          }
+          return;
+        }
+        if (e.key === keybinds.burstSelect) {
+          e.preventDefault();
+          if (focusedIndex >= 0 && focusedIndex < sortedFiles.length) {
+            const focused = sortedFiles[focusedIndex];
+            if (focused.burstId) {
+              const next = new Set<number>();
+              sortedFiles.forEach((f, i) => { if (f.burstId === focused.burstId) next.add(i); });
+              setSelectedIndices(next);
+            }
+          }
+          return;
+        }
+        if (e.key === keybinds.burstCollapse) {
+          e.preventDefault();
+          if (focusedIndex >= 0 && focusedIndex < sortedFiles.length) {
+            const focused = sortedFiles[focusedIndex];
+            if (focused.burstId) dispatch({ type: 'TOGGLE_BURST_COLLAPSE', burstId: focused.burstId });
+          }
+          return;
+        }
+        if (e.key === keybinds.jumpUnreviewed) {
+          e.preventDefault();
+          const startIdx = focusedIndex >= 0 ? focusedIndex + 1 : 0;
+          const nextUnreviewed = sortedFiles.findIndex(
+            (f, i) => i >= startIdx && f.pick === undefined,
+          );
+          if (nextUnreviewed >= 0) setFocused(nextUnreviewed);
+          return;
+        }
+        if (e.key === keybinds.batchRejectBurst && (viewMode === 'single' || viewMode === 'split')) {
+          e.preventDefault();
+          if (focusedIndex >= 0 && focusedIndex < sortedFiles.length) {
+            const focused = sortedFiles[focusedIndex];
+            if (focused.burstId) {
+              const paths = sortedFiles.filter((f) => f.burstId === focused.burstId).map((f) => f.path);
+              dispatch({ type: 'SET_PICK_BATCH', filePaths: paths, pick: 'rejected' });
+            } else {
+              pickFile('rejected', true);
+            }
+          }
+          return;
+        }
+        // Star rating keys (remappable)
+        const ratingKeys: (keyof typeof keybinds)[] = ['clearRating', 'rateOne', 'rateTwo', 'rateThree', 'rateFour', 'rateFive'];
+        const ratingValues = [0, 1, 2, 3, 4, 5];
+        const ratingIdx = ratingKeys.findIndex((k) => keybinds[k] === e.key);
+        if (ratingIdx >= 0) {
+          e.preventDefault();
+          const rating = ratingValues[ratingIdx];
+          if (selectedPaths.length > 0) {
+            selectedPaths.forEach((path) => dispatch({ type: 'SET_RATING', filePath: path, rating }));
+          } else if (focusedIndex >= 0 && focusedIndex < sortedFiles.length) {
+            dispatch({ type: 'SET_RATING', filePath: sortedFiles[focusedIndex].path, rating });
+            if (cullMode && focusedIndex < sortedFiles.length - 1) setFocused(focusedIndex + 1);
+          }
+          return;
+        }
+      }
+
+      // ── Shift-modified bulk pick shortcuts (non-remappable, keep as-is) ──
+      if (e.shiftKey && !e.metaKey && !e.ctrlKey) {
+        if (e.key.toLowerCase() === keybinds.pick.toLowerCase() && focusedIndex >= 0 && lastClickedPathRef.current) {
+          const anchorIndex = sortedFiles.findIndex((file) => file.path === lastClickedPathRef.current);
+          if (anchorIndex >= 0) {
+            e.preventDefault();
+            const start = Math.min(focusedIndex, anchorIndex);
+            const end = Math.max(focusedIndex, anchorIndex);
+            const paths = sortedFiles.slice(start, end + 1).map((f) => f.path);
+            dispatch({ type: 'SET_PICK_BATCH', filePaths: paths, pick: 'selected' });
+            setSelectedIndices(new Set(paths.map((_, offset) => start + offset)));
+            return;
+          }
+        }
+        if (e.key.toLowerCase() === keybinds.reject.toLowerCase() && focusedIndex >= 0 && lastClickedPathRef.current) {
+          const anchorIndex = sortedFiles.findIndex((file) => file.path === lastClickedPathRef.current);
+          if (anchorIndex >= 0) {
+            e.preventDefault();
+            const start = Math.min(focusedIndex, anchorIndex);
+            const end = Math.max(focusedIndex, anchorIndex);
+            const paths = sortedFiles.slice(start, end + 1).map((f) => f.path);
+            dispatch({ type: 'SET_PICK_BATCH', filePaths: paths, pick: 'rejected' });
+            setSelectedIndices(new Set(paths.map((_, offset) => start + offset)));
+            return;
+          }
+        }
+      }
+
       switch (e.key) {
         case 'ArrowRight':
           e.preventDefault();
@@ -1567,7 +1713,7 @@ export function ThumbnailGrid() {
             const targets = selectedPaths.length > 0
               ? selectedPaths
               : focusedIndex >= 0 && focusedIndex < sortedFiles.length ? [sortedFiles[focusedIndex].path] : [];
-            dispatch({ type: 'NUDGE_EXPOSURE_ADJUSTMENT', filePaths: targets, delta: e.key === '[' ? -0.33 : 0.33 });
+            dispatch({ type: 'NUDGE_EXPOSURE_ADJUSTMENT', filePaths: targets, delta: e.key === '[' ? -exposureAdjustmentStep : exposureAdjustmentStep });
           }
           break;
         case '\\':
@@ -1599,7 +1745,7 @@ export function ThumbnailGrid() {
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [focusedIndex, sortedFiles, viewMode, getColumnsCount, setFocused, pickFile, dispatch, selectedIndices, selectedPaths, cullMode, files, openBestOfSelection, openAdjacentBatch, openAdjacentBurst, queuePaths, showBestOfSelection, showShortcuts, selectAllVisible, clearSelection]);
+  }, [focusedIndex, sortedFiles, viewMode, getColumnsCount, setFocused, pickFile, dispatch, selectedIndices, selectedPaths, cullMode, files, openBestOfSelection, openAdjacentBatch, openAdjacentBurst, queuePaths, showBestOfSelection, showShortcuts, selectAllVisible, clearSelection, keybinds]);
 
   useEffect(() => {
     const open = () => setShowShortcuts(true);
@@ -2124,9 +2270,9 @@ export function ThumbnailGrid() {
         <>
           <div className="w-px h-4 bg-border" />
           <button
-            onClick={() => dispatch({ type: 'NUDGE_EXPOSURE_ADJUSTMENT', filePaths: normalizeTargetPaths, delta: -0.33 })}
+            onClick={() => dispatch({ type: 'NUDGE_EXPOSURE_ADJUSTMENT', filePaths: normalizeTargetPaths, delta: -exposureAdjustmentStep })}
             className="px-2 py-1.5 text-[11px] text-text-secondary hover:text-sky-300 hover:bg-sky-500/10 transition-colors"
-            title="Darken selection by 0.33 EV ([)"
+            title={`Darken selection by ${exposureAdjustmentStep.toFixed(2)} EV ([)`}
           >
             -
           </button>
@@ -2140,9 +2286,9 @@ export function ThumbnailGrid() {
             {avgEffectiveStops >= 0 ? '+' : ''}{avgEffectiveStops.toFixed(2)}
           </button>
           <button
-            onClick={() => dispatch({ type: 'NUDGE_EXPOSURE_ADJUSTMENT', filePaths: normalizeTargetPaths, delta: 0.33 })}
+            onClick={() => dispatch({ type: 'NUDGE_EXPOSURE_ADJUSTMENT', filePaths: normalizeTargetPaths, delta: exposureAdjustmentStep })}
             className="px-2 py-1.5 text-[11px] text-text-secondary hover:text-sky-300 hover:bg-sky-500/10 transition-colors"
-            title="Brighten selection by 0.33 EV (])"
+            title={`Brighten selection by ${exposureAdjustmentStep.toFixed(2)} EV (])`}
           >
             +
           </button>
@@ -2547,6 +2693,24 @@ export function ThumbnailGrid() {
           </div>
         )}
 
+        {/* ── Session stats ─────────────────────────────────────────── */}
+        {files.length > 0 && phase !== 'scanning' && (
+          <div className="flex items-center gap-2 shrink-0 ml-2 px-2 py-0.5 rounded bg-surface-raised/60 border border-border/50">
+            {(() => {
+              const keptCount = files.filter((f) => f.pick === 'selected').length;
+              const rejectedCount = files.filter((f) => f.pick === 'rejected').length;
+              const pendingCount = files.filter((f) => f.pick === undefined).length;
+              return (
+                <>
+                  <span className="text-[10px] text-emerald-400 font-mono" title="Picked (kept)">✓ {keptCount}</span>
+                  <span className="text-[10px] text-red-400 font-mono" title="Rejected">✕ {rejectedCount}</span>
+                  <span className="text-[10px] text-text-muted font-mono" title="Unreviewed">? {pendingCount}</span>
+                </>
+              );
+            })()}
+          </div>
+        )}
+
         {/* Spacer pushes filters to the right */}
         <div className="flex-1 min-w-0" />
 
@@ -2701,6 +2865,95 @@ export function ThumbnailGrid() {
           </svg>
         </button>
       </div>
+
+      {/* ── Multi-select tag bar ─────────────────────────────────────── */}
+      {hasBatchSelection && (
+        <div className="shrink-0 px-3 py-1.5 flex items-center gap-2 border-b border-border bg-blue-500/5">
+          <span className="text-[10px] text-blue-300 font-medium shrink-0">Tag {selectedPaths.length} photos:</span>
+          <div className="relative flex-1">
+            <input
+              type="text"
+              value={tagInput}
+              onChange={(e) => {
+                setTagInput(e.target.value);
+                setShowTagSuggestions(e.target.value.trim().length > 0);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && tagInput.trim()) {
+                  e.preventDefault();
+                  const newTags = tagInput.split(',').map((t) => t.trim()).filter(Boolean);
+                  // Merge into session memory
+                  setSessionTags((prev) => {
+                    const merged = [...prev];
+                    newTags.forEach((t) => { if (!merged.includes(t)) merged.push(t); });
+                    return merged;
+                  });
+                  // Append to global metadataKeywords setting
+                  const existing = metadataKeywords ?? '';
+                  const existingArr = existing ? existing.split(',').map((t: string) => t.trim()).filter(Boolean) : [];
+                  const merged = [...new Set([...existingArr, ...newTags])].join(', ');
+                  dispatch({ type: 'SET_WORKFLOW_STRING', key: 'metadataKeywords', value: merged });
+                  void window.electronAPI.setSettings({ metadataKeywords: merged });
+                  setTagInput('');
+                  setShowTagSuggestions(false);
+                }
+                if (e.key === 'Escape') {
+                  setTagInput('');
+                  setShowTagSuggestions(false);
+                }
+              }}
+              onFocus={() => setShowTagSuggestions(tagInput.trim().length > 0 || sessionTags.length > 0)}
+              onBlur={() => setTimeout(() => setShowTagSuggestions(false), 150)}
+              placeholder="Add keywords (comma-separated), Enter to apply"
+              className="w-full px-2 py-0.5 text-[11px] bg-surface border border-border rounded text-text placeholder-text-muted focus:outline-none focus:border-blue-500/50"
+            />
+            {showTagSuggestions && sessionTags.length > 0 && (
+              <div className="absolute top-full left-0 z-50 mt-0.5 bg-surface border border-border rounded shadow-lg max-h-32 overflow-y-auto min-w-full">
+                {sessionTags
+                  .filter((t) => tagInput.trim() === '' || t.toLowerCase().includes(tagInput.toLowerCase()))
+                  .map((tag) => (
+                    <button
+                      key={tag}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        setTagInput((prev) => {
+                          const parts = prev.split(',').map((p) => p.trim()).filter(Boolean);
+                          if (!parts.includes(tag)) parts.push(tag);
+                          return parts.join(', ');
+                        });
+                      }}
+                      className="w-full text-left px-2 py-1 text-[11px] text-text-secondary hover:bg-surface-raised hover:text-text transition-colors"
+                    >
+                      {tag}
+                    </button>
+                  ))}
+              </div>
+            )}
+          </div>
+          {sessionTags.length > 0 && (
+            <div className="flex flex-wrap gap-1 shrink-0">
+              {sessionTags.slice(-5).map((tag) => (
+                <button
+                  key={tag}
+                  onClick={() => {
+                    const newTags = [tag];
+                    const existing = metadataKeywords ?? '';
+                    const existingArr = existing ? existing.split(',').map((t) => t.trim()).filter(Boolean) : [];
+                    const merged = [...new Set([...existingArr, ...newTags])].join(', ');
+                    dispatch({ type: 'SET_WORKFLOW_STRING', key: 'metadataKeywords', value: merged });
+                    void window.electronAPI.setSettings({ metadataKeywords: merged });
+                  }}
+                  className="px-1.5 py-0.5 text-[10px] bg-blue-500/15 text-blue-300 rounded border border-blue-500/25 hover:bg-blue-500/25 transition-colors"
+                  title={`Apply "${tag}" to selected photos`}
+                >
+                  {tag}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {nextActionToolbar}
 
       {/* Content */}
@@ -2770,7 +3023,7 @@ export function ThumbnailGrid() {
           <div className="h-full relative">
             <div className="h-full overflow-y-auto px-4 pt-3 pb-16">
               {folderGroups ? (
-                /* ── Folder view: one section per sub-directory, ranked by ★ ── */
+                /* Folder view: one section per sub-directory, ranked by star */
                 <div className="flex flex-col gap-8">
                   {folderGroups.length > 1 && (
                     <div className="sticky top-0 z-20 -mb-4 flex items-center gap-2 border-b border-border bg-surface/95 py-2">
@@ -2800,7 +3053,6 @@ export function ThumbnailGrid() {
                       : 0;
                     return (
                       <div key={folder}>
-                        {/* Folder header */}
                         <button
                           type="button"
                           onClick={() => {
@@ -2829,13 +3081,12 @@ export function ThumbnailGrid() {
                           {ratedFiles.length > 0 && (
                             <span
                               className="text-[10px] text-yellow-400 shrink-0"
-                              title={`${ratedFiles.length} rated · avg ${avgRating.toFixed(1)}★ · best ${maxRating}★`}
+                              title={`${ratedFiles.length} rated · avg ${avgRating.toFixed(1)} · best ${maxRating}`}
                             >
-                              {'★'.repeat(maxRating)}{'☆'.repeat(5 - maxRating)} best · avg {avgRating.toFixed(1)}★
+                              {'\u2605'.repeat(maxRating)}{'\u2606'.repeat(5 - maxRating)} best · avg {avgRating.toFixed(1)}
                             </span>
                           )}
                         </button>
-                        {/* Thumbnail grid for this folder */}
                         {!collapsed && (
                         <div className="thumbnail-grid grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-3">
                           {folderFiles.map((file) => {
@@ -2865,7 +3116,7 @@ export function ThumbnailGrid() {
                   })}
                 </div>
               ) : (
-                /* ── Normal flat grid ── */
+                /* Normal flat grid */
                 <div
                   ref={gridRef}
                   className="thumbnail-grid grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-3"

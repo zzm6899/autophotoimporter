@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
-import type { SaveFormat } from '../../shared/types';
-import { FOLDER_PRESETS } from '../../shared/types';
+import type { SaveFormat, KeybindMap, MetadataExportFlags, WatermarkMode, WatermarkPosition } from '../../shared/types';
+import { DEFAULT_KEYBINDS, FOLDER_PRESETS } from '../../shared/types';
 import { playCompletionSound } from '../utils/completionSound';
 import { useUpdateNotification } from '../hooks/useUpdateNotification';
 
@@ -10,6 +10,46 @@ interface SettingsPageProps {
   /** When true, renders as a full-page view instead of a modal overlay */
   inline?: boolean;
 }
+
+const KEYBIND_ITEMS: Array<{ action: keyof KeybindMap; label: string; hint: string }> = [
+  { action: 'pick', label: 'Pick', hint: 'keep current photo' },
+  { action: 'reject', label: 'Reject', hint: 'mark for deletion' },
+  { action: 'unflag', label: 'Unflag', hint: 'clear pick / reject' },
+  { action: 'nextPhoto', label: 'Next photo', hint: 'move right' },
+  { action: 'prevPhoto', label: 'Previous photo', hint: 'move left' },
+  { action: 'rateOne', label: '1 star', hint: 'apply rating' },
+  { action: 'rateTwo', label: '2 stars', hint: 'apply rating' },
+  { action: 'rateThree', label: '3 stars', hint: 'apply rating' },
+  { action: 'rateFour', label: '4 stars', hint: 'apply rating' },
+  { action: 'rateFive', label: '5 stars', hint: 'apply rating' },
+  { action: 'clearRating', label: 'Clear rating', hint: 'remove stars' },
+  { action: 'compareMode', label: 'Compare mode', hint: 'toggle split view' },
+  { action: 'burstSelect', label: 'Burst select', hint: 'select burst' },
+  { action: 'burstCollapse', label: 'Collapse burst', hint: 'hide similar shots' },
+  { action: 'queuePhoto', label: 'Queue photo', hint: 'send to import queue' },
+  { action: 'jumpUnreviewed', label: 'Jump unreviewed', hint: 'next untouched photo' },
+  { action: 'batchRejectBurst', label: 'Reject burst', hint: 'bulk reject group' },
+];
+
+const METADATA_EXPORT_ITEMS: Array<{ flag: keyof MetadataExportFlags; label: string; hint: string }> = [
+  { flag: 'keywords', label: 'Keywords', hint: 'tags / categories' },
+  { flag: 'title', label: 'Title', hint: 'headline field' },
+  { flag: 'caption', label: 'Caption', hint: 'description / notes' },
+  { flag: 'creator', label: 'Creator', hint: 'photographer / author' },
+  { flag: 'copyright', label: 'Copyright', hint: 'ownership notice' },
+  { flag: 'rating', label: 'Rating', hint: 'XMP star rating' },
+  { flag: 'pickLabel', label: 'Pick label', hint: 'pick / reject flag' },
+  { flag: 'stripGps', label: 'Strip GPS', hint: 'privacy-safe export' },
+];
+
+const SETTINGS_TOPICS = [
+  { id: 'general', label: 'General' },
+  { id: 'workflow', label: 'Workflow' },
+  { id: 'editing', label: 'Editing' },
+  { id: 'account', label: 'Account' },
+] as const;
+
+type SettingsTopic = typeof SETTINGS_TOPICS[number]['id'];
 
 export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const {
@@ -39,15 +79,19 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     burstWindowSec,
     normalizeExposure,
     exposureMaxStops,
+    exposureAdjustmentStep,
     metadataKeywords,
     metadataTitle,
     metadataCaption,
     metadataCreator,
     metadataCopyright,
     watermarkEnabled,
+    watermarkMode,
     watermarkText,
+    watermarkImagePath,
     watermarkOpacity,
-    watermarkPosition,
+    watermarkPositionLandscape,
+    watermarkPositionPortrait,
     watermarkScale,
     autoStraighten,
     selectionSets,
@@ -60,6 +104,8 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     fastKeeperMode,
     previewConcurrency,
     faceConcurrency,
+    keybinds,
+    metadataExport,
   } = useAppState();
   const dispatch = useAppDispatch();
   const { updateState, checkNow, downloadUpdate, installUpdate, openRelease } = useUpdateNotification();
@@ -81,6 +127,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const [buyFeedback, setBuyFeedback] = useState<string | null>(null);
   const [buyNameInput, setBuyNameInput] = useState('');
   const [buyEmailInput, setBuyEmailInput] = useState('');
+  const [activeTopic, setActiveTopic] = useState<SettingsTopic>('general');
 
   const BASE_URL = 'https://updates.culler.z2hs.au';
   const [diagnosing, setDiagnosing] = useState(false);
@@ -194,7 +241,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   };
 
   const handleWorkflowString = (
-    key: 'protectedFolderName' | 'backupDestRoot' | 'autoImportDestRoot' | 'completeSoundPath',
+    key: 'protectedFolderName' | 'backupDestRoot' | 'autoImportDestRoot' | 'completeSoundPath' | 'watermarkImagePath',
     value: string,
   ) => {
     dispatch({ type: 'SET_WORKFLOW_STRING', key, value });
@@ -202,7 +249,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   };
 
   const handleMetadataString = (
-    key: 'metadataKeywords' | 'metadataTitle' | 'metadataCaption' | 'metadataCreator' | 'metadataCopyright' | 'watermarkText',
+    key: 'metadataKeywords' | 'metadataTitle' | 'metadataCaption' | 'metadataCreator' | 'metadataCopyright' | 'watermarkText' | 'watermarkImagePath',
     value: string,
   ) => {
     dispatch({ type: 'SET_WORKFLOW_STRING', key, value });
@@ -214,9 +261,21 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     set(key, value);
   };
 
-  const handleWatermarkPosition = (position: 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left' | 'center') => {
-    dispatch({ type: 'SET_WATERMARK_POSITION', position });
-    set('watermarkPosition', position);
+  const handleWatermarkPosition = (orientation: 'landscape' | 'portrait', position: WatermarkPosition) => {
+    dispatch({ type: 'SET_WATERMARK_POSITION', orientation, position });
+    void window.electronAPI.setSettings({
+      [orientation === 'portrait' ? 'watermarkPositionPortrait' : 'watermarkPositionLandscape']: position,
+    });
+  };
+
+  const handleWatermarkMode = (mode: WatermarkMode) => {
+    dispatch({ type: 'SET_WATERMARK_MODE', mode });
+    set('watermarkMode', mode);
+  };
+
+  const handleExposureAdjustmentStep = (step: number) => {
+    dispatch({ type: 'SET_EXPOSURE_ADJUSTMENT_STEP', step });
+    set('exposureAdjustmentStep', step);
   };
 
   const handleBurstWindow = (seconds: number) => {
@@ -239,6 +298,42 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const handleFastKeeperMode = (enabled: boolean) => {
     dispatch({ type: 'SET_FAST_KEEPER_MODE', enabled });
     void window.electronAPI.setSettings({ fastKeeperMode: enabled });
+  };
+
+  // ── Keybind handlers ─────────────────────────────────────────────────────
+  const [rebindingAction, setRebindingAction] = useState<keyof typeof keybinds | null>(null);
+  const rebindCaptureRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    if (rebindingAction) {
+      rebindCaptureRef.current?.focus();
+    }
+  }, [rebindingAction]);
+
+  const handleStartRebind = (action: keyof typeof keybinds) => {
+    setRebindingAction(action);
+  };
+
+  const handleKeyCapture = (e: React.KeyboardEvent, action: keyof typeof keybinds) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // Ignore modifier-only presses
+    if (['Control', 'Meta', 'Alt', 'Shift'].includes(e.key)) return;
+    dispatch({ type: 'SET_KEYBIND', action, key: e.key });
+    void window.electronAPI.setSettings({ keybinds: { ...keybinds, [action]: e.key } });
+    setRebindingAction(null);
+  };
+
+  const handleResetKeybinds = () => {
+    dispatch({ type: 'RESET_KEYBINDS' });
+    void window.electronAPI.setSettings({ keybinds: DEFAULT_KEYBINDS });
+    setRebindingAction(null);
+  };
+
+  // ── Metadata export handlers ─────────────────────────────────────────────
+  const handleMetadataExport = (flag: keyof typeof metadataExport, value: boolean) => {
+    dispatch({ type: 'SET_METADATA_EXPORT', flags: { [flag]: value } });
+    void window.electronAPI.setSettings({ metadataExport: { ...metadataExport, [flag]: value } });
   };
   const handleFaceConcurrency = (concurrency: number) => {
     dispatch({ type: 'SET_FACE_CONCURRENCY', concurrency });
@@ -338,6 +433,17 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
 
   const playCompleteSound = () => {
     playCompletionSound(completeSoundPath);
+  };
+
+  const handleChooseWatermarkImage = async () => {
+    const file = await window.electronAPI.selectFile('Choose Watermark Image', [
+      { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] },
+      { name: 'All Files', extensions: ['*'] },
+    ]);
+    if (!file) return;
+    handleWorkflowBool('watermarkEnabled', true);
+    handleWatermarkMode('image');
+    handleWorkflowString('watermarkImagePath', file);
   };
 
   const handleEjectCurrentSource = async () => {
@@ -466,6 +572,13 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     }
   };
 
+  const watermarkPreviewUrl = watermarkImagePath
+    ? `file://${watermarkImagePath.replace(/\\/g, '/').replace(/^([A-Za-z]):/, '/$1:')}`
+    : '';
+  const watermarkPreviewLabel = watermarkMode === 'image'
+    ? (watermarkImagePath ? watermarkImagePath.split(/[/\\]/).pop() : 'No image selected')
+    : (watermarkText.trim() || 'Watermark');
+
   // Shared inner content (header + scrollable body)
   const inner = (
     <div className={`bg-surface border border-border ${inline ? 'flex flex-col h-full' : 'rounded-xl shadow-2xl w-[520px] max-h-[80vh] flex flex-col overflow-hidden'}`}>
@@ -490,42 +603,28 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
       </div>
 
       {/* Scrollable body */}
-      <div className={`overflow-y-auto flex-1 space-y-5 ${inline ? 'px-6 py-4' : 'px-4 py-3'}`}>
-
-          {/* Fast workflow */}
-          <section>
-            <h3 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-2">Fast Workflow</h3>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                onClick={() => window.dispatchEvent(new Event('photo-importer:tutorial'))}
-                className="px-3 py-2 rounded bg-surface-raised hover:bg-border text-left"
-              >
-                <div className="text-xs text-text">Quick tutorial</div>
-                <div className="text-[10px] text-text-muted mt-0.5">Source, cull, queue, import</div>
-              </button>
-              <button
-                onClick={onClose}
-                className="px-3 py-2 rounded bg-surface-raised hover:bg-border text-left"
-              >
-                <div className="text-xs text-text">Back to culling</div>
-                <div className="text-[10px] text-text-muted mt-0.5">P pick, X reject, Shift+B best</div>
-              </button>
+      <div className={`overflow-y-auto flex-1 space-y-4 ${inline ? 'px-5 py-3' : 'px-4 py-3'}`}>
+          <div className="sticky top-0 z-10 -mx-1 border-b border-border bg-surface/95 px-1 pb-3 backdrop-blur">
+            <div className="flex gap-1 overflow-x-auto">
+              {SETTINGS_TOPICS.map((topic) => (
+                <button
+                  key={topic.id}
+                  type="button"
+                  onClick={() => setActiveTopic(topic.id)}
+                  className={`rounded-full px-3 py-1.5 text-[11px] transition-colors ${
+                    activeTopic === topic.id
+                      ? 'bg-accent text-white'
+                      : 'bg-surface-raised text-text-secondary hover:text-text'
+                  }`}
+                >
+                  {topic.label}
+                </button>
+              ))}
             </div>
-            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-1 text-[10px] text-text-muted">
-              <div className="bg-surface-alt border border-border rounded px-2 py-1" title="Keep review analysis local and pauseable from the toolbar.">Pause review</div>
-              <div className="bg-surface-alt border border-border rounded px-2 py-1" title="Stop background preview generation when the laptop feels busy.">Stop loading</div>
-              <div className="bg-surface-alt border border-border rounded px-2 py-1" title="Conservative burst/duplicate culling that never rejects protected, starred, or picked files.">Safe cull</div>
-              <div className="bg-surface-alt border border-border rounded px-2 py-1" title="Copy and paste manual EV offsets across a batch.">Copy EV</div>
-            </div>
-            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-1 text-[10px] text-text-muted">
-              <div className="bg-surface-alt border border-border rounded px-2 py-1">Arrow keys move</div>
-              <div className="bg-surface-alt border border-border rounded px-2 py-1">0-5 rate</div>
-              <div className="bg-surface-alt border border-border rounded px-2 py-1">Space original</div>
-              <div className="bg-surface-alt border border-border rounded px-2 py-1">[ ] exposure</div>
-            </div>
-          </section>
+          </div>
 
           {/* Appearance */}
+          {activeTopic === 'general' && (
           <section>
             <h3 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-2">Appearance</h3>
             <div className="flex gap-2">
@@ -542,8 +641,10 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
               ))}
             </div>
           </section>
+          )}
 
           {/* Import */}
+          {activeTopic === 'general' && (
           <section>
             <h3 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-2">Import</h3>
             <div className="space-y-2">
@@ -558,8 +659,10 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
               </label>
             </div>
           </section>
+          )}
 
           {/* License — compact */}
+          {activeTopic === 'account' && (
           <section>
             <h3 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-2">License</h3>
             {licenseStatus?.valid ? (
@@ -724,7 +827,10 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
               </div>
             )}
           </section>
+          )}
 
+          {activeTopic === 'general' && (
+          <>
           {/* Version / updates */}
           <section>
             <h3 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-2">Version</h3>
@@ -882,9 +988,11 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
               </div>
             )}
           </section>
+          </>
+          )}
 
           {/* Selection sets */}
-          {selectionSets.length > 0 && (
+          {activeTopic === 'editing' && selectionSets.length > 0 && (
             <section>
               <h3 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-2">Selection Sets</h3>
               <div className="space-y-1">
@@ -910,6 +1018,8 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
             </section>
           )}
 
+          {activeTopic === 'workflow' && (
+          <>
           {/* Backup */}
           <section>
             <h3 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-2">Backup Copy</h3>
@@ -1264,7 +1374,11 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
               </div>
             )}
           </section>
+          </>
+          )}
 
+          {activeTopic === 'editing' && (
+          <>
           {/* Exposure normalization */}
           <section>
             <h3 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-2">Exposure</h3>
@@ -1283,20 +1397,40 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
               </p>
             )}
             {normalizeExposure && saveFormat !== 'original' && (
-              <div className="mt-2 ml-5">
-                <div className="flex items-center justify-between mb-0.5">
-                  <span className="text-[10px] text-text-secondary">Max adjustment</span>
-                  <span className="text-[10px] text-text-secondary font-mono">±{exposureMaxStops.toFixed(2)} stops</span>
+              <div className="mt-2 ml-5 space-y-3">
+                <div>
+                  <div className="flex items-center justify-between mb-0.5">
+                    <span className="text-[10px] text-text-secondary">Max adjustment</span>
+                    <span className="text-[10px] text-text-secondary font-mono">±{exposureMaxStops.toFixed(2)} stops</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0.33}
+                    max={4}
+                    step={0.33}
+                    value={exposureMaxStops}
+                    onChange={(e) => handleMaxStops(Number(e.target.value))}
+                    className="w-full h-1 bg-surface-raised rounded appearance-none cursor-pointer accent-accent"
+                  />
                 </div>
-                <input
-                  type="range"
-                  min={0.33}
-                  max={4}
-                  step={0.33}
-                  value={exposureMaxStops}
-                  onChange={(e) => handleMaxStops(Number(e.target.value))}
-                  className="w-full h-1 bg-surface-raised rounded appearance-none cursor-pointer accent-accent"
-                />
+                <div>
+                  <div className="flex items-center justify-between mb-0.5">
+                    <span className="text-[10px] text-text-secondary">Manual EV step</span>
+                    <span className="text-[10px] text-text-secondary font-mono">{exposureAdjustmentStep.toFixed(2)} EV</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0.1}
+                    max={1}
+                    step={0.05}
+                    value={exposureAdjustmentStep}
+                    onChange={(e) => handleExposureAdjustmentStep(Number(e.target.value))}
+                    className="w-full h-1 bg-surface-raised rounded appearance-none cursor-pointer accent-accent"
+                  />
+                  <p className="mt-0.5 text-[10px] text-text-muted">
+                    Used by the `[` and `]` quick exposure nudges in the grid. Custom EV entry is still available.
+                  </p>
+                </div>
               </div>
             )}
           </section>
@@ -1345,6 +1479,102 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
           </section>
 
           <section>
+            <div className="flex items-center justify-between gap-3 mb-2">
+              <div>
+                <h3 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider">Shortcuts & Export</h3>
+                <p className="text-[10px] text-text-muted mt-1">Keep culling keys and import metadata reachable without scrolling to the bottom.</p>
+              </div>
+              <button
+                type="button"
+                onClick={handleResetKeybinds}
+                className="shrink-0 rounded border border-surface-border px-2 py-1 text-[10px] text-text-secondary transition-colors hover:border-text-secondary hover:text-text"
+              >
+                Reset keybinds
+              </button>
+            </div>
+            <div className="grid gap-3 xl:grid-cols-[1.4fr_1fr]">
+              <div className="rounded-xl border border-border bg-surface-alt/60 p-3">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <div>
+                    <h4 className="text-xs font-medium text-text">Keybinds</h4>
+                    <p className="text-[10px] text-text-muted">Select a key badge, then press the replacement key. `Esc` cancels.</p>
+                  </div>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {KEYBIND_ITEMS.map(({ action, label, hint }) => {
+                    const isRebinding = rebindingAction === action;
+                    const currentKey = keybinds[action] || DEFAULT_KEYBINDS[action];
+                    const displayKey =
+                      currentKey === 'ArrowRight' ? '→' :
+                      currentKey === 'ArrowLeft' ? '←' :
+                      currentKey === 'ArrowUp' ? '↑' :
+                      currentKey === 'ArrowDown' ? '↓' :
+                      currentKey === 'Tab' ? 'Tab' :
+                      currentKey === ' ' ? 'Space' :
+                      currentKey;
+
+                    return (
+                      <div key={action} className="flex items-center justify-between gap-2 rounded-lg border border-border bg-surface px-2.5 py-2">
+                        <div className="min-w-0">
+                          <div className="truncate text-[11px] font-medium text-text">{label}</div>
+                          <div className="truncate text-[10px] text-text-muted">{hint}</div>
+                        </div>
+                        {isRebinding ? (
+                          <button
+                            ref={rebindCaptureRef}
+                            type="button"
+                            onKeyDown={(e) => {
+                              if (e.key === 'Escape') {
+                                e.preventDefault();
+                                setRebindingAction(null);
+                                return;
+                              }
+                              handleKeyCapture(e, action);
+                            }}
+                            onBlur={() => setRebindingAction((current) => (current === action ? null : current))}
+                            className="min-w-[88px] rounded border border-accent bg-accent/15 px-2 py-1 text-center text-[10px] font-mono text-accent outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/40"
+                          >
+                            press key
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleStartRebind(action)}
+                            className="min-w-[72px] rounded border border-surface-border bg-surface-raised px-2 py-1 text-center text-[10px] font-mono text-text-secondary transition-colors hover:border-accent hover:text-accent"
+                          >
+                            {displayKey}
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-border bg-surface-alt/60 p-3">
+                <h4 className="text-xs font-medium text-text">Metadata written on import</h4>
+                <p className="mb-2 mt-1 text-[10px] text-text-muted">Choose which metadata fields are embedded into imported files.</p>
+                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
+                  {METADATA_EXPORT_ITEMS.map(({ flag, label, hint }) => (
+                    <label key={flag} className="flex items-start gap-2 rounded-lg border border-border bg-surface px-2.5 py-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={metadataExport[flag]}
+                        onChange={(e) => handleMetadataExport(flag, e.target.checked)}
+                        className="mt-0.5"
+                      />
+                      <span className="min-w-0">
+                        <span className="block text-[11px] font-medium text-text">{label}</span>
+                        <span className="block text-[10px] text-text-muted">{hint}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section>
             <h3 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-2">Watermark & Straighten</h3>
             <div className="space-y-2">
               <label className={`flex items-center gap-2 ${saveFormat === 'original' ? 'opacity-50' : 'cursor-pointer'}`}>
@@ -1363,7 +1593,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                   onChange={(e) => handleWorkflowBool('watermarkEnabled', e.target.checked)}
                   disabled={saveFormat === 'original'}
                 />
-                <span className="text-xs text-text">Add text watermark to converted outputs</span>
+                <span className="text-xs text-text">Add watermark overlay to converted outputs</span>
               </label>
               {saveFormat === 'original' && (
                 <p className="text-[10px] text-text-muted ml-5">
@@ -1372,26 +1602,54 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
               )}
               {watermarkEnabled && saveFormat !== 'original' && (
                 <div className="ml-5 space-y-2">
-                  <input
-                    value={watermarkText}
-                    onChange={(e) => handleMetadataString('watermarkText', e.target.value)}
-                    placeholder="Watermark text"
-                    className="w-full rounded border border-border bg-surface-raised px-2 py-1 text-xs text-text placeholder-text-muted focus:border-text focus:outline-none"
-                  />
-                  <div className="grid grid-cols-[1fr_auto] gap-2 items-center">
-                    <span className="text-[10px] text-text-secondary">Position</span>
-                    <select
-                      value={watermarkPosition}
-                      onChange={(e) => handleWatermarkPosition(e.target.value as typeof watermarkPosition)}
-                      className="rounded border border-border bg-surface-raised px-2 py-1 text-xs text-text focus:border-text focus:outline-none"
-                    >
-                      <option value="bottom-right">Bottom right</option>
-                      <option value="bottom-left">Bottom left</option>
-                      <option value="top-right">Top right</option>
-                      <option value="top-left">Top left</option>
-                      <option value="center">Center</option>
-                    </select>
+                  <div className="grid grid-cols-2 gap-1">
+                    {(['text', 'image'] as const).map((mode) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() => handleWatermarkMode(mode)}
+                        className={`rounded border px-2 py-1 text-xs transition-colors ${
+                          watermarkMode === mode
+                            ? 'border-accent bg-accent/10 text-text'
+                            : 'border-border bg-surface-raised text-text-secondary hover:text-text'
+                        }`}
+                      >
+                        {mode === 'text' ? 'Text watermark' : 'Image watermark'}
+                      </button>
+                    ))}
                   </div>
+                  {watermarkMode === 'text' ? (
+                    <input
+                      value={watermarkText}
+                      onChange={(e) => handleMetadataString('watermarkText', e.target.value)}
+                      placeholder="Watermark text"
+                      className="w-full rounded border border-border bg-surface-raised px-2 py-1 text-xs text-text placeholder-text-muted focus:border-text focus:outline-none"
+                    />
+                  ) : (
+                    <div className="space-y-2 rounded-lg border border-border bg-surface-alt px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={handleChooseWatermarkImage}
+                          className="flex-1 rounded bg-surface-raised px-2 py-1 text-left text-xs text-text-secondary transition-colors hover:bg-border"
+                        >
+                          {watermarkImagePath ? watermarkImagePath.split(/[/\\]/).pop() : 'Choose watermark image...'}
+                        </button>
+                        {watermarkImagePath && (
+                          <button
+                            type="button"
+                            onClick={() => handleWorkflowString('watermarkImagePath', '')}
+                            className="text-[10px] text-text-muted hover:text-text"
+                          >
+                            clear
+                          </button>
+                        )}
+                      </div>
+                      <p className="text-[10px] text-text-muted">
+                        PNG works best for logos with transparency.
+                      </p>
+                    </div>
+                  )}
                   <div>
                     <div className="flex items-center justify-between mb-0.5">
                       <span className="text-[10px] text-text-secondary">Opacity</span>
@@ -1406,6 +1664,46 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                       onChange={(e) => handleWatermarkNumber('watermarkOpacity', Number(e.target.value))}
                       className="w-full h-1 bg-surface-raised rounded appearance-none cursor-pointer accent-accent"
                     />
+                  </div>
+                  <div className="grid gap-2 md:grid-cols-2">
+                    {([
+                      ['landscape', 'Landscape frame', watermarkPositionLandscape],
+                      ['portrait', 'Portrait frame', watermarkPositionPortrait],
+                    ] as const).map(([orientation, label, value]) => (
+                      <div key={orientation} className="rounded-lg border border-border bg-surface-alt px-3 py-2">
+                        <div className="mb-2 flex items-center justify-between">
+                          <span className="text-[10px] text-text-secondary">{label}</span>
+                          <select
+                            value={value}
+                            onChange={(e) => handleWatermarkPosition(orientation, e.target.value as WatermarkPosition)}
+                            className="rounded border border-border bg-surface-raised px-2 py-1 text-[10px] text-text focus:border-text focus:outline-none"
+                          >
+                            <option value="bottom-right">Bottom right</option>
+                            <option value="bottom-left">Bottom left</option>
+                            <option value="top-right">Top right</option>
+                            <option value="top-left">Top left</option>
+                            <option value="center">Center</option>
+                          </select>
+                        </div>
+                        <div className={`relative overflow-hidden rounded-md border border-border bg-[radial-gradient(circle_at_top,_rgba(255,255,255,0.16),_transparent_40%),linear-gradient(135deg,_rgba(15,23,42,0.95),_rgba(51,65,85,0.85))] ${orientation === 'landscape' ? 'aspect-[16/10]' : 'mx-auto aspect-[4/5] max-w-[150px]'}`}>
+                          {watermarkMode === 'image' && watermarkPreviewUrl ? (
+                            <img
+                              src={watermarkPreviewUrl}
+                              alt="Watermark preview"
+                              className={`pointer-events-none absolute max-h-[30%] max-w-[34%] object-contain ${value === 'top-left' ? 'left-[8%] top-[8%]' : value === 'top-right' ? 'right-[8%] top-[8%]' : value === 'bottom-left' ? 'left-[8%] bottom-[8%]' : value === 'center' ? 'left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2' : 'right-[8%] bottom-[8%]'}`}
+                              style={{ opacity: watermarkOpacity }}
+                            />
+                          ) : (
+                            <div
+                              className={`pointer-events-none absolute rounded bg-white/90 px-2 py-1 text-[10px] font-semibold tracking-[0.2em] text-slate-900 shadow ${value === 'top-left' ? 'left-[8%] top-[8%]' : value === 'top-right' ? 'right-[8%] top-[8%]' : value === 'bottom-left' ? 'left-[8%] bottom-[8%]' : value === 'center' ? 'left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2' : 'right-[8%] bottom-[8%]'}`}
+                              style={{ opacity: watermarkOpacity }}
+                            >
+                              {watermarkPreviewLabel}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                   <div>
                     <div className="flex items-center justify-between mb-0.5">
@@ -1426,7 +1724,10 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
               )}
             </div>
           </section>
+          </>
+          )}
 
+          {activeTopic === 'workflow' && (
           <section>
             <h3 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-2">Performance</h3>
 
@@ -1557,6 +1858,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
               )}
             </div>
           </section>
+          )}
 
         </div>
       </div>

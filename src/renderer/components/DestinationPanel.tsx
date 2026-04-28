@@ -31,7 +31,7 @@ export function DestinationPanel() {
     destination, skipDuplicates, saveFormat, jpegQuality, folderPreset, customPattern,
     files, phase, importProgress, selectedSource, selectedPaths, queuedPaths,
     separateProtected, protectedFolderName, backupDestRoot, ftpDestEnabled, ftpDestConfig,
-    metadataKeywords, metadataTitle, metadataCaption, watermarkEnabled, watermarkText, autoStraighten,
+    metadataKeywords, metadataTitle, metadataCaption, watermarkEnabled, watermarkMode, watermarkText, watermarkImagePath, autoStraighten,
     licenseStatus,
   } = useAppState();
   const dispatch = useAppDispatch();
@@ -191,6 +191,10 @@ export function DestinationPanel() {
   const exposureEditCount = importFiles.filter((f) => f.normalizeToAnchor || f.exposureAdjustmentStops).length;
   const metadataCount = metadataKeywords.split(/[\n,;]+/).map((value) => value.trim()).filter(Boolean).length;
   const backupSameAsPrimary = !!backupDestRoot && !!destination && backupDestRoot === destination;
+  const hasRenderableWatermark = watermarkEnabled && (
+    (watermarkMode === 'image' && watermarkImagePath.trim()) ||
+    (watermarkMode !== 'image' && watermarkText.trim())
+  );
 
   // Free-space check on the destination. Re-runs when the destination or
   // the set of files-to-import changes so the warning reflects reality.
@@ -592,7 +596,7 @@ export function DestinationPanel() {
             {exposureEditCount > 0 && saveFormat === 'original' && (
               <div className="text-[10px] text-yellow-500">Exposure edits need JPEG/TIFF/HEIC output.</div>
             )}
-            {(watermarkEnabled || autoStraighten) && saveFormat === 'original' && (
+            {(hasRenderableWatermark || autoStraighten) && saveFormat === 'original' && (
               <div className="text-[10px] text-yellow-500">Watermark and auto-straighten need JPEG/TIFF/HEIC output.</div>
             )}
             {backupSameAsPrimary && (
@@ -624,7 +628,7 @@ export function DestinationPanel() {
             {(metadataCount > 0 || metadataTitle.trim() || metadataCaption.trim()) && (
               <span className="text-sky-300/80"> &middot; metadata</span>
             )}
-            {watermarkEnabled && watermarkText.trim() && saveFormat !== 'original' && (
+            {hasRenderableWatermark && saveFormat !== 'original' && (
               <span className="text-orange-300/80"> &middot; watermark</span>
             )}
             {autoStraighten && saveFormat !== 'original' && (

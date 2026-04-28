@@ -4533,95 +4533,180 @@ app.get('/checkout-success', (_req, res) => {
 // ---------------------------------------------------------------------------
 app.get('/manage-license', (_req, res) => {
   return res.send(htmlPage('Manage your license', `
-    <div class="panel" style="max-width:620px;margin:60px auto">
-      <div style="text-align:center;margin-bottom:32px">
-        <h1 style="margin-bottom:8px">Manage your license</h1>
-        <p class="muted">Enter your activation code to view details, extend validity, or add devices</p>
-      </div>
-      
-      <div style="background:var(--surface-raised);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:24px">
-        <label style="display:block;margin-bottom:8px;font-weight:500">Activation code</label>
-        <div style="display:flex;gap:8px">
-          <input id="activationCodeInput" type="text" placeholder="PI1-ABC123..." style="flex:1;padding:10px;border:1px solid var(--border);border-radius:6px;font-family:monospace;font-size:0.9rem" />
-          <button id="lookupBtn" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:10px 20px;font-weight:500;cursor:pointer">Lookup</button>
+    <style>
+      .ml-wrap { max-width: 560px; margin: 48px auto; }
+      .ml-section { margin-bottom: 20px; }
+      .ml-lookup { display: flex; gap: 8px; align-items: stretch; }
+      .ml-lookup input {
+        flex: 1;
+        font-family: ui-monospace, 'SF Mono', Consolas, monospace;
+        font-size: .92rem;
+        letter-spacing: .03em;
+        padding: 11px 14px;
+        background: rgba(6,14,18,.6);
+        border: 1px solid var(--border-strong);
+        border-radius: 14px;
+        color: var(--text);
+        transition: border-color .15s, box-shadow .15s;
+      }
+      .ml-lookup input:focus { outline: none; border-color: rgba(96,199,178,.65); box-shadow: 0 0 0 3px rgba(96,199,178,.1); }
+      .ml-lookup input::placeholder { color: var(--faint); letter-spacing: 0; }
+      .ml-lookup button {
+        padding: 11px 20px;
+        border-radius: 14px;
+        font-size: .88rem;
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
+      .ml-error {
+        display: none;
+        padding: 11px 14px;
+        border-radius: 14px;
+        background: var(--danger-soft);
+        border: 1px solid rgba(255,123,103,.22);
+        color: var(--danger);
+        font-size: .88rem;
+        margin-bottom: 16px;
+      }
+      .ml-error.show { display: block; }
+      .ml-spinner {
+        display: none;
+        text-align: center;
+        padding: 24px;
+        color: var(--muted);
+        font-size: .9rem;
+      }
+      .ml-spinner.show { display: block; }
+      .ml-details { display: none; }
+      .ml-details.show { display: block; }
+      .ml-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+        margin-bottom: 20px;
+      }
+      .ml-field {
+        padding: 14px 16px;
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        background: rgba(6,14,18,.38);
+      }
+      .ml-field-label {
+        font-size: .7rem;
+        font-weight: 760;
+        text-transform: uppercase;
+        letter-spacing: .14em;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+      .ml-field-value {
+        font-size: .96rem;
+        font-weight: 650;
+        line-height: 1.3;
+        overflow-wrap: anywhere;
+      }
+      .ml-field.span2 { grid-column: 1 / -1; }
+      .ml-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px; }
+      .ml-actions button { border-radius: 14px; padding: 12px 16px; font-size: .88rem; }
+      .ml-extend {
+        display: none;
+        padding: 20px;
+        border: 1px solid var(--border-strong);
+        border-radius: 20px;
+        background: rgba(13,24,31,.7);
+        margin-bottom: 16px;
+      }
+      .ml-extend.show { display: block; }
+      .ml-extend h3 { font-size: 1rem; font-weight: 700; margin: 0 0 16px; }
+      .ml-extend-row { display: grid; grid-template-columns: 2fr 3fr; gap: 10px; margin-bottom: 12px; }
+      .ml-price { font-size: .88rem; color: var(--muted); margin-bottom: 16px; }
+      .ml-extend-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+      .ml-extend-actions button { border-radius: 14px; padding: 11px 16px; font-size: .88rem; }
+      @media (max-width: 560px) {
+        .ml-grid, .ml-actions, .ml-extend-actions { grid-template-columns: 1fr; }
+        .ml-field.span2 { grid-column: auto; }
+      }
+    </style>
+
+    <div class="ml-wrap">
+      <h1 style="margin-bottom:8px">License</h1>
+      <p class="muted" style="margin-bottom:28px">Enter your activation code to view, extend, or add devices.</p>
+
+      <div class="ml-section">
+        <div class="ml-lookup">
+          <input id="activationCodeInput" type="text" placeholder="PI1-XXXXXXXX" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" />
+          <button id="lookupBtn">Look up</button>
         </div>
       </div>
-      
-      <div id="loadingMsg" style="display:none;text-align:center;padding:20px;color:var(--text-muted)">
-        <p>Loading license details...</p>
-      </div>
-      
-      <div id="errorMsg" style="display:none;background:rgba(255,107,107,0.1);border:1px solid rgba(255,107,107,0.3);border-radius:8px;padding:12px;color:#ff6b6b;margin-bottom:16px"></div>
-      
-      <div id="licenseDetails" style="display:none">
-        <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:20px">
-          <h3 style="margin-bottom:16px;margin-top:0">Current status</h3>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;font-size:0.9rem">
-            <div>
-              <p style="color:var(--text-muted);margin-bottom:4px;font-size:0.85rem">Customer</p>
-              <p style="font-weight:600" id="customerName">—</p>
-            </div>
-            <div>
-              <p style="color:var(--text-muted);margin-bottom:4px;font-size:0.85rem">Plan</p>
-              <p style="font-weight:600" id="planType">—</p>
-            </div>
-            <div>
-              <p style="color:var(--text-muted);margin-bottom:4px;font-size:0.85rem">Devices</p>
-              <p style="font-weight:600" id="maxDevices">—</p>
-            </div>
-            <div>
-              <p style="color:var(--text-muted);margin-bottom:4px;font-size:0.85rem">Status</p>
-              <p style="font-weight:600" id="statusText">—</p>
-            </div>
-            <div style="grid-column:1/-1">
-              <p style="color:var(--text-muted);margin-bottom:4px;font-size:0.85rem">Expiry date</p>
-              <p style="font-weight:600" id="expiryDate">—</p>
-            </div>
+
+      <div class="ml-error" id="errorMsg"></div>
+      <div class="ml-spinner" id="loadingMsg">Looking up license…</div>
+
+      <div class="ml-details" id="licenseDetails">
+        <div class="ml-grid">
+          <div class="ml-field">
+            <div class="ml-field-label">Name</div>
+            <div class="ml-field-value" id="customerName">—</div>
+          </div>
+          <div class="ml-field">
+            <div class="ml-field-label">Plan</div>
+            <div class="ml-field-value" id="planType">—</div>
+          </div>
+          <div class="ml-field">
+            <div class="ml-field-label">Devices</div>
+            <div class="ml-field-value" id="maxDevices">—</div>
+          </div>
+          <div class="ml-field">
+            <div class="ml-field-label">Status</div>
+            <div class="ml-field-value" id="statusText">—</div>
+          </div>
+          <div class="ml-field span2">
+            <div class="ml-field-label">Expiry</div>
+            <div class="ml-field-value" id="expiryDate">—</div>
           </div>
         </div>
-        
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-          <button id="extendBtn" style="background:rgba(76,175,80,0.1);border:1px solid rgba(76,175,80,0.5);color:#4caf50;border-radius:6px;padding:12px;font-weight:500;cursor:pointer;text-align:center">📅 Extend validity</button>
-          <button id="upgradeBtn" style="background:rgba(33,150,243,0.1);border:1px solid rgba(33,150,243,0.5);color:#2196f3;border-radius:6px;padding:12px;font-weight:500;cursor:pointer;text-align:center">🚀 Add devices</button>
+
+        <div class="ml-actions">
+          <button id="extendBtn" class="secondary">Extend validity</button>
+          <button id="upgradeBtn" class="secondary">Add devices</button>
         </div>
       </div>
-      
-      <div id="extendForm" style="display:none;background:var(--surface-raised);border:1px solid var(--border);border-radius:8px;padding:20px;margin-top:20px">
-        <h3 style="margin-top:0">Extend your license</h3>
-        <label style="display:block;margin-bottom:8px;font-weight:500">Add time to your license</label>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
-          <input id="extendAmount" type="number" min="1" value="1" style="padding:10px;border:1px solid var(--border);border-radius:6px" />
-          <select id="extendUnit" style="padding:10px;border:1px solid var(--border);border-radius:6px">
+
+      <div class="ml-extend" id="extendForm">
+        <h3>Extend validity</h3>
+        <div class="ml-extend-row">
+          <input id="extendAmount" type="number" min="1" value="1" />
+          <select id="extendUnit">
             <option value="days">Days</option>
             <option value="months">Months</option>
             <option value="years">Years</option>
           </select>
         </div>
-        <p id="extendPriceSummary" style="color:var(--text-muted);font-size:0.85rem;margin:0 0 16px">Loading pricing...</p>
-        <button id="confirmExtendBtn" style="width:100%;background:var(--accent);color:#fff;border:none;border-radius:6px;padding:10px;font-weight:500;cursor:pointer">Proceed to payment</button>
-        <button id="cancelExtendBtn" style="width:100%;background:transparent;color:var(--text-muted);border:1px solid var(--border);border-radius:6px;padding:10px;font-weight:500;cursor:pointer;margin-top:8px">Cancel</button>
+        <div class="ml-price" id="extendPriceSummary">Loading pricing…</div>
+        <div class="ml-extend-actions">
+          <button id="confirmExtendBtn">Pay and extend</button>
+          <button id="cancelExtendBtn" class="secondary">Cancel</button>
+        </div>
       </div>
     </div>
-    
+
     <script>
       let currentLicense = null;
       let pricingData = null;
-      const activationCodeInput = document.getElementById('activationCodeInput');
+      const codeInput = document.getElementById('activationCodeInput');
 
       function formatMoney(cents) {
         const currency = (pricingData && pricingData.currency) || 'AUD';
         return new Intl.NumberFormat('en-AU', {
-          style: 'currency',
-          currency,
-          minimumFractionDigits: 0,
-          maximumFractionDigits: 2,
+          style: 'currency', currency,
+          minimumFractionDigits: 0, maximumFractionDigits: 2,
         }).format((Number(cents) || 0) / 100);
       }
 
       function displayPlan(plan, expiresAt) {
-        if (plan === 'trial') return 'Trial';
-        if (plan === 'monthly') return 'Monthly';
-        if (plan === 'yearly') return 'Yearly';
+        if (plan === 'trial')    return 'Trial';
+        if (plan === 'monthly')  return 'Monthly';
+        if (plan === 'yearly')   return 'Yearly';
         if (plan === 'lifetime') return 'Lifetime';
         return expiresAt ? 'Timed' : 'Lifetime';
       }
@@ -4632,144 +4717,115 @@ app.get('/manage-license', (_req, res) => {
           if (!res.ok) return;
           pricingData = await res.json();
           updateExtendSummary();
-        } catch (err) {
-          console.error(err);
-        }
+        } catch (err) { console.error(err); }
       }
 
       function updateExtendSummary() {
-        const summary = document.getElementById('extendPriceSummary');
-        if (!summary) return;
+        const el = document.getElementById('extendPriceSummary');
+        if (!el) return;
         const amount = parseInt(document.getElementById('extendAmount').value, 10) || 1;
         const unit = document.getElementById('extendUnit').value;
-        const unitPrices = pricingData && pricingData.extensionPrices ? pricingData.extensionPrices : {};
-        const totalCents = (Number(unitPrices[unit]) || 0) * amount;
-        summary.textContent = totalCents > 0
-          ? 'Total: ' + formatMoney(totalCents)
-          : 'Pricing not configured yet';
+        const prices = (pricingData && pricingData.extensionPrices) ? pricingData.extensionPrices : {};
+        const totalCents = (Number(prices[unit]) || 0) * amount;
+        el.textContent = totalCents > 0 ? 'Total: ' + formatMoney(totalCents) : 'Pricing not configured';
       }
 
       async function lookupLicense() {
-        const code = activationCodeInput.value.trim();
-        if (!code) {
-          showError('Please enter an activation code');
-          return;
-        }
-        
+        const code = codeInput.value.trim();
+        if (!code) { showError('Enter an activation code first.'); return; }
         showLoading();
         try {
           const res = await fetch('/api/v1/license-info/' + encodeURIComponent(code));
           const data = await res.json();
-          
-          if (!res.ok) {
-            showError(data.error || 'License not found');
-            return;
-          }
-          
+          if (!res.ok) { showError(data.error || 'License not found.'); return; }
           currentLicense = data;
           showLicenseDetails();
-        } catch (err) {
-          showError('Error: ' + err.message);
-        }
+        } catch (err) { showError('Request failed: ' + err.message); }
       }
 
-      document.getElementById('lookupBtn').onclick = () => {
-        void lookupLicense();
-      };
-      
       function showLoading() {
-        document.getElementById('loadingMsg').style.display = 'block';
-        document.getElementById('errorMsg').style.display = 'none';
-        document.getElementById('licenseDetails').style.display = 'none';
-        document.getElementById('extendForm').style.display = 'none';
+        document.getElementById('loadingMsg').classList.add('show');
+        document.getElementById('errorMsg').classList.remove('show');
+        document.getElementById('licenseDetails').classList.remove('show');
+        document.getElementById('extendForm').classList.remove('show');
       }
-      
+
       function showError(msg) {
-        document.getElementById('loadingMsg').style.display = 'none';
-        const errorBox = document.getElementById('errorMsg');
-        errorBox.textContent = msg;
-        errorBox.style.display = 'block';
+        document.getElementById('loadingMsg').classList.remove('show');
+        const el = document.getElementById('errorMsg');
+        el.textContent = msg;
+        el.classList.add('show');
       }
-      
+
       function showLicenseDetails() {
-        document.getElementById('loadingMsg').style.display = 'none';
-        document.getElementById('errorMsg').style.display = 'none';
-        
+        document.getElementById('loadingMsg').classList.remove('show');
+        document.getElementById('errorMsg').classList.remove('show');
+
         document.getElementById('customerName').textContent = currentLicense.customerName || '—';
         document.getElementById('planType').textContent = displayPlan(currentLicense.plan, currentLicense.expiresAt);
-        document.getElementById('maxDevices').textContent = currentLicense.maxDevices || 1;
-        
-        const isLifetime = !currentLicense.expiresAt;
-        document.getElementById('statusText').textContent = isLifetime ? 'Lifetime' : 'Active';
-        
+        document.getElementById('maxDevices').textContent = (currentLicense.maxDevices || 1) + ' device' + (currentLicense.maxDevices === 1 ? '' : 's');
+        document.getElementById('statusText').textContent = currentLicense.expiresAt ? 'Active' : 'Lifetime';
+
         if (currentLicense.expiresAt) {
-          const date = new Date(currentLicense.expiresAt);
-          document.getElementById('expiryDate').textContent = date.toLocaleDateString('en-AU', {year: 'numeric', month: 'short', day: 'numeric'});
+          document.getElementById('expiryDate').textContent = new Date(currentLicense.expiresAt).toLocaleDateString('en-AU', { year: 'numeric', month: 'short', day: 'numeric' });
+          document.getElementById('extendBtn').style.display = '';
         } else {
-          document.getElementById('expiryDate').textContent = 'Never expires';
+          document.getElementById('expiryDate').textContent = 'Does not expire';
+          document.getElementById('extendBtn').style.display = 'none';
         }
-        
-        document.getElementById('licenseDetails').style.display = 'block';
+
+        document.getElementById('licenseDetails').classList.add('show');
       }
-      
+
+      document.getElementById('lookupBtn').onclick = () => void lookupLicense();
+      codeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') void lookupLicense(); });
+
       document.getElementById('extendBtn').onclick = () => {
-        document.getElementById('licenseDetails').style.display = 'none';
-        document.getElementById('extendForm').style.display = 'block';
+        document.getElementById('extendForm').classList.add('show');
+        document.getElementById('licenseDetails').classList.remove('show');
         updateExtendSummary();
       };
-      
+
       document.getElementById('cancelExtendBtn').onclick = () => {
-        document.getElementById('extendForm').style.display = 'none';
-        document.getElementById('licenseDetails').style.display = 'block';
+        document.getElementById('extendForm').classList.remove('show');
+        if (currentLicense) document.getElementById('licenseDetails').classList.add('show');
       };
 
       document.getElementById('extendAmount').oninput = updateExtendSummary;
       document.getElementById('extendUnit').onchange = updateExtendSummary;
-      
+
       document.getElementById('confirmExtendBtn').onclick = async () => {
-        const amount = parseInt(document.getElementById('extendAmount').value);
+        if (!currentLicense) return;
+        const amount = parseInt(document.getElementById('extendAmount').value, 10);
         const unit = document.getElementById('extendUnit').value;
-        
-        if (!amount || amount < 1) {
-          alert('Please enter a valid amount');
-          return;
-        }
-        
-        showLoading();
+        if (!amount || amount < 1) { showError('Enter a valid duration.'); return; }
+        const btn = document.getElementById('confirmExtendBtn');
+        btn.disabled = true;
+        btn.textContent = 'Processing…';
         try {
           const res = await fetch('/api/v1/extend-license', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              activationCode: currentLicense.activationCode,
-              amount,
-              unit
-            })
+            body: JSON.stringify({ activationCode: currentLicense.activationCode, amount, unit }),
           });
-          
           const data = await res.json();
-          if (!res.ok) {
-            showError(data.error || 'Failed to create extension');
-            return;
-          }
-          
-          // Redirect to Stripe checkout
+          if (!res.ok) { showError(data.error || 'Could not create extension.'); return; }
           window.location.href = data.url;
         } catch (err) {
-          showError('Error: ' + err.message);
+          showError('Request failed: ' + err.message);
+          btn.disabled = false;
+          btn.textContent = 'Pay and extend';
         }
       };
-      
+
       document.getElementById('upgradeBtn').onclick = () => {
+        if (!currentLicense) return;
         window.location.href = '/upgrade-license?code=' + encodeURIComponent(currentLicense.activationCode);
       };
 
       const params = new URLSearchParams(window.location.search);
       const initialCode = params.get('code');
-      if (initialCode) {
-        activationCodeInput.value = initialCode;
-        void lookupLicense();
-      }
+      if (initialCode) { codeInput.value = initialCode; void lookupLicense(); }
 
       void loadPricing();
     </script>

@@ -13,7 +13,8 @@ export function useImport() {
     verifyChecksums,
     normalizeExposure, exposureAnchorPath, exposureMaxStops,
     metadataKeywords, metadataTitle, metadataCaption, metadataCreator, metadataCopyright,
-    watermarkEnabled, watermarkText, watermarkOpacity, watermarkPosition, watermarkScale, autoStraighten,
+    metadataExport,
+    watermarkEnabled, watermarkMode, watermarkText, watermarkImagePath, watermarkOpacity, watermarkPositionLandscape, watermarkPositionPortrait, watermarkScale, autoStraighten,
     licenseStatus,
   } = useAppState();
   const dispatch = useAppDispatch();
@@ -57,6 +58,8 @@ export function useImport() {
       //       (skip rejects + skip duplicates if enabled).
     }
 
+    const importPathSet = pathsToImport ? new Set(pathsToImport) : null;
+
     // Exposure normalization only makes sense when we're transcoding — with
     // `original` we'd just copy bytes unchanged. The main process also
     // gates on this, but surfacing it here keeps the IPC payload small
@@ -69,11 +72,13 @@ export function useImport() {
     // the global normalizeExposure toggle, as long as the anchor EV is known
     // and the save format is transcoding.
     const normalizeAnchorPaths = typeof exposureAnchorEV === 'number' && saveFormat !== 'original'
-      ? files.filter((f) => f.normalizeToAnchor).map((f) => f.path)
+      ? files
+          .filter((f) => (!importPathSet || importPathSet.has(f.path)) && f.normalizeToAnchor)
+          .map((f) => f.path)
       : [];
     const exposureAdjustments = saveFormat !== 'original'
       ? Object.fromEntries(files
-          .filter((f) => typeof f.exposureAdjustmentStops === 'number' && Math.abs(f.exposureAdjustmentStops) >= 0.01)
+          .filter((f) => (!importPathSet || importPathSet.has(f.path)) && typeof f.exposureAdjustmentStops === 'number' && Math.abs(f.exposureAdjustmentStops) >= 0.01)
           .map((f) => [f.path, f.exposureAdjustmentStops as number]))
       : {};
     const metadataKeywordList = metadataKeywords
@@ -103,21 +108,28 @@ export function useImport() {
         exposureMaxStops,
         normalizeAnchorPaths: normalizeAnchorPaths.length > 0 ? normalizeAnchorPaths : undefined,
         exposureAdjustments: Object.keys(exposureAdjustments).length > 0 ? exposureAdjustments : undefined,
+        metadataExportFlags: metadataExport,
         metadata: metadataKeywordList.length > 0 || metadataTitle.trim() || metadataCaption.trim() || metadataCreator.trim() || metadataCopyright.trim()
           ? {
-              keywords: metadataKeywordList.length > 0 ? metadataKeywordList : undefined,
-              title: metadataTitle.trim() || undefined,
-              caption: metadataCaption.trim() || undefined,
-              creator: metadataCreator.trim() || undefined,
-              copyright: metadataCopyright.trim() || undefined,
+              keywords: metadataExport.keywords !== false && metadataKeywordList.length > 0 ? metadataKeywordList : undefined,
+              title: metadataExport.title !== false ? (metadataTitle.trim() || undefined) : undefined,
+              caption: metadataExport.caption !== false ? (metadataCaption.trim() || undefined) : undefined,
+              creator: metadataExport.creator !== false ? (metadataCreator.trim() || undefined) : undefined,
+              copyright: metadataExport.copyright !== false ? (metadataCopyright.trim() || undefined) : undefined,
             }
           : undefined,
-        watermark: watermarkEnabled && watermarkText.trim()
+        watermark: watermarkEnabled && (
+          (watermarkMode === 'text' && watermarkText.trim()) ||
+          (watermarkMode === 'image' && watermarkImagePath.trim())
+        )
           ? {
               enabled: true,
-              text: watermarkText.trim(),
+              mode: watermarkMode,
+              text: watermarkMode === 'text' ? watermarkText.trim() : undefined,
+              imagePath: watermarkMode === 'image' ? (watermarkImagePath.trim() || undefined) : undefined,
               opacity: watermarkOpacity,
-              position: watermarkPosition,
+              positionLandscape: watermarkPositionLandscape,
+              positionPortrait: watermarkPositionPortrait,
               scale: watermarkScale,
             }
           : undefined,
@@ -156,8 +168,8 @@ export function useImport() {
     ftpDestEnabled, ftpDestConfig,
     autoEject, playSoundOnComplete, completeSoundPath, openFolderOnComplete, verifyChecksums,
     normalizeExposure, exposureAnchorPath, exposureMaxStops,
-    metadataKeywords, metadataTitle, metadataCaption, metadataCreator, metadataCopyright,
-    watermarkEnabled, watermarkText, watermarkOpacity, watermarkPosition, watermarkScale, autoStraighten,
+    metadataKeywords, metadataTitle, metadataCaption, metadataCreator, metadataCopyright, metadataExport,
+    watermarkEnabled, watermarkMode, watermarkText, watermarkImagePath, watermarkOpacity, watermarkPositionLandscape, watermarkPositionPortrait, watermarkScale, autoStraighten,
     licenseStatus,
   ]);
 

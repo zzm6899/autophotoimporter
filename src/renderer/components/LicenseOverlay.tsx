@@ -34,17 +34,22 @@ export function LicenseOverlay() {
   if (!licenseHydrated || licenseStatus?.valid || !licensePromptOpen) return null;
 
   const activate = async () => {
+    const trimmed = licenseInput.trim();
+    if (!trimmed) return;
     setBusy(true);
+    setFeedback(null);
     try {
-      const status = await window.electronAPI.activateLicense(licenseInput);
+      const status = await window.electronAPI.activateLicense(trimmed);
       if (status.valid) {
         dispatch({ type: 'SET_LICENSE_STATUS', status });
         setFeedback(null);
         dispatch({ type: 'CLOSE_LICENSE_PROMPT' });
       } else {
         dispatch({ type: 'SET_LICENSE_STATUS', status });
-        setFeedback(status.message);
+        setFeedback(status.message ?? 'Activation failed — check your code and try again.');
       }
+    } catch {
+      setFeedback('Could not reach the activation server. Check your internet connection.');
     } finally {
       setBusy(false);
     }
@@ -97,20 +102,28 @@ export function LicenseOverlay() {
               Each activated machine uses one device seat. Seat counts are managed in the hosted admin panel, and this app checks the current machine automatically after activation.
             </div>
           </div>
-          <textarea
-            rows={4}
+          <input
+            type="text"
             value={licenseInput}
             onChange={(e) => setLicenseInput(e.target.value)}
-            placeholder="Paste your license key or activation code"
-            className="w-full resize-y rounded border border-border bg-surface-raised px-3 py-2 font-mono text-xs text-text placeholder-text-muted focus:border-text focus:outline-none"
+            onKeyDown={(e) => { if (e.key === 'Enter') void activate(); }}
+            placeholder="Paste your activation code (e.g. PI1-ABC123…)"
+            spellCheck={false}
+            autoComplete="off"
+            className="w-full rounded border border-border bg-surface-raised px-3 py-2.5 font-mono text-xs text-text placeholder-text-muted focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
           />
+          {feedback && (
+            <div className="rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+              {feedback}
+            </div>
+          )}
           <div className="flex items-center gap-2">
             <button
               onClick={activate}
               disabled={busy || !licenseInput.trim()}
               className="rounded bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {busy ? 'Checking...' : 'Activate License'}
+              {busy ? 'Checking…' : 'Activate'}
             </button>
             <button
               onClick={() => dispatch({ type: 'CLOSE_LICENSE_PROMPT' })}
@@ -119,9 +132,6 @@ export function LicenseOverlay() {
             >
               Continue Without License
             </button>
-            {(feedback || licenseStatus?.message) && (
-              <span className="text-xs text-text-muted">{feedback || licenseStatus?.message}</span>
-            )}
           </div>
           {licenseStatus?.entitlement && (
             <div className="grid grid-cols-2 gap-2 text-[11px]">

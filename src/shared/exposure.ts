@@ -95,10 +95,37 @@ export function stopsToSafeMultiplier(stops: number): number {
   const direction = stops >= 0 ? 1 : -1;
   const magnitude = Math.abs(stops);
   const compressedStops = direction > 0
-    ? magnitude / (1 + magnitude * 1.18)
-    : magnitude / (1 + magnitude * 0.52);
+    ? magnitude / (1 + magnitude * 1.65)
+    : magnitude / (1 + magnitude * 0.7);
   const multiplier = Math.pow(2, compressedStops * direction);
-  return Math.max(0.5, Math.min(1.64, multiplier));
+  return Math.max(0.56, Math.min(1.48, multiplier));
+}
+
+export function getRenderedExposureProfile(stops: number): {
+  brightness: number;
+  contrast: number;
+  saturation: number;
+  gamma: number;
+} {
+  if (!Number.isFinite(stops) || Math.abs(stops) < 0.001) {
+    return { brightness: 1, contrast: 1, saturation: 1, gamma: 1 };
+  }
+  const magnitude = Math.min(Math.abs(stops), 4);
+  const brightness = stopsToSafeMultiplier(stops);
+  if (stops > 0) {
+    return {
+      brightness,
+      contrast: 1 + Math.min(0.16, magnitude * 0.042),
+      saturation: 1 + Math.min(0.07, magnitude * 0.018),
+      gamma: Math.max(0.88, 1 - magnitude * 0.032),
+    };
+  }
+  return {
+    brightness,
+    contrast: 1 + Math.min(0.12, magnitude * 0.03),
+    saturation: 1 + Math.min(0.06, magnitude * 0.016),
+    gamma: Math.min(1.12, 1 + magnitude * 0.028),
+  };
 }
 
 /**
@@ -109,15 +136,8 @@ export function stopsToSafeMultiplier(stops: number): number {
 export function buildPreviewExposureFilter(stops: number): string | undefined {
   const normalized = normalizeExposureStops(stops, 0.01);
   if (normalized === 0) return undefined;
-  const magnitude = Math.min(Math.abs(normalized), 4);
-  const brightness = stopsToSafeMultiplier(normalized);
-  const contrast = normalized > 0
-    ? 1 + Math.min(0.08, magnitude * 0.024)
-    : 1 + Math.min(0.07, magnitude * 0.022);
-  const saturate = normalized > 0
-    ? 1 + Math.min(0.04, magnitude * 0.012)
-    : 1 + Math.min(0.04, magnitude * 0.014);
-  return `brightness(${brightness.toFixed(3)}) contrast(${contrast.toFixed(3)}) saturate(${saturate.toFixed(3)})`;
+  const { brightness, contrast, saturation, gamma } = getRenderedExposureProfile(normalized);
+  return `brightness(${brightness.toFixed(3)}) contrast(${contrast.toFixed(3)}) saturate(${saturation.toFixed(3)})`;
 }
 
 /**

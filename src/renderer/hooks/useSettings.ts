@@ -26,9 +26,7 @@ export function useSettings() {
         dispatch({ type: 'SET_THEME', theme: settings.theme });
       }
 
-      // Workflow — hydrate from persisted settings. Wrap each in a safe
-      // "if defined" check so an older settings.json (pre-workflow) doesn't
-      // stomp sane defaults with `undefined`.
+      // Workflow
       if (typeof settings.separateProtected === 'boolean') {
         dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'separateProtected', value: settings.separateProtected });
       }
@@ -83,6 +81,9 @@ export function useSettings() {
       if (typeof settings.exposureMaxStops === 'number') {
         dispatch({ type: 'SET_EXPOSURE_MAX_STOPS', stops: settings.exposureMaxStops });
       }
+      if (typeof settings.exposureAdjustmentStep === 'number') {
+        dispatch({ type: 'SET_EXPOSURE_ADJUSTMENT_STEP', step: settings.exposureAdjustmentStep });
+      }
       if (typeof settings.metadataKeywords === 'string') {
         dispatch({ type: 'SET_WORKFLOW_STRING', key: 'metadataKeywords', value: settings.metadataKeywords });
       }
@@ -101,8 +102,14 @@ export function useSettings() {
       if (typeof settings.watermarkEnabled === 'boolean') {
         dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'watermarkEnabled', value: settings.watermarkEnabled });
       }
+      if (settings.watermarkMode) {
+        dispatch({ type: 'SET_WATERMARK_MODE', mode: settings.watermarkMode });
+      }
       if (typeof settings.watermarkText === 'string') {
         dispatch({ type: 'SET_WORKFLOW_STRING', key: 'watermarkText', value: settings.watermarkText });
+      }
+      if (typeof settings.watermarkImagePath === 'string') {
+        dispatch({ type: 'SET_WORKFLOW_STRING', key: 'watermarkImagePath', value: settings.watermarkImagePath });
       }
       if (typeof settings.watermarkOpacity === 'number') {
         dispatch({ type: 'SET_WATERMARK_NUMBER', key: 'watermarkOpacity', value: settings.watermarkOpacity });
@@ -110,8 +117,11 @@ export function useSettings() {
       if (typeof settings.watermarkScale === 'number') {
         dispatch({ type: 'SET_WATERMARK_NUMBER', key: 'watermarkScale', value: settings.watermarkScale });
       }
-      if (settings.watermarkPosition) {
-        dispatch({ type: 'SET_WATERMARK_POSITION', position: settings.watermarkPosition });
+      if (settings.watermarkPositionLandscape) {
+        dispatch({ type: 'SET_WATERMARK_POSITION', orientation: 'landscape', position: settings.watermarkPositionLandscape });
+      }
+      if (settings.watermarkPositionPortrait) {
+        dispatch({ type: 'SET_WATERMARK_POSITION', orientation: 'portrait', position: settings.watermarkPositionPortrait });
       }
       if (typeof settings.autoStraighten === 'boolean') {
         dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'autoStraighten', value: settings.autoStraighten });
@@ -147,6 +157,15 @@ export function useSettings() {
       }
       if (typeof settings.faceConcurrency === 'number' && settings.faceConcurrency > 0) {
         dispatch({ type: 'SET_FACE_CONCURRENCY', concurrency: settings.faceConcurrency });
+      }
+
+      // Keybinds
+      if (settings.keybinds && typeof settings.keybinds === 'object') {
+        dispatch({ type: 'SET_KEYBINDS', keybinds: settings.keybinds });
+      }
+      // Metadata export flags
+      if (settings.metadataExport && typeof settings.metadataExport === 'object') {
+        dispatch({ type: 'SET_METADATA_EXPORT', flags: settings.metadataExport });
       }
 
       dispatch({ type: 'HYDRATE_LICENSE_STATUS', status: settings.licenseStatus ?? null });

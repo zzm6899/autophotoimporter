@@ -40,13 +40,20 @@ function buildImportMetadata(settings: AppSettings): ImportConfig['metadata'] {
 }
 
 function buildWatermarkConfig(settings: AppSettings): ImportConfig['watermark'] {
+  const mode = settings.watermarkMode ?? 'text';
   const text = settings.watermarkText?.trim();
-  if (!settings.watermarkEnabled || !text) return undefined;
+  const imagePath = settings.watermarkImagePath?.trim();
+  if (!settings.watermarkEnabled) return undefined;
+  if (mode === 'image' && !imagePath) return undefined;
+  if (mode === 'text' && !text) return undefined;
   return {
     enabled: true,
-    text,
+    mode,
+    text: mode === 'text' ? text : undefined,
+    imagePath: mode === 'image' ? imagePath : undefined,
     opacity: settings.watermarkOpacity ?? 0.3,
-    position: settings.watermarkPosition ?? 'bottom-right',
+    positionLandscape: settings.watermarkPositionLandscape ?? 'bottom-right',
+    positionPortrait: settings.watermarkPositionPortrait ?? settings.watermarkPositionLandscape ?? 'bottom-right',
     scale: settings.watermarkScale ?? 0.045,
   };
 }
@@ -124,15 +131,19 @@ const DEFAULT_SETTINGS: AppSettings = {
   burstWindowSec: 2,
   normalizeExposure: false,
   exposureMaxStops: 2,
+  exposureAdjustmentStep: 0.33,
   metadataKeywords: '',
   metadataTitle: '',
   metadataCaption: '',
   metadataCreator: '',
   metadataCopyright: '',
   watermarkEnabled: false,
+  watermarkMode: 'text',
   watermarkText: '',
+  watermarkImagePath: '',
   watermarkOpacity: 0.3,
-  watermarkPosition: 'bottom-right',
+  watermarkPositionLandscape: 'bottom-right',
+  watermarkPositionPortrait: 'bottom-right',
   watermarkScale: 0.045,
   autoStraighten: true,
   // Performance optimizations
@@ -415,6 +426,7 @@ async function runAutomatedFtpSync(trigger: 'manual' | 'launch' | 'interval'): P
       normalizeExposure: settings.normalizeExposure,
       exposureMaxStops: settings.exposureMaxStops,
       metadata: buildImportMetadata(settings),
+      metadataExportFlags: settings.metadataExport,
       watermark: buildWatermarkConfig(settings),
       autoStraighten: settings.autoStraighten,
     };
@@ -1537,6 +1549,7 @@ async function runAutoImport(volume: Volume): Promise<void> {
       autoEject: settings.autoEject,
       verifyChecksums: settings.verifyChecksums,
       metadata: buildImportMetadata(settings),
+      metadataExportFlags: settings.metadataExport,
       watermark: buildWatermarkConfig(settings),
       autoStraighten: settings.autoStraighten,
     };
