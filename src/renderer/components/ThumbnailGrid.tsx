@@ -1,9 +1,10 @@
 import { useMemo, useEffect, useCallback, useRef, useState } from 'react';
 // Main grid / single / split view orchestrator.
 import { useAppState, useAppDispatch, useMergedFiles } from '../context/ImportContext';
+import type { FilterMode } from '../context/ImportContext';
 import { useFileScanner } from '../hooks/useFileScanner';
 import { useImport } from '../hooks/useImport';
-import type { MediaFile } from '../../shared/types';
+import type { MediaFile, WhiteBalanceAdjustment } from '../../shared/types';
 import { ThumbnailCard } from './ThumbnailCard';
 import { SingleView } from './SingleView';
 import { CompareView } from './CompareView';
@@ -26,6 +27,7 @@ type ExposureClipboard = {
   manualStops: number;
   normalizeToAnchor: boolean;
   anchorPath: string | null;
+  whiteBalanceAdjustment?: WhiteBalanceAdjustment;
 };
 
 /**
@@ -544,7 +546,7 @@ async function visualHash(src: string): Promise<string> {
 }
 
 export function ThumbnailGrid() {
-  const { phase, selectedSource, scanError, focusedIndex, viewMode, showLeftPanel, showRightPanel, filter, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, exposureAdjustmentStep, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused, fastKeeperMode, faceConcurrency, gpuFaceAcceleration, keybinds, metadataKeywords } = useAppState();
+  const { phase, selectedSource, scanError, focusedIndex, viewMode, showLeftPanel, showRightPanel, filter, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, exposureAdjustmentStep, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused, fastKeeperMode, faceConcurrency, gpuFaceAcceleration, keybinds, metadataKeywords, whiteBalanceTemperature, whiteBalanceTint } = useAppState();
   // useMergedFiles() overlays face/review scores without re-running the full
   // reducer map — O(n) only when scores.size > 0, otherwise returns the same array.
   const files = useMergedFiles();
@@ -572,12 +574,15 @@ export function ThumbnailGrid() {
   const [tagInput, setTagInput] = useState('');
   const [sessionTags, setSessionTags] = useState<string[]>([]);
   const [showTagSuggestions, setShowTagSuggestions] = useState(false);
+  const [faceProviderSummary, setFaceProviderSummary] = useState<string>('Face engine warming');
+  const [showAiReviewStrip, setShowAiReviewStrip] = useState(true);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const toolbarDragState = useRef<{ startMouseX: number; startMouseY: number; startLeft: number; startTop: number } | null>(null);
   const lastClickedPathRef = useRef<string | null>(null);
   const lastExposureTapRef = useRef(0);
   const sharpnessInFlightRef = useRef(false);
   const reviewBatchCounterRef = useRef(0);
+  const reviewGenerationRef = useRef(0);
   // Stable refs so the review loop effect doesn't need files/sortedFiles as deps.
   // Without these, every SET_REVIEW_SCORES dispatch (one per analyzed image) triggers
   // a new files reference → effect cleanup + re-run mid-flight → concurrent ONNX batches
@@ -598,6 +603,11 @@ export function ThumbnailGrid() {
     [files],
   );
   const reviewWaitingForThumbnails = totalPhotoCount > 0 && readyThumbnailCount === 0;
+  const aiAnalyzedCount = useMemo(
+    () => files.filter((f) => f.type === 'photo' && (typeof f.sharpnessScore === 'number' || f.faceBoxes !== undefined || f.faceEmbedding)).length,
+    [files],
+  );
+  const aiPendingCount = Math.max(0, totalPhotoCount - aiAnalyzedCount);
 
   const setsEqual = useCallback((a: Set<number>, b: Set<number>) => {
     if (a.size !== b.size) return false;
@@ -624,7 +634,7 @@ export function ThumbnailGrid() {
       if (query) {
         const haystack = [
           f.name, f.path, f.extension, f.cameraMake, f.cameraModel, f.lensModel,
-          f.dateTaken?.slice(0, 10),
+          f.dateTaken?.slice(0, 10), f.sceneBucket, f.locationName,
         ].filter(Boolean).join(' ').toLowerCase();
         if (!haystack.includes(query)) return false;
       }
@@ -632,6 +642,8 @@ export function ThumbnailGrid() {
       if (filter.startsWith('lens:')) return (f.lensModel || 'Unknown lens') === decodeURIComponent(filter.slice(5));
       if (filter.startsWith('date:')) return (f.dateTaken ? f.dateTaken.slice(0, 10) : 'Undated') === decodeURIComponent(filter.slice(5));
       if (filter.startsWith('ext:')) return f.extension.toLowerCase() === decodeURIComponent(filter.slice(4));
+      if (filter.startsWith('scene:')) return (f.sceneBucket || 'Scene') === decodeURIComponent(filter.slice(6));
+      if (filter.startsWith('burst:')) return f.burstId === decodeURIComponent(filter.slice(6));
       switch (filter) {
         case 'protected': return f.isProtected;
         case 'picked': return f.pick === 'selected';
@@ -645,7 +657,7 @@ export function ThumbnailGrid() {
         case 'face-groups': return !!f.faceGroupId;
         case 'blur-risk': return f.blurRisk === 'high' || f.blurRisk === 'medium';
         case 'near-duplicates': return !!f.visualGroupId;
-        case 'review-needed': return !f.reviewScore || f.blurRisk === 'high' || !!f.visualGroupId || !f.pick;
+        case 'review-needed': return !f.reviewScore || f.blurRisk === 'high' || (f.pick === 'selected' && (f.reviewScore ?? 0) < 58) || (!!f.visualGroupId && !f.pick) || !f.pick;
         case 'needs-exposure': return typeof f.exposureValue === 'number' && !!exposureAnchorPath && !f.normalizeToAnchor;
         case 'normalized': return !!f.normalizeToAnchor;
         case 'adjusted': return typeof f.exposureAdjustmentStops === 'number' && Math.abs(f.exposureAdjustmentStops) >= 0.01;
@@ -696,17 +708,20 @@ export function ThumbnailGrid() {
     const lenses = new Set<string>();
     const dates = new Set<string>();
     const exts = new Set<string>();
+    const scenes = new Set<string>();
     for (const f of files) {
       cameras.add(f.cameraModel || 'Unknown camera');
       if (f.type === 'photo') lenses.add(f.lensModel || 'Unknown lens');
       dates.add(f.dateTaken ? f.dateTaken.slice(0, 10) : 'Undated');
       exts.add(f.extension.toLowerCase());
+      if (f.sceneBucket) scenes.add(f.sceneBucket);
     }
     return {
       cameras: [...cameras].sort(),
       lenses: [...lenses].sort(),
       dates: [...dates].sort().reverse(),
       exts: [...exts].sort(),
+      scenes: [...scenes].sort(),
     };
   }, [files]);
 
@@ -726,10 +741,14 @@ export function ThumbnailGrid() {
   // the user clicks again before React has flushed effects from the last click.
   const selectedPathsRef = useRef(selectedPaths);
   const selectedPathSetRef = useRef(new Set(selectedPaths));
+  const queuedPathSetRef = useRef(new Set(queuedPaths));
   useEffect(() => {
     selectedPathsRef.current = selectedPaths;
     selectedPathSetRef.current = new Set(selectedPaths);
   }, [selectedPaths]);
+  useEffect(() => {
+    queuedPathSetRef.current = new Set(queuedPaths);
+  }, [queuedPaths]);
 
   const normalizeSelectedPaths = useCallback((paths: string[]) => {
     const seen = new Set<string>();
@@ -780,6 +799,30 @@ export function ThumbnailGrid() {
   useEffect(() => { fastKeeperModeRef.current = fastKeeperMode; }, [fastKeeperMode]);
   useEffect(() => { faceConcurrencyRef.current = faceConcurrency; }, [faceConcurrency]);
   useEffect(() => { gpuFaceAccelerationRef.current = gpuFaceAcceleration; }, [gpuFaceAcceleration]);
+  useEffect(() => {
+    reviewGenerationRef.current++;
+    sharpnessInFlightRef.current = false;
+  }, [selectedSource]);
+  useEffect(() => {
+    let cancelled = false;
+    const update = async () => {
+      try {
+        const info = await window.electronAPI.getExecutionProvider?.();
+        if (cancelled || !info) return;
+        if (info.models?.length) {
+          setFaceProviderSummary(info.models.map((m) => `${m.model}:${m.provider}`).join(' · '));
+        } else if (info.ep) {
+          setFaceProviderSummary(info.ep);
+        }
+      } catch { /* ignore */ }
+    };
+    void update();
+    const timer = window.setInterval(update, 6000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   // Also kick the review loop when new thumbnails arrive (so it picks up files
   // that were waiting on thumbnails) — but throttled to avoid per-thumbnail spam.
@@ -816,12 +859,15 @@ export function ThumbnailGrid() {
     const currentFastKeeperMode = fastKeeperModeRef.current;
     const currentFaceConcurrency = faceConcurrencyRef.current;
     const currentGpuAccel = gpuFaceAccelerationRef.current;
+    const selectedPathSet = selectedPathSetRef.current;
+    const queuedPathSet = queuedPathSetRef.current;
+    const reviewGeneration = reviewGenerationRef.current;
     // With the streaming per-file IPC approach, batchSize controls how many
     // files are queued into the main-process semaphore at once. Larger = more
     // pipelining (canvas work overlaps with ONNX), but also more memory for
     // in-flight canvas ImageData. 16 is a good balance: keeps ONNX busy across
     // the ~50–200ms round-trip without overwhelming the renderer.
-    const batchSize = currentFastKeeperMode ? 8 : Math.max(16, currentFaceConcurrency * 16);
+    const batchSize = currentFastKeeperMode ? 8 : Math.min(96, Math.max(16, currentFaceConcurrency * 4));
     const focusedPath = focusedIndex >= 0 && focusedIndex < currentSortedFiles.length ? currentSortedFiles[focusedIndex].path : null;
     const visibleRank = new Map<string, number>();
     currentSortedFiles.slice(0, 240).forEach((f, index) => visibleRank.set(f.path, index));
@@ -836,11 +882,17 @@ export function ThumbnailGrid() {
       .sort((a, b) => {
         const af = focusedPath && a.path === focusedPath ? -1000 : 0;
         const bf = focusedPath && b.path === focusedPath ? -1000 : 0;
+        const aq = queuedPathSet.has(a.path) ? -800 : 0;
+        const bq = queuedPathSet.has(b.path) ? -800 : 0;
+        const as = selectedPathSet.has(a.path) ? -700 : 0;
+        const bs = selectedPathSet.has(b.path) ? -700 : 0;
+        const ap = a.pick === 'selected' ? -500 : a.pick === 'rejected' ? 500 : 0;
+        const bp = b.pick === 'selected' ? -500 : b.pick === 'rejected' ? 500 : 0;
         const aMissingFace = a.faceBoxes === undefined ? -200 : 0;
         const bMissingFace = b.faceBoxes === undefined ? -200 : 0;
         const aVisible = visibleRank.get(a.path) ?? 9999;
         const bVisible = visibleRank.get(b.path) ?? 9999;
-        return (af + aMissingFace + aVisible) - (bf + bMissingFace + bVisible);
+        return (af + aq + as + ap + aMissingFace + aVisible) - (bf + bq + bs + bp + bMissingFace + bVisible);
       })
       .slice(0, batchSize);
     if (candidates.length === 0) return;
@@ -865,6 +917,7 @@ export function ThumbnailGrid() {
       // concurrently with the IPC round-trip, overlapping CPU work efficiently.
       void (async () => {
       const entries = await Promise.all(candidates.map(async (f): Promise<[string, Partial<MediaFile>]> => {
+        if (reviewGeneration !== reviewGenerationRef.current) return [f.path, {}];
         const thumbnail = f.thumbnail as string;
         const failureTag = `analysis-failed:${f.path}`;
         try {
@@ -927,7 +980,9 @@ export function ThumbnailGrid() {
             personBoxes: onnxPersonBoxes,
             subjectReasons: [...new Set(mergedReasons)],
           };
-          dispatch({ type: 'SET_REVIEW_SCORES', scores: { [f.path]: patch } });
+          if (reviewGeneration === reviewGenerationRef.current) {
+            dispatch({ type: 'SET_REVIEW_SCORES', scores: { [f.path]: patch } });
+          }
           return [f.path, patch];
         } catch (err) {
           console.error(`[review-loop] file error: ${f.path}`, err);
@@ -946,7 +1001,9 @@ export function ThumbnailGrid() {
             personBoxes: f.personBoxes,
             subjectReasons: [...new Set([...(f.subjectReasons ?? []), 'analysis failed'])],
           };
-          dispatch({ type: 'SET_REVIEW_SCORES', scores: { [f.path]: patch } });
+          if (reviewGeneration === reviewGenerationRef.current) {
+            dispatch({ type: 'SET_REVIEW_SCORES', scores: { [f.path]: patch } });
+          }
           return [f.path, patch];
         }
       }));
@@ -957,6 +1014,7 @@ export function ThumbnailGrid() {
         // Individual dispatches already fired above; this final batch dispatch
         // is a no-op for already-dispatched entries but ensures nothing is missed.
         reviewBatchCounterRef.current += 1;
+        if (reviewGeneration !== reviewGenerationRef.current) return;
         if (reviewBatchCounterRef.current % 5 === 0 || entries.length < batchSize) {
           dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10 });
           dispatch({ type: 'GROUP_VISUAL_DUPLICATES', threshold: 8 });
@@ -999,8 +1057,18 @@ export function ThumbnailGrid() {
 
   const resumeAiReview = useCallback(() => {
     setReviewPaused(false);
+    reviewPausedRef.current = false;
     setBackgroundLoadingPaused(false);
     setReviewLoopTick((value) => value + 1);
+  }, []);
+
+  const pauseAiReview = useCallback(() => {
+    setReviewPaused(true);
+    reviewPausedRef.current = true;
+    setBackgroundLoadingPaused(true);
+    reviewGenerationRef.current++;
+    sharpnessInFlightRef.current = false;
+    void window.electronAPI.cancelFaceAnalysis?.().catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -1062,6 +1130,22 @@ export function ThumbnailGrid() {
     const metaKey = e.metaKey || e.ctrlKey;
     const multiSelectEnabled = multiClickSelectRef.current;
 
+    if (
+      !e.shiftKey &&
+      !metaKey &&
+      clickedFile.burstId &&
+      clickedFile.burstSize &&
+      clickedFile.burstSize > 1 &&
+      (filter === 'queue' || collapsedSet.has(clickedFile.burstId))
+    ) {
+      dispatch({ type: 'SET_FILTER', filter: `burst:${encodeURIComponent(clickedFile.burstId)}` as FilterMode });
+      if (collapsedSet.has(clickedFile.burstId)) dispatch({ type: 'TOGGLE_BURST_COLLAPSE', burstId: clickedFile.burstId });
+      clearSelection();
+      setFocused(0);
+      lastClickedPathRef.current = clickedPath;
+      return;
+    }
+
     if (e.shiftKey && lastClickedPathRef.current) {
       const anchorIndex = currentSortedFiles.findIndex((file) => file.path === lastClickedPathRef.current);
       if (anchorIndex >= 0) {
@@ -1105,7 +1189,7 @@ export function ThumbnailGrid() {
       setFocused(index);
       lastClickedPathRef.current = clickedPath;
     }
-  }, [applySelectedPaths, clearSelection, setFocused]); // stable — reads selected selection via refs
+  }, [applySelectedPaths, clearSelection, collapsedSet, dispatch, filter, setFocused]); // stable — reads selected selection via refs
 
   const handleMultiToggle = useCallback(() => {
     const nextMultiSelect = !multiClickSelect;
@@ -1120,8 +1204,14 @@ export function ThumbnailGrid() {
   }, [setFocused, dispatch]);
 
   const handleBurstToggle = useCallback((burstId: string) => {
+    if (filter === 'queue' || filter.startsWith('burst:')) {
+      dispatch({ type: 'SET_FILTER', filter: `burst:${encodeURIComponent(burstId)}` as FilterMode });
+      if (collapsedSet.has(burstId)) dispatch({ type: 'TOGGLE_BURST_COLLAPSE', burstId });
+      setFocused(0);
+      return;
+    }
     dispatch({ type: 'TOGGLE_BURST_COLLAPSE', burstId });
-  }, [dispatch]);
+  }, [collapsedSet, dispatch, filter, setFocused]);
 
   // Trigger ONNX face scan for any unscanned photos about to appear in a panel.
   const scanUnscannedPanelFiles = useCallback((paths: string[]) => {
@@ -1815,6 +1905,15 @@ export function ThumbnailGrid() {
       exposureMaxStops,
     );
   }, [anchorFile?.exposureValue, anchorHasEV, exposureMaxStops]);
+  const getThumbnailWhiteBalance = useCallback((file: typeof files[number]) => {
+    if (saveFormat === 'original') return undefined;
+    if (file.whiteBalanceAdjustment) return file.whiteBalanceAdjustment;
+    const temperature = whiteBalanceTemperature ?? 0;
+    const tint = whiteBalanceTint ?? 0;
+    return Math.abs(temperature) >= 0.5 || Math.abs(tint) >= 0.5
+      ? { temperature, tint }
+      : undefined;
+  }, [saveFormat, whiteBalanceTemperature, whiteBalanceTint]);
   const normalizeTargetPaths = hasBatchSelection
     ? selectedPaths
     : focusedFile ? [focusedFile.path] : [];
@@ -1833,6 +1932,11 @@ export function ThumbnailGrid() {
       ]),
     )
   ), [compareDisplayFiles, exposureMaxStops, getThumbnailExposureStops]);
+  const comparePreviewWhiteBalanceByPath = useMemo(() => (
+    Object.fromEntries(
+      compareDisplayFiles.map((file) => [file.path, getThumbnailWhiteBalance(file)]),
+    )
+  ), [compareDisplayFiles, getThumbnailWhiteBalance]);
   const bestPanelFiles = useMemo(() => {
     if (!bestScope) return selectedFiles;
     const byPath = new Map(files.map((f) => [f.path, f]));
@@ -1968,6 +2072,7 @@ export function ThumbnailGrid() {
       manualStops: source.exposureAdjustmentStops ?? 0,
       normalizeToAnchor: !!source.normalizeToAnchor,
       anchorPath: exposureAnchorPath,
+      whiteBalanceAdjustment: source.whiteBalanceAdjustment,
     });
   }, [exposureAnchorPath, focusedFile, selectedFiles]);
 
@@ -1987,6 +2092,12 @@ export function ThumbnailGrid() {
       type: 'SET_EXPOSURE_ADJUSTMENT',
       filePaths: normalizeTargetPaths,
       stops: exposureClipboard.manualStops,
+    });
+    dispatch({
+      type: 'SET_WHITE_BALANCE_ADJUSTMENT',
+      filePaths: normalizeTargetPaths,
+      temperature: exposureClipboard.whiteBalanceAdjustment?.temperature ?? 0,
+      tint: exposureClipboard.whiteBalanceAdjustment?.tint ?? 0,
     });
   }, [dispatch, exposureClipboard, files, normalizeTargetPaths]);
 
@@ -2302,17 +2413,17 @@ export function ThumbnailGrid() {
           <button
             onClick={copyExposureAdjustment}
             className="px-2 py-1.5 text-[11px] text-text-muted hover:text-sky-300 hover:bg-sky-500/10 transition-colors"
-            title="Copy the focused photo's exposure recipe"
+            title="Copy the focused photo's exposure and per-photo white balance recipe"
           >
-            Copy EV
+            Copy Edit
           </button>
           <button
             onClick={pasteExposureAdjustment}
             disabled={exposureClipboard === null}
             className="px-2 py-1.5 text-[11px] text-text-muted hover:text-sky-300 hover:bg-sky-500/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
             title={exposureClipboard === null
-              ? 'Copy an EV offset first'
-              : `Paste ${exposureClipboard.manualStops >= 0 ? '+' : ''}${exposureClipboard.manualStops.toFixed(2)} EV${exposureClipboard.normalizeToAnchor ? ' with auto-normalize' : ''} to current target`}
+              ? 'Copy an edit recipe first'
+              : `Paste ${exposureClipboard.manualStops >= 0 ? '+' : ''}${exposureClipboard.manualStops.toFixed(2)} EV${exposureClipboard.normalizeToAnchor ? ' with auto-normalize' : ''}${exposureClipboard.whiteBalanceAdjustment ? ' and WB' : ''} to current target`}
           >
             Paste
           </button>
@@ -2436,6 +2547,17 @@ export function ThumbnailGrid() {
         Best of Batch
       </button>
 
+      <button
+        onClick={() => {
+          dispatch({ type: 'GROUP_SCENE_BUCKETS' });
+          dispatch({ type: 'SET_FILTER', filter: 'review-needed' });
+        }}
+        className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-blue-300 transition-colors shrink-0"
+        title="Rebuild scene buckets, then show the second-pass lane for low-confidence and unreviewed decisions."
+      >
+        2nd Pass
+      </button>
+
       <div className="w-px h-4 bg-border shrink-0 mx-0.5" />
 
       {/* ── AI scan controls ── */}
@@ -2443,9 +2565,8 @@ export function ThumbnailGrid() {
       <button
         onClick={() => {
           if (reviewWaitingForThumbnails) return;
-          const pausing = !reviewPaused;
-          setReviewPaused(pausing);
-          setBackgroundLoadingPaused(pausing);
+          if (reviewPaused) resumeAiReview();
+          else pauseAiReview();
         }}
         className={`px-2 py-1 text-[10px] rounded-md transition-colors shrink-0 ${
           reviewWaitingForThumbnails
@@ -2544,6 +2665,15 @@ export function ThumbnailGrid() {
               title="Pick the top-scored shot in each burst/group and reject the rest."
             >
               Pick Burst Best
+            </button>
+          )}
+          {focusedFile && (
+            <button
+              onClick={() => dispatch({ type: 'SYNC_EDITS_FROM_FOCUSED', filePath: focusedFile.path })}
+              className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-cyan-300 transition-colors shrink-0"
+              title="Sync the focused photo's exposure and white-balance recipe to the selected photos, or to its burst/scene if nothing is selected."
+            >
+              Sync Edits
             </button>
           )}
           {duplicateCount > 0 && (
@@ -2741,10 +2871,19 @@ export function ThumbnailGrid() {
             >
               Queue{queuedPaths.length > 0 ? ` ${queuedPaths.length}` : ''}
             </button>
+            {filter.startsWith('burst:') && (
+              <button
+                onClick={() => dispatch({ type: 'SET_FILTER', filter: 'queue' })}
+                className="px-1.5 py-0.5 text-[10px] rounded bg-blue-500/10 text-blue-300 hover:bg-blue-500/20 transition-colors"
+                title="Showing every photo in the opened burst. Click to return to Queue."
+              >
+                Burst Review
+              </button>
+            )}
 
             {/* Single consolidated filter dropdown — replaces 6 individual ones */}
             <select
-              value={['all', 'picked', 'rejected', 'queue'].includes(filter) ? '' : filter}
+              value={['all', 'picked', 'rejected', 'queue'].includes(filter) || filter.startsWith('burst:') ? '' : filter}
               onChange={(e) => {
                 if (!e.target.value) return;
                 dispatch({ type: 'SET_FILTER', filter: e.target.value as typeof filter });
@@ -2763,6 +2902,7 @@ export function ThumbnailGrid() {
                 <option value="face-groups">Face groups</option>
                 <option value="blur-risk">Blur risk</option>
                 <option value="near-duplicates">Similar photos</option>
+                <option value="review-needed">Second pass</option>
               </optgroup>
               <optgroup label="Type">
                 <option value="photos">Photos only</option>
@@ -2789,6 +2929,11 @@ export function ThumbnailGrid() {
               {metadataFilters.dates.length > 0 && (
                 <optgroup label="Date">
                   {metadataFilters.dates.map((v) => <option key={v} value={`date:${encodeURIComponent(v)}`}>{v}</option>)}
+                </optgroup>
+              )}
+              {metadataFilters.scenes.length > 0 && (
+                <optgroup label="Scene">
+                  {metadataFilters.scenes.map((v) => <option key={v} value={`scene:${encodeURIComponent(v)}`}>{v}</option>)}
                 </optgroup>
               )}
               {metadataFilters.exts.length > 1 && (
@@ -2956,6 +3101,36 @@ export function ThumbnailGrid() {
 
       {nextActionToolbar}
 
+      {totalPhotoCount > 0 && showAiReviewStrip && (
+        <div className="shrink-0 border-b border-border bg-surface-alt/45 px-3 py-1.5">
+          <div className="flex flex-wrap items-center gap-2 text-[10px] text-text-muted">
+            <span className="font-medium text-text-secondary">AI</span>
+            <span>{aiAnalyzedCount}/{totalPhotoCount} analyzed</span>
+            {aiPendingCount > 0 && <span>{aiPendingCount} pending</span>}
+            <span>{fastKeeperMode ? 'Fast Keeper' : faceProviderSummary}</span>
+            {reviewPaused && <span className="text-yellow-400">paused</span>}
+            <button
+              type="button"
+              onClick={() => setShowAiReviewStrip(false)}
+              className="ml-auto rounded px-1 text-[10px] text-text-muted hover:bg-surface-raised hover:text-text"
+              title="Hide AI status strip"
+            >
+              Hide
+            </button>
+          </div>
+        </div>
+      )}
+      {totalPhotoCount > 0 && !showAiReviewStrip && (
+        <button
+          type="button"
+          onClick={() => setShowAiReviewStrip(true)}
+          className="absolute bottom-7 left-2 z-30 rounded border border-border bg-surface-alt/90 px-2 py-0.5 text-[10px] text-text-muted hover:text-text"
+          title="Show AI status strip"
+        >
+          AI {aiAnalyzedCount}/{totalPhotoCount}
+        </button>
+      )}
+
       {/* Content */}
       <div className="flex-1 min-h-0">
         {viewMode === 'compare' ? (
@@ -2963,6 +3138,7 @@ export function ThumbnailGrid() {
             <CompareView
               files={compareDisplayFiles}
               previewStopsByPath={comparePreviewStopsByPath}
+              previewWhiteBalanceByPath={comparePreviewWhiteBalanceByPath}
               selectionCount={compareFiles.length >= 2 ? selectedPaths.length : 0}
             />
             {floatingToolbar}
@@ -2993,6 +3169,7 @@ export function ThumbnailGrid() {
                     queued={queuedSet.has(file.path)}
                     forceLoad={forceVisibleThumbnails(i, file.path)}
                     exposurePreviewStops={getThumbnailExposureStops(file)}
+                    whiteBalancePreview={getThumbnailWhiteBalance(file)}
                     isBurstBest={false}
                     compact
                     frameNumber={i + 1}
@@ -3101,6 +3278,7 @@ export function ThumbnailGrid() {
                                 queued={queuedSet.has(file.path)}
                                 forceLoad={forceVisibleThumbnails(i, file.path)}
                                 exposurePreviewStops={getThumbnailExposureStops(file)}
+                                whiteBalancePreview={getThumbnailWhiteBalance(file)}
                                 isBurstBest={false}
                                 burstCollapsed={!!file.burstId && collapsedSet.has(file.burstId)}
                                 onBurstToggle={handleBurstToggle}
@@ -3131,6 +3309,7 @@ export function ThumbnailGrid() {
                       queued={queuedSet.has(file.path)}
                       forceLoad={forceVisibleThumbnails(i, file.path)}
                       exposurePreviewStops={getThumbnailExposureStops(file)}
+                      whiteBalancePreview={getThumbnailWhiteBalance(file)}
                       isBurstBest={false}
                       burstCollapsed={!!file.burstId && collapsedSet.has(file.burstId)}
                       onBurstToggle={handleBurstToggle}

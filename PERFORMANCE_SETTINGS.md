@@ -1,6 +1,6 @@
 # Performance Settings & Optimizations
 
-Photo Importer now includes three key performance optimization settings to help you get the best experience based on your hardware.
+Keptra now includes three key performance optimization settings to help you get the best experience based on your hardware.
 
 ## Settings Overview
 
@@ -141,9 +141,9 @@ Cache is **not** automatically cleaned up. To clear:
 ## Settings Storage
 
 All performance settings are saved in:
-- **Windows**: `%APPDATA%/Photo Importer/settings.json`
-- **macOS**: `~/Library/Application Support/Photo Importer/settings.json`
-- **Linux**: `~/.config/Photo Importer/settings.json`
+- **Windows**: `%APPDATA%/Keptra/settings.json`
+- **macOS**: `~/Library/Application Support/Keptra/settings.json`
+- **Linux**: `~/.config/Keptra/settings.json`
 
 Settings are applied:
 1. On app startup (read from saved settings)

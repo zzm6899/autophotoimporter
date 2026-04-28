@@ -65,7 +65,7 @@ export function LicenseOverlay() {
       <div className="w-full max-w-xl overflow-hidden rounded-xl border border-border bg-surface shadow-2xl">
         <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
           <div>
-            <h2 className="text-base font-semibold text-text">Activate Photo Importer</h2>
+            <h2 className="text-base font-semibold text-text">Activate Keptra</h2>
             <p className="mt-1 text-xs text-text-muted">
               You can keep browsing the app without a license, but importing stays disabled until activation.
             </p>

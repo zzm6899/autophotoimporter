@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./assets/brand/logo-black.svg" alt="Photo Importer" width="260" />
+  <img src="./assets/brand/logo-black.svg" alt="Keptra" width="260" />
 </p>
 
 <p align="center">
@@ -38,7 +38,7 @@
 
 **macOS** — download the `.dmg`. macOS will block the first launch; go to **System Settings → Privacy & Security** and click **Open Anyway**.
 
-**Windows** — download `PhotoImporter-Setup.exe`. SmartScreen may warn on first run — click **More info → Run anyway**. Portable `.zip` builds are also attached to each release if you'd rather avoid the installer.
+**Windows** — download `Keptra-Setup.exe`. SmartScreen may warn on first run — click **More info → Run anyway**. Portable `.zip` builds are also attached to each release if you'd rather avoid the installer.
 
 ## Keyboard Shortcuts
 
@@ -77,7 +77,7 @@ Face recognition is powered by ONNX Runtime and automatically uses **GPU acceler
 
 ### How it works
 
-1. On startup, Photo Importer detects your platform and GPU hardware
+1. On startup, Keptra detects your platform and GPU hardware
 2. It attempts to load ONNX models using GPU providers in this order:
    - **Windows**: DirectML (GPU-agnostic) → CUDA (NVIDIA) → CPU fallback
    - **macOS**: CoreML (Apple Silicon) → CUDA (external GPU) → CPU fallback
@@ -137,7 +137,7 @@ npm run make         # build installers for the host platform
 Requires **Node 20+**.
 
 - On **macOS** `npm run make` produces a `.dmg` and a `.zip` under `out/make/`.
-- On **Windows** it produces `PhotoImporter-Setup.exe` (Squirrel), a `.nupkg`, and a portable `.zip` under `out/make/`.
+- On **Windows** it produces `Keptra-Setup.exe` (Squirrel), a `.nupkg`, and a portable `.zip` under `out/make/`.
 
 ### Windows one-shot setup
 
@@ -145,7 +145,7 @@ Prefer clicking over typing? Double-click `scripts\setup-windows.cmd` (or run it
 
 ```cmd
 scripts\setup-windows.cmd dev      :: install + npm start (dev mode)
-scripts\setup-windows.cmd build    :: install + npm run make (produces PhotoImporter-Setup.exe)
+scripts\setup-windows.cmd build    :: install + npm run make (produces Keptra-Setup.exe)
 scripts\setup-windows.cmd install  :: install deps only
 ```
 
@@ -202,8 +202,8 @@ Without a valid license, the app stays in browse/review mode and importing is bl
 ## License
 
 [MIT](./LICENSE)
-"# autophotoimporter" 
-"# autophotoimporter" 
+"# autophotoimporter"
+"# autophotoimporter"
 # Hosted Updates
 
 For the TrueNAS-hosted update/admin stack:
@@ -244,7 +244,7 @@ Local/manual release registration:
 
 ```powershell
 $env:UPDATE_ADMIN_API_TOKEN="your-admin-api-token"
-npm run update:publish -- --endpoint https://updates.culler.z2hs.au --platform windows --version 1.1.11 --file .\out\make\squirrel.windows\x64\PhotoImporter-Setup.exe --release-name "Photo Importer 1.1.11" --release-url https://admin.culler.z2hs.au/releases/1.1.11 --notes "Manual release import" --rollout live
+npm run update:publish -- --endpoint https://updates.culler.z2hs.au --platform windows --version 1.1.11 --file .\out\make\squirrel.windows\x64\Keptra-Setup.exe --release-name "Keptra 1.1.11" --release-url https://admin.culler.z2hs.au/releases/1.1.11 --notes "Manual release import" --rollout live
 ```
 
 That helper uploads the installer to the hosted admin/update service and registers the release record there. GitHub Actions does the same thing automatically once `UPDATE_ADMIN_ENDPOINT` and `UPDATE_ADMIN_API_TOKEN` are configured as repo secrets.

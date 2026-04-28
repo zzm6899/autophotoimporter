@@ -127,6 +127,29 @@ function normalizeExifOrientation(value: unknown): number | undefined {
   return undefined;
 }
 
+function numberFromExif(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function gpsFromExif(exif: Record<string, unknown>): MediaFile['gps'] | undefined {
+  const latitude = numberFromExif(exif.latitude ?? exif.GPSLatitude);
+  const longitude = numberFromExif(exif.longitude ?? exif.GPSLongitude);
+  if (latitude === undefined || longitude === undefined) return undefined;
+  if (Math.abs(latitude) > 90 || Math.abs(longitude) > 180) return undefined;
+  const altitude = numberFromExif(exif.GPSAltitude);
+  return altitude === undefined ? { latitude, longitude } : { latitude, longitude, altitude };
+}
+
+function locationLabelFromGps(gps: MediaFile['gps']): string | undefined {
+  if (!gps) return undefined;
+  return `${gps.latitude.toFixed(4)}, ${gps.longitude.toFixed(4)}`;
+}
+
 export async function parseExifDate(
   file: MediaFile,
   folderPattern?: string,
@@ -144,6 +167,8 @@ export async function parseExifDate(
   rating?: number;
   isProtected?: boolean;
   exposureValue?: number;
+  gps?: MediaFile['gps'];
+  locationName?: string;
 }> {
   let dateTaken: Date | null = null;
   let orientation: number | undefined;
@@ -156,6 +181,7 @@ export async function parseExifDate(
   let lensModel: string | undefined;
   let rating: number | undefined;
   let exifProtected = false;
+  let gps: MediaFile['gps'] | undefined;
 
   if (file.type === 'photo' && EXIFR_SUPPORTED.has(file.extension)) {
     try {
@@ -165,8 +191,10 @@ export async function parseExifDate(
           'ISO', 'FNumber', 'ExposureTime', 'FocalLength',
           'Make', 'Model', 'LensModel',
           'Rating', 'RatingPercent', 'ProtectStatus',
+          'latitude', 'longitude', 'GPSLatitude', 'GPSLongitude', 'GPSAltitude',
         ],
         reviveValues: true,
+        gps: true,
       });
       if (exif) {
         dateTaken = exif.DateTimeOriginal || exif.CreateDate || exif.ModifyDate || null;
@@ -183,6 +211,7 @@ export async function parseExifDate(
         if (exif.ProtectStatus && exif.ProtectStatus !== 0 && exif.ProtectStatus !== 'Off') {
           exifProtected = true;
         }
+        gps = gpsFromExif(exif as Record<string, unknown>);
       }
     } catch {
       // EXIF parse failed
@@ -204,6 +233,7 @@ export async function parseExifDate(
   const pattern = folderPattern || '{YYYY}-{MM}-{DD}/{filename}';
   const destPath = resolvePattern(pattern, dateTaken, file.name, file.extension, rating);
   const exposureValue = computeEV100(aperture, shutterSpeed, iso);
+  const locationName = locationLabelFromGps(gps);
   return {
     dateTaken: dateTaken.toISOString(),
     destPath,
@@ -218,6 +248,8 @@ export async function parseExifDate(
     rating,
     isProtected,
     exposureValue,
+    gps,
+    locationName,
   };
 }
 

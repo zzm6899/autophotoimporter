@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import type { MediaFile } from '../../shared/types';
 import { formatFileSize, formatExposure } from '../utils/formatters';
 import { getCachedPreview } from '../utils/previewCache';
-import { faceQuality, keeperScore, subjectPresenceQuality } from '../../shared/review';
+import { bestShotScore, rankBestShots } from '../../shared/review';
 
 interface BestOfSelectionPanelProps {
   files: MediaFile[];
@@ -39,33 +39,22 @@ function explain(file: MediaFile): string {
 }
 
 function rankScore(file: MediaFile): number {
-  return keeperScore(file);
+  return bestShotScore(file);
 }
 
 export function rankBestOfSelection(files: MediaFile[]): MediaFile[] {
-  return files.slice().sort((a, b) =>
-    Number(!!b.isProtected) - Number(!!a.isProtected) ||
-    (b.rating ?? 0) - (a.rating ?? 0) ||
-    subjectPresenceQuality(b) - subjectPresenceQuality(a) ||
-    faceQuality(b) - faceQuality(a) ||
-    (b.faceCount ?? 0) - (a.faceCount ?? 0) ||
-    (b.personCount ?? 0) - (a.personCount ?? 0) ||
-    (b.subjectSharpnessScore ?? 0) - (a.subjectSharpnessScore ?? 0) ||
-    Number(a.blurRisk === 'high') - Number(b.blurRisk === 'high') ||
-    keeperScore(b) - keeperScore(a) ||
-    (b.sharpnessScore ?? 0) - (a.sharpnessScore ?? 0) ||
-    (b.reviewScore ?? 0) - (a.reviewScore ?? 0) ||
-    a.name.localeCompare(b.name),
-  );
+  return rankBestShots(files);
 }
 
 // Corrects face box positions for object-contain letterboxing.
 function LetterboxedFaceBoxes({
   boxes,
+  personBoxes = [],
   imgNaturalW,
   imgNaturalH,
 }: {
   boxes: NonNullable<MediaFile['faceBoxes']>;
+  personBoxes?: NonNullable<MediaFile['personBoxes']>;
   imgNaturalW: number;
   imgNaturalH: number;
 }) {
@@ -93,6 +82,19 @@ function LetterboxedFaceBoxes({
 
   return (
     <div ref={containerRef} className="absolute inset-0 pointer-events-none">
+      {personBoxes.map((box, i) => (
+        <div
+          key={`person-${i}`}
+          className="absolute rounded-sm border border-dashed border-sky-300/70 shadow-[0_0_0_1px_rgba(0,0,0,0.45)]"
+          style={{
+            left: `${((box.x * rW + offX) / cSize.w) * 100}%`,
+            top: `${((box.y * rH + offY) / cSize.h) * 100}%`,
+            width: `${(box.width * rW / cSize.w) * 100}%`,
+            height: `${(box.height * rH / cSize.h) * 100}%`,
+          }}
+          title={`Person detected${typeof box.score === 'number' ? ` (${Math.round(box.score * 100)}%)` : ''}`}
+        />
+      ))}
       {boxes.map((box, i) => {
         const eyeScore = box.eyeScore ?? 0;
         return (
@@ -269,6 +271,19 @@ function ImageLightbox({
             />
             {zoom <= 1 && imgNatural && (file.faceBoxes?.length ?? 0) > 0 && (
               <div className="absolute inset-0 pointer-events-none">
+                {file.personBoxes?.map((box, i) => (
+                  <div
+                    key={`person-${i}`}
+                    className="absolute rounded-sm border border-dashed border-sky-300/70 shadow-[0_0_0_1px_rgba(0,0,0,0.5)]"
+                    style={{
+                      left: `${box.x * 100}%`,
+                      top: `${box.y * 100}%`,
+                      width: `${box.width * 100}%`,
+                      height: `${box.height * 100}%`,
+                    }}
+                    title={`Person detected${typeof box.score === 'number' ? ` (${Math.round(box.score * 100)}%)` : ''}`}
+                  />
+                ))}
                 {file.faceBoxes!.map((box, i) => (
                   <div
                     key={i}
@@ -282,6 +297,23 @@ function ImageLightbox({
                       height: `${box.height * 100}%`,
                     }}
                     title={(box.eyeScore ?? 0) >= 2 ? 'Eyes open' : 'Face detected'}
+                  />
+                ))}
+              </div>
+            )}
+            {zoom <= 1 && imgNatural && (file.faceBoxes?.length ?? 0) === 0 && (file.personBoxes?.length ?? 0) > 0 && (
+              <div className="absolute inset-0 pointer-events-none">
+                {file.personBoxes!.map((box, i) => (
+                  <div
+                    key={i}
+                    className="absolute rounded-sm border border-dashed border-sky-300/70 shadow-[0_0_0_1px_rgba(0,0,0,0.5)]"
+                    style={{
+                      left: `${box.x * 100}%`,
+                      top: `${box.y * 100}%`,
+                      width: `${box.width * 100}%`,
+                      height: `${box.height * 100}%`,
+                    }}
+                    title={`Person detected${typeof box.score === 'number' ? ` (${Math.round(box.score * 100)}%)` : ''}`}
                   />
                 ))}
               </div>
@@ -542,8 +574,13 @@ export function BestOfSelectionPanel({
                     ) : (
                       <span className="text-xs text-text-muted">No preview</span>
                     )}
-                    {src && nat && (file.faceBoxes?.length ?? 0) > 0 && (
-                      <LetterboxedFaceBoxes boxes={file.faceBoxes!} imgNaturalW={nat.w} imgNaturalH={nat.h} />
+                    {src && nat && ((file.faceBoxes?.length ?? 0) > 0 || (file.personBoxes?.length ?? 0) > 0) && (
+                      <LetterboxedFaceBoxes
+                        boxes={file.faceBoxes ?? []}
+                        personBoxes={file.personBoxes ?? []}
+                        imgNaturalW={nat.w}
+                        imgNaturalH={nat.h}
+                      />
                     )}
                     <div className="absolute top-2 left-2 px-2 py-0.5 rounded bg-black/70 text-white text-[10px] font-semibold">#{idx + 1}</div>
                     {idx === 0 && (

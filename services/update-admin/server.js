@@ -77,7 +77,7 @@ const trialCooldownDays = Math.max(1, Number.parseInt(process.env.TRIAL_COOLDOWN
 const corsAllowedOrigins = (process.env.CORS_ALLOWED_ORIGINS || 'https://culler.z2hs.au,http://culler.z2hs.au')
   .split(',').map((o) => o.trim()).filter(Boolean);
 
-const CULLER_LOGO_SVG = '<svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M128 252C196.483 252 252 196.483 252 128C252 59.5167 196.483 4 128 4C59.5167 4 4 59.5167 4 128C4 196.483 59.5167 252 128 252ZM128 226.694C182.507 226.694 226.694 182.507 226.694 128C226.694 73.4929 182.507 29.3061 128 29.3061C73.4929 29.3061 29.3061 73.4929 29.3061 128C29.3061 182.507 73.4929 226.694 128 226.694ZM188.633 131.549C181.333 137.253 172.145 140.653 162.163 140.653C138.404 140.653 119.143 121.392 119.143 97.6327C119.143 85.8325 123.894 75.1419 131.587 67.3695C130.4 67.3004 129.204 67.2653 128 67.2653C94.4572 67.2653 67.2653 94.4572 67.2653 128C67.2653 161.543 94.4572 188.735 128 188.735C160.352 188.735 186.795 163.44 188.633 131.549ZM117.878 148.245C123.468 148.245 128 143.713 128 138.122C128 132.532 123.468 128 117.878 128C112.287 128 107.755 132.532 107.755 138.122C107.755 143.713 112.287 148.245 117.878 148.245ZM107.755 153.306C107.755 156.101 105.489 158.367 102.694 158.367C99.8986 158.367 97.6327 156.101 97.6327 153.306C97.6327 150.511 99.8986 148.245 102.694 148.245C105.489 148.245 107.755 150.511 107.755 153.306ZM177.347 97.6326C177.347 106.018 170.549 112.816 162.163 112.816C161.21 112.816 160.278 112.729 159.373 112.561C163.87 111.53 167.225 107.503 167.225 102.694C167.225 97.1034 162.693 92.5714 157.102 92.5714C152.292 92.5714 148.266 95.9258 147.235 100.423C147.067 99.5183 146.98 98.5857 146.98 97.6326C146.98 89.2469 153.778 82.449 162.163 82.449C170.549 82.449 177.347 89.2469 177.347 97.6326Z" fill="white"/></svg>';
+const KEPTRA_LOGO_SVG = '<svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect width="256" height="256" rx="56" fill="#0D1416"/><rect x="13" y="13" width="230" height="230" rx="46" fill="#142629" stroke="#37B69F" stroke-width="12"/><path d="M128 49L178 136H78L128 49Z" fill="#37B69F"/><path d="M211 116L161 202L112 116H211Z" fill="#52D7B5"/><path d="M55 152L104 67L154 152H55Z" fill="#2585A1"/><path d="M88 139L121 173L190 92" stroke="#F6FBFA" stroke-width="21" stroke-linecap="round" stroke-linejoin="round"/><path d="M67 67H101M67 67V101M188 67H222M222 67V101M67 188V222H101M188 222H222V188" stroke="#F6FBFA" stroke-opacity=".78" stroke-width="11" stroke-linecap="round"/></svg>';
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL || 'postgres://photo_importer:photo_importer@db:5432/photo_importer_updates',
@@ -190,7 +190,7 @@ function htmlPage(title, body) {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="dark" />
-  <title>${title} — Culler Admin</title>
+  <title>${title} — Keptra Admin</title>
   <script>
     // Convert all <time data-ts="..."> elements to local browser time on load
     document.addEventListener('DOMContentLoaded', () => {
@@ -204,33 +204,32 @@ function htmlPage(title, body) {
     });
   </script>
   <style>
-    :root{--bg:#091116;--surface:rgba(13,24,31,.9);--surface-2:rgba(19,33,41,.92);--surface-3:rgba(28,45,55,.96);--border:rgba(95,130,147,.22);--border-strong:rgba(135,177,198,.3);--text:#edf5f7;--muted:#9db2bc;--faint:#6f8791;--accent:#60c7b2;--accent-strong:#1ea48b;--accent-soft:rgba(96,199,178,.16);--accent-warm:#f2bf83;--danger:#ff9d8d;--danger-soft:rgba(255,123,103,.14);--warning:#ffd08a;--ok:#9fe4bb;--shadow:0 24px 60px rgba(0,0,0,.28);--radius:24px;--radius-sm:16px}
+    :root{--bg:#091116;--surface:rgba(13,24,31,.94);--surface-2:rgba(19,33,41,.95);--surface-3:rgba(28,45,55,.98);--border:rgba(95,130,147,.24);--border-strong:rgba(135,177,198,.32);--text:#edf5f7;--muted:#9db2bc;--faint:#6f8791;--accent:#60c7b2;--accent-strong:#1ea48b;--accent-soft:rgba(96,199,178,.16);--accent-warm:#f2bf83;--danger:#ff9d8d;--danger-soft:rgba(255,123,103,.14);--warning:#ffd08a;--ok:#9fe4bb;--shadow:0 22px 52px rgba(0,0,0,.24);--radius:12px;--radius-sm:8px}
     *,*::before,*::after{box-sizing:border-box}
     html{color-scheme:dark}
-    body{font-family:'Segoe UI Variable','Avenir Next','Segoe UI',Tahoma,sans-serif;background:radial-gradient(circle at top left,rgba(47,108,119,.32),transparent 28%),radial-gradient(circle at top right,rgba(242,191,131,.12),transparent 24%),linear-gradient(180deg,#0b1318 0%,#091116 54%,#081015 100%);color:var(--text);margin:0;min-height:100vh;-webkit-font-smoothing:antialiased;line-height:1.55;position:relative;overflow-x:hidden}
+    body{font-family:'Segoe UI Variable','Avenir Next','Segoe UI',Tahoma,sans-serif;background:linear-gradient(180deg,#0b1318 0%,#091116 54%,#081015 100%);color:var(--text);margin:0;min-height:100vh;-webkit-font-smoothing:antialiased;line-height:1.55;position:relative;overflow-x:hidden}
     body::before{content:'';position:fixed;inset:0;pointer-events:none;background:linear-gradient(90deg,rgba(255,255,255,.018) 1px,transparent 1px),linear-gradient(rgba(255,255,255,.018) 1px,transparent 1px);background-size:48px 48px;mask-image:linear-gradient(180deg,rgba(0,0,0,.34),transparent 80%)}
-    body::after{content:'';position:fixed;inset:auto -10vw -20vh auto;width:46vw;height:46vw;border-radius:50%;pointer-events:none;background:radial-gradient(circle,rgba(96,199,178,.08),transparent 70%);filter:blur(10px)}
     a{color:inherit;text-decoration:none}
     a:hover{color:#fff}
     code{font-family:ui-monospace,'SF Mono',Consolas,monospace;font-size:.83em;background:rgba(12,20,26,.88);border:1px solid rgba(128,163,178,.14);padding:3px 8px;border-radius:999px;white-space:normal;overflow-wrap:anywhere}
     pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
-    h1{font-size:clamp(1.8rem,3vw,2.85rem);font-weight:750;margin:0;letter-spacing:-.04em;line-height:1.04;max-width:16ch}
+    h1{font-size:clamp(1.8rem,3vw,2.85rem);font-weight:750;margin:0;letter-spacing:0;line-height:1.04;max-width:16ch}
     h2{font-size:.78rem;font-weight:700;margin:0 0 14px;color:var(--muted);text-transform:uppercase;letter-spacing:.16em}
     p{margin:0}
     label{display:block;font-size:.8rem;font-weight:650;color:var(--muted);margin-bottom:6px;margin-top:14px;letter-spacing:.02em}
     label:first-child{margin-top:0}
     .shell{max-width:1380px;margin:0 auto;padding:34px 24px 56px;position:relative;z-index:1}
-    .hero{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:22px;align-items:end;padding:28px 28px 24px;margin-bottom:22px;border:1px solid var(--border-strong);border-radius:32px;background:linear-gradient(135deg,rgba(96,199,178,.14),rgba(242,191,131,.08) 35%,rgba(13,24,31,.9) 72%);box-shadow:var(--shadow);backdrop-filter:blur(18px)}
+    .hero{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:22px;align-items:end;padding:28px 28px 24px;margin-bottom:22px;border:1px solid var(--border-strong);border-radius:16px;background:linear-gradient(135deg,rgba(96,199,178,.12),rgba(13,24,31,.94) 64%);box-shadow:var(--shadow);backdrop-filter:blur(18px)}
     .hero-copy{display:flex;flex-direction:column;gap:10px;min-width:0}
     .hero-copy p{max-width:66ch;color:var(--muted);font-size:1rem}
     .hero-kicker{font-size:.72rem;font-weight:800;letter-spacing:.18em;text-transform:uppercase;color:var(--accent-warm)}
     .hero-meta{display:flex;gap:10px;flex-wrap:wrap}
     .hero-note{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border:1px solid var(--border);border-radius:999px;background:rgba(6,14,18,.34);color:var(--muted);font-size:.8rem}
     .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin-bottom:20px}
-    .card,.panel{background:linear-gradient(180deg,rgba(17,29,36,.92),rgba(12,22,28,.94));border:1px solid var(--border);border-radius:24px;box-shadow:var(--shadow);backdrop-filter:blur(18px)}
+    .card,.panel{background:linear-gradient(180deg,rgba(17,29,36,.92),rgba(12,22,28,.94));border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow);backdrop-filter:blur(18px)}
     .card{padding:20px 20px 18px;min-height:154px;display:flex;flex-direction:column;justify-content:space-between}
     .card-label{font-size:.76rem;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.14em;line-height:1.45}
-    .card-value{font-size:clamp(1.75rem,2.8vw,2.6rem);font-weight:760;line-height:1.02;letter-spacing:-.05em;margin-top:12px}
+    .card-value{font-size:clamp(1.75rem,2.8vw,2.6rem);font-weight:760;line-height:1.02;letter-spacing:0;margin-top:12px}
     .card-note,.subtle{color:var(--muted);font-size:.88rem;line-height:1.45}
     .metric-list{display:grid;gap:8px;margin-top:14px}
     .metric-row{display:flex;justify-content:space-between;gap:12px;color:var(--muted);font-size:.88rem}
@@ -251,13 +250,13 @@ function htmlPage(title, body) {
     .actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
     form.inline{display:inline}
     .nav-shell{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end;max-width:100%}
-    .nav-brand{display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:999px;border:1px solid var(--border);background:rgba(7,15,19,.58);font-size:.88rem;font-weight:750;letter-spacing:-.01em;box-shadow:0 10px 24px rgba(0,0,0,.18)}
+    .nav-brand{display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:999px;border:1px solid var(--border);background:rgba(7,15,19,.58);font-size:.88rem;font-weight:750;letter-spacing:0;box-shadow:0 10px 24px rgba(0,0,0,.18)}
     .nav-links{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:6px;border:1px solid var(--border);border-radius:999px;background:rgba(7,15,19,.58);box-shadow:0 10px 24px rgba(0,0,0,.18)}
     .nav-links a,.nav-shell form.inline button{font-size:.82rem;font-weight:650;color:var(--muted);padding:9px 14px;border-radius:999px;transition:background .18s,color .18s,border-color .18s,transform .18s;line-height:1.2}
     .nav-links a:hover,.nav-links a.active,.nav-shell form.inline button:hover{color:var(--text);background:rgba(96,199,178,.16)}
     .nav-links a.active{box-shadow:inset 0 0 0 1px rgba(96,199,178,.3)}
     .nav-shell form.inline button{background:rgba(7,15,19,.58);border:1px solid var(--border);cursor:pointer;font-family:inherit}
-    .table-wrap{margin-top:12px;overflow:auto;border:1px solid var(--border);border-radius:20px;background:rgba(8,16,20,.48)}
+    .table-wrap{margin-top:12px;overflow:auto;border:1px solid var(--border);border-radius:12px;background:rgba(8,16,20,.48)}
     table{width:100%;border-collapse:collapse;font-size:.89rem;min-width:720px}
     thead{border-bottom:1px solid var(--border-strong);background:rgba(255,255,255,.02)}
     th{padding:14px 16px;text-align:left;font-weight:750;font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.14em;white-space:nowrap}
@@ -266,7 +265,7 @@ function htmlPage(title, body) {
     tbody tr:hover td{background:rgba(255,255,255,.02)}
     td code{display:inline-block;max-width:100%}
     .cell-actions{width:1%;white-space:nowrap}
-    input,textarea,select{width:100%;background:rgba(6,14,18,.52);border:1px solid var(--border);border-radius:16px;color:var(--text);padding:11px 14px;box-sizing:border-box;font-size:.92rem;font-family:inherit;transition:border-color .15s,box-shadow .15s,background .15s}
+    input,textarea,select{width:100%;background:rgba(6,14,18,.52);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:11px 14px;box-sizing:border-box;font-size:.92rem;font-family:inherit;transition:border-color .15s,box-shadow .15s,background .15s}
     input::placeholder,textarea::placeholder{color:#70848d}
     input:focus,textarea:focus,select:focus{outline:none;border-color:rgba(96,199,178,.7);box-shadow:0 0 0 4px rgba(96,199,178,.12);background:rgba(9,18,23,.8)}
     textarea{resize:vertical;min-height:100px}
@@ -284,17 +283,21 @@ function htmlPage(title, body) {
     .pill-revoked{background:rgba(255,123,103,.14);color:var(--danger);border-color:rgba(255,123,103,.2)}
     .pill-expired,.pill-draft{background:rgba(242,191,131,.14);color:var(--warning);border-color:rgba(242,191,131,.22)}
     .pill-disabled,.pill-hidden{background:rgba(122,144,156,.16);color:#b1c1c8;border-color:rgba(122,144,156,.2)}
+    .pill-trial{background:rgba(126,187,255,.14);color:#9fd0ff;border-color:rgba(126,187,255,.22)}
+    .pill-monthly,.pill-yearly{background:rgba(96,199,178,.12);color:var(--accent);border-color:rgba(96,199,178,.2)}
+    .pill-lifetime{background:rgba(189,160,255,.14);color:#d3c4ff;border-color:rgba(189,160,255,.22)}
+    .pill-timed{background:rgba(242,191,131,.12);color:var(--warning);border-color:rgba(242,191,131,.2)}
     .muted{color:var(--muted);font-size:.88rem}
     .ok{color:var(--ok)}
     .bad{color:var(--danger)}
     .warn{color:var(--warning)}
     .list{margin:0;padding-left:18px;color:var(--muted)}
     .list li{margin:6px 0}
-    .notice{padding:14px 16px;border:1px solid var(--border);border-radius:18px;background:rgba(96,199,178,.08)}
+    .notice{padding:14px 16px;border:1px solid var(--border);border-radius:8px;background:rgba(96,199,178,.08)}
     .notice.warning{background:rgba(242,191,131,.09);border-color:rgba(242,191,131,.18)}
     .notice.danger{background:var(--danger-soft);border-color:rgba(255,123,103,.18)}
     .detail-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px}
-    .detail-item{padding:14px 16px;border:1px solid rgba(116,148,161,.14);border-radius:18px;background:rgba(6,14,18,.36)}
+    .detail-item{padding:14px 16px;border:1px solid rgba(116,148,161,.14);border-radius:8px;background:rgba(6,14,18,.36)}
     .detail-label{font-size:.72rem;font-weight:760;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
     .detail-value{font-size:1rem;font-weight:650;line-height:1.35;overflow-wrap:anywhere}
     .danger-zone{border-color:rgba(255,123,103,.24);background:linear-gradient(180deg,rgba(57,18,18,.66),rgba(25,11,11,.8))}
@@ -341,7 +344,7 @@ function nav(page = '') {
   const link = (href, label, name) =>
     `<a href="${href}"${page === name ? ' class="active"' : ''}>${label}</a>`;
   return `<div class="nav-shell">
-    <a href="/admin" class="nav-brand"><span style="display:flex;align-items:center;width:18px;height:18px;flex-shrink:0">${CULLER_LOGO_SVG}</span><span>Culler Admin</span></a>
+    <a href="/admin" class="nav-brand"><span style="display:flex;align-items:center;width:18px;height:18px;flex-shrink:0">${KEPTRA_LOGO_SVG}</span><span>Keptra Admin</span></a>
     <div class="nav-links">
       ${link('/admin', 'Dashboard', 'dashboard')}
       ${link('/admin/licenses', 'Licenses', 'licenses')}
@@ -355,8 +358,15 @@ function nav(page = '') {
 
 function statusPill(status) {
   const variants = { active: 1, live: 1, revoked: 1, expired: 1, draft: 1, disabled: 1, hidden: 1 };
-  const cls = variants[String(status)] ? ` pill-${status}` : '';
-  return `<span class="pill${cls}">${status}</span>`;
+  const value = String(status || 'unknown').toLowerCase();
+  const cls = variants[value] ? ` pill-${value}` : '';
+  return `<span class="pill${cls}">${escapeHtml(value)}</span>`;
+}
+
+function planPill(plan, expiresAt) {
+  const label = inferPlanType(plan, expiresAt);
+  const cls = label.toLowerCase();
+  return `<span class="pill pill-${cls}">${escapeHtml(label)}</span>`;
 }
 
 function publicUpdatesBaseUrl() {
@@ -1120,10 +1130,10 @@ app.get('/admin/login', (req, res, next) => {
     <div class="center-card">
       <div class="panel">
         <div style="display:flex;align-items:center;gap:14px;margin-bottom:24px">
-          <span style="display:flex;align-items:center;justify-content:center;width:44px;height:44px;flex-shrink:0;border-radius:14px;background:rgba(96,199,178,.14);border:1px solid var(--border)">${CULLER_LOGO_SVG}</span>
+          <span style="display:flex;align-items:center;justify-content:center;width:44px;height:44px;flex-shrink:0;border-radius:14px;background:rgba(96,199,178,.14);border:1px solid var(--border)">${KEPTRA_LOGO_SVG}</span>
           <div>
             <div class="hero-kicker" style="margin-bottom:4px">Hosted admin</div>
-            <div style="font-weight:780;font-size:1.15rem;letter-spacing:-.03em">Culler</div>
+            <div style="font-weight:780;font-size:1.15rem;letter-spacing:0">Keptra</div>
           </div>
         </div>
         <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:22px">
@@ -1156,10 +1166,10 @@ app.post('/admin/login', async (req, res) => {
       <div class="center-card">
         <div class="panel">
           <div style="display:flex;align-items:center;gap:14px;margin-bottom:24px">
-            <span style="display:flex;align-items:center;justify-content:center;width:44px;height:44px;flex-shrink:0;border-radius:14px;background:rgba(255,123,103,.14);border:1px solid rgba(255,123,103,.22)">${CULLER_LOGO_SVG}</span>
+            <span style="display:flex;align-items:center;justify-content:center;width:44px;height:44px;flex-shrink:0;border-radius:14px;background:rgba(255,123,103,.14);border:1px solid rgba(255,123,103,.22)">${KEPTRA_LOGO_SVG}</span>
             <div>
               <div class="hero-kicker" style="margin-bottom:4px;color:var(--danger)">Access denied</div>
-              <div style="font-weight:780;font-size:1.15rem;letter-spacing:-.03em">Culler</div>
+              <div style="font-weight:780;font-size:1.15rem;letter-spacing:0">Keptra</div>
             </div>
           </div>
           <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:18px">
@@ -1205,7 +1215,7 @@ app.get('/admin', authSession, async (_req, res) => {
       GROUP BY lr.fingerprint, lr.customer_name, lr.status, lr.last_seen_at
       ORDER BY lr.last_seen_at DESC NULLS LAST LIMIT 5`),
     pool.query(`SELECT COUNT(*)::int AS count FROM license_activations`),
-    pool.query(`SELECT 
+    pool.query(`SELECT
       COUNT(DISTINCT customer_email)::int AS total_customers,
       COUNT(*)::int AS total_licenses,
       COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '30 days')::int AS licenses_30d
@@ -1301,7 +1311,7 @@ app.get('/admin', authSession, async (_req, res) => {
         </div>
       </div>
     </div>
-    
+
     <div class="grid">
       <div class="panel">
         <div class="panel-head">
@@ -1414,7 +1424,9 @@ app.get('/admin', authSession, async (_req, res) => {
 app.get('/admin/licenses', authSession, async (req, res) => {
   const queryValue = String(req.query.q || '').trim();
   const rawStatus = String(req.query.status || '').trim().toLowerCase();
+  const rawPlan = String(req.query.plan || '').trim().toLowerCase();
   const statusValue = ['active', 'revoked', 'expired', 'disabled'].includes(rawStatus) ? rawStatus : '';
+  const planValue = ['trial', 'monthly', 'yearly', 'lifetime', 'timed'].includes(rawPlan) ? rawPlan : '';
   const params = [];
   const filters = [];
   if (queryValue) {
@@ -1430,6 +1442,12 @@ app.get('/admin/licenses', authSession, async (req, res) => {
     params.push(statusValue);
     filters.push(`status = $${params.length}`);
   }
+  if (planValue === 'timed') {
+    filters.push(`(COALESCE(plan, '') = '' AND expires_at IS NOT NULL)`);
+  } else if (planValue) {
+    params.push(planValue);
+    filters.push(`plan = $${params.length}`);
+  }
 
   const whereClause = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
   const [licenseResult, stripeLicensesResult, licenseOverview] = await Promise.all([
@@ -1439,15 +1457,28 @@ app.get('/admin/licenses', authSession, async (req, res) => {
       SELECT COUNT(*)::int AS total,
              COUNT(*) FILTER (WHERE status = 'active')::int AS active,
              COUNT(*) FILTER (WHERE status = 'revoked')::int AS revoked,
+             COUNT(*) FILTER (WHERE status = 'expired')::int AS expired,
+             COUNT(*) FILTER (WHERE status = 'disabled')::int AS disabled,
+             COUNT(*) FILTER (WHERE plan = 'trial')::int AS trial,
+             COUNT(*) FILTER (WHERE plan = 'lifetime' OR (plan IS NULL AND expires_at IS NULL))::int AS lifetime,
              COUNT(*) FILTER (WHERE activation_code IS NULL)::int AS missing_codes
       FROM license_records
     `),
   ]);
 
   const generatorEnabled = canGenerateLicenses();
-  const overview = licenseOverview.rows[0] || { total: 0, active: 0, revoked: 0, missing_codes: 0 };
+  const overview = licenseOverview.rows[0] || {
+    total: 0,
+    active: 0,
+    revoked: 0,
+    expired: 0,
+    disabled: 0,
+    trial: 0,
+    lifetime: 0,
+    missing_codes: 0,
+  };
   const shownCount = licenseResult.rows.length;
-  const hasFilters = Boolean(queryValue || statusValue);
+  const hasFilters = Boolean(queryValue || statusValue || planValue);
 
   res.send(htmlPage('Licenses', `
     <div class="hero">
@@ -1488,6 +1519,13 @@ app.get('/admin/licenses', authSession, async (req, res) => {
       </div>
       <div class="card">
         <div>
+          <div class="card-label">Trial / lifetime</div>
+          <div class="card-value">${overview.trial} / ${overview.lifetime}</div>
+          <div class="card-note">Plan mix that often needs support context</div>
+        </div>
+      </div>
+      <div class="card">
+        <div>
           <div class="card-label">Needs cleanup</div>
           <div class="card-value">${overview.missing_codes}</div>
           <div class="card-note">Records missing an activation code</div>
@@ -1515,6 +1553,17 @@ app.get('/admin/licenses', authSession, async (req, res) => {
             <option value="revoked"${statusValue === 'revoked' ? ' selected' : ''}>Revoked</option>
             <option value="expired"${statusValue === 'expired' ? ' selected' : ''}>Expired</option>
             <option value="disabled"${statusValue === 'disabled' ? ' selected' : ''}>Disabled</option>
+          </select>
+        </div>
+        <div style="min-width:180px">
+          <label>Plan</label>
+          <select name="plan">
+            <option value=""${planValue ? '' : ' selected'}>All plans</option>
+            <option value="trial"${planValue === 'trial' ? ' selected' : ''}>Trial</option>
+            <option value="monthly"${planValue === 'monthly' ? ' selected' : ''}>Monthly</option>
+            <option value="yearly"${planValue === 'yearly' ? ' selected' : ''}>Yearly</option>
+            <option value="lifetime"${planValue === 'lifetime' ? ' selected' : ''}>Lifetime</option>
+            <option value="timed"${planValue === 'timed' ? ' selected' : ''}>Timed/custom</option>
           </select>
         </div>
         <div class="toolbar-actions">
@@ -1602,7 +1651,7 @@ app.get('/admin/licenses', authSession, async (req, res) => {
         </ul>
       </div>
     </div>
-    
+
     ${stripeLicensesResult.rows.length > 0 ? `<div class="panel">
       <div class="panel-head">
         <div>
@@ -1624,7 +1673,7 @@ app.get('/admin/licenses', authSession, async (req, res) => {
         </table>
       </div>
     </div>` : ''}
-    
+
     <div class="panel">
       <div class="panel-head">
         <div>
@@ -1634,11 +1683,12 @@ app.get('/admin/licenses', authSession, async (req, res) => {
       </div>
       ${licenseResult.rows.length ? `<div class="table-wrap">
         <table class="table-stack">
-          <thead><tr><th>Customer</th><th>Status</th><th>Seats</th><th>Activation code</th><th>Expires</th><th>Last seen</th><th>Actions</th></tr></thead>
+          <thead><tr><th>Customer</th><th>Status</th><th>Plan</th><th>Seats</th><th>Activation code</th><th>Expires</th><th>Last seen</th><th>Actions</th></tr></thead>
           <tbody>
           ${licenseResult.rows.map((row) => `<tr>
             <td data-label="Customer"><span style="font-weight:700">${row.customer_name}</span>${row.customer_email ? `<div class="muted">${row.customer_email}</div>` : ''}</td>
             <td data-label="Status">${statusPill(row.status)}</td>
+            <td data-label="Plan">${planPill(row.plan, row.expires_at)}</td>
             <td data-label="Seats" class="muted">${row.max_devices || '&infin;'} device${row.max_devices === 1 ? '' : 's'}</td>
             <td data-label="Activation code"><code>${row.activation_code || '—'}</code></td>
             <td data-label="Expires" class="muted">${formatLicenseDate(row.expires_at)}</td>
@@ -2114,8 +2164,8 @@ app.get('/admin/releases', authSession, async (req, res) => {
             <div><label>Channel</label><input name="channel" value="stable" required /></div>
             <div><label>Rollout</label><select name="rolloutState"><option value="live">Live</option><option value="draft">Draft</option><option value="hidden">Hidden</option></select></div>
           </div>
-          <label>Release name</label><input name="releaseName" placeholder="Photo Importer 1.1.1" required />
-          <label>Artifact URL</label><input name="artifactUrl" placeholder="https://updates.culler.z2hs.au/artifacts/windows/PhotoImporter-Setup-1.1.1.exe" required />
+          <label>Release name</label><input name="releaseName" placeholder="Keptra 1.1.1" required />
+          <label>Artifact URL</label><input name="artifactUrl" placeholder="https://updates.culler.z2hs.au/artifacts/windows/Keptra-Setup-1.1.1.exe" required />
           <label>Release URL <span style="font-weight:400">(optional)</span></label><input name="releaseUrl" placeholder="https://admin.culler.z2hs.au/releases/1.1.1" />
           <label>Release notes <span style="font-weight:400">(optional)</span></label><textarea name="releaseNotes" rows="4"></textarea>
           <div class="actions" style="margin-top:16px">
@@ -2208,7 +2258,7 @@ app.post('/admin/releases/sync-github', authSession, async (_req, res) => {
         [
           version,
           asset.platform,
-          latest.name || `Photo Importer ${version}`,
+          latest.name || `Keptra ${version}`,
           latest.body || null,
           latest.htmlUrl || null,
           asset.url,
@@ -2929,11 +2979,11 @@ function licenseEmailHtml({ customerName, licenseKey, activationCode, expiresLab
   const expiry = expiresLabel ? `<p>This license expires on <strong>${expiresLabel}</strong>.</p>` : '';
   return `
     <div style="font-family:system-ui,sans-serif;max-width:560px;margin:0 auto;color:#1a1a1a">
-      <h2 style="margin-bottom:4px">Your Culler license</h2>
+      <h2 style="margin-bottom:4px">Your Keptra license</h2>
       <p>Hi ${customerName},</p>
-      <p>Thanks for trying Culler. Here are your license details:</p>
+      <p>Thanks for trying Keptra. Here are your license details:</p>
       ${expiry}
-      <p><strong>Activation code</strong> (easiest — paste this into Culler → Settings → License):</p>
+      <p><strong>Activation code</strong> (easiest — paste this into Keptra → Settings → License):</p>
       <pre style="background:#f4f4f5;padding:12px 16px;border-radius:8px;font-size:15px;letter-spacing:.05em">${activationCode}</pre>
       <p style="margin-top:24px"><strong>Full license key</strong> (alternative, for offline use):</p>
       <pre style="background:#f4f4f5;padding:12px 16px;border-radius:8px;font-size:11px;word-break:break-all;white-space:pre-wrap">${licenseKey}</pre>
@@ -2994,7 +3044,7 @@ async function ensureStripeSessionsSchema() {
     )
   `);
   await pool.query('CREATE INDEX IF NOT EXISTS idx_stripe_sessions_email ON stripe_sessions(customer_email)');
-  
+
   // Add new columns if they don't exist (migration for existing tables)
   try {
     await pool.query('ALTER TABLE stripe_sessions ADD COLUMN plan TEXT');
@@ -3092,7 +3142,7 @@ app.post('/api/v1/trial/request', async (req, res) => {
     // Send email
     await sendEmail({
       to: cleanEmail,
-      subject: `Your Culler ${trialDays}-day trial license`,
+      subject: `Your Keptra ${trialDays}-day trial license`,
       html: licenseEmailHtml({ customerName: cleanName, licenseKey, activationCode, expiresLabel }),
     });
 
@@ -3112,13 +3162,13 @@ app.get('/stripe/webhook/status', authSession, async (_req, res) => {
   for (const row of config.rows) {
     stripeConfig[row.key] = row.value ? `${row.value.substring(0, 10)}...` : '(not set)';
   }
-  
+
   const sessionsCount = await pool.query('SELECT COUNT(*)::int AS cnt FROM stripe_sessions');
   const recentSessions = await pool.query(`
-    SELECT session_id, license_key, customer_email, created_at FROM stripe_sessions 
+    SELECT session_id, license_key, customer_email, created_at FROM stripe_sessions
     ORDER BY created_at DESC LIMIT 5
   `);
-  
+
   return res.json({
     timestamp: new Date().toISOString(),
     stripeConfig,
@@ -3138,7 +3188,7 @@ app.get('/stripe/webhook/status', authSession, async (_req, res) => {
 // Manual test endpoint to simulate a webhook (for debugging)
 app.post('/stripe/webhook/test', authSession, async (req, res) => {
   const { session_id, email, name } = req.query;
-  
+
   if (!session_id || !email) {
     return res.status(400).json({ error: 'Requires: session_id and email query params' });
   }
@@ -3164,8 +3214,8 @@ app.post('/stripe/webhook/test', authSession, async (req, res) => {
 
     console.log(`[stripe-test] ✓ Session stored — session: ${session_id}`);
 
-    return res.json({ 
-      ok: true, 
+    return res.json({
+      ok: true,
       sessionId: session_id,
       licenseKey: licenseKey.substring(0, 50) + '...',
       activationCode,
@@ -3211,7 +3261,7 @@ app.post(
       const session = event.data.object;
       const sessionId = session.id;
       const customerEmail = session.customer_details?.email || session.customer_email || '';
-      const customerName = session.customer_details?.name || 'Culler Customer';
+      const customerName = session.customer_details?.name || 'Keptra Customer';
       const amountTotal = session.amount_total; // cents
       const currency = (session.currency || 'aud').toUpperCase();
       const plan = session.metadata?.plan || 'lifetime';
@@ -3248,7 +3298,7 @@ app.post(
 
         await sendEmail({
           to: customerEmail,
-          subject: 'Your Culler license — thank you!',
+          subject: 'Your Keptra license — thank you!',
           html: licenseEmailHtml({ customerName, licenseKey, activationCode, expiresLabel }),
         });
 
@@ -3294,7 +3344,7 @@ app.post(
       }
 
       let customerEmail = checkoutSession?.customer_details?.email || paymentIntent.receipt_email || '';
-      let customerName = checkoutSession?.customer_details?.name || paymentIntent.metadata?.customer_name || 'Culler Customer';
+      let customerName = checkoutSession?.customer_details?.name || paymentIntent.metadata?.customer_name || 'Keptra Customer';
       const plan = checkoutSession?.metadata?.plan || paymentIntent.metadata?.plan || 'lifetime';
       const maxDevices = safeParseMaxDevices(checkoutSession?.metadata?.max_devices || paymentIntent.metadata?.max_devices, defaultMaxDevices);
 
@@ -3349,7 +3399,7 @@ app.post(
         console.log(`[stripe] Sending email to ${customerEmail}`);
         await sendEmail({
           to: customerEmail,
-          subject: 'Your Culler license — thank you!',
+          subject: 'Your Keptra license — thank you!',
           html: licenseEmailHtml({ customerName, licenseKey, activationCode, expiresLabel }),
         });
 
@@ -3366,25 +3416,25 @@ app.post(
       const activationCode = charge.metadata?.activation_code;
       const newDeviceCount = Number(charge.metadata?.new_device_count);
       const licenseId = Number(charge.metadata?.license_id);
-      
+
       if (!activationCode || !newDeviceCount) {
         console.log('[stripe] charge.succeeded without device upgrade metadata — skipping');
         return res.json({ received: true });
       }
-      
+
       console.log(`[stripe] charge.succeeded — device upgrade: ${activationCode} → ${newDeviceCount} devices`);
-      
+
       try {
         const licenseResult = await pool.query(
           'SELECT * FROM license_records WHERE activation_code = $1',
           [activationCode]
         );
-        
+
         if (!licenseResult.rowCount) {
           console.error('[stripe] ✗ License not found for upgrade:', activationCode);
           return res.json({ received: true });
         }
-        
+
         const license = licenseResult.rows[0];
         const updated = buildUpdatedLicenseRecord(license, { maxDevices: newDeviceCount });
         await pool.query(
@@ -3404,23 +3454,23 @@ app.post(
           [updated.licenseKey, updated.maxDevices, activationCode]
         ).catch(() => {});
         console.log(`[stripe] ✓ License updated to ${newDeviceCount} devices`);
-        
+
         // Send confirmation email
         await sendEmail({
           to: license.customer_email,
-          subject: 'Culler license device upgrade — done!',
+          subject: 'Keptra license device upgrade — done!',
           html: `
             <div style="font-family:system-ui,sans-serif;max-width:560px;margin:0 auto;color:#1a1a1a">
               <h2>Device upgrade successful</h2>
               <p>Hi ${license.customer_name},</p>
-              <p>Your Culler license has been upgraded to <strong>${newDeviceCount} devices</strong>.</p>
+              <p>Your Keptra license has been upgraded to <strong>${newDeviceCount} devices</strong>.</p>
               <p>Your stored license key has been refreshed too, so future activations stay in sync.</p>
-              <p>Simply restart Culler on your devices and they will all work with this license.</p>
+              <p>Simply restart Keptra on your devices and they will all work with this license.</p>
               <p style="margin-top:24px;font-size:14px;color:#666"><strong>Activation code:</strong> ${activationCode}</p>
             </div>
           `,
         });
-        
+
         console.log(`[stripe] ✓ Upgrade confirmation email sent to ${license.customer_email}`);
       } catch (err) {
         console.error('[stripe] ✗ Failed to process device upgrade:');
@@ -3433,36 +3483,36 @@ app.post(
       const activationCode = charge.metadata?.activation_code;
       const extendAmount = Number(charge.metadata?.extend_amount);
       const extendUnit = charge.metadata?.extend_unit;
-      
+
       if (!activationCode || !extendAmount || !extendUnit) {
         console.log('[stripe] charge.succeeded without extension metadata — skipping');
         return res.json({ received: true });
       }
-      
+
       console.log(`[stripe] charge.succeeded — license extension: ${activationCode} +${extendAmount} ${extendUnit}`);
-      
+
       try {
         // Get current license to calculate new expiry
         const licenseResult = await pool.query(
           'SELECT * FROM license_records WHERE activation_code = $1',
           [activationCode]
         );
-        
+
         if (!licenseResult.rowCount) {
           console.error('[stripe] ✗ License not found for extension:', activationCode);
           return res.json({ received: true });
         }
-        
+
         const license = licenseResult.rows[0];
-        
+
         // Calculate new expiry date
         const currentExpiry = license.expires_at ? new Date(license.expires_at) : new Date();
         const newExpiry = new Date(currentExpiry);
-        
+
         if (extendUnit === 'days') newExpiry.setDate(newExpiry.getDate() + extendAmount);
         else if (extendUnit === 'months') newExpiry.setMonth(newExpiry.getMonth() + extendAmount);
         else if (extendUnit === 'years') newExpiry.setFullYear(newExpiry.getFullYear() + extendAmount);
-        
+
         const updated = buildUpdatedLicenseRecord(license, { expiresAt: newExpiry.toISOString().slice(0, 10) });
         await pool.query(
           `UPDATE license_records
@@ -3488,25 +3538,25 @@ app.post(
            WHERE activation_code = $3`,
           [updated.licenseKey, updated.expiresAt, activationCode]
         ).catch(() => {});
-        
+
         console.log(`[stripe] ✓ License extended to ${newExpiry.toISOString()}`);
-        
+
         // Send confirmation email
         await sendEmail({
           to: license.customer_email,
-          subject: 'Culler license extended!',
+          subject: 'Keptra license extended!',
           html: `
             <div style="font-family:system-ui,sans-serif;max-width:560px;margin:0 auto;color:#1a1a1a">
               <h2>License extended</h2>
               <p>Hi ${license.customer_name},</p>
-              <p>Your Culler license has been extended by <strong>${extendAmount} ${extendUnit}</strong>.</p>
+              <p>Your Keptra license has been extended by <strong>${extendAmount} ${extendUnit}</strong>.</p>
               <p>New expiry date: <strong>${newExpiry.toLocaleDateString('en-AU', {year: 'numeric', month: 'short', day: 'numeric'})}</strong></p>
               <p>Your stored license key has also been regenerated to match the new end date.</p>
               <p style="margin-top:24px;font-size:14px;color:#666"><strong>Activation code:</strong> ${activationCode}</p>
             </div>
           `,
         });
-        
+
         console.log(`[stripe] ✓ Extension confirmation email sent to ${license.customer_email}`);
       } catch (err) {
         console.error('[stripe] ✗ Failed to process extension:');
@@ -3565,10 +3615,15 @@ app.get('/api/v1/pricing', apiCors, async (_req, res) => {
 app.post('/api/v1/checkout/create', async (req, res) => {
   if (!stripeSecretKey) return res.status(503).json({ error: 'Payments not configured.' });
   const { plan, name, email, maxDevices, extensionCode } = req.body || {};
+  const customerName = String(name || '').trim();
+  const customerEmail = String(email || '').trim().toLowerCase();
   if (!['monthly', 'yearly', 'lifetime'].includes(plan)) {
     return res.status(400).json({ error: 'plan must be monthly, yearly, or lifetime.' });
   }
-  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+  if (customerName.length < 2 || customerName.length > 120) {
+    return res.status(400).json({ error: 'Name must be between 2 and 120 characters.' });
+  }
+  if (!customerEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail)) {
     return res.status(400).json({ error: 'Valid email required.' });
   }
 
@@ -3584,6 +3639,7 @@ app.post('/api/v1/checkout/create', async (req, res) => {
     return res.status(400).json({ error: err.message });
   }
   const extraDevices = Math.max(0, selectedMaxDevices - defaultMaxDevices);
+  const checkoutTotalCents = amountCents + (extraDevices * pricePerExtraDeviceCents);
 
   if (!priceId && !amountCents) {
     return res.status(503).json({ error: `No price configured for plan: ${plan}` });
@@ -3597,13 +3653,13 @@ app.post('/api/v1/checkout/create', async (req, res) => {
     // Build Stripe Checkout Session via API
     const stripeBody = new URLSearchParams({
       'payment_method_types[]': 'card',
-      'customer_email': email.trim(),
+      'customer_email': customerEmail,
       'success_url': successUrl,
       'cancel_url': cancelUrl,
       'metadata[plan]': plan,
       'metadata[max_devices]': String(selectedMaxDevices),
-      'metadata[customer_name]': (name || '').trim(),
-      'metadata[customer_email]': email.trim(),
+      'metadata[customer_name]': customerName,
+      'metadata[customer_email]': customerEmail,
       'metadata[extension_code]': extensionCode || '',
     });
 
@@ -3618,14 +3674,14 @@ app.post('/api/v1/checkout/create', async (req, res) => {
       stripeBody.set('mode', 'payment');
       stripeBody.set('line_items[0][price_data][currency]', currency);
       stripeBody.set('line_items[0][price_data][unit_amount]', String(amountCents));
-      stripeBody.set('line_items[0][price_data][product_data][name]', `Culler Pro — ${plan}`);
+      stripeBody.set('line_items[0][price_data][product_data][name]', `Keptra Pro — ${plan}`);
       stripeBody.set('line_items[0][quantity]', '1');
     }
 
     if (extraDevices > 0 && pricePerExtraDeviceCents > 0) {
       stripeBody.set('line_items[1][price_data][currency]', currency);
       stripeBody.set('line_items[1][price_data][unit_amount]', String(pricePerExtraDeviceCents));
-      stripeBody.set('line_items[1][price_data][product_data][name]', 'Culler additional device seat');
+      stripeBody.set('line_items[1][price_data][product_data][name]', 'Keptra additional device seat');
       stripeBody.set('line_items[1][price_data][product_data][description]', `Adds ${extraDevices} extra device${extraDevices > 1 ? 's' : ''} to this license.`);
       stripeBody.set('line_items[1][quantity]', String(extraDevices));
     }
@@ -3640,7 +3696,17 @@ app.post('/api/v1/checkout/create', async (req, res) => {
     });
     const session = await stripeRes.json();
     if (!stripeRes.ok) return res.status(400).json({ error: session.error?.message || 'Stripe error.' });
-    return res.json({ url: session.url });
+    return res.json({
+      url: session.url,
+      summary: {
+        plan,
+        maxDevices: selectedMaxDevices,
+        includedDevices: defaultMaxDevices,
+        extraDevices,
+        totalCents: checkoutTotalCents,
+        currency: String(currency).toUpperCase(),
+      },
+    });
   } catch (err) {
     console.error('[checkout] error:', err);
     return res.status(500).json({ error: 'Could not create checkout session.' });
@@ -3695,10 +3761,10 @@ async function ensurePricingSchema() {
 // ---------------------------------------------------------------------------
 app.post('/api/v1/upgrade-devices', async (req, res) => {
   if (!stripeSecretKey) return res.status(503).json({ error: 'Payments not configured.' });
-  
+
   const { activationCode, newDeviceCount } = req.body || {};
   const count = Number(newDeviceCount);
-  
+
   if (!activationCode) return res.status(400).json({ error: 'activationCode required.' });
   if (!Number.isInteger(count) || count < 2 || count > 100) {
     return res.status(400).json({ error: 'newDeviceCount must be integer between 2 and 100.' });
@@ -3710,29 +3776,29 @@ app.post('/api/v1/upgrade-devices', async (req, res) => {
       'SELECT id, fingerprint, customer_email, customer_name, max_devices FROM license_records WHERE activation_code = $1',
       [activationCode]
     );
-    
+
     if (!licenseResult.rowCount) {
       return res.status(404).json({ error: 'License not found.' });
     }
-    
+
     const license = licenseResult.rows[0];
     const currentDevices = license.max_devices || 1;
-    
+
     if (count <= currentDevices) {
       return res.status(400).json({ error: `New device count (${count}) must be higher than current (${currentDevices}).` });
     }
-    
+
     const devicesToAdd = count - currentDevices;
     const pricing = await getStripePricing();
     const pricePerDevice = Number(pricing.device_upgrade_price_cents || 0);
     const currency = pricing.currency || 'aud';
-    
+
     if (pricePerDevice === 0) {
       return res.status(503).json({ error: 'Device upgrade pricing not configured.' });
     }
-    
+
     const totalCents = pricePerDevice * devicesToAdd;
-    
+
     const origin = req.headers.origin || publicUpdatesBaseUrl();
     const successUrl = `${origin}/upgrade-success?activation_code=${encodeURIComponent(activationCode)}&new_devices=${count}`;
     const cancelUrl = `${origin}/`;
@@ -3750,7 +3816,7 @@ app.post('/api/v1/upgrade-devices', async (req, res) => {
       'metadata[devices_to_add]': String(devicesToAdd),
       'line_items[0][price_data][currency]': currency,
       'line_items[0][price_data][unit_amount]': String(totalCents),
-      'line_items[0][price_data][product_data][name]': `Culler — ${devicesToAdd} additional device${devicesToAdd > 1 ? 's' : ''}`,
+      'line_items[0][price_data][product_data][name]': `Keptra — ${devicesToAdd} additional device${devicesToAdd > 1 ? 's' : ''}`,
       'line_items[0][quantity]': '1',
     });
 
@@ -3762,10 +3828,10 @@ app.post('/api/v1/upgrade-devices', async (req, res) => {
       },
       body: stripeBody.toString(),
     });
-    
+
     const session = await stripeRes.json();
     if (!stripeRes.ok) return res.status(400).json({ error: session.error?.message || 'Stripe error.' });
-    
+
     console.log(`[upgrade] Device upgrade checkout created: ${devicesToAdd} devices for ${license.customer_email}`);
     return res.json({ url: session.url });
   } catch (err) {
@@ -3917,7 +3983,7 @@ app.get('/admin/pricing', authSession, async (_req, res) => {
         </div>
       </div>
       <div class="notice">
-        <p class="muted">For subscription plans, set a Stripe Price ID so Culler can treat the purchase as a renewable timed license.</p>
+        <p class="muted">For subscription plans, set a Stripe Price ID so Keptra can treat the purchase as a renewable timed license.</p>
         <p class="muted" style="margin-top:8px">Webhook URL to register in Stripe: <code>${publicUpdatesBaseUrl()}/stripe/webhook</code></p>
       </div>
     </div>
@@ -3948,16 +4014,16 @@ app.get('/upgrade-success', (_req, res) => {
       <div style="font-size:2.5rem;margin-bottom:16px">✓</div>
       <h1 style="margin-bottom:8px">Upgrade complete</h1>
       <p class="muted" style="margin-bottom:24px">Your device limit has been increased!</p>
-      
+
       <div style="background:var(--surface-raised);border:1px solid var(--border);border-radius:12px;padding:24px;text-align:left;margin-bottom:24px">
         <p style="font-size:0.85rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px">What's next</p>
         <ol style="margin-left:20px;line-height:1.8">
-          <li>Restart Culler on your devices</li>
+          <li>Restart Keptra on your devices</li>
           <li>All devices will activate with your license</li>
           <li>Confirmation email has been sent</li>
         </ol>
       </div>
-      
+
       <p class="muted"><a href="/#pricing">← Back to pricing</a></p>
     </div>
   `));
@@ -4015,7 +4081,7 @@ app.post('/admin/licenses/:id/extend', authSession, async (req, res) => {
     try {
       await sendEmail({
         to: row.customer_email,
-        subject: 'Your Culler license has been extended',
+        subject: 'Your Keptra license has been extended',
         html: licenseEmailHtml({
           customerName: row.customer_name,
           licenseKey: newKey,
@@ -4045,23 +4111,23 @@ app.post('/admin/licenses/:id/extend', authSession, async (req, res) => {
 // ---------------------------------------------------------------------------
 app.get('/api/v1/license/:sessionId', apiCors, async (req, res) => {
   let { sessionId } = req.params;
-  
+
   // Handle case where Stripe appends metadata to session ID (e.g., cs_live_...:150)
   if (sessionId.includes(':')) {
     const original = sessionId;
     sessionId = sessionId.split(':')[0];
     console.log(`[license-lookup] Cleaned session ID: ${original} → ${sessionId}`);
   }
-  
+
   try {
     console.log(`[license-lookup] Querying stripe_sessions for: ${sessionId}`);
     const result = await pool.query(
       'SELECT ss.license_key, ss.activation_code, ss.customer_email, ss.plan, ss.max_devices, ss.expires_at FROM stripe_sessions ss WHERE ss.session_id = $1',
       [sessionId]
     );
-    
+
     console.log(`[license-lookup] Query returned ${result.rows.length} rows`);
-    
+
     if (result.rows.length === 0) {
       console.warn(`[license-lookup] Session not found: ${sessionId}`);
       return res.status(404).json({ error: 'License not found. It may take a few seconds to process. Please refresh.' });
@@ -4090,7 +4156,7 @@ app.get('/api/v1/license/:sessionId', apiCors, async (req, res) => {
 app.get('/api/v1/license-info/:code', apiCors, async (req, res) => {
   const code = req.params.code?.trim();
   if (!code) return res.status(400).json({ error: 'Activation code required.' });
-  
+
   try {
     const row = await getLicenseRecordByActivationCode(code);
     const activations = row
@@ -4113,6 +4179,7 @@ app.get('/api/v1/license-info/:code', apiCors, async (req, res) => {
       customerName: row.customer_name,
       customerEmail: row.customer_email,
       plan: row.plan,
+      status: row.status || 'active',
       maxDevices: row.max_devices,
       issuedAt: issuedDateForRecord(row),
       expiresAt: latestDeviceExpiry(activations.rows) || normalizeLicenseDate(row.expires_at),
@@ -4130,25 +4197,28 @@ app.get('/api/v1/license-info/:code', apiCors, async (req, res) => {
 // ---------------------------------------------------------------------------
 app.post('/api/v1/extend-license', apiCors, async (req, res) => {
   const { activationCode, amount, unit } = req.body;
-  
+
   if (!activationCode || !amount || !unit) {
     return res.status(400).json({ error: 'Missing required fields.' });
   }
-  
+
   if (!['days', 'months', 'years'].includes(unit)) {
     return res.status(400).json({ error: 'Invalid unit (days/months/years).' });
   }
-  
+
   try {
     // Get pricing config
     const cfg = await getStripePricing();
     const currency = (cfg.currency || 'aud').toLowerCase();
-    
+
     // Look up license
     const license = await getLicenseRecordByActivationCode(activationCode);
 
     if (!license) {
       return res.status(404).json({ error: 'License not found.' });
+    }
+    if (license.status === 'revoked' || license.status === 'disabled') {
+      return res.status(403).json({ error: `This license is ${license.status} and cannot be extended.` });
     }
 
     const unitPriceKey = unit === 'days'
@@ -4157,17 +4227,17 @@ app.post('/api/v1/extend-license', apiCors, async (req, res) => {
         ? 'extend_month_price_cents'
         : 'extend_year_price_cents';
     const unitPriceCents = Number(cfg[unitPriceKey] || 0);
-    
+
     if (!unitPriceCents) {
       return res.status(503).json({ error: `Extension pricing not configured for ${unit}.` });
     }
-    
+
     const extendCents = unitPriceCents * Number(amount);
-    
+
     const origin = req.headers.origin || publicUpdatesBaseUrl();
     const successUrl = `${origin}/manage-license`;
     const cancelUrl = `${origin}/manage-license`;
-    
+
     const stripeBody = new URLSearchParams({
       'payment_method_types[]': 'card',
       'customer_email': license.customer_email,
@@ -4180,10 +4250,10 @@ app.post('/api/v1/extend-license', apiCors, async (req, res) => {
       'metadata[extend_unit]': unit,
       'line_items[0][price_data][currency]': currency,
       'line_items[0][price_data][unit_amount]': String(extendCents),
-      'line_items[0][price_data][product_data][name]': `Culler extension — +${amount} ${unit}`,
+      'line_items[0][price_data][product_data][name]': `Keptra extension — +${amount} ${unit}`,
       'line_items[0][quantity]': '1',
     });
-    
+
     const stripeRes = await fetch('https://api.stripe.com/v1/checkout/sessions', {
       method: 'POST',
       headers: {
@@ -4192,10 +4262,10 @@ app.post('/api/v1/extend-license', apiCors, async (req, res) => {
       },
       body: stripeBody.toString(),
     });
-    
+
     const session = await stripeRes.json();
     if (!stripeRes.ok) return res.status(400).json({ error: session.error?.message || 'Stripe error.' });
-    
+
     console.log(`[extend] License extension checkout created for ${license.customer_email}: +${amount} ${unit}`);
     return res.json({ url: session.url });
   } catch (err) {
@@ -4214,29 +4284,29 @@ app.get('/upgrade-license', (_req, res) => {
     <div class="panel" style="max-width:620px;margin:60px auto">
       <h1 style="text-align:center;margin-bottom:8px">Add devices to your license</h1>
       <p class="muted" style="text-align:center;margin-bottom:32px">Your current license will be upgraded to cover more devices</p>
-      
+
       <div style="background:var(--surface-raised);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:24px">
         <label style="display:block;margin-bottom:8px;font-weight:500">How many devices do you need?</label>
         <input id="deviceCount" type="number" min="2" max="100" value="5" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:6px;font-size:1rem" />
         <p class="muted" style="font-size:0.85rem;margin-top:8px">Current devices: <span id="currentDevices">1</span> → New: <span id="newDevices">5</span> | Cost: <span id="costDisplay">—</span></p>
       </div>
-      
+
       <button id="upgradeBtn" style="width:100%;background:var(--accent);color:#fff;border:none;border-radius:6px;padding:12px;font-weight:500;cursor:pointer;font-size:1rem;margin-bottom:12px">Proceed to payment</button>
       <a href="/manage-license" style="display:block;text-align:center;color:var(--text-muted);text-decoration:none;padding:8px">← Back</a>
     </div>
-    
+
     <script>
       const code = '${code.replace(/'/g, "\\'")}';
       let currentDevices = 1;
       let pricePerDevice = 0;
       let pricingCurrency = 'AUD';
-      
+
       async function loadLicense() {
         if (!code) {
           document.getElementById('upgradeBtn').disabled = true;
           return;
         }
-        
+
         try {
           const res = await fetch('/api/v1/license-info/' + encodeURIComponent(code));
           const data = await res.json();
@@ -4249,7 +4319,7 @@ app.get('/upgrade-license', (_req, res) => {
           console.error(err);
         }
       }
-      
+
       async function getPricing() {
         try {
           const res = await fetch('/api/v1/pricing');
@@ -4261,7 +4331,7 @@ app.get('/upgrade-license', (_req, res) => {
           console.error(err);
         }
       }
-      
+
       function updateCost() {
         const newCount = parseInt(document.getElementById('deviceCount').value) || currentDevices;
         const devicesToAdd = newCount - currentDevices;
@@ -4271,16 +4341,16 @@ app.get('/upgrade-license', (_req, res) => {
           ? new Intl.NumberFormat('en-AU', { style: 'currency', currency: pricingCurrency }).format(totalCost)
           : 'FREE';
       }
-      
+
       document.getElementById('deviceCount').oninput = updateCost;
-      
+
       document.getElementById('upgradeBtn').onclick = async () => {
         const newCount = parseInt(document.getElementById('deviceCount').value);
         if (newCount <= currentDevices) {
           alert('Please select a number greater than ' + currentDevices);
           return;
         }
-        
+
         try {
           const res = await fetch('/api/v1/upgrade-devices', {
             method: 'POST',
@@ -4290,7 +4360,7 @@ app.get('/upgrade-license', (_req, res) => {
               newDeviceCount: newCount
             })
           });
-          
+
           const data = await res.json();
           if (res.ok) {
             window.location.href = data.url;
@@ -4301,7 +4371,7 @@ app.get('/upgrade-license', (_req, res) => {
           alert('Error: ' + err.message);
         }
       };
-      
+
       loadLicense();
       getPricing();
     </script>
@@ -4315,7 +4385,7 @@ app.get('/checkout-success', (_req, res) => {
       <div class="hero" style="max-width:980px;margin:0 auto 18px">
         <div class="hero-copy">
           <div class="hero-kicker">Payment received</div>
-          <h1>Your Culler license is being prepared.</h1>
+          <h1>Your Keptra license is being prepared.</h1>
           <p class="muted" id="loadingMsg">Pairing your payment with an activation code now.</p>
           <div class="hero-meta">
             <span class="hero-note" id="statusBadge">Waiting for license sync</span>
@@ -4324,7 +4394,7 @@ app.get('/checkout-success', (_req, res) => {
           </div>
         </div>
         <div class="actions">
-          <a href="https://culler.z2hs.au/download.html" target="_blank" rel="noreferrer"><button type="button">Download Culler</button></a>
+          <a href="https://culler.z2hs.au/download.html" target="_blank" rel="noreferrer"><button type="button">Download Keptra</button></a>
           <a href="/manage-license"><button class="secondary" type="button">Manage license</button></a>
         </div>
       </div>
@@ -4348,7 +4418,7 @@ app.get('/checkout-success', (_req, res) => {
             <div class="panel-head">
               <div>
                 <h2>Activation code</h2>
-                <p class="muted">Paste this into Culler and keep it somewhere safe for later.</p>
+                <p class="muted">Paste this into Keptra and keep it somewhere safe for later.</p>
               </div>
             </div>
             <div style="padding:18px;border:1px solid var(--border-strong);border-radius:22px;background:linear-gradient(135deg,rgba(96,199,178,.14),rgba(242,191,131,.08) 42%,rgba(12,22,28,.92) 100%)">
@@ -4389,7 +4459,7 @@ app.get('/checkout-success', (_req, res) => {
               </div>
             </div>
             <ol class="list" style="padding-left:20px">
-              <li>Download or open the latest Culler build.</li>
+              <li>Download or open the latest Keptra build.</li>
               <li>Go to <strong>Settings → License</strong>.</li>
               <li>Paste the activation code and confirm.</li>
               <li>Restart the app if it was already open.</li>
@@ -4450,7 +4520,7 @@ app.get('/checkout-success', (_req, res) => {
 
       async function loadLicense() {
         retryCount++;
-        
+
         if (!sessionId) {
           showError('No session ID found. Please check your payment link.');
           return;
@@ -4474,7 +4544,7 @@ app.get('/checkout-success', (_req, res) => {
               document.getElementById('helpBox').style.display = 'block';
               return;
             }
-            
+
             setTimeout(loadLicense, 2000);
             return;
           }
@@ -4486,7 +4556,7 @@ app.get('/checkout-success', (_req, res) => {
           const codeEl = document.getElementById('activationCode');
           codeEl.textContent = data.activationCode;
           document.getElementById('licenseBox').style.display = 'block';
-          
+
           document.getElementById('planType').textContent = displayPlan(data.plan, data.expiresAt);
           const deviceCount = Number(data.maxDevices || 1);
           document.getElementById('maxDevices').textContent = String(deviceCount);
@@ -4496,7 +4566,7 @@ app.get('/checkout-success', (_req, res) => {
             document.getElementById('expiryDate').textContent = date.toLocaleDateString('en-AU', {year: 'numeric', month: 'short', day: 'numeric'});
             document.getElementById('expiryItem').style.display = 'block';
           }
-          
+
           document.getElementById('copyBtn').onclick = async () => {
             try {
               await navigator.clipboard.writeText(data.activationCode);
@@ -4534,9 +4604,55 @@ app.get('/checkout-success', (_req, res) => {
 app.get('/manage-license', (_req, res) => {
   return res.send(htmlPage('Manage your license', `
     <style>
-      .ml-wrap { max-width: 560px; margin: 48px auto; }
-      .ml-section { margin-bottom: 20px; }
-      .ml-lookup { display: flex; gap: 8px; align-items: stretch; }
+      .ml-wrap { max-width: 860px; margin: 42px auto 64px; }
+      .ml-hero {
+        display: grid;
+        gap: 10px;
+        margin-bottom: 22px;
+        padding: 24px;
+        border: 1px solid var(--border-strong);
+        border-radius: 16px;
+        background: linear-gradient(135deg, rgba(96,199,178,.12), rgba(13,24,31,.9));
+        box-shadow: var(--shadow);
+      }
+      .ml-hero h1 { max-width: none; }
+      .ml-hero p { max-width: 56ch; }
+      .ml-section {
+        margin-bottom: 18px;
+        padding: 18px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: rgba(13,24,31,.68);
+      }
+      .ml-helper {
+        margin-top: 10px;
+        color: var(--muted);
+        font-size: .84rem;
+        line-height: 1.45;
+      }
+      .ml-help-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        margin: 0 0 18px;
+      }
+      .ml-help-card {
+        padding: 13px 14px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: rgba(6,14,18,.34);
+      }
+      .ml-help-card strong {
+        display: block;
+        margin-bottom: 4px;
+        font-size: .82rem;
+      }
+      .ml-help-card span {
+        color: var(--muted);
+        font-size: .78rem;
+        line-height: 1.4;
+      }
+      .ml-lookup { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: stretch; }
       .ml-lookup input {
         flex: 1;
         font-family: ui-monospace, 'SF Mono', Consolas, monospace;
@@ -4545,7 +4661,7 @@ app.get('/manage-license', (_req, res) => {
         padding: 11px 14px;
         background: rgba(6,14,18,.6);
         border: 1px solid var(--border-strong);
-        border-radius: 14px;
+        border-radius: 8px;
         color: var(--text);
         transition: border-color .15s, box-shadow .15s;
       }
@@ -4553,7 +4669,7 @@ app.get('/manage-license', (_req, res) => {
       .ml-lookup input::placeholder { color: var(--faint); letter-spacing: 0; }
       .ml-lookup button {
         padding: 11px 20px;
-        border-radius: 14px;
+        border-radius: 8px;
         font-size: .88rem;
         white-space: nowrap;
         flex-shrink: 0;
@@ -4561,7 +4677,7 @@ app.get('/manage-license', (_req, res) => {
       .ml-error {
         display: none;
         padding: 11px 14px;
-        border-radius: 14px;
+        border-radius: 8px;
         background: var(--danger-soft);
         border: 1px solid rgba(255,123,103,.22);
         color: var(--danger);
@@ -4581,14 +4697,14 @@ app.get('/manage-license', (_req, res) => {
       .ml-details.show { display: block; }
       .ml-grid {
         display: grid;
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 12px;
         margin-bottom: 20px;
       }
       .ml-field {
         padding: 14px 16px;
         border: 1px solid var(--border);
-        border-radius: 18px;
+        border-radius: 8px;
         background: rgba(6,14,18,.38);
       }
       .ml-field-label {
@@ -4605,14 +4721,34 @@ app.get('/manage-license', (_req, res) => {
         line-height: 1.3;
         overflow-wrap: anywhere;
       }
+      .ml-status-pill {
+        display: inline-flex;
+        align-items: center;
+        min-height: 24px;
+        padding: 3px 9px;
+        border-radius: 999px;
+        border: 1px solid rgba(96,199,178,.28);
+        background: rgba(96,199,178,.12);
+        color: var(--accent);
+      }
+      .ml-status-pill.warn {
+        border-color: rgba(255,207,92,.28);
+        background: rgba(255,207,92,.12);
+        color: #ffcf5c;
+      }
+      .ml-status-pill.bad {
+        border-color: rgba(255,123,103,.28);
+        background: rgba(255,123,103,.12);
+        color: var(--danger);
+      }
       .ml-field.span2 { grid-column: 1 / -1; }
       .ml-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px; }
-      .ml-actions button { border-radius: 14px; padding: 12px 16px; font-size: .88rem; }
+      .ml-actions button { border-radius: 8px; padding: 12px 16px; font-size: .88rem; }
       .ml-extend {
         display: none;
         padding: 20px;
         border: 1px solid var(--border-strong);
-        border-radius: 20px;
+        border-radius: 12px;
         background: rgba(13,24,31,.7);
         margin-bottom: 16px;
       }
@@ -4621,22 +4757,34 @@ app.get('/manage-license', (_req, res) => {
       .ml-extend-row { display: grid; grid-template-columns: 2fr 3fr; gap: 10px; margin-bottom: 12px; }
       .ml-price { font-size: .88rem; color: var(--muted); margin-bottom: 16px; }
       .ml-extend-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-      .ml-extend-actions button { border-radius: 14px; padding: 11px 16px; font-size: .88rem; }
+      .ml-extend-actions button { border-radius: 8px; padding: 11px 16px; font-size: .88rem; }
       @media (max-width: 560px) {
-        .ml-grid, .ml-actions, .ml-extend-actions { grid-template-columns: 1fr; }
+        .ml-wrap { margin: 18px auto 44px; }
+        .ml-hero, .ml-section { padding: 18px; }
+        .ml-lookup, .ml-grid, .ml-actions, .ml-extend-row, .ml-extend-actions, .ml-help-grid { grid-template-columns: 1fr; }
         .ml-field.span2 { grid-column: auto; }
       }
     </style>
 
     <div class="ml-wrap">
-      <h1 style="margin-bottom:8px">License</h1>
-      <p class="muted" style="margin-bottom:28px">Enter your activation code to view, extend, or add devices.</p>
+      <div class="ml-hero">
+        <div class="hero-kicker">License manager</div>
+        <h1>Manage your Keptra license</h1>
+        <p class="muted">View status, renew a timed license, or add device seats with the activation code from your purchase email.</p>
+      </div>
 
       <div class="ml-section">
         <div class="ml-lookup">
           <input id="activationCodeInput" type="text" placeholder="PI1-XXXXXXXX" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" />
           <button id="lookupBtn">Look up</button>
         </div>
+        <div class="ml-helper">Paste the activation code from your email or Keptra settings. You can renew a timed license, add seats, or check whether a webhook/payment is still pending.</div>
+      </div>
+
+      <div class="ml-help-grid">
+        <div class="ml-help-card"><strong>Renew</strong><span>Extend monthly, yearly, trial, or other timed licenses before they expire.</span></div>
+        <div class="ml-help-card"><strong>Add seats</strong><span>Upgrade device count before checkout so the renewal total is clear.</span></div>
+        <div class="ml-help-card"><strong>Support check</strong><span>Expired, revoked, disabled, or delayed-payment states show directly here.</span></div>
       </div>
 
       <div class="ml-error" id="errorMsg"></div>
@@ -4658,7 +4806,7 @@ app.get('/manage-license', (_req, res) => {
           </div>
           <div class="ml-field">
             <div class="ml-field-label">Status</div>
-            <div class="ml-field-value" id="statusText">—</div>
+            <div class="ml-field-value"><span id="statusText" class="ml-status-pill">—</span></div>
           </div>
           <div class="ml-field span2">
             <div class="ml-field-label">Expiry</div>
@@ -4709,6 +4857,20 @@ app.get('/manage-license', (_req, res) => {
         if (plan === 'yearly')   return 'Yearly';
         if (plan === 'lifetime') return 'Lifetime';
         return expiresAt ? 'Timed' : 'Lifetime';
+      }
+
+      function displayLicenseStatus(license) {
+        const status = (license.status || '').toLowerCase();
+        if (status === 'revoked') return 'Revoked';
+        if (status === 'disabled') return 'Disabled';
+        if (status === 'expired') return 'Expired';
+        if (license.expiresAt && new Date(license.expiresAt).getTime() < Date.now()) return 'Expired';
+        return license.expiresAt ? 'Active' : 'Lifetime';
+      }
+
+      function canModifyLicense(license) {
+        const status = (license.status || '').toLowerCase();
+        return status !== 'revoked' && status !== 'disabled';
       }
 
       async function loadPricing() {
@@ -4764,15 +4926,23 @@ app.get('/manage-license', (_req, res) => {
         document.getElementById('customerName').textContent = currentLicense.customerName || '—';
         document.getElementById('planType').textContent = displayPlan(currentLicense.plan, currentLicense.expiresAt);
         document.getElementById('maxDevices').textContent = (currentLicense.maxDevices || 1) + ' device' + (currentLicense.maxDevices === 1 ? '' : 's');
-        document.getElementById('statusText').textContent = currentLicense.expiresAt ? 'Active' : 'Lifetime';
+        const statusLabel = displayLicenseStatus(currentLicense);
+        const statusEl = document.getElementById('statusText');
+        statusEl.textContent = statusLabel;
+        statusEl.className = 'ml-status-pill';
+        if (statusLabel === 'Expired') statusEl.classList.add('warn');
+        if (statusLabel === 'Revoked' || statusLabel === 'Disabled') statusEl.classList.add('bad');
+        const modifiable = canModifyLicense(currentLicense);
 
         if (currentLicense.expiresAt) {
           document.getElementById('expiryDate').textContent = new Date(currentLicense.expiresAt).toLocaleDateString('en-AU', { year: 'numeric', month: 'short', day: 'numeric' });
-          document.getElementById('extendBtn').style.display = '';
+          document.getElementById('extendBtn').style.display = modifiable ? '' : 'none';
         } else {
           document.getElementById('expiryDate').textContent = 'Does not expire';
           document.getElementById('extendBtn').style.display = 'none';
         }
+        document.getElementById('upgradeBtn').disabled = !modifiable;
+        document.getElementById('upgradeBtn').textContent = modifiable ? 'Add devices' : 'License cannot be changed';
 
         document.getElementById('licenseDetails').classList.add('show');
       }

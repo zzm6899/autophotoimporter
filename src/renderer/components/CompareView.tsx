@@ -2,15 +2,16 @@ import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import type { MediaFile } from '../../shared/types';
 import { buildExposure } from '../utils/formatters';
 import { decodeImage, getCachedPreview } from '../utils/previewCache';
-import { buildPreviewExposureFilter } from '../../shared/exposure';
+import { buildPreviewExposureFilter, buildPreviewWhiteBalanceFilter } from '../../shared/exposure';
 
 interface CompareViewProps {
   files: MediaFile[];
   previewStopsByPath?: Record<string, number>;
+  previewWhiteBalanceByPath?: Record<string, { temperature?: number; tint?: number } | undefined>;
   selectionCount?: number;
 }
 
-export function CompareView({ files, previewStopsByPath, selectionCount = files.length }: CompareViewProps) {
+export function CompareView({ files, previewStopsByPath, previewWhiteBalanceByPath, selectionCount = files.length }: CompareViewProps) {
   const visible = useMemo(() => files.slice(0, 4), [files]);
   const [previews, setPreviews] = useState<Record<string, string | undefined>>({});
   const [zoom, setZoom] = useState(1);
@@ -60,7 +61,10 @@ export function CompareView({ files, previewStopsByPath, selectionCount = files.
       {visible.map((file) => {
         const src = previews[file.path] || file.thumbnail;
         const exposure = buildExposure(file);
-        const previewFilter = buildPreviewExposureFilter(previewStopsByPath?.[file.path] ?? 0);
+        const previewFilter = [
+          buildPreviewExposureFilter(previewStopsByPath?.[file.path] ?? 0),
+          buildPreviewWhiteBalanceFilter(file.whiteBalanceAdjustment ?? previewWhiteBalanceByPath?.[file.path]),
+        ].filter(Boolean).join(' ') || undefined;
         return (
           <div key={file.path} className="relative bg-black flex items-center justify-center overflow-hidden">
             {src ? (
@@ -87,9 +91,10 @@ export function CompareView({ files, previewStopsByPath, selectionCount = files.
                 {exposure || `${Math.round(file.size / 1024)} KB`}
               </span>
             </div>
-            {(file.normalizeToAnchor || file.exposureAdjustmentStops) && (
+            {(file.normalizeToAnchor || file.exposureAdjustmentStops || file.whiteBalanceAdjustment || previewWhiteBalanceByPath?.[file.path]) && (
               <div className="absolute top-2 left-2 text-[10px] font-mono text-orange-200 bg-orange-600/75 px-1.5 py-0.5 rounded">
                 {file.normalizeToAnchor ? 'ANCHOR ' : ''}{file.exposureAdjustmentStops ? `${file.exposureAdjustmentStops > 0 ? '+' : ''}${file.exposureAdjustmentStops.toFixed(2)} EV` : ''}
+                {(file.whiteBalanceAdjustment || previewWhiteBalanceByPath?.[file.path]) ? ' WB' : ''}
               </div>
             )}
           </div>

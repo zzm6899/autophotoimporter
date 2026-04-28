@@ -140,6 +140,27 @@ export function buildPreviewExposureFilter(stops: number): string | undefined {
   return `brightness(${brightness.toFixed(3)}) contrast(${contrast.toFixed(3)}) saturate(${saturation.toFixed(3)})`;
 }
 
+export function buildPreviewWhiteBalanceFilter(
+  adjustment?: { temperature?: number; tint?: number } | null,
+): string | undefined {
+  const normalized = normalizeWhiteBalanceAdjustment(adjustment);
+  if (!normalized) return undefined;
+
+  const temperature = normalized.temperature / 100;
+  const tint = normalized.tint / 100;
+  const hue = temperature * 7 + tint * 5;
+  const sepia = Math.min(0.16, Math.abs(temperature) * 0.12 + Math.max(0, tint) * 0.04);
+  const saturate = 1 + Math.min(0.12, Math.abs(temperature) * 0.05 + Math.abs(tint) * 0.08);
+  const brightness = 1 + Math.max(-0.04, Math.min(0.04, temperature * 0.025 - Math.abs(tint) * 0.012));
+
+  const filters: string[] = [];
+  if (sepia > 0.005) filters.push(`sepia(${sepia.toFixed(3)})`);
+  if (Math.abs(hue) >= 0.1) filters.push(`hue-rotate(${hue.toFixed(2)}deg)`);
+  if (Math.abs(saturate - 1) >= 0.005) filters.push(`saturate(${saturate.toFixed(3)})`);
+  if (Math.abs(brightness - 1) >= 0.005) filters.push(`brightness(${brightness.toFixed(3)})`);
+  return filters.length > 0 ? filters.join(' ') : undefined;
+}
+
 /**
  * Rough clipping estimate for an already-rendered RGB preview after applying
  * a display-safe brightness multiplier. This is intentionally lightweight so
@@ -175,4 +196,71 @@ export function estimateClippingPercent(
 export function clampStops(stops: number, maxStops: number): number {
   if (!Number.isFinite(stops)) return 0;
   return Math.max(-maxStops, Math.min(maxStops, stops));
+}
+
+export interface ChannelMultipliers {
+  red: number;
+  green: number;
+  blue: number;
+}
+
+export function clampWhiteBalanceValue(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(-100, Math.min(100, value));
+}
+
+export const WHITE_BALANCE_NEUTRAL_KELVIN = 5500;
+export const WHITE_BALANCE_MIN_KELVIN = 2500;
+export const WHITE_BALANCE_MAX_KELVIN = 10000;
+
+export function whiteBalanceTemperatureToKelvin(value: number): number {
+  const clamped = clampWhiteBalanceValue(value);
+  const kelvin = clamped >= 0
+    ? WHITE_BALANCE_NEUTRAL_KELVIN + (clamped / 100) * (WHITE_BALANCE_MAX_KELVIN - WHITE_BALANCE_NEUTRAL_KELVIN)
+    : WHITE_BALANCE_NEUTRAL_KELVIN + (clamped / 100) * (WHITE_BALANCE_NEUTRAL_KELVIN - WHITE_BALANCE_MIN_KELVIN);
+  return Math.round(kelvin / 50) * 50;
+}
+
+export function kelvinToWhiteBalanceTemperature(kelvin: number): number {
+  if (!Number.isFinite(kelvin)) return 0;
+  const clamped = Math.max(WHITE_BALANCE_MIN_KELVIN, Math.min(WHITE_BALANCE_MAX_KELVIN, kelvin));
+  const value = clamped >= WHITE_BALANCE_NEUTRAL_KELVIN
+    ? ((clamped - WHITE_BALANCE_NEUTRAL_KELVIN) / (WHITE_BALANCE_MAX_KELVIN - WHITE_BALANCE_NEUTRAL_KELVIN)) * 100
+    : ((clamped - WHITE_BALANCE_NEUTRAL_KELVIN) / (WHITE_BALANCE_NEUTRAL_KELVIN - WHITE_BALANCE_MIN_KELVIN)) * 100;
+  return clampWhiteBalanceValue(Math.round(value));
+}
+
+export function formatWhiteBalanceKelvin(value: number): string {
+  return `${whiteBalanceTemperatureToKelvin(value)}K`;
+}
+
+export function normalizeWhiteBalanceAdjustment(
+  adjustment?: { temperature?: number; tint?: number } | null,
+): { temperature: number; tint: number } | undefined {
+  const temperature = clampWhiteBalanceValue(adjustment?.temperature ?? 0);
+  const tint = clampWhiteBalanceValue(adjustment?.tint ?? 0);
+  if (Math.abs(temperature) < 0.5 && Math.abs(tint) < 0.5) return undefined;
+  return { temperature, tint };
+}
+
+export function whiteBalanceMultipliers(
+  adjustment?: { temperature?: number; tint?: number } | null,
+): ChannelMultipliers {
+  const normalized = normalizeWhiteBalanceAdjustment(adjustment);
+  if (!normalized) return { red: 1, green: 1, blue: 1 };
+
+  const temperature = normalized.temperature / 100;
+  const tint = normalized.tint / 100;
+  const red = 1 + temperature * 0.18 + Math.max(0, tint) * 0.08;
+  const blue = 1 - temperature * 0.18 + Math.max(0, tint) * 0.08;
+  const green = 1 - tint * 0.14;
+  return {
+    red: Math.max(0.72, Math.min(1.32, red)),
+    green: Math.max(0.72, Math.min(1.32, green)),
+    blue: Math.max(0.72, Math.min(1.32, blue)),
+  };
+}
+
+export function hasWhiteBalanceAdjustment(adjustment?: { temperature?: number; tint?: number } | null): boolean {
+  return !!normalizeWhiteBalanceAdjustment(adjustment);
 }

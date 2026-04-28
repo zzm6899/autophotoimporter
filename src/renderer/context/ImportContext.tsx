@@ -1,14 +1,14 @@
 import { createContext, useContext, useReducer, useRef, useMemo, useCallback, useState, type Dispatch, type ReactNode } from 'react';
-import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, SourceKind, FtpConfig, FtpSyncSettings, FtpSyncStatus, RatingFilter, SelectionSet, LicenseValidation, WatermarkPosition, WatermarkMode, KeybindMap, MetadataExportFlags } from '../../shared/types';
+import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, SourceKind, FtpConfig, FtpSyncSettings, FtpSyncStatus, RatingFilter, SelectionSet, LicenseValidation, WatermarkPosition, WatermarkMode, KeybindMap, MetadataExportFlags, EventMode, CullConfidence, KeeperQuota } from '../../shared/types';
 import { FOLDER_PRESETS, DEFAULT_KEYBINDS, DEFAULT_METADATA_EXPORT } from '../../shared/types';
 import { groupBursts } from '../../shared/burst';
 import { clampStops, normalizeExposureStops } from '../../shared/exposure';
-import { bestInGroup, faceQuality, groupByFaceSignature, groupByVisualHash, keeperScore, scoreReview } from '../../shared/review';
+import { assignSceneBuckets, autoCullGroup, bestInGroup, bestShotScore, groupByFaceSimilarity, groupByVisualHash, rankBestShots, scoreReview } from '../../shared/review';
 
 export type AppPhase = 'idle' | 'scanning' | 'ready' | 'importing' | 'complete';
 export type ViewMode = 'grid' | 'single' | 'split' | 'compare' | 'settings';
 
-export type FilterMode = 'all' | 'protected' | 'picked' | 'rejected' | 'unrated' | 'duplicates' | 'unmarked' | 'queue' | 'best' | 'faces' | 'face-groups' | 'blur-risk' | 'near-duplicates' | 'review-needed' | 'needs-exposure' | 'normalized' | 'adjusted' | 'photos' | 'videos' | 'raw' | RatingFilter | `camera:${string}` | `lens:${string}` | `date:${string}` | `ext:${string}`;
+export type FilterMode = 'all' | 'protected' | 'picked' | 'rejected' | 'unrated' | 'duplicates' | 'unmarked' | 'queue' | 'best' | 'faces' | 'face-groups' | 'blur-risk' | 'near-duplicates' | 'review-needed' | 'needs-exposure' | 'normalized' | 'adjusted' | 'photos' | 'videos' | 'raw' | RatingFilter | `camera:${string}` | `lens:${string}` | `date:${string}` | `ext:${string}` | `scene:${string}` | `burst:${string}`;
 
 interface State {
   volumes: Volume[];
@@ -72,6 +72,12 @@ interface State {
   exposureAnchorPath: string | null;
   exposureMaxStops: number;
   exposureAdjustmentStep: number;
+  whiteBalanceTemperature?: number;
+  whiteBalanceTint?: number;
+  eventMode: EventMode;
+  cullConfidence: CullConfidence;
+  groupPhotoEveryoneGood: boolean;
+  keeperQuota: KeeperQuota;
   metadataKeywords: string;
   metadataTitle: string;
   metadataCaption: string;
@@ -92,6 +98,7 @@ interface State {
   licenseBannerDismissed: boolean;
   // Performance
   gpuFaceAcceleration: boolean;
+  gpuDeviceId?: number;
   rawPreviewCache: boolean;
   cpuOptimization: boolean;
   rawPreviewQuality: number;
@@ -178,6 +185,12 @@ export type Action =
   | { type: 'CLEAR_EXPOSURE_ANCHOR' }
   | { type: 'SET_EXPOSURE_MAX_STOPS'; stops: number }
   | { type: 'SET_EXPOSURE_ADJUSTMENT_STEP'; step: number }
+  | { type: 'SET_WHITE_BALANCE'; temperature: number; tint: number }
+  | { type: 'SET_WHITE_BALANCE_ADJUSTMENT'; filePaths: string[]; temperature: number; tint: number }
+  | { type: 'SET_EVENT_MODE'; mode: EventMode }
+  | { type: 'SET_CULL_CONFIDENCE'; confidence: CullConfidence }
+  | { type: 'SET_GROUP_PHOTO_EVERYONE_GOOD'; enabled: boolean }
+  | { type: 'SET_KEEPER_QUOTA'; quota: KeeperQuota }
   | { type: 'SET_NORMALIZE_TO_ANCHOR'; filePaths: string[]; value: boolean }
   | { type: 'SET_EXPOSURE_ADJUSTMENT'; filePaths: string[]; stops: number }
   | { type: 'NUDGE_EXPOSURE_ADJUSTMENT'; filePaths: string[]; delta: number }
@@ -187,9 +200,11 @@ export type Action =
   | { type: 'SET_REVIEW_SCORES'; scores: Record<string, Partial<MediaFile>> }
   | { type: 'GROUP_VISUAL_DUPLICATES'; threshold?: number }
   | { type: 'GROUP_FACE_SIMILAR'; threshold?: number }
+  | { type: 'GROUP_SCENE_BUCKETS' }
   | { type: 'PICK_BEST_IN_GROUPS' }
   | { type: 'QUEUE_BEST' }
   | { type: 'AUTO_CULL_SAFE' }
+  | { type: 'SYNC_EDITS_FROM_FOCUSED'; filePath?: string }
   | { type: 'REJECT_DUPLICATES' }
   | { type: 'UNDO_FILE_EDIT' }
   /**
@@ -211,6 +226,7 @@ export type Action =
   | { type: 'CLOSE_LICENSE_PROMPT' }
   | { type: 'DISMISS_LICENSE_BANNER' }
   | { type: 'SET_PERFORMANCE_OPTION'; key: 'gpuFaceAcceleration' | 'rawPreviewCache' | 'cpuOptimization'; value: boolean }
+  | { type: 'SET_GPU_DEVICE_ID'; deviceId: number }
   | { type: 'SET_RAW_PREVIEW_QUALITY'; quality: number }
   | { type: 'SET_PERF_TIER'; tier: 'auto' | 'low' | 'balanced' | 'high' }
   | { type: 'SET_FAST_KEEPER_MODE'; enabled: boolean }
@@ -283,7 +299,7 @@ const initialState: State = {
     user: '',
     password: '',
     secure: false,
-    remotePath: '/PhotoImporter',
+    remotePath: '/Keptra',
   },
   autoEject: false,
   playSoundOnComplete: false,
@@ -300,6 +316,12 @@ const initialState: State = {
   exposureAnchorPath: null,
   exposureMaxStops: 2,
   exposureAdjustmentStep: 0.33,
+  whiteBalanceTemperature: 0,
+  whiteBalanceTint: 0,
+  eventMode: 'general',
+  cullConfidence: 'balanced',
+  groupPhotoEveryoneGood: false,
+  keeperQuota: 'best-1',
   metadataKeywords: '',
   metadataTitle: '',
   metadataCaption: '',
@@ -319,6 +341,7 @@ const initialState: State = {
   licensePromptOpen: false,
   licenseBannerDismissed: false,
   gpuFaceAcceleration: true,
+  gpuDeviceId: -1,
   rawPreviewCache: true,
   cpuOptimization: true,
   rawPreviewQuality: 70,
@@ -336,6 +359,75 @@ function withFileHistory(state: State, files: MediaFile[]): State {
     files,
     fileHistory: [state.files, ...state.fileHistory].slice(0, 20),
   };
+}
+
+function collectReviewGroups(files: MediaFile[], includeFace = true): Map<string, MediaFile[]> {
+  const groups = new Map<string, MediaFile[]>();
+  for (const f of files) {
+    if (f.burstId && f.burstSize && f.burstSize > 1) {
+      const id = `burst:${f.burstId}`;
+      groups.set(id, [...(groups.get(id) ?? []), f]);
+    }
+    if (f.visualGroupId && f.visualGroupSize && f.visualGroupSize > 1) {
+      const id = `visual:${f.visualGroupId}`;
+      groups.set(id, [...(groups.get(id) ?? []), f]);
+    }
+    if (includeFace && f.faceGroupId && f.faceGroupSize && f.faceGroupSize > 1) {
+      const id = `face:${f.faceGroupId}`;
+      groups.set(id, [...(groups.get(id) ?? []), f]);
+    }
+  }
+  return groups;
+}
+
+function queueBestPaths(
+  files: MediaFile[],
+  options: { cullConfidence?: CullConfidence; groupPhotoEveryoneGood?: boolean; keeperQuota?: KeeperQuota } = {},
+): string[] {
+  const candidates = rankBestShots(files.filter((f) => f.type === 'photo' && f.pick !== 'rejected' && !f.duplicate));
+  const groupByPath = new Set<string>();
+  const groups = collectReviewGroups(candidates, true);
+  for (const group of groups.values()) {
+    for (const f of group) groupByPath.add(f.path);
+  }
+
+  const next = new Set<string>();
+  for (const f of candidates) {
+    if ((f.rating ?? 0) > 0 || f.pick === 'selected') next.add(f.path);
+  }
+  for (const group of groups.values()) {
+    const decision = autoCullGroup(group, {
+      confidence: options.cullConfidence,
+      groupPhotoEveryoneGood: options.groupPhotoEveryoneGood,
+      keeperQuota: options.keeperQuota,
+    });
+    const best = decision.best;
+    if (!best) continue;
+    if (
+      best.pick === 'selected' ||
+      best.isProtected ||
+      (best.rating ?? 0) > 0 ||
+      bestShotScore(best) >= 145 ||
+      (best.reviewScore ?? 0) >= 62 ||
+      decision.confidence !== 'low'
+    ) {
+      next.add(best.path);
+    }
+    const algorithmBest = rankBestShots(group.filter((f) => !f.isProtected && (f.rating ?? 0) === 0 && f.pick !== 'selected'))[0];
+    if (algorithmBest && (bestShotScore(algorithmBest) >= 145 || (algorithmBest.reviewScore ?? 0) >= 62 || decision.confidence !== 'low')) {
+      next.add(algorithmBest.path);
+    }
+  }
+
+  const targetCount = Math.min(140, Math.max(8, Math.ceil(candidates.length * 0.08)));
+  for (const f of candidates) {
+    if (next.has(f.path)) continue;
+    if (groupByPath.has(f.path)) continue;
+    if ((bestShotScore(f) >= 185 || (f.reviewScore ?? 0) >= 70 || f.isProtected) && next.size < targetCount) {
+      next.add(f.path);
+    }
+  }
+  return [...next];
 }
 
 export function reducer(state: State, action: Action): State {
@@ -359,7 +451,7 @@ export function reducer(state: State, action: Action): State {
       // Bursts can only be reliably grouped once every file has a parsed
       // dateTaken, so we do it here (not per-batch). If the user has toggled
       // grouping off, just drop any stale burst data.
-      const grouped = state.burstGrouping
+      const burstGrouped = state.burstGrouping
         ? groupBursts(state.files, { windowSec: state.burstWindowSec })
         : state.files.map((f) => {
             if (f.burstId || f.burstIndex || f.burstSize) {
@@ -368,6 +460,7 @@ export function reducer(state: State, action: Action): State {
             }
             return f;
           });
+      const grouped = assignSceneBuckets(burstGrouped, state.eventMode);
       return {
         ...state,
         files: grouped,
@@ -579,6 +672,31 @@ export function reducer(state: State, action: Action): State {
       return { ...state, exposureMaxStops: Math.max(0.33, Math.min(4, action.stops)) };
     case 'SET_EXPOSURE_ADJUSTMENT_STEP':
       return { ...state, exposureAdjustmentStep: Math.max(0.1, Math.min(2, action.step)) };
+    case 'SET_WHITE_BALANCE':
+      return {
+        ...state,
+        whiteBalanceTemperature: Math.max(-100, Math.min(100, action.temperature)),
+        whiteBalanceTint: Math.max(-100, Math.min(100, action.tint)),
+      };
+    case 'SET_WHITE_BALANCE_ADJUSTMENT': {
+      const pathSet = new Set(action.filePaths);
+      const temperature = Math.max(-100, Math.min(100, action.temperature));
+      const tint = Math.max(-100, Math.min(100, action.tint));
+      const nextAdjustment = Math.abs(temperature) >= 0.5 || Math.abs(tint) >= 0.5
+        ? { temperature, tint }
+        : undefined;
+      return withFileHistory(state, state.files.map((f) =>
+        pathSet.has(f.path) ? { ...f, whiteBalanceAdjustment: nextAdjustment } : f,
+      ));
+    }
+    case 'SET_EVENT_MODE':
+      return { ...state, eventMode: action.mode, files: assignSceneBuckets(state.files, action.mode) };
+    case 'SET_CULL_CONFIDENCE':
+      return { ...state, cullConfidence: action.confidence };
+    case 'SET_GROUP_PHOTO_EVERYONE_GOOD':
+      return { ...state, groupPhotoEveryoneGood: action.enabled };
+    case 'SET_KEEPER_QUOTA':
+      return { ...state, keeperQuota: action.quota };
     case 'SET_NORMALIZE_TO_ANCHOR': {
       const pathSet = new Set(action.filePaths);
       return withFileHistory(state, state.files.map((f) =>
@@ -589,9 +707,7 @@ export function reducer(state: State, action: Action): State {
                 f.path !== state.exposureAnchorPath &&
                 typeof f.exposureValue === 'number',
             }
-          : action.value && f.normalizeToAnchor
-            ? { ...f, normalizeToAnchor: false }
-            : f,
+          : f,
       ));
     }
     case 'SET_EXPOSURE_ADJUSTMENT': {
@@ -620,7 +736,7 @@ export function reducer(state: State, action: Action): State {
                 ...f,
                 normalizeToAnchor: f.path !== anchor.path && typeof f.exposureValue === 'number',
               }
-            : f.normalizeToAnchor ? { ...f, normalizeToAnchor: false } : f,
+            : f,
         )),
         exposureAnchorPath: anchor.path,
       };
@@ -731,7 +847,7 @@ export function reducer(state: State, action: Action): State {
       };
     }
     case 'GROUP_FACE_SIMILAR': {
-      const groups = groupByFaceSignature(state.files, action.threshold ?? 10);
+      const groups = groupByFaceSimilarity(state.files, 0.67, action.threshold ?? 10);
       const groupByPath = new Map<string, { id: string; size: number }>();
       for (const [id, paths] of Object.entries(groups)) {
         for (const p of paths) groupByPath.set(p, { id, size: paths.length });
@@ -748,120 +864,43 @@ export function reducer(state: State, action: Action): State {
         }),
       };
     }
+    case 'GROUP_SCENE_BUCKETS':
+      return { ...state, files: assignSceneBuckets(state.files, state.eventMode) };
     case 'PICK_BEST_IN_GROUPS': {
-      const groups = new Map<string, MediaFile[]>();
-      for (const f of state.files) {
-        if (f.visualGroupId && f.visualGroupSize && f.visualGroupSize > 1) {
-          groups.set(f.visualGroupId, [...(groups.get(f.visualGroupId) ?? []), f]);
-        }
-        if (f.burstId && f.burstSize && f.burstSize > 1) {
-          const id = `burst:${f.burstId}`;
-          groups.set(id, [...(groups.get(id) ?? []), f]);
-        }
-      }
+      const groups = collectReviewGroups(state.files, true);
       const keepers = new Set<string>();
       for (const group of groups.values()) {
         const best = bestInGroup(group);
         if (best) keepers.add(best.path);
       }
       return withFileHistory(state, state.files.map((f) => {
-        const inGroup = (f.visualGroupId && groups.has(f.visualGroupId)) || (f.burstId && groups.has(`burst:${f.burstId}`));
+        const inGroup =
+          (f.visualGroupId && groups.has(`visual:${f.visualGroupId}`)) ||
+          (f.burstId && groups.has(`burst:${f.burstId}`)) ||
+          (f.faceGroupId && groups.has(`face:${f.faceGroupId}`));
         return inGroup ? { ...f, pick: keepers.has(f.path) ? 'selected' : 'rejected' } : f;
       }));
     }
     case 'QUEUE_BEST': {
-      const candidates = state.files
-        .filter((f) => f.type === 'photo' && f.pick !== 'rejected' && !f.duplicate)
-        .sort((a, b) =>
-          Number(!!b.isProtected) - Number(!!a.isProtected) ||
-          (b.rating ?? 0) - (a.rating ?? 0) ||
-          keeperScore(b) - keeperScore(a) ||
-          faceQuality(b) - faceQuality(a) ||
-          (b.reviewScore ?? 0) - (a.reviewScore ?? 0),
-        );
-      const groupByPath = new Set<string>();
-      const groups = new Map<string, MediaFile[]>();
-      for (const f of candidates) {
-        const groupId =
-          f.burstId && f.burstSize && f.burstSize > 1 ? `burst:${f.burstId}` :
-          f.visualGroupId && f.visualGroupSize && f.visualGroupSize > 1 ? `visual:${f.visualGroupId}` :
-          f.faceGroupId && f.faceGroupSize && f.faceGroupSize > 1 ? `face:${f.faceGroupId}` :
-          null;
-        if (groupId) {
-          groupByPath.add(f.path);
-          groups.set(groupId, [...(groups.get(groupId) ?? []), f]);
-        }
-      }
-
-      const next = new Set<string>();
-      for (const f of candidates) {
-        if ((f.rating ?? 0) > 0 || f.pick === 'selected') next.add(f.path);
-      }
-      const autoBestInGroup = (group: MediaFile[]): MediaFile | null => {
-        if (group.length === 0) return null;
-        return group.slice().sort((a, b) =>
-          Number(!!b.isProtected) - Number(!!a.isProtected) ||
-          faceQuality(b) - faceQuality(a) ||
-          (b.faceCount ?? 0) - (a.faceCount ?? 0) ||
-          (b.subjectSharpnessScore ?? 0) - (a.subjectSharpnessScore ?? 0) ||
-          Number(a.blurRisk === 'high') - Number(b.blurRisk === 'high') ||
-          (b.sharpnessScore ?? 0) - (a.sharpnessScore ?? 0) ||
-          (b.reviewScore ?? 0) - (a.reviewScore ?? 0) ||
-          keeperScore(b) - keeperScore(a) ||
-          (a.burstIndex ?? 0) - (b.burstIndex ?? 0),
-        )[0];
-      };
-      for (const group of groups.values()) {
-        const best = autoBestInGroup(group);
-        if (!best) continue;
-        if (best.pick === 'selected' || best.isProtected || (best.rating ?? 0) > 0 || keeperScore(best) >= 70 || (best.reviewScore ?? 0) >= 62) {
-          next.add(best.path);
-        }
-      }
-
-      const targetCount = Math.min(120, Math.max(8, Math.ceil(candidates.length * 0.08)));
-      for (const f of candidates) {
-        if (next.has(f.path)) continue;
-        if (f.pick === 'selected') {
-          next.add(f.path);
-          continue;
-        }
-        if (groupByPath.has(f.path)) continue;
-        if ((keeperScore(f) >= 85 || (f.reviewScore ?? 0) >= 70 || (f.rating ?? 0) > 0 || f.isProtected) && next.size < targetCount) {
-          next.add(f.path);
-        }
-      }
-      return { ...state, queuedPaths: [...next], filter: next.size > 0 ? 'queue' : state.filter };
+      const next = queueBestPaths(state.files, {
+        cullConfidence: state.cullConfidence,
+        groupPhotoEveryoneGood: state.groupPhotoEveryoneGood,
+        keeperQuota: state.keeperQuota,
+      });
+      return { ...state, queuedPaths: next, filter: next.length > 0 ? 'queue' : state.filter };
     }
     case 'AUTO_CULL_SAFE': {
-      const groups = new Map<string, MediaFile[]>();
-      for (const f of state.files) {
-        if (f.burstId && f.burstSize && f.burstSize > 1) {
-          groups.set(`burst:${f.burstId}`, [...(groups.get(`burst:${f.burstId}`) ?? []), f]);
-        }
-        if (f.visualGroupId && f.visualGroupSize && f.visualGroupSize > 1) {
-          groups.set(`visual:${f.visualGroupId}`, [...(groups.get(`visual:${f.visualGroupId}`) ?? []), f]);
-        }
-      }
-
+      const groups = collectReviewGroups(state.files, true);
       const reject = new Set<string>();
       const keep = new Set<string>();
       for (const group of groups.values()) {
-        const best = bestInGroup(group);
-        if (!best) continue;
-        keep.add(best.path);
-        for (const file of group) {
-          if (file.path === best.path) continue;
-          if (file.isProtected || (file.rating ?? 0) > 0 || file.pick === 'selected') continue;
-          const muchWorse =
-            (file.blurRisk === 'high' && faceQuality(file) < 45) ||
-            (faceQuality(best) - faceQuality(file) >= 45) ||
-            ((best.subjectSharpnessScore ?? 0) - (file.subjectSharpnessScore ?? 0) >= 25) ||
-            ((best.sharpnessScore ?? 0) - (file.sharpnessScore ?? 0) >= 60) ||
-            (keeperScore(best) - keeperScore(file) >= 42) ||
-            ((best.reviewScore ?? 0) - (file.reviewScore ?? 0) >= 22);
-          if (muchWorse) reject.add(file.path);
-        }
+        const decision = autoCullGroup(group, {
+          confidence: state.cullConfidence,
+          groupPhotoEveryoneGood: state.groupPhotoEveryoneGood,
+          keeperQuota: state.keeperQuota,
+        });
+        for (const p of decision.keep) keep.add(p);
+        for (const p of decision.reject) reject.add(p);
       }
 
       return withFileHistory(state, state.files.map((f) => {
@@ -874,6 +913,33 @@ export function reducer(state: State, action: Action): State {
       return withFileHistory(state, state.files.map((f) =>
         f.duplicate ? { ...f, pick: 'rejected' } : f,
       ));
+    case 'SYNC_EDITS_FROM_FOCUSED': {
+      const focused = action.filePath
+        ? state.files.find((f) => f.path === action.filePath)
+        : state.focusedIndex >= 0 ? state.files[state.focusedIndex] : null;
+      if (!focused) return state;
+      const targetPaths = state.selectedPaths.length > 0
+        ? new Set(state.selectedPaths)
+        : new Set(state.files
+            .filter((f) =>
+              (focused.burstId && f.burstId === focused.burstId) ||
+              (focused.visualGroupId && f.visualGroupId === focused.visualGroupId) ||
+              (focused.sceneBucket && f.sceneBucket === focused.sceneBucket),
+            )
+            .map((f) => f.path));
+      targetPaths.delete(focused.path);
+      if (targetPaths.size === 0) return state;
+      return withFileHistory(state, state.files.map((f) =>
+        targetPaths.has(f.path)
+          ? {
+              ...f,
+              exposureAdjustmentStops: focused.exposureAdjustmentStops,
+              normalizeToAnchor: focused.normalizeToAnchor && typeof f.exposureValue === 'number',
+              whiteBalanceAdjustment: focused.whiteBalanceAdjustment,
+            }
+          : f,
+      ));
+    }
     case 'UNDO_FILE_EDIT':
       if (state.fileHistory.length === 0) return state;
       return {
@@ -894,9 +960,7 @@ export function reducer(state: State, action: Action): State {
       const anchor = candidates[Math.floor((candidates.length - 1) / 2)];
       return {
         ...withFileHistory(state, state.files.map((f) => {
-          if (!pathSet.has(f.path)) {
-            return f.normalizeToAnchor ? { ...f, normalizeToAnchor: false } : f;
-          }
+          if (!pathSet.has(f.path)) return f;
           if (f.path === anchor.path) {
             // The anchor itself never needs normalizing.
             return { ...f, normalizeToAnchor: false };
@@ -953,9 +1017,43 @@ export function reducer(state: State, action: Action): State {
       return { ...state, licenseBannerDismissed: true };
     case 'SET_PERFORMANCE_OPTION':
       return { ...state, [action.key]: action.value };
+    case 'SET_GPU_DEVICE_ID':
+      return { ...state, gpuDeviceId: Number.isFinite(action.deviceId) ? Math.max(-1, Math.round(action.deviceId)) : -1 };
     case 'SET_RAW_PREVIEW_QUALITY':
       return { ...state, rawPreviewQuality: action.quality };
     case 'SET_PERF_TIER':
+      if (action.tier === 'low') {
+        return {
+          ...state,
+          perfTier: action.tier,
+          cpuOptimization: true,
+          fastKeeperMode: true,
+          previewConcurrency: 1,
+          faceConcurrency: 1,
+          rawPreviewQuality: Math.min(state.rawPreviewQuality, 60),
+        };
+      }
+      if (action.tier === 'balanced') {
+        return {
+          ...state,
+          perfTier: action.tier,
+          cpuOptimization: true,
+          fastKeeperMode: false,
+          previewConcurrency: 2,
+          faceConcurrency: 1,
+          rawPreviewQuality: Math.max(65, Math.min(state.rawPreviewQuality, 75)),
+        };
+      }
+      if (action.tier === 'high') {
+        return {
+          ...state,
+          perfTier: action.tier,
+          fastKeeperMode: false,
+          previewConcurrency: Math.max(3, state.previewConcurrency),
+          faceConcurrency: Math.max(2, state.faceConcurrency),
+          rawPreviewQuality: Math.max(state.rawPreviewQuality, 82),
+        };
+      }
       return { ...state, perfTier: action.tier };
     case 'SET_FAST_KEEPER_MODE':
       return { ...state, fastKeeperMode: action.enabled };
@@ -1052,64 +1150,14 @@ export function ImportProvider({ children }: { children: ReactNode }) {
         }
         return merged;
       });
-      const candidates = mergedFiles
-        .filter((f) => f.type === 'photo' && f.pick !== 'rejected' && !f.duplicate)
-        .sort((a, b) =>
-          Number(!!b.isProtected) - Number(!!a.isProtected) ||
-          (b.rating ?? 0) - (a.rating ?? 0) ||
-          keeperScore(b) - keeperScore(a) ||
-          faceQuality(b) - faceQuality(a) ||
-          (b.reviewScore ?? 0) - (a.reviewScore ?? 0),
-        );
-      const groupByPath = new Set<string>();
-      const groups = new Map<string, MediaFile[]>();
-      for (const f of candidates) {
-        const groupId =
-          f.burstId && f.burstSize && f.burstSize > 1 ? `burst:${f.burstId}` :
-          f.visualGroupId && f.visualGroupSize && f.visualGroupSize > 1 ? `visual:${f.visualGroupId}` :
-          f.faceGroupId && f.faceGroupSize && f.faceGroupSize > 1 ? `face:${f.faceGroupId}` :
-          null;
-        if (groupId) {
-          groupByPath.add(f.path);
-          groups.set(groupId, [...(groups.get(groupId) ?? []), f]);
-        }
-      }
-      const next = new Set<string>();
-      for (const f of candidates) {
-        if ((f.rating ?? 0) > 0 || f.pick === 'selected') next.add(f.path);
-      }
-      const autoBestInGroup = (group: MediaFile[]): MediaFile | null => {
-        if (group.length === 0) return null;
-        return group.slice().sort((a, b) =>
-          Number(!!b.isProtected) - Number(!!a.isProtected) ||
-          faceQuality(b) - faceQuality(a) ||
-          (b.faceCount ?? 0) - (a.faceCount ?? 0) ||
-          (b.subjectSharpnessScore ?? 0) - (a.subjectSharpnessScore ?? 0) ||
-          Number(a.blurRisk === 'high') - Number(b.blurRisk === 'high') ||
-          (b.sharpnessScore ?? 0) - (a.sharpnessScore ?? 0) ||
-          (b.reviewScore ?? 0) - (a.reviewScore ?? 0) ||
-          keeperScore(b) - keeperScore(a) ||
-          (a.burstIndex ?? 0) - (b.burstIndex ?? 0),
-        )[0];
-      };
-      for (const group of groups.values()) {
-        const best = autoBestInGroup(group);
-        if (!best) continue;
-        if (best.pick === 'selected' || best.isProtected || (best.rating ?? 0) > 0 || keeperScore(best) >= 70 || (best.reviewScore ?? 0) >= 62) {
-          next.add(best.path);
-        }
-      }
-      const targetCount = Math.min(120, Math.max(8, Math.ceil(candidates.length * 0.08)));
-      for (const f of candidates) {
-        if (next.has(f.path)) continue;
-        if (f.pick === 'selected') { next.add(f.path); continue; }
-        if (groupByPath.has(f.path)) continue;
-        if ((keeperScore(f) >= 85 || (f.reviewScore ?? 0) >= 70 || (f.rating ?? 0) > 0 || f.isProtected) && next.size < targetCount) {
-          next.add(f.path);
-        }
-      }
-      rawDispatch({ type: 'QUEUE_ADD_PATHS', paths: [...next] });
-      if (next.size > 0) rawDispatch({ type: 'SET_FILTER', filter: 'queue' });
+      const current = stateRef.current;
+      const next = queueBestPaths(mergedFiles, {
+        cullConfidence: current.cullConfidence,
+        groupPhotoEveryoneGood: current.groupPhotoEveryoneGood,
+        keeperQuota: current.keeperQuota,
+      });
+      rawDispatch({ type: 'QUEUE_ADD_PATHS', paths: next });
+      if (next.length > 0) rawDispatch({ type: 'SET_FILTER', filter: 'queue' });
       return;
     }
     rawDispatch(action);

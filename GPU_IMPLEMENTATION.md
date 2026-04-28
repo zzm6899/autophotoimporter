@@ -1,7 +1,7 @@
 # GPU Acceleration Implementation Summary
 
 ## Overview
-This document describes the GPU acceleration feature added to Photo Importer's face recognition pipeline via ONNX Runtime.
+This document describes the GPU acceleration feature added to Keptra's face recognition pipeline via ONNX Runtime.
 
 ## Changes Made
 
@@ -86,7 +86,7 @@ Added comprehensive GPU Acceleration section covering:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ User opens Photo Importer                                    │
+│ User opens Keptra                                    │
 └─────────────────────────┬───────────────────────────────────┘
                           │
                     ┌─────▼──────┐

@@ -198,20 +198,41 @@ const api = {
   }>> =>
     ipcRenderer.invoke(IPC.FACE_ANALYZE, paths),
 
+  /** Cancel queued background face-analysis work. In-flight ONNX calls finish, but stale renderer batches are ignored. */
+  cancelFaceAnalysis: (): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke(IPC.FACE_CANCEL_QUEUE),
+
   /** Clear the on-disk thumbnail/preview cache. */
   clearCache: (): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke(IPC.CACHE_CLEAR),
 
-  /** Update how many face analyses run in parallel (1–4). */
+  /** Update how many face analyses run in parallel (1-32). */
   setFaceAnalysisConcurrency: (n: number): Promise<void> =>
     ipcRenderer.invoke('face:set-concurrency', n),
+
+  /** Enumerate Windows display adapters so DirectML can target a specific GPU. */
+  listGpus: (): Promise<Array<{ id: number; name: string; adapterCompatibility?: string; videoMemoryMB?: number }>> =>
+    ipcRenderer.invoke(IPC.GPU_LIST),
 
   /** Clear the persistent face-analysis result cache. */
   clearFaceCache: (): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke(IPC.FACE_CACHE_CLEAR),
 
-  /** Returns the execution provider actually in use: 'cpu', 'dml', 'coreml', or null if not yet determined. */
-  getExecutionProvider: (): Promise<string | null> =>
+  /** Returns execution provider diagnostics for the face engine. */
+  getExecutionProvider: (): Promise<{
+    ep: string | null;
+    models: Array<{
+      model: 'detector' | 'embedder' | 'person';
+      provider: string;
+      inputName?: string;
+      loadMs?: number;
+      avgInferenceMs?: number;
+      cpuAvgInferenceMs?: number;
+      dmlAvgInferenceMs?: number;
+      deviceId?: number;
+      fallbackReason?: string;
+    }>;
+  }> =>
     ipcRenderer.invoke(IPC.FACE_EXECUTION_PROVIDER),
 
   /** Run a quick DML benchmark — returns EP, avg inference time, session load time. */
@@ -222,8 +243,45 @@ const api = {
     sessionLoadMs: number;
     platform: string;
     providers: string[];
+    models: Array<{
+      model: 'detector' | 'embedder' | 'person';
+      provider: string;
+      inputName?: string;
+      loadMs?: number;
+      avgInferenceMs?: number;
+      cpuAvgInferenceMs?: number;
+      dmlAvgInferenceMs?: number;
+      deviceId?: number;
+      fallbackReason?: string;
+    }>;
   }> =>
     ipcRenderer.invoke('face:diagnose'),
+
+  /** Run a multi-second detector/embedder loop so Task Manager can show DirectML GPU Compute usage. */
+  stressTestFaceGpu: (durationMs?: number, streams?: number): Promise<{
+    ep: string | null;
+    gpuAvailable: boolean | null;
+    durationMs: number;
+    streams: number;
+    detectorRuns: number;
+    embedderRuns: number;
+    totalRuns: number;
+    runsPerSecond: number;
+    detectorAvgMs: number;
+    embedderAvgMs: number;
+    models: Array<{
+      model: 'detector' | 'embedder' | 'person';
+      provider: string;
+      inputName?: string;
+      loadMs?: number;
+      avgInferenceMs?: number;
+      cpuAvgInferenceMs?: number;
+      dmlAvgInferenceMs?: number;
+      deviceId?: number;
+      fallbackReason?: string;
+    }>;
+  }> =>
+    ipcRenderer.invoke(IPC.FACE_GPU_STRESS_TEST, durationMs, streams),
 
   /** Get the device performance tier profile. */
   getDeviceTier: (): Promise<{

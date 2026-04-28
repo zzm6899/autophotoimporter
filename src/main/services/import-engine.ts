@@ -8,7 +8,7 @@ import { Client } from 'basic-ftp';
 import type { MediaFile, ImportConfig, ImportProgress, ImportResult, ImportError, SaveFormat, BatchMetadata, WatermarkConfig, WatermarkPosition, MetadataExportFlags } from '../../shared/types';
 import { DEFAULT_METADATA_EXPORT } from '../../shared/types';
 import { isDuplicate } from './duplicate-detector';
-import { stopsToSafeMultiplier, getEffectiveExposureStops } from '../../shared/exposure';
+import { stopsToSafeMultiplier, getEffectiveExposureStops, hasWhiteBalanceAdjustment, whiteBalanceMultipliers } from '../../shared/exposure';
 
 const execFileAsync = promisify(execFile);
 
@@ -47,6 +47,7 @@ type ConvertResult = {
   normalized: boolean;
   watermarked: boolean;
   straightened: boolean;
+  whiteBalanced: boolean;
 };
 
 function sidecarPathFor(destFullPath: string): string {
@@ -73,9 +74,12 @@ function hasMetadata(
   flags: MetadataExportFlags,
   rating: number | undefined,
   pick: 'selected' | 'rejected' | undefined,
+  file?: MediaFile,
 ): boolean {
   if (flags.rating && typeof rating === 'number' && rating > 0) return true;
   if (flags.pickLabel && pick !== undefined) return true;
+  if (!flags.stripGps && (file?.gps || file?.locationName)) return true;
+  if (flags.keywords && file?.sceneBucket) return true;
   if (!metadata) return false;
   return (
     (flags.keywords && (metadata.keywords?.length ?? 0) > 0) ||
@@ -102,14 +106,24 @@ function buildXmpSidecar(
   flags: MetadataExportFlags,
   rating?: number,
   pick?: 'selected' | 'rejected',
+  file?: MediaFile,
 ): string {
-  const keywords  = flags.keywords  ? (metadata?.keywords?.filter(Boolean) ?? []) : [];
+  const smartKeywords = [
+    file?.sceneBucket,
+    file?.locationName && !flags.stripGps ? file.locationName : undefined,
+  ].filter(Boolean) as string[];
+  const keywords  = flags.keywords
+    ? [...(metadata?.keywords?.filter(Boolean) ?? []), ...smartKeywords]
+        .filter((value, index, all) => all.findIndex((other) => other.toLowerCase() === value.toLowerCase()) === index)
+    : [];
   const title     = flags.title     ? metadata?.title?.trim()      : undefined;
   const caption   = flags.caption   ? metadata?.caption?.trim()    : undefined;
   const creator   = flags.creator   ? metadata?.creator?.trim()    : undefined;
   const copyright = flags.copyright ? metadata?.copyright?.trim()  : undefined;
   const ratingVal = flags.rating && typeof rating === 'number' && rating > 0 ? Math.min(5, rating) : undefined;
   const pickInfo  = flags.pickLabel && pick !== undefined ? pickToXmpLabel(pick) : undefined;
+  const gps = flags.stripGps ? undefined : file?.gps;
+  const locationName = flags.stripGps ? undefined : file?.locationName;
 
   return [
     '<?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?>',
@@ -119,6 +133,7 @@ function buildXmpSidecar(
     '      xmlns:dc="http://purl.org/dc/elements/1.1/"',
     '      xmlns:xmp="http://ns.adobe.com/xap/1.0/"',
     '      xmlns:xmpRights="http://ns.adobe.com/xap/1.0/rights/"',
+    '      xmlns:exif="http://ns.adobe.com/exif/1.0/"',
     '      xmlns:tiff="http://ns.adobe.com/tiff/1.0/"',
     '      xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/">',
     title    ? `      <dc:title><rdf:Alt><rdf:li xml:lang="x-default">${escapeXml(title)}</rdf:li></rdf:Alt></dc:title>` : '',
@@ -134,6 +149,10 @@ function buildXmpSidecar(
     ratingVal !== undefined ? `      <xmp:Rating>${ratingVal}</xmp:Rating>` : '',
     pickInfo  ? `      <xmp:Label>${escapeXml(pickInfo.label)}</xmp:Label>` : '',
     pickInfo  ? `      <photoshop:Urgency>${pickInfo.urgency}</photoshop:Urgency>` : '',
+    locationName ? `      <photoshop:Location>${escapeXml(locationName)}</photoshop:Location>` : '',
+    gps ? `      <exif:GPSLatitude>${gps.latitude.toFixed(8)}</exif:GPSLatitude>` : '',
+    gps ? `      <exif:GPSLongitude>${gps.longitude.toFixed(8)}</exif:GPSLongitude>` : '',
+    gps && typeof gps.altitude === 'number' ? `      <exif:GPSAltitude>${gps.altitude.toFixed(2)}</exif:GPSAltitude>` : '',
     '    </rdf:Description>',
     '  </rdf:RDF>',
     '</x:xmpmeta>',
@@ -147,10 +166,11 @@ async function writeMetadataSidecar(
   flags: MetadataExportFlags,
   rating?: number,
   pick?: 'selected' | 'rejected',
+  file?: MediaFile,
 ): Promise<string | null> {
-  if (!hasMetadata(metadata, flags, rating, pick)) return null;
+  if (!hasMetadata(metadata, flags, rating, pick, file)) return null;
   const sidecarPath = sidecarPathFor(destFullPath);
-  await writeFile(sidecarPath, buildXmpSidecar(metadata, flags, rating, pick), 'utf8');
+  await writeFile(sidecarPath, buildXmpSidecar(metadata, flags, rating, pick, file), 'utf8');
   return sidecarPath;
 }
 
@@ -276,6 +296,7 @@ async function convertWithPowerShell(
   format: Exclude<SaveFormat, 'original'>,
   jpegQuality: number,
   brightness = 1,
+  whiteBalance?: ImportConfig['whiteBalance'],
   orientation?: number,
   watermark?: WatermarkConfig,
 ): Promise<ConvertResult> {
@@ -285,11 +306,18 @@ async function convertWithPowerShell(
     heic: 'image/jpeg',
   };
   const mime = formatMap[format];
-  const needsMatrix = Math.abs(brightness - 1) > 0.001;
+  const wb = whiteBalanceMultipliers(whiteBalance);
+  const whiteBalanced = hasWhiteBalanceAdjustment(whiteBalance);
+  const red = brightness * wb.red;
+  const green = brightness * wb.green;
+  const blue = brightness * wb.blue;
+  const needsMatrix = [red, green, blue].some((v) => Math.abs(v - 1) > 0.001);
   const rotateFlip = rotateFlipType(orientation);
   const hasWatermark = hasRenderableWatermark(watermark);
   const needsRasterPass = needsMatrix || !!rotateFlip || hasWatermark;
-  const b = brightness.toFixed(4);
+  const r = red.toFixed(4);
+  const gChannel = green.toFixed(4);
+  const b = blue.toFixed(4);
   const opacity = Math.max(0.05, Math.min(1, watermark?.opacity ?? 0.3)).toFixed(3);
   const shadowOpacity = Math.max(0.05, Math.min(0.6, (watermark?.opacity ?? 0.3) * 0.6)).toFixed(3);
   const pointSize = watermarkPointSize(watermark?.scale);
@@ -306,8 +334,8 @@ async function convertWithPowerShell(
       ${needsRasterPass ? `
       ${needsMatrix ? `
       $matrix = New-Object System.Drawing.Imaging.ColorMatrix
-      $matrix.Matrix00 = ${b}
-      $matrix.Matrix11 = ${b}
+      $matrix.Matrix00 = ${r}
+      $matrix.Matrix11 = ${gChannel}
       $matrix.Matrix22 = ${b}
       $matrix.Matrix33 = 1
       $matrix.Matrix44 = 1
@@ -395,6 +423,7 @@ async function convertWithPowerShell(
     normalized: needsMatrix,
     watermarked: hasWatermark,
     straightened: !!rotateFlip,
+    whiteBalanced,
   };
 }
 
@@ -422,6 +451,7 @@ async function convertWithImageMagick(
   format: Exclude<SaveFormat, 'original'>,
   jpegQuality: number,
   brightness: number,
+  whiteBalance: ImportConfig['whiteBalance'] | undefined,
   binary: 'magick' | 'convert',
   autoStraighten = false,
   watermark?: WatermarkConfig,
@@ -430,11 +460,23 @@ async function convertWithImageMagick(
   // shape is the same for our purposes.
   const args: string[] = [srcPath];
   const hasWatermark = hasRenderableWatermark(watermark);
+  const wb = whiteBalanceMultipliers(whiteBalance);
+  const whiteBalanced = hasWhiteBalanceAdjustment(whiteBalance);
+  const channelMultipliers = {
+    red: brightness * wb.red,
+    green: brightness * wb.green,
+    blue: brightness * wb.blue,
+  };
   if (autoStraighten) {
     args.push('-auto-orient');
   }
-  if (Math.abs(brightness - 1) > 0.001) {
-    args.push('-evaluate', 'Multiply', brightness.toFixed(4));
+  if (Object.values(channelMultipliers).some((v) => Math.abs(v - 1) > 0.001)) {
+    args.push(
+      '-channel', 'R', '-evaluate', 'Multiply', channelMultipliers.red.toFixed(4),
+      '-channel', 'G', '-evaluate', 'Multiply', channelMultipliers.green.toFixed(4),
+      '-channel', 'B', '-evaluate', 'Multiply', channelMultipliers.blue.toFixed(4),
+      '+channel',
+    );
   }
   if (hasWatermark) {
     const gravity = watermarkGravity(watermarkPositionForOrientation(watermark, autoStraighten ? undefined : undefined));
@@ -469,6 +511,7 @@ async function convertWithImageMagick(
     normalized: Math.abs(brightness - 1) > 0.001,
     watermarked: hasWatermark,
     straightened: autoStraighten,
+    whiteBalanced,
   };
 }
 
@@ -478,39 +521,41 @@ async function convertAndCopy(
   format: Exclude<SaveFormat, 'original'>,
   jpegQuality: number,
   brightness: number,
+  whiteBalance?: ImportConfig['whiteBalance'],
   orientation?: number,
   watermark?: WatermarkConfig,
   autoStraighten = false,
 ): Promise<ConvertResult> {
   const needsBrightness = Math.abs(brightness - 1) > 0.001;
+  const wantsWhiteBalance = hasWhiteBalanceAdjustment(whiteBalance);
   const wantsWatermark = hasRenderableWatermark(watermark);
   const wantsStraighten = !!autoStraighten && !!rotateFlipType(orientation);
 
   if (process.platform === 'win32') {
-    return convertWithPowerShell(srcPath, destFullPath, format, jpegQuality, brightness, wantsStraighten ? orientation : undefined, watermark);
+    return convertWithPowerShell(srcPath, destFullPath, format, jpegQuality, brightness, whiteBalance, wantsStraighten ? orientation : undefined, watermark);
   }
 
   // For darwin + linux: prefer ImageMagick when brightness matters or when
   // we're on Linux. Fall back to sips (mac) / raises otherwise.
-  if (needsBrightness || wantsWatermark || wantsStraighten) {
+  if (needsBrightness || wantsWhiteBalance || wantsWatermark || wantsStraighten) {
     const bin = await detectImageMagick();
     if (bin) {
-      return convertWithImageMagick(srcPath, destFullPath, format, jpegQuality, brightness, bin, wantsStraighten, watermark);
+      return convertWithImageMagick(srcPath, destFullPath, format, jpegQuality, brightness, whiteBalance, bin, wantsStraighten, watermark);
     }
     // No IM available — we can't run advanced transforms. Fall through to plain conversion
     // and report the miss to the caller so it can surface a warning.
     if (process.platform === 'darwin') {
       await convertWithSips(srcPath, destFullPath, format, jpegQuality, false);
-      return { normalized: false, watermarked: false, straightened: false };
+      return { normalized: false, watermarked: false, straightened: false, whiteBalanced: false };
     }
     // Linux without IM — this would already be broken for normal conversion,
     // but throw a clearer error.
-    throw new Error('ImageMagick (magick/convert) is required for watermarking, exposure normalization, or auto-straightening on Linux');
+    throw new Error('ImageMagick (magick/convert) is required for watermarking, exposure normalization, white balance, or auto-straightening on Linux');
   }
 
   if (process.platform === 'darwin') {
     await convertWithSips(srcPath, destFullPath, format, jpegQuality, false);
-    return { normalized: false, watermarked: false, straightened: false };
+    return { normalized: false, watermarked: false, straightened: false, whiteBalanced: false };
   }
   // Linux default path — convert is the historical invocation
   await execFileAsync(
@@ -522,7 +567,7 @@ async function convertAndCopy(
     ],
     { timeout: 60000 },
   );
-  return { normalized: false, watermarked: false, straightened: false };
+  return { normalized: false, watermarked: false, straightened: false, whiteBalanced: false };
 }
 
 export async function importFiles(
@@ -572,6 +617,7 @@ export async function importFiles(
   let normalizationMissing = 0; // how many files we couldn't normalize
   let watermarkMissing = 0;
   let straightenMissing = 0;
+  let whiteBalanceMissing = 0;
 
   function brightnessFor(file: MediaFile): number {
     const shouldNormalize = normalizeActive || perFileNormalizePaths.has(file.path);
@@ -583,6 +629,11 @@ export async function importFiles(
       maxStops,
     );
     return stopsToSafeMultiplier(correctionStops);
+  }
+
+  function whiteBalanceFor(file: MediaFile): ImportConfig['whiteBalance'] | undefined {
+    if (config.saveFormat === 'original') return undefined;
+    return config.whiteBalanceAdjustments?.[file.path] ?? file.whiteBalanceAdjustment ?? config.whiteBalance;
   }
 
   async function ensureDir(dirPath: string): Promise<void> {
@@ -625,8 +676,9 @@ export async function importFiles(
         await copyFile(file.path, destFullPath, constants.COPYFILE_EXCL);
       } else {
         const brightness = brightnessFor(file);
-        const { normalized, watermarked, straightened } = await convertAndCopy(
-          file.path, destFullPath, saveFormat, jpegQuality, brightness, file.orientation, config.watermark, config.autoStraighten,
+        const whiteBalance = whiteBalanceFor(file);
+        const { normalized, watermarked, straightened, whiteBalanced } = await convertAndCopy(
+          file.path, destFullPath, saveFormat, jpegQuality, brightness, whiteBalance, file.orientation, config.watermark, config.autoStraighten,
         );
         if (normalizeActive && Math.abs(brightness - 1) > 0.001 && !normalized) {
           normalizationMissing++;
@@ -637,10 +689,13 @@ export async function importFiles(
         if (config.autoStraighten && rotateFlipType(file.orientation) && !straightened) {
           straightenMissing++;
         }
+        if (hasWhiteBalanceAdjustment(whiteBalance) && !whiteBalanced) {
+          whiteBalanceMissing++;
+        }
       }
 
       const flags = resolveFlags(config.metadataExportFlags);
-      const primarySidecarPath = await writeMetadataSidecar(destFullPath, config.metadata, flags, file.rating, file.pick);
+      const primarySidecarPath = await writeMetadataSidecar(destFullPath, config.metadata, flags, file.rating, file.pick, file);
 
       // Mirror to backup destination after primary copy succeeds. Mirror
       // failures are recorded but don't roll back the primary — the user
@@ -676,7 +731,7 @@ export async function importFiles(
             localPath: primarySidecarPath,
             remoteRelPath: path.posix.join(path.posix.dirname(finalRelPath.replace(/\\/g, '/')), sidecarName),
             fileName: `${file.name}.xmp`,
-            size: Buffer.byteLength(buildXmpSidecar(config.metadata, resolveFlags(config.metadataExportFlags), file.rating, file.pick)),
+            size: Buffer.byteLength(buildXmpSidecar(config.metadata, resolveFlags(config.metadataExportFlags), file.rating, file.pick, file)),
           });
         }
       }
@@ -831,6 +886,12 @@ export async function importFiles(
     errors.push({
       file: 'auto-straighten',
       error: `Skipped auto-straighten/upright conversion on ${straightenMissing} file(s). Install ImageMagick ('magick' or 'convert' on PATH) to enable this on macOS/Linux.`,
+    });
+  }
+  if (whiteBalanceMissing > 0) {
+    errors.push({
+      file: 'white-balance',
+      error: `Skipped white-balance correction on ${whiteBalanceMissing} file(s). Install ImageMagick ('magick' or 'convert' on PATH) to enable this on macOS/Linux.`,
     });
   }
 

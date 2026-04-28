@@ -2,7 +2,24 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import type { MediaFile } from '../../shared/types';
 import { buildExposure, formatFileSize } from '../utils/formatters';
 import { useAppState, useAppDispatch, useMergedFiles } from '../context/ImportContext';
-import { buildPreviewExposureFilter, formatEVDelta, stopsToSafeMultiplier, clampStops, estimateClippingPercent, getNormalizedExposureStops } from '../../shared/exposure';
+import {
+  buildPreviewExposureFilter,
+  buildPreviewWhiteBalanceFilter,
+  clampStops,
+  clampWhiteBalanceValue,
+  estimateClippingPercent,
+  formatWhiteBalanceKelvin,
+  kelvinToWhiteBalanceTemperature,
+  formatEVDelta,
+  getNormalizedExposureStops,
+  normalizeExposureStops,
+  normalizeWhiteBalanceAdjustment,
+  stopsToSafeMultiplier,
+  WHITE_BALANCE_MAX_KELVIN,
+  WHITE_BALANCE_MIN_KELVIN,
+  whiteBalanceTemperatureToKelvin,
+} from '../../shared/exposure';
+import { bestShotScore, faceQuality, humanMomentQuality } from '../../shared/review';
 import { Histogram } from './Histogram';
 import { decodeImage, getCachedPreview } from '../utils/previewCache';
 
@@ -19,6 +36,33 @@ const RAW_EXT_RE = /\.(nef|nrw|cr2|cr3|arw|raf|rw2|orf|dng|pef|srw)$/i;
 
 function isRawPhoto(file: MediaFile) {
   return file.type === 'photo' && RAW_EXT_RE.test(file.name || file.extension);
+}
+
+function buildAiReasons(file: MediaFile): string[] {
+  const reasons = new Set<string>();
+  if (file.pick === 'selected') reasons.add('picked keeper');
+  if (file.pick === 'rejected') reasons.add('marked reject');
+  for (const reason of file.reviewReasons ?? []) reasons.add(reason);
+  for (const reason of file.subjectReasons ?? []) reasons.add(reason);
+  const faceCount = file.faceCount ?? file.faceBoxes?.length ?? 0;
+  const personCount = file.personCount ?? file.personBoxes?.length ?? 0;
+  if (faceCount > 0) {
+    const bestEye = (file.faceBoxes ?? []).reduce((best, box) => Math.max(best, box.eyeScore ?? 0), 0);
+    reasons.add(`${faceCount} face${faceCount === 1 ? '' : 's'} detected`);
+    if (bestEye >= 2) reasons.add('best eyes open');
+    else if (bestEye === 1) reasons.add('blink/side-face risk');
+    if (humanMomentQuality(file) >= 75) reasons.add('strong expression moment');
+    if (faceQuality(file) < 45) reasons.add('weak face detail');
+  }
+  if (personCount > 0) reasons.add(`${personCount} person${personCount === 1 ? '' : 's'} detected`);
+  if ((file.subjectSharpnessScore ?? 0) >= 120) reasons.add('sharpest subject candidate');
+  if ((file.subjectSharpnessScore ?? 0) > 0 && (file.subjectSharpnessScore ?? 0) < 35) reasons.add('softer subject');
+  if (file.blurRisk === 'high') reasons.add('high blur risk');
+  if (file.visualGroupSize && file.visualGroupSize > 1) reasons.add(`duplicate stack ${file.visualGroupSize}`);
+  if (file.burstSize && file.burstSize > 1) reasons.add(`burst frame ${file.burstIndex ?? '?'} of ${file.burstSize}`);
+  if (file.faceGroupSize && file.faceGroupSize > 1) reasons.add(`similar face group ${file.faceGroupSize}`);
+  if (bestShotScore(file) >= 185) reasons.add('high best-shot score');
+  return [...reasons].slice(0, 5);
 }
 
 function orientationTransform(orientation?: number) {
@@ -57,7 +101,14 @@ export function SingleView({ file, index, total }: SingleViewProps) {
   const [loadError, setLoadError] = useState(false);
   const isPicked = file.pick === 'selected';
   const isRejected = file.pick === 'rejected';
-  const { exposureAnchorPath, normalizeExposure, saveFormat, exposureMaxStops } = useAppState();
+  const {
+    exposureAnchorPath,
+    normalizeExposure,
+    saveFormat,
+    exposureMaxStops,
+    whiteBalanceTemperature,
+    whiteBalanceTint,
+  } = useAppState();
   const files = useMergedFiles();
   const dispatch = useAppDispatch();
   const anchor = exposureAnchorPath ? files.find((f) => f.path === exposureAnchorPath) : null;
@@ -347,6 +398,14 @@ export function SingleView({ file, index, total }: SingleViewProps) {
       : 0;
   const matchCorrection = canPreviewNorm ? normalizedEvDelta : undefined;
   const manualStops = file.exposureAdjustmentStops ?? 0;
+  const globalWhiteBalance = normalizeWhiteBalanceAdjustment({
+    temperature: whiteBalanceTemperature,
+    tint: whiteBalanceTint,
+  });
+  const photoWhiteBalance = normalizeWhiteBalanceAdjustment(file.whiteBalanceAdjustment);
+  const previewWhiteBalance = holdOriginal || saveFormat === 'original'
+    ? undefined
+    : photoWhiteBalance ?? globalWhiteBalance;
   const previewStops = holdOriginal
     ? 0
     : clampStops((previewNormalized ? normalizedEvDelta : 0) + manualStops, exposureMaxStops);
@@ -354,9 +413,11 @@ export function SingleView({ file, index, total }: SingleViewProps) {
     ? stopsToSafeMultiplier(previewStops)
     : 1;
   const exposurePreviewFilter = buildPreviewExposureFilter(previewStops);
+  const whiteBalancePreviewFilter = buildPreviewWhiteBalanceFilter(previewWhiteBalance);
   const imageFilter = [
     showingThumbnailOnly ? 'blur(0.35px)' : '',
     exposurePreviewFilter ?? '',
+    whiteBalancePreviewFilter ?? '',
   ].filter(Boolean).join(' ');
   const orientation = orientationTransform(file.orientation);
   const manualRotation = manualQuarterTurns ? `rotate(${manualQuarterTurns * 90}deg)` : undefined;
@@ -378,6 +439,34 @@ export function SingleView({ file, index, total }: SingleViewProps) {
     : null;
   const canPreviewAdjust = imageSrc && canPreviewNorm;
   const clippingRisk = Math.abs(previewStops) >= exposureMaxStops - 0.01 || brightnessMultiplier >= 2.25 || brightnessMultiplier <= 0.4;
+  const aiReasons = buildAiReasons(file);
+  const editDisabled = saveFormat === 'original';
+  const currentPhotoTemp = photoWhiteBalance?.temperature ?? 0;
+  const currentPhotoTint = photoWhiteBalance?.tint ?? 0;
+  const currentPhotoKelvin = whiteBalanceTemperatureToKelvin(currentPhotoTemp);
+  const hasPhotoWhiteBalance = !!photoWhiteBalance;
+  const setPhotoExposure = useCallback((stops: number) => {
+    if (editDisabled) return;
+    dispatch({
+      type: 'SET_EXPOSURE_ADJUSTMENT',
+      filePaths: [file.path],
+      stops: normalizeExposureStops(clampStops(stops, exposureMaxStops), 0.01),
+    });
+  }, [dispatch, editDisabled, exposureMaxStops, file.path]);
+  const setPhotoWhiteBalance = useCallback((temperature: number, tint: number) => {
+    if (editDisabled) return;
+    dispatch({
+      type: 'SET_WHITE_BALANCE_ADJUSTMENT',
+      filePaths: [file.path],
+      temperature: clampWhiteBalanceValue(temperature),
+      tint: clampWhiteBalanceValue(tint),
+    });
+  }, [dispatch, editDisabled, file.path]);
+  const resetPhotoEdits = useCallback(() => {
+    dispatch({ type: 'SET_EXPOSURE_ADJUSTMENT', filePaths: [file.path], stops: 0 });
+    dispatch({ type: 'SET_NORMALIZE_TO_ANCHOR', filePaths: [file.path], value: false });
+    dispatch({ type: 'SET_WHITE_BALANCE_ADJUSTMENT', filePaths: [file.path], temperature: 0, tint: 0 });
+  }, [dispatch, file.path]);
 
   useEffect(() => {
     if (!imageSrc) {
@@ -494,6 +583,29 @@ export function SingleView({ file, index, total }: SingleViewProps) {
             </svg>
           </div>
         )}
+        {!isZoomed && imageSrc && (file.personBoxes?.length ?? 0) > 0 && (
+          <div
+            className="absolute inset-0 pointer-events-none z-[14]"
+            style={{
+              transform: displayTransform,
+              transformOrigin: 'center center',
+            }}
+          >
+            {file.personBoxes!.map((box, i) => (
+              <div
+                key={i}
+                className="absolute rounded-sm border border-dashed border-sky-300/70 shadow-[0_0_0_1px_rgba(0,0,0,0.35)]"
+                style={{
+                  left: `${box.x * 100}%`,
+                  top: `${box.y * 100}%`,
+                  width: `${box.width * 100}%`,
+                  height: `${box.height * 100}%`,
+                }}
+                title={`Person detected${typeof box.score === 'number' ? ` (${Math.round(box.score * 100)}%)` : ''}`}
+              />
+            ))}
+          </div>
+        )}
         {!isZoomed && imageSrc && (file.faceBoxes?.length ?? 0) > 0 && (
           <div
             className="absolute inset-0 pointer-events-none z-[15]"
@@ -537,6 +649,22 @@ export function SingleView({ file, index, total }: SingleViewProps) {
         <div className="absolute top-3 right-3 flex items-center gap-1.5 bg-black/45 text-white/80 px-2 py-1 rounded z-30">
           <div className="w-3 h-3 border-[1.5px] border-text-muted border-t-text rounded-full animate-spin" />
           <span className="text-[10px]">Loading full preview</span>
+        </div>
+      )}
+
+      {!isZoomed && imageSrc && aiReasons.length > 0 && (
+        <div className="absolute left-3 top-12 z-20 max-w-[min(320px,42vw)] rounded border border-white/10 bg-black/55 px-2 py-1.5 text-white/90 shadow backdrop-blur-sm">
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <span className="text-[9px] font-semibold uppercase tracking-wider text-white/65">AI reasons</span>
+            <span className="text-[9px] font-mono text-white/55">best {bestShotScore(file)}</span>
+          </div>
+          <div className="flex max-h-12 flex-wrap gap-1 overflow-hidden">
+            {aiReasons.map((reason) => (
+              <span key={reason} className="max-w-full truncate rounded bg-white/10 px-1.5 py-0.5 text-[9px] text-white/80">
+                {reason}
+              </span>
+            ))}
+          </div>
         </div>
       )}
 
@@ -651,6 +779,11 @@ export function SingleView({ file, index, total }: SingleViewProps) {
             {Math.abs(manualStops) >= 0.01 && (
               <span className="text-[9px] font-mono text-sky-300 bg-sky-500/30 px-1.5 py-0.5 rounded" title="Manual exposure offset">
                 EV {manualStops > 0 ? '+' : ''}{manualStops.toFixed(2)}
+              </span>
+            )}
+            {previewWhiteBalance && (
+              <span className="text-[9px] font-mono text-cyan-200 bg-cyan-500/25 px-1.5 py-0.5 rounded" title={photoWhiteBalance ? 'Per-photo white balance override' : 'Bulk white balance preview'}>
+                WB {formatWhiteBalanceKelvin(previewWhiteBalance.temperature)} tint {previewWhiteBalance.tint > 0 ? '+' : ''}{previewWhiteBalance.tint}
               </span>
             )}
             {clippingRisk && (
@@ -780,6 +913,88 @@ export function SingleView({ file, index, total }: SingleViewProps) {
               {cameraName}
             </span>
           )}
+        </div>
+      )}
+
+      {!isZoomed && imageSrc && (
+        <div className="absolute bottom-12 right-3 z-20 w-[min(260px,42vw)] rounded border border-white/10 bg-black/60 p-2 text-white/90 shadow backdrop-blur-sm">
+          <div className="mb-1.5 flex items-center justify-between gap-2">
+            <span className="text-[9px] font-semibold uppercase tracking-wider text-white/65">Photo edits</span>
+            <div className="flex gap-1">
+              <button
+                type="button"
+                onClick={() => dispatch({ type: 'SYNC_EDITS_FROM_FOCUSED', filePath: file.path })}
+                className="rounded bg-white/10 px-1.5 py-0.5 text-[9px] text-white/80 hover:bg-white/20"
+                title="Sync this photo's EV/WB edits to selected photos, or to the same burst/scene if nothing is selected"
+              >
+                Sync
+              </button>
+              <button
+                type="button"
+                onClick={resetPhotoEdits}
+                className="rounded bg-white/10 px-1.5 py-0.5 text-[9px] text-white/80 hover:bg-white/20"
+                title="Reset this photo's exposure normalization, manual EV, and per-photo white balance"
+              >
+                Reset
+              </button>
+            </div>
+          </div>
+          {editDisabled && (
+            <div className="mb-2 rounded bg-yellow-500/15 px-1.5 py-1 text-[9px] text-yellow-100">
+              Pixel edits preview/export need JPEG, TIFF, or HEIC output.
+            </div>
+          )}
+          <div className={editDisabled ? 'pointer-events-none opacity-50' : ''}>
+            <div className="mb-1 flex items-center justify-between text-[10px]">
+              <span className="text-white/70">Exposure</span>
+              <span className="font-mono text-sky-100">{manualStops > 0 ? '+' : ''}{manualStops.toFixed(2)} EV</span>
+            </div>
+            <div className="mb-2 flex items-center gap-1">
+              <button type="button" onClick={() => setPhotoExposure(manualStops - 0.33)} className="rounded bg-white/10 px-2 py-0.5 text-[10px] hover:bg-white/20">-</button>
+              <input
+                type="range"
+                min={-exposureMaxStops}
+                max={exposureMaxStops}
+                step={0.05}
+                value={manualStops}
+                onChange={(e) => setPhotoExposure(Number(e.target.value))}
+                className="min-w-0 flex-1 accent-sky-300"
+              />
+              <button type="button" onClick={() => setPhotoExposure(manualStops + 0.33)} className="rounded bg-white/10 px-2 py-0.5 text-[10px] hover:bg-white/20">+</button>
+            </div>
+            <div className="mb-1 flex items-center justify-between text-[10px]">
+              <span className="text-white/70">Photo WB</span>
+              <span className="font-mono text-cyan-100">
+                {hasPhotoWhiteBalance ? `${formatWhiteBalanceKelvin(currentPhotoTemp)} / ${currentPhotoTint > 0 ? '+' : ''}${currentPhotoTint}` : 'bulk'}
+              </span>
+            </div>
+            <div className="mb-1 grid grid-cols-[2.25rem_1fr_3rem] items-center gap-1 text-[9px] text-white/65">
+              <span>K</span>
+              <input
+                type="range"
+                min={WHITE_BALANCE_MIN_KELVIN}
+                max={WHITE_BALANCE_MAX_KELVIN}
+                step={50}
+                value={currentPhotoKelvin}
+                onChange={(e) => setPhotoWhiteBalance(kelvinToWhiteBalanceTemperature(Number(e.target.value)), currentPhotoTint)}
+                className="min-w-0 accent-cyan-300"
+              />
+              <span className="text-right font-mono">{currentPhotoKelvin}</span>
+            </div>
+            <div className="grid grid-cols-[2.25rem_1fr_2.25rem] items-center gap-1 text-[9px] text-white/65">
+              <span>Tint</span>
+              <input
+                type="range"
+                min={-100}
+                max={100}
+                step={5}
+                value={currentPhotoTint}
+                onChange={(e) => setPhotoWhiteBalance(currentPhotoTemp, Number(e.target.value))}
+                className="min-w-0 accent-cyan-300"
+              />
+              <span className="text-right font-mono">{currentPhotoTint}</span>
+            </div>
+          </div>
         </div>
       )}
 

@@ -1,7 +1,7 @@
 import { memo, useRef, useEffect, useState } from 'react';
 import type { MediaFile } from '../../shared/types';
 import { formatFileSize, formatExposure } from '../utils/formatters';
-import { buildPreviewExposureFilter, clampStops } from '../../shared/exposure';
+import { buildPreviewExposureFilter, buildPreviewWhiteBalanceFilter, clampStops } from '../../shared/exposure';
 
 function useLazySrc(src: string | undefined, forceActive: boolean) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -35,6 +35,7 @@ interface ThumbnailCardProps {
   queued?: boolean;
   forceLoad?: boolean;
   exposurePreviewStops?: number;
+  whiteBalancePreview?: { temperature?: number; tint?: number };
   compact?: boolean;
   frameNumber?: number;
   burstCollapsed?: boolean;
@@ -88,6 +89,7 @@ function ThumbnailCardInner({
   queued = false,
   forceLoad = false,
   exposurePreviewStops = 0,
+  whiteBalancePreview,
   compact = false,
   frameNumber,
   burstCollapsed = false,
@@ -99,9 +101,12 @@ function ThumbnailCardInner({
   const isVideo = file.type === 'video';
   const isPicked = file.pick === 'selected';
   const isRejected = file.pick === 'rejected';
-  const exposureMarked = !!file.normalizeToAnchor || Math.abs(file.exposureAdjustmentStops ?? 0) >= 0.01;
+  const whiteBalanceMarked = !!file.whiteBalanceAdjustment || !!whiteBalancePreview;
+  const exposureMarked = !!file.normalizeToAnchor || Math.abs(file.exposureAdjustmentStops ?? 0) >= 0.01 || whiteBalanceMarked;
   const totalPreviewStops = clampStops((file.exposureAdjustmentStops ?? 0) + exposurePreviewStops, 4);
   const previewFilter = buildPreviewExposureFilter(totalPreviewStops);
+  const whiteBalanceFilter = buildPreviewWhiteBalanceFilter(file.whiteBalanceAdjustment ?? whiteBalancePreview);
+  const imageFilter = [previewFilter, whiteBalanceFilter].filter(Boolean).join(' ') || undefined;
   const orientation = orientationTransform(file.orientation);
   const { containerRef, activeSrc } = useLazySrc(file.thumbnail, forceLoad || focused || selected);
 
@@ -128,7 +133,7 @@ function ThumbnailCardInner({
                 imageOrientation: 'none',
                 transform: orientation,
                 transformOrigin: 'center center',
-                filter: previewFilter,
+                filter: imageFilter,
               }}
             />
           ) : (
@@ -166,7 +171,7 @@ function ThumbnailCardInner({
             </div>
           )}
 
-          {(file.isProtected || file.normalizeToAnchor || file.exposureAdjustmentStops) && (
+          {(file.isProtected || file.normalizeToAnchor || file.exposureAdjustmentStops || whiteBalanceMarked) && (
             <div className="absolute top-1.5 left-1.5 flex flex-col gap-0.5 z-20">
               {file.isProtected && (
                 <div
@@ -193,6 +198,14 @@ function ThumbnailCardInner({
                   title="Manual exposure offset"
                 >
                   {file.exposureAdjustmentStops > 0 ? '+' : ''}{file.exposureAdjustmentStops.toFixed(1)}EV
+                </div>
+              )}
+              {whiteBalanceMarked && (
+                <div
+                  className="bg-cyan-500/90 text-[9px] text-white px-1 py-0.5 rounded font-medium"
+                  title={file.whiteBalanceAdjustment ? 'Per-photo white balance override' : 'Bulk white balance preview'}
+                >
+                  WB
                 </div>
               )}
             </div>
@@ -268,10 +281,10 @@ function ThumbnailCardInner({
                   : 'bg-blue-500/85 hover:bg-blue-500 cursor-pointer'
               }`}
               title={burstCollapsed
-                ? `Burst - ${file.burstSize} shots. Click to expand (G)`
+                ? `Open all ${file.burstSize} shots in this burst`
                 : `Burst shot ${file.burstIndex} of ${file.burstSize}. Click to collapse (G)`}
             >
-              {burstCollapsed ? `x${file.burstSize}` : `${file.burstIndex}/${file.burstSize}`}
+              {burstCollapsed ? `View ${file.burstSize}` : `${file.burstIndex}/${file.burstSize}`}
             </button>
           )}
 
@@ -318,6 +331,8 @@ export const ThumbnailCard = memo(ThumbnailCardInner, (prev, next) => {
     a.rating === b.rating &&
     a.normalizeToAnchor === b.normalizeToAnchor &&
     a.exposureAdjustmentStops === b.exposureAdjustmentStops &&
+    a.whiteBalanceAdjustment?.temperature === b.whiteBalanceAdjustment?.temperature &&
+    a.whiteBalanceAdjustment?.tint === b.whiteBalanceAdjustment?.tint &&
     a.burstId === b.burstId &&
     a.burstIndex === b.burstIndex &&
     a.burstSize === b.burstSize &&
@@ -339,6 +354,8 @@ export const ThumbnailCard = memo(ThumbnailCardInner, (prev, next) => {
     prev.queued === next.queued &&
     prev.forceLoad === next.forceLoad &&
     prev.exposurePreviewStops === next.exposurePreviewStops &&
+    prev.whiteBalancePreview?.temperature === next.whiteBalancePreview?.temperature &&
+    prev.whiteBalancePreview?.tint === next.whiteBalancePreview?.tint &&
     prev.compact === next.compact &&
     prev.frameNumber === next.frameNumber &&
     prev.burstCollapsed === next.burstCollapsed &&

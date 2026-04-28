@@ -190,6 +190,76 @@ describe('importFiles', () => {
     }
   });
 
+  it('does not apply exposure normalization when copying originals', async () => {
+    const result = await importFiles([
+      makeFile({ exposureValue: 8, normalizeToAnchor: true, exposureAdjustmentStops: 1 }),
+    ], makeConfig({
+      saveFormat: 'original',
+      normalizeExposure: true,
+      exposureAnchorEV: 10,
+      normalizeAnchorPaths: ['/src/IMG_001.jpg'],
+      exposureAdjustments: { '/src/IMG_001.jpg': 1 },
+    }), onProgress);
+
+    expect(result.imported).toBe(1);
+    expect(mockCopyFile).toHaveBeenCalledOnce();
+    expect(mockExecFile).not.toHaveBeenCalled();
+  });
+
+  it('does not apply white balance when copying originals', async () => {
+    const result = await importFiles([
+      makeFile({ whiteBalanceAdjustment: { temperature: 40, tint: -20 } }),
+    ], makeConfig({
+      saveFormat: 'original',
+      whiteBalance: { temperature: 25, tint: 10 },
+      whiteBalanceAdjustments: { '/src/IMG_001.jpg': { temperature: 40, tint: -20 } },
+    }), onProgress);
+
+    expect(result.imported).toBe(1);
+    expect(mockCopyFile).toHaveBeenCalledOnce();
+    expect(mockExecFile).not.toHaveBeenCalled();
+  });
+
+  it('passes brightness adjustment when transcoding with exposure normalization', async () => {
+    await importFiles([
+      makeFile({ exposureValue: 8, normalizeToAnchor: true }),
+    ], makeConfig({
+      saveFormat: 'jpeg',
+      normalizeExposure: false,
+      exposureAnchorEV: 10,
+      normalizeAnchorPaths: ['/src/IMG_001.jpg'],
+    }), onProgress);
+
+    if (process.platform === 'win32') {
+      expect(mockExecFile).toHaveBeenCalledWith(
+        'powershell.exe',
+        expect.arrayContaining(['-Command', expect.stringContaining('$matrix.Matrix00')]),
+        expect.any(Object),
+      );
+    } else {
+      expect(mockExecFile).toHaveBeenCalled();
+    }
+  });
+
+  it('passes white-balance channel adjustment when transcoding', async () => {
+    await importFiles([
+      makeFile(),
+    ], makeConfig({
+      saveFormat: 'jpeg',
+      whiteBalance: { temperature: 50, tint: -25 },
+    }), onProgress);
+
+    if (process.platform === 'win32') {
+      expect(mockExecFile).toHaveBeenCalledWith(
+        'powershell.exe',
+        expect.arrayContaining(['-Command', expect.stringContaining('$matrix.Matrix22')]),
+        expect.any(Object),
+      );
+    } else {
+      expect(mockExecFile).toHaveBeenCalled();
+    }
+  });
+
   it('verifies converted files after writing', async () => {
     const config = makeConfig({ saveFormat: 'jpeg' });
     await importFiles([makeFile()], config, onProgress);

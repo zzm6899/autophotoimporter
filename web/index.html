@@ -3,15 +3,15 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Culler — Photo culling &amp; import for photographers</title>
+  <title>Keptra — Photo culling &amp; import for photographers</title>
   <meta name="description" content="Cull, review, and import photos from your camera cards at full speed. Mac and Windows." />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
-      --bg: #0d0d0f; --surface: #141416; --surface-raised: #1c1c1f;
-      --border: #2a2a2e; --text: #f0f0f0; --text-muted: #888; --text-faint: #555;
-      --accent: #6c63ff; --accent-hover: #7b73ff; --accent-soft: rgba(108,99,255,.16); --green: #34d399;
-      --radius: 12px;
+      --bg: #0c0f11; --surface: #141719; --surface-raised: #1c2124;
+      --border: #2b3337; --text: #f2f6f7; --text-muted: #9ba9ae; --text-faint: #69777d;
+      --accent: #37b69f; --accent-hover: #45c6af; --accent-soft: rgba(55,182,159,.15); --green: #5ad69d;
+      --radius: 8px;
       --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
       --mono: "SF Mono", "Fira Code", Consolas, monospace;
       --page-width: 1120px;
@@ -20,10 +20,7 @@
     html { scroll-behavior: smooth; }
     body {
       font-family: var(--font);
-      background:
-        radial-gradient(circle at top left, rgba(108,99,255,.18), transparent 28%),
-        radial-gradient(circle at top right, rgba(52,211,153,.10), transparent 24%),
-        linear-gradient(180deg, #0b0b0d 0%, #0d0d0f 30%, #111114 100%);
+      background: linear-gradient(180deg, #0a0d0f 0%, #0c0f11 38%, #101416 100%);
       color: var(--text);
       line-height: 1.6;
       -webkit-font-smoothing: antialiased;
@@ -38,18 +35,18 @@
       padding: 0 1.25rem; height: 64px;
       background: rgba(13,13,15,0.82); backdrop-filter: blur(16px);
       border: 1px solid rgba(255,255,255,.08);
-      border-radius: 18px;
+      border-radius: 12px;
       box-shadow: 0 18px 44px rgba(0,0,0,.28);
     }
-    .nav-logo { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 1rem; letter-spacing: -.01em; }
+    .nav-logo { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 1rem; letter-spacing: 0; }
     .nav-logo svg { width: 28px; height: 28px; }
     .nav-links { display: flex; align-items: center; justify-content: center; gap: 1.5rem; font-size: 0.875rem; color: var(--text-muted); flex: 1; }
     .nav-links a:hover { color: var(--text); }
-    .nav-cta { padding: 0.6rem 1rem; background: var(--accent); color: #fff; border-radius: 10px; font-size: 0.875rem; font-weight: 600; transition: background 0.15s, transform 0.1s; box-shadow: 0 14px 32px rgba(108,99,255,.2); }
+    .nav-cta { padding: 0.6rem 1rem; background: var(--accent); color: #041210; border-radius: 8px; font-size: 0.875rem; font-weight: 700; transition: background 0.15s, transform 0.1s; box-shadow: 0 14px 32px rgba(55,182,159,.14); }
     .nav-cta:hover { background: var(--accent-hover); }
     .nav-menu-toggle {
       display: none; align-items: center; justify-content: center; flex-direction: column; gap: 4px;
-      width: 42px; height: 42px; border-radius: 12px; border: 1px solid var(--border);
+      width: 42px; height: 42px; border-radius: 8px; border: 1px solid var(--border);
       background: var(--surface-raised); cursor: pointer;
     }
     .nav-menu-toggle span { width: 16px; height: 2px; border-radius: 999px; background: var(--text); }
@@ -62,7 +59,7 @@
       gap: 0.55rem;
       background: rgba(20,20,22,.96);
       border: 1px solid rgba(255,255,255,.08);
-      border-radius: 18px;
+      border-radius: 12px;
       box-shadow: 0 24px 48px rgba(0,0,0,.38);
       opacity: 0;
       pointer-events: none;
@@ -73,7 +70,7 @@
     .mobile-menu a {
       display: flex; align-items: center; justify-content: space-between;
       padding: 0.9rem 1rem;
-      border-radius: 12px;
+      border-radius: 8px;
       background: var(--surface-raised);
       border: 1px solid var(--border);
       color: var(--text);
@@ -83,13 +80,13 @@
     .mobile-menu a.mobile-menu-cta {
       background: var(--accent);
       border-color: transparent;
-      color: #fff;
+      color: #041210;
       font-weight: 600;
     }
     .hero { padding: clamp(7.5rem, 14vw, 9.5rem) clamp(1.25rem, 4vw, 2rem) clamp(3rem, 6vw, 4rem); text-align: center; max-width: 860px; margin: 0 auto; position: relative; }
     .hero-badge { display: inline-flex; align-items: center; gap: 6px; font-size: 0.75rem; font-weight: 500; letter-spacing: .04em; color: var(--text-muted); text-transform: uppercase; border: 1px solid var(--border); border-radius: 999px; padding: 4px 12px; margin-bottom: 1.5rem; }
     .hero-badge span { color: var(--green); }
-    h1 { font-size: clamp(2.2rem, 5vw, 3.8rem); font-weight: 700; letter-spacing: -.03em; line-height: 1.1; margin-bottom: 1.25rem; }
+    h1 { font-size: clamp(2.2rem, 5vw, 3.8rem); font-weight: 700; letter-spacing: 0; line-height: 1.1; margin-bottom: 1.25rem; }
     h1 em { font-style: normal; color: var(--accent); }
     .hero-sub { font-size: clamp(0.98rem, 1.6vw, 1.08rem); color: var(--text-muted); max-width: 38rem; margin: 0 auto 2.25rem; line-height: 1.75; }
     .hero-actions { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
@@ -103,20 +100,20 @@
       font-size: 0.8rem;
       line-height: 1.3;
     }
-    .btn-primary { display: inline-flex; align-items: center; gap: 8px; padding: 0.75rem 1.75rem; background: var(--accent); color: #fff; border-radius: var(--radius); font-size: 0.95rem; font-weight: 600; transition: background 0.15s, transform 0.1s; }
+    .btn-primary { display: inline-flex; align-items: center; gap: 8px; padding: 0.75rem 1.75rem; background: var(--accent); color: #041210; border-radius: var(--radius); font-size: 0.95rem; font-weight: 700; transition: background 0.15s, transform 0.1s; }
     .btn-primary:hover { background: var(--accent-hover); transform: translateY(-1px); }
     .btn-secondary { display: inline-flex; align-items: center; gap: 8px; padding: 0.75rem 1.75rem; background: var(--surface-raised); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); font-size: 0.95rem; font-weight: 500; transition: background 0.15s, transform 0.1s; }
     .btn-secondary:hover { background: var(--border); transform: translateY(-1px); }
     .hero-demo { max-width: 1080px; margin: clamp(2rem, 5vw, 3.5rem) auto 0; padding: 0 clamp(1rem, 4vw, 2rem); }
-    .demo-frame { border-radius: 18px; border: 1px solid rgba(255,255,255,.08); overflow: hidden; background: var(--surface); box-shadow: var(--shadow-lg); }
-    .demo-frame svg { display: block; width: 100%; }
+    .demo-frame { border-radius: 12px; border: 1px solid rgba(255,255,255,.08); overflow: hidden; background: var(--surface); box-shadow: var(--shadow-lg); }
+    .demo-frame svg, .demo-frame img { display: block; width: 100%; height: auto; aspect-ratio: 960 / 560; object-fit: cover; }
     .platform-strip { border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 1.75rem 2rem; text-align: center; background: var(--surface); margin-top: 5rem; }
     .platform-strip p { color: var(--text-muted); font-size: 0.8rem; margin-bottom: 1rem; text-transform: uppercase; letter-spacing: .06em; font-weight: 500; }
     .platform-badges { display: flex; justify-content: center; gap: 1.25rem; flex-wrap: wrap; }
     .platform-badge { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 0.875rem; font-weight: 500; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 10px; padding: 0.55rem 1.1rem; }
     .section { padding: clamp(3.5rem, 7vw, 5rem) clamp(1.25rem, 4vw, 2rem); max-width: var(--page-width); margin: 0 auto; }
     .section-label { font-size: 0.75rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); margin-bottom: 0.75rem; }
-    .section-title { font-size: clamp(1.6rem, 3vw, 2.4rem); font-weight: 700; letter-spacing: -.02em; margin-bottom: 0.75rem; }
+    .section-title { font-size: clamp(1.6rem, 3vw, 2.4rem); font-weight: 700; letter-spacing: 0; margin-bottom: 0.75rem; }
     .section-sub { color: var(--text-muted); font-size: 1rem; max-width: 480px; line-height: 1.7; }
     .features-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 1.25rem; margin-top: 3rem; }
     .feature-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.5rem; transition: border-color 0.2s; }
@@ -129,23 +126,24 @@
     .gif-row.reverse { direction: rtl; }
     .gif-row.reverse > * { direction: ltr; }
     .gif-frame { border-radius: var(--radius); border: 1px solid var(--border); overflow: hidden; background: var(--surface); box-shadow: 0 16px 48px rgba(0,0,0,.35); }
-    .gif-frame svg { display: block; width: 100%; }
-    .gif-text h3 { font-size: 1.5rem; font-weight: 700; letter-spacing: -.02em; margin-bottom: 0.75rem; line-height: 1.25; }
+    .gif-frame svg, .gif-frame img { display: block; width: 100%; height: auto; aspect-ratio: 720 / 444; object-fit: cover; }
+    .gif-frame picture { display: block; }
+    .gif-text h3 { font-size: 1.5rem; font-weight: 700; letter-spacing: 0; margin-bottom: 0.75rem; line-height: 1.25; }
     .gif-text p { color: var(--text-muted); font-size: 0.9375rem; line-height: 1.75; margin-bottom: 1rem; }
     .tag-list { display: flex; flex-wrap: wrap; gap: 6px; }
     .tag { font-size: 0.75rem; font-family: var(--mono); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; color: var(--text-muted); }
     .pricing-section { padding: clamp(3.5rem, 7vw, 5rem) clamp(1.25rem, 4vw, 2rem); max-width: 920px; margin: 0 auto; text-align: center; }
     .pricing-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.25rem; margin-top: 3rem; text-align: left; }
-    .pricing-card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 2rem; }
-    .pricing-card.featured { border-color: var(--accent); background: rgba(108,99,255,.06); }
+    .pricing-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 2rem; }
+    .pricing-card.featured { border-color: rgba(55,182,159,.62); background: rgba(55,182,159,.06); }
     .pricing-tier { font-size: 0.7rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 1rem; }
     .pricing-card.featured .pricing-tier { color: var(--accent); }
-    .pricing-price { font-size: 2.4rem; font-weight: 700; letter-spacing: -.04em; margin-bottom: 0.25rem; }
+    .pricing-price { font-size: 2.4rem; font-weight: 700; letter-spacing: 0; margin-bottom: 0.25rem; }
     .pricing-price span { font-size: 1rem; font-weight: 400; color: var(--text-muted); }
     .pricing-note { font-size: 0.8rem; color: var(--text-muted); margin-bottom: 1.75rem; }
     .pricing-btn { display: block; width: 100%; text-align: center; padding: 0.7rem 1.5rem; border-radius: 10px; font-size: 0.9rem; font-weight: 600; background: var(--surface-raised); color: var(--text); border: 1px solid var(--border); transition: background 0.15s; cursor: pointer; }
     .pricing-btn:hover { background: var(--border); }
-    .pricing-card.featured .pricing-btn { background: var(--accent); color: #fff; border-color: transparent; }
+    .pricing-card.featured .pricing-btn { background: var(--accent); color: #041210; border-color: transparent; font-weight: 700; }
     .pricing-card.featured .pricing-btn:hover { background: var(--accent-hover); }
     .pricing-features { margin-top: 1.75rem; }
     .pricing-features li { list-style: none; font-size: 0.875rem; color: var(--text-muted); padding: 0.4rem 0; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
@@ -157,7 +155,7 @@
       margin: 1.1rem 0 1.35rem;
       padding: 1rem;
       border: 1px solid var(--border);
-      border-radius: 14px;
+      border-radius: 8px;
       background: rgba(255,255,255,.03);
     }
     .device-picker-head {
@@ -188,7 +186,7 @@
     .device-chip {
       min-width: 56px;
       padding: 0.65rem 0.85rem;
-      border-radius: 999px;
+      border-radius: 8px;
       border: 1px solid var(--border);
       background: var(--surface-raised);
       color: var(--text-muted);
@@ -213,7 +211,7 @@
     }
     .pricing-micro { margin-top: 0.9rem; }
     .cta-section { padding: clamp(4rem, 8vw, 6rem) clamp(1.25rem, 4vw, 2rem); text-align: center; border-top: 1px solid var(--border); }
-    .cta-section h2 { font-size: clamp(1.8rem, 3.5vw, 2.6rem); font-weight: 700; letter-spacing: -.03em; margin-bottom: 1rem; }
+    .cta-section h2 { font-size: clamp(1.8rem, 3.5vw, 2.6rem); font-weight: 700; letter-spacing: 0; margin-bottom: 1rem; }
     .cta-section p { color: var(--text-muted); font-size: 1rem; margin-bottom: 2rem; }
     footer { border-top: 1px solid var(--border); padding: 2rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; color: var(--text-muted); font-size: 0.8125rem; max-width: var(--page-width); margin: 0 auto; }
     .footer-logo { display: flex; align-items: center; gap: 8px; font-weight: 600; color: var(--text); }
@@ -284,10 +282,8 @@
 <!-- NAV -->
 <nav>
   <a href="/" class="nav-logo">
-    <svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path fill-rule="evenodd" clip-rule="evenodd" d="M128 252C196.483 252 252 196.483 252 128C252 59.5167 196.483 4 128 4C59.5167 4 4 59.5167 4 128C4 196.483 59.5167 252 128 252ZM128 226.694C182.507 226.694 226.694 182.507 226.694 128C226.694 73.4929 182.507 29.3061 128 29.3061C73.4929 29.3061 29.3061 73.4929 29.3061 128C29.3061 182.507 73.4929 226.694 128 226.694ZM188.633 131.549C181.333 137.253 172.145 140.653 162.163 140.653C138.404 140.653 119.143 121.392 119.143 97.6327C119.143 85.8325 123.894 75.1419 131.587 67.3695C130.4 67.3004 129.204 67.2653 128 67.2653C94.4572 67.2653 67.2653 94.4572 67.2653 128C67.2653 161.543 94.4572 188.735 128 188.735C160.352 188.735 186.795 163.44 188.633 131.549ZM117.878 148.245C123.468 148.245 128 143.713 128 138.122C128 132.532 123.468 128 117.878 128C112.287 128 107.755 132.532 107.755 138.122C107.755 143.713 112.287 148.245 117.878 148.245ZM107.755 153.306C107.755 156.101 105.489 158.367 102.694 158.367C99.8986 158.367 97.6327 156.101 97.6327 153.306C97.6327 150.511 99.8986 148.245 102.694 148.245C105.489 148.245 107.755 150.511 107.755 153.306ZM177.347 97.6326C177.347 106.018 170.549 112.816 162.163 112.816C161.21 112.816 160.278 112.729 159.373 112.561C163.87 111.53 167.225 107.503 167.225 102.694C167.225 97.1034 162.693 92.5714 157.102 92.5714C152.292 92.5714 148.266 95.9258 147.235 100.423C147.067 99.5183 146.98 98.5857 146.98 97.6326C146.98 89.2469 153.778 82.449 162.163 82.449C170.549 82.449 177.347 89.2469 177.347 97.6326Z" fill="white"/>
-    </svg>
-    Culler
+    <svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect width="256" height="256" rx="56" fill="#0D1416"/><rect x="13" y="13" width="230" height="230" rx="46" fill="#142629" stroke="#37B69F" stroke-width="12"/><path d="M128 49L178 136H78L128 49Z" fill="#37B69F"/><path d="M211 116L161 202L112 116H211Z" fill="#52D7B5"/><path d="M55 152L104 67L154 152H55Z" fill="#2585A1"/><path d="M88 139L121 173L190 92" stroke="#F6FBFA" stroke-width="21" stroke-linecap="round" stroke-linejoin="round"/><path d="M67 67H101M67 67V101M188 67H222M222 67V101M67 188V222H101M188 222H222V188" stroke="#F6FBFA" stroke-opacity=".78" stroke-width="11" stroke-linecap="round"/></svg>
+    Keptra
   </a>
   <div class="nav-links">
     <a href="#features">Features</a>
@@ -338,151 +334,10 @@
 <!-- HERO ANIMATED DEMO -->
 <div class="hero-demo">
   <div class="demo-frame">
-    <svg viewBox="0 0 960 560" xmlns="http://www.w3.org/2000/svg">
-      <defs>
-        <linearGradient id="p1" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#1a2535"/><stop offset="60%" stop-color="#2d3f55"/><stop offset="100%" stop-color="#3a5070"/></linearGradient>
-        <linearGradient id="p2" x1="0" y1="1" x2="1" y2="0"><stop offset="0%" stop-color="#251a18"/><stop offset="50%" stop-color="#4a2e25"/><stop offset="100%" stop-color="#6b4030"/></linearGradient>
-        <linearGradient id="p3" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#1a2518"/><stop offset="50%" stop-color="#2d4528"/><stop offset="100%" stop-color="#3a5535"/></linearGradient>
-        <linearGradient id="p4" x1="1" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#25201a"/><stop offset="50%" stop-color="#4a3d28"/><stop offset="100%" stop-color="#5e4e33"/></linearGradient>
-        <linearGradient id="p5" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#1e1a2e"/><stop offset="50%" stop-color="#2e2845"/><stop offset="100%" stop-color="#3e3660"/></linearGradient>
-        <linearGradient id="p6" x1="0" y1="1" x2="1" y2="0"><stop offset="0%" stop-color="#1a2520"/><stop offset="50%" stop-color="#283d2e"/><stop offset="100%" stop-color="#345040"/></linearGradient>
-      </defs>
-
-      <!-- App chrome -->
-      <rect width="960" height="560" fill="#141416"/>
-      <rect width="960" height="36" fill="#0f0f11"/>
-      <circle cx="18" cy="18" r="5.5" fill="#ff5f57"/>
-      <circle cx="34" cy="18" r="5.5" fill="#febc2e"/>
-      <circle cx="50" cy="18" r="5.5" fill="#28c840"/>
-      <text x="480" y="23" text-anchor="middle" fill="#666" font-family="system-ui,sans-serif" font-size="12">Culler — SD Card (3,421 photos)</text>
-
-      <!-- Sidebar -->
-      <rect x="0" y="36" width="200" height="524" fill="#0f0f11"/>
-      <rect x="0" y="36" width="200" height="524" fill="none" stroke="#2a2a2e" stroke-width="1"/>
-      <text x="20" y="68" fill="#666" font-family="system-ui,sans-serif" font-size="10" font-weight="600" letter-spacing="0.06em">CARD</text>
-      <text x="20" y="86" fill="#e0e0e0" font-family="system-ui,sans-serif" font-size="13" font-weight="600">SD Card — EOS R5</text>
-      <text x="20" y="102" fill="#666" font-family="system-ui,sans-serif" font-size="11">3,421 photos · 48.2 GB</text>
-      <line x1="16" y1="118" x2="184" y2="118" stroke="#2a2a2e" stroke-width="1"/>
-      <text x="20" y="138" fill="#666" font-family="system-ui,sans-serif" font-size="10" font-weight="600" letter-spacing="0.06em">SESSION</text>
-      <text x="20" y="158" fill="#888" font-family="system-ui,sans-serif" font-size="11">Picked</text>
-      <text x="184" y="158" text-anchor="end" fill="#34d399" font-family="ui-monospace,monospace" font-size="13" font-weight="700">
-        <animate attributeName="textContent" dur="4.5s" repeatCount="indefinite" values="12;12;13;13;13;14;14;14;14;12" keyTimes="0;0.1;0.22;0.35;0.5;0.72;0.85;0.9;0.98;1" calcMode="discrete"/>
-      </text>
-      <text x="20" y="176" fill="#888" font-family="system-ui,sans-serif" font-size="11">Rejected</text>
-      <text x="184" y="176" text-anchor="end" fill="#f87171" font-family="ui-monospace,monospace" font-size="13" font-weight="700">
-        <animate attributeName="textContent" dur="4.5s" repeatCount="indefinite" values="5;6;6;6;7;7;7;8;8;5" keyTimes="0;0.1;0.22;0.35;0.5;0.6;0.72;0.85;0.98;1" calcMode="discrete"/>
-      </text>
-      <text x="20" y="194" fill="#888" font-family="system-ui,sans-serif" font-size="11">Unreviewed</text>
-      <text x="184" y="194" text-anchor="end" fill="#e0e0e0" font-family="ui-monospace,monospace" font-size="13" font-weight="700">3,404</text>
-      <line x1="16" y1="208" x2="184" y2="208" stroke="#2a2a2e" stroke-width="1"/>
-      <text x="20" y="228" fill="#666" font-family="system-ui,sans-serif" font-size="10" font-weight="600" letter-spacing="0.06em">DESTINATION</text>
-      <rect x="16" y="236" width="168" height="28" rx="6" fill="#1c1c1f" stroke="#2a2a2e" stroke-width="1"/>
-      <text x="26" y="255" fill="#888" font-family="ui-monospace,monospace" font-size="10">~/Pictures/2025/05/17</text>
-      <line x1="16" y1="274" x2="184" y2="274" stroke="#2a2a2e" stroke-width="1"/>
-      <text x="20" y="294" fill="#666" font-family="system-ui,sans-serif" font-size="10" font-weight="600" letter-spacing="0.06em">CURRENT PHOTO</text>
-      <text x="20" y="314" fill="#888" font-family="ui-monospace,monospace" font-size="10">DSC_0847.CR3</text>
-      <text x="20" y="330" fill="#555" font-family="ui-monospace,monospace" font-size="10">f/2.8 · 1/800s · ISO 400</text>
-      <text x="20" y="346" fill="#555" font-family="ui-monospace,monospace" font-size="10">24mm · EOS R5</text>
-      <rect x="16" y="356" width="168" height="5" rx="2" fill="#1c1c1f"/>
-      <rect x="16" y="356" width="126" height="5" rx="2" fill="#34d399"/>
-      <text x="20" y="374" fill="#555" font-family="system-ui,sans-serif" font-size="10">Sharp  84/100</text>
-      <rect x="16" y="478" width="168" height="36" rx="8" fill="#6c63ff"/>
-      <text x="100" y="501" text-anchor="middle" fill="white" font-family="system-ui,sans-serif" font-size="13" font-weight="600">Import picks →</text>
-
-      <!-- Grid thumbnails - Row 1 -->
-      <rect x="216" y="48" width="142" height="94" rx="4" fill="url(#p1)"/>
-      <polygon points="216,142 258,88 290,106 316,78 358,142" fill="#0d1a2a" opacity="0.6"/>
-      <rect x="214.5" y="46.5" width="145" height="97" rx="5" fill="none" stroke="#34d399" stroke-width="2.5"/>
-      <rect x="218" y="127" width="16" height="11" rx="2" fill="#34d399"/>
-      <text x="226" y="136" text-anchor="middle" fill="white" font-family="system-ui,sans-serif" font-size="8" font-weight="700">P</text>
-
-      <rect x="370" y="48" width="142" height="94" rx="4" fill="url(#p2)"/>
-      <polygon points="370,142 408,98 438,113 478,86 512,142" fill="#1a0a05" opacity="0.6"/>
-      <rect x="368.5" y="46.5" width="145" height="97" rx="5" fill="none" stroke="#f87171" stroke-width="2.5"/>
-      <rect x="372" y="127" width="16" height="11" rx="2" fill="#f87171"/>
-      <text x="380" y="136" text-anchor="middle" fill="white" font-family="system-ui,sans-serif" font-size="8" font-weight="700">X</text>
-
-      <rect x="524" y="48" width="142" height="94" rx="4" fill="url(#p3)"/>
-      <polygon points="524,142 562,93 598,110 643,80 666,142" fill="#050f05" opacity="0.6"/>
-      <rect x="522.5" y="46.5" width="145" height="97" rx="5" fill="none" stroke="#6c63ff" stroke-width="3"/>
-
-      <rect x="678" y="48" width="142" height="94" rx="4" fill="url(#p4)"/>
-      <polygon points="678,142 714,100 750,116 788,88 820,142" fill="#100a00" opacity="0.6"/>
-
-      <rect x="832" y="48" width="124" height="94" rx="4" fill="url(#p5)"/>
-
-      <!-- Row 2 -->
-      <rect x="216" y="154" width="142" height="94" rx="4" fill="url(#p5)"/>
-      <polygon points="216,248 254,196 288,213 325,186 358,248" fill="#080515" opacity="0.6"/>
-      <rect x="214.5" y="152.5" width="145" height="97" rx="5" fill="none" stroke="#34d399" stroke-width="2.5" opacity="0">
-        <animate attributeName="opacity" dur="4.5s" repeatCount="indefinite" values="0;0;0;0;0;0;1;1;1;1;0" keyTimes="0;0.1;0.22;0.35;0.5;0.6;0.72;0.85;0.9;0.98;1" calcMode="discrete"/>
-      </rect>
-      <rect x="370" y="154" width="142" height="94" rx="4" fill="url(#p6)"/>
-      <polygon points="370,248 408,198 440,216 476,190 512,248" fill="#050f05" opacity="0.5"/>
-      <rect x="524" y="154" width="142" height="94" rx="4" fill="url(#p1)"/>
-      <rect x="678" y="154" width="142" height="94" rx="4" fill="url(#p2)"/>
-      <rect x="832" y="154" width="124" height="94" rx="4" fill="url(#p3)"/>
-
-      <!-- Row 3 -->
-      <rect x="216" y="260" width="142" height="94" rx="4" fill="url(#p4)"/>
-      <rect x="370" y="260" width="142" height="94" rx="4" fill="url(#p5)"/>
-      <rect x="524" y="260" width="142" height="94" rx="4" fill="url(#p6)"/>
-      <rect x="678" y="260" width="142" height="94" rx="4" fill="url(#p1)"/>
-      <rect x="832" y="260" width="124" height="94" rx="4" fill="url(#p2)"/>
-
-      <!-- Row 4 -->
-      <rect x="216" y="366" width="142" height="94" rx="4" fill="url(#p3)"/>
-      <rect x="370" y="366" width="142" height="94" rx="4" fill="url(#p4)"/>
-      <rect x="524" y="366" width="142" height="94" rx="4" fill="url(#p5)"/>
-      <rect x="678" y="366" width="142" height="94" rx="4" fill="url(#p6)"/>
-      <rect x="832" y="366" width="124" height="94" rx="4" fill="url(#p1)"/>
-
-      <!-- Moving selection ring -->
-      <rect rx="5" ry="5" fill="none" stroke="#6c63ff" stroke-width="3" opacity="0.9">
-        <animate attributeName="x" dur="4.5s" repeatCount="indefinite"
-          values="522.5;522.5;676.5;676.5;214.5;214.5;368.5;368.5;522.5;522.5"
-          keyTimes="0;0.12;0.22;0.34;0.45;0.57;0.67;0.78;0.88;1" calcMode="spline"
-          keySplines="0.4 0 0.2 1;0.4 0 0.2 1;0.4 0 0.2 1;0.4 0 0.2 1;0.4 0 0.2 1;0.4 0 0.2 1;0.4 0 0.2 1;0.4 0 0.2 1;0.4 0 0.2 1"/>
-        <animate attributeName="y" dur="4.5s" repeatCount="indefinite"
-          values="46.5;46.5;46.5;46.5;152.5;152.5;152.5;152.5;152.5;46.5"
-          keyTimes="0;0.12;0.22;0.34;0.45;0.57;0.67;0.78;0.88;1" calcMode="spline"
-          keySplines="0.4 0 0.2 1;0.4 0 0.2 1;0.4 0 0.2 1;0.4 0 0.2 1;0.4 0 0.2 1;0.4 0 0.2 1;0.4 0 0.2 1;0.4 0 0.2 1;0.4 0 0.2 1"/>
-        <animate attributeName="width" dur="4.5s" repeatCount="indefinite" values="145;145;145;145;145;145;145;145;145;145" keyTimes="0;0.5;1" calcMode="discrete"/>
-        <animate attributeName="height" dur="4.5s" repeatCount="indefinite" values="97;97;97;97;97;97;97;97;97;97" keyTimes="0;0.5;1" calcMode="discrete"/>
-      </rect>
-
-      <!-- Keyboard bar -->
-      <rect x="0" y="516" width="960" height="44" fill="#0d0d0f" opacity="0.95"/>
-      <line x1="0" y1="516" x2="960" y2="516" stroke="#2a2a2e" stroke-width="1"/>
-      <rect x="230" y="524" width="26" height="24" rx="4" fill="#2a2a2e"/>
-      <rect x="230" y="524" width="26" height="24" rx="4" fill="#34d399" opacity="0">
-        <animate attributeName="opacity" dur="4.5s" repeatCount="indefinite" values="0;0;0;0;0;0;0.9;0;0;0" keyTimes="0;0.1;0.22;0.35;0.5;0.6;0.68;0.72;0.9;1" calcMode="discrete"/>
-      </rect>
-      <text x="243" y="541" text-anchor="middle" fill="#e0e0e0" font-family="ui-monospace,monospace" font-size="12" font-weight="600">P</text>
-      <text x="260" y="540" fill="#666" font-family="system-ui,sans-serif" font-size="11">Pick</text>
-      <rect x="320" y="524" width="26" height="24" rx="4" fill="#2a2a2e"/>
-      <rect x="320" y="524" width="26" height="24" rx="4" fill="#f87171" opacity="0">
-        <animate attributeName="opacity" dur="4.5s" repeatCount="indefinite" values="0;0.8;0;0;0.8;0;0;0;0;0" keyTimes="0;0.1;0.15;0.45;0.5;0.55;0.65;0.75;0.9;1" calcMode="discrete"/>
-      </rect>
-      <text x="333" y="541" text-anchor="middle" fill="#e0e0e0" font-family="ui-monospace,monospace" font-size="12" font-weight="600">X</text>
-      <text x="350" y="540" fill="#666" font-family="system-ui,sans-serif" font-size="11">Reject</text>
-      <rect x="420" y="524" width="26" height="24" rx="4" fill="#2a2a2e"/>
-      <text x="433" y="541" text-anchor="middle" fill="#e0e0e0" font-family="system-ui,sans-serif" font-size="13">←</text>
-      <rect x="450" y="524" width="26" height="24" rx="4" fill="#2a2a2e">
-        <animate attributeName="fill" dur="4.5s" repeatCount="indefinite" values="#2a2a2e;#2a2a2e;#6c63ff;#2a2a2e;#2a2a2e;#6c63ff;#2a2a2e;#2a2a2e;#2a2a2e;#2a2a2e" keyTimes="0;0.1;0.2;0.25;0.6;0.65;0.7;0.8;0.9;1" calcMode="discrete"/>
-      </rect>
-      <text x="463" y="541" text-anchor="middle" fill="#e0e0e0" font-family="system-ui,sans-serif" font-size="13">→</text>
-      <text x="480" y="540" fill="#666" font-family="system-ui,sans-serif" font-size="11">Navigate</text>
-      <rect x="560" y="524" width="52" height="24" rx="4" fill="#2a2a2e"/>
-      <text x="586" y="540" text-anchor="middle" fill="#e0e0e0" font-family="ui-monospace,monospace" font-size="11">Space</text>
-      <text x="618" y="540" fill="#666" font-family="system-ui,sans-serif" font-size="11">Full res</text>
-      <rect x="690" y="524" width="18" height="24" rx="4" fill="#2a2a2e"/>
-      <text x="699" y="541" text-anchor="middle" fill="#e0e0e0" font-family="ui-monospace,monospace" font-size="12" font-weight="600">1</text>
-      <text x="710" y="540" fill="#666" font-family="system-ui,sans-serif" font-size="11">–</text>
-      <rect x="716" y="524" width="18" height="24" rx="4" fill="#2a2a2e"/>
-      <text x="725" y="541" text-anchor="middle" fill="#e0e0e0" font-family="ui-monospace,monospace" font-size="12" font-weight="600">5</text>
-      <text x="738" y="540" fill="#666" font-family="system-ui,sans-serif" font-size="11">Rate</text>
-    </svg>
+    <picture>
+      <source media="(prefers-reduced-motion: reduce)" srcset="assets/demo/real-app-capture.png">
+      <img src="assets/demo/face-review.gif" data-poster="assets/demo/real-app-capture.png" alt="Keptra app showing local face review and culling workflow" width="960" height="560">
+    </picture>
   </div>
 </div>
 
@@ -523,7 +378,7 @@
     <div class="feature-card">
       <div class="feature-icon">🤖</div>
       <div class="feature-title">AI sharpness review</div>
-      <div class="feature-desc">Face detection and sharpness scoring run in the background as you browse. Blurry shots and missed focus are flagged automatically — you decide what to do with them.</div>
+      <div class="feature-desc">Local face detection, embeddings, and sharpness scoring run in the background as you browse. On Windows, DirectML is used only when the detector or embedder benchmarks faster and stays stable; otherwise Keptra falls back to CPU automatically.</div>
     </div>
     <div class="feature-card">
       <div class="feature-icon">⚡</div>
@@ -533,7 +388,7 @@
     <div class="feature-card">
       <div class="feature-icon">🔍</div>
       <div class="feature-title">Duplicate skipping</div>
-      <div class="feature-desc">Re-insert a card you partially imported yesterday. Culler compares filenames and sizes against what's already on disk, and skips anything already there.</div>
+      <div class="feature-desc">Re-insert a card you partially imported yesterday. Keptra compares filenames and sizes against what's already on disk, and skips anything already there.</div>
     </div>
     <div class="feature-card">
       <div class="feature-icon">📁</div>
@@ -543,7 +398,7 @@
     <div class="feature-card">
       <div class="feature-icon">🔄</div>
       <div class="feature-title">Auto-import</div>
-      <div class="feature-desc">Insert a card and Culler gets to work without you touching a thing. Useful when you're juggling gear and just need everything off the card.</div>
+      <div class="feature-desc">Insert a card and Keptra gets to work without you touching a thing. Useful when you're juggling gear and just need everything off the card.</div>
     </div>
     <div class="feature-card">
       <div class="feature-icon">📡</div>
@@ -571,120 +426,10 @@
   <!-- Demo 1: Culling -->
   <div class="gif-row" style="margin-top:3rem">
     <div class="gif-frame">
-      <svg viewBox="0 0 520 320" xmlns="http://www.w3.org/2000/svg">
-        <defs>
-          <linearGradient id="cg1" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#1a2535"/><stop offset="100%" stop-color="#3a5070"/></linearGradient>
-          <linearGradient id="cg2" x1="0" y1="1" x2="1" y2="0"><stop offset="0%" stop-color="#251a18"/><stop offset="100%" stop-color="#6b4030"/></linearGradient>
-          <linearGradient id="cg3" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#1a2518"/><stop offset="100%" stop-color="#3a5535"/></linearGradient>
-          <linearGradient id="sky1" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#1a3a5c"/><stop offset="100%" stop-color="#2d5a8c"/></linearGradient>
-        </defs>
-        <rect width="520" height="320" fill="#0f0f11"/>
-        <!-- Title bar -->
-        <rect width="520" height="28" fill="#0a0a0c"/>
-        <circle cx="12" cy="14" r="4.5" fill="#ff5f57"/>
-        <circle cx="24" cy="14" r="4.5" fill="#febc2e"/>
-        <circle cx="36" cy="14" r="4.5" fill="#28c840"/>
-        <text x="260" y="19" text-anchor="middle" fill="#555" font-family="system-ui,sans-serif" font-size="10">
-          <animate attributeName="textContent" dur="5s" repeatCount="indefinite" values="DSC_0841.CR3 — 1 of 3,421;DSC_0841.CR3 — 1 of 3,421;DSC_0842.CR3 — 2 of 3,421;DSC_0843.CR3 — 3 of 3,421" keyTimes="0;0.3;0.35;0.7" calcMode="discrete"/>
-        </text>
-        <!-- Main image -->
-        <rect x="0" y="28" width="352" height="218" fill="url(#cg1)"/>
-        <rect x="0" y="28" width="352" height="110" fill="url(#sky1)"/>
-        <circle cx="282" cy="72" r="20" fill="#e8c870" opacity="0.18"/>
-        <polygon points="0,246 48,148 108,178 178,118 240,155 300,112 352,148 352,246" fill="#0d1a2a"/>
-        <polygon points="178,118 192,138 164,138" fill="#e0e8f0" opacity="0.6"/>
-        <!-- Second image overlay -->
-        <rect x="0" y="28" width="352" height="218" fill="url(#cg2)" opacity="0">
-          <animate attributeName="opacity" dur="5s" repeatCount="indefinite" values="0;0;0;0;0;0;1;1;0" keyTimes="0;0.28;0.3;0.35;0.6;0.63;0.65;0.95;1" calcMode="discrete"/>
-        </rect>
-        <!-- Face detection box -->
-        <rect x="140" y="70" width="46" height="58" rx="3" fill="none" stroke="#6c63ff" stroke-width="1.5" opacity="0">
-          <animate attributeName="opacity" dur="5s" repeatCount="indefinite" values="0;0;0;0.9;0.9;0.9;0;0;0" keyTimes="0;0.05;0.1;0.14;0.3;0.62;0.65;0.8;1" calcMode="discrete"/>
-        </rect>
-        <rect x="140" y="63" width="28" height="11" rx="2" fill="#6c63ff" opacity="0">
-          <animate attributeName="opacity" dur="5s" repeatCount="indefinite" values="0;0;0;0.9;0.9;0.9;0;0;0" keyTimes="0;0.05;0.1;0.14;0.3;0.62;0.65;0.8;1" calcMode="discrete"/>
-        </rect>
-        <text x="154" y="72" text-anchor="middle" fill="white" font-family="system-ui,sans-serif" font-size="7" font-weight="600" opacity="0">
-          Face
-          <animate attributeName="opacity" dur="5s" repeatCount="indefinite" values="0;0;0;0.9;0.9;0.9;0;0;0" keyTimes="0;0.05;0.1;0.14;0.3;0.62;0.65;0.8;1" calcMode="discrete"/>
-        </text>
-        <!-- Pick/reject ring -->
-        <rect x="1" y="29" width="350" height="216" rx="2" fill="none" stroke="#34d399" stroke-width="3" opacity="0">
-          <animate attributeName="opacity" dur="5s" repeatCount="indefinite" values="0;0;0;0;0;1;1;0;0" keyTimes="0;0.28;0.3;0.6;0.62;0.64;0.95;0.97;1" calcMode="discrete"/>
-        </rect>
-        <rect x="1" y="29" width="350" height="216" rx="2" fill="none" stroke="#f87171" stroke-width="3" opacity="0">
-          <animate attributeName="opacity" dur="5s" repeatCount="indefinite" values="0;0;0;1;1;0;0;0;0" keyTimes="0;0.1;0.12;0.14;0.26;0.28;0.5;0.8;1" calcMode="discrete"/>
-        </rect>
-        <!-- EXIF / info bar -->
-        <rect x="0" y="246" width="352" height="42" fill="rgba(10,10,12,0.92)"/>
-        <line x1="0" y1="246" x2="352" y2="246" stroke="#2a2a2e" stroke-width="1"/>
-        <text x="10" y="261" fill="#888" font-family="ui-monospace,monospace" font-size="9">
-          <animate attributeName="textContent" dur="5s" repeatCount="indefinite" values="f/1.8  ·  1/1000s  ·  ISO 200  ·  85mm;f/1.8  ·  1/1000s  ·  ISO 200  ·  85mm;f/2.8  ·  1/800s  ·  ISO 400  ·  24mm;f/4.0  ·  1/400s  ·  ISO 800  ·  50mm" keyTimes="0;0.3;0.35;0.7" calcMode="discrete"/>
-        </text>
-        <text x="10" y="278" fill="#555" font-family="system-ui,sans-serif" font-size="9">Sharp</text>
-        <rect x="42" y="272" width="90" height="5" rx="2" fill="#1c1c1f"/>
-        <rect x="42" y="272" width="76" height="5" rx="2" fill="#34d399">
-          <animate attributeName="width" dur="5s" repeatCount="indefinite" values="76;76;76;76;40;40;40;76;76" keyTimes="0;0.15;0.3;0.35;0.45;0.55;0.65;0.7;1"/>
-        </rect>
-        <text x="142" y="278" fill="#555" font-family="system-ui,sans-serif" font-size="9">★★★★☆</text>
-        <text x="340" y="260" text-anchor="end" fill="#34d399" font-family="system-ui,sans-serif" font-size="10" font-weight="700" opacity="0">
-          ✓ PICKED
-          <animate attributeName="opacity" dur="5s" repeatCount="indefinite" values="0;0;0;0;0;1;1;0;0" keyTimes="0;0.28;0.3;0.6;0.62;0.64;0.95;0.97;1" calcMode="discrete"/>
-        </text>
-        <text x="340" y="260" text-anchor="end" fill="#f87171" font-family="system-ui,sans-serif" font-size="10" font-weight="700" opacity="0">
-          ✕ REJECTED
-          <animate attributeName="opacity" dur="5s" repeatCount="indefinite" values="0;0;0;1;1;0;0;0;0" keyTimes="0;0.1;0.12;0.14;0.26;0.28;0.5;0.8;1" calcMode="discrete"/>
-        </text>
-        <!-- Filmstrip -->
-        <rect x="352" y="28" width="168" height="218" fill="#0a0a0c" stroke="#2a2a2e" stroke-width="1"/>
-        <text x="368" y="46" fill="#555" font-family="system-ui,sans-serif" font-size="9" font-weight="600" letter-spacing="0.06em">FILMSTRIP</text>
-        <rect x="358" y="52" width="154" height="50" rx="3" fill="url(#cg1)"/>
-        <polygon points="358,102 380,78 408,90 440,68 512,102" fill="#0d1a2a" opacity="0.6"/>
-        <rect x="357" y="51" width="156" height="52" rx="4" fill="none" stroke="#34d399" stroke-width="2"/>
-        <rect x="361" y="89" width="16" height="10" rx="2" fill="#34d399"/>
-        <text x="369" y="97" text-anchor="middle" fill="white" font-family="system-ui,sans-serif" font-size="7" font-weight="700">P</text>
-        <text x="504" y="97" text-anchor="end" fill="#444" font-family="ui-monospace,monospace" font-size="7">0841</text>
-        <rect x="358" y="109" width="154" height="50" rx="3" fill="url(#cg2)"/>
-        <polygon points="358,159 384,133 412,148 450,124 512,159" fill="#1a0a05" opacity="0.6"/>
-        <rect x="357" y="108" width="156" height="52" rx="4" fill="none" stroke="#f87171" stroke-width="2"/>
-        <rect x="361" y="147" width="16" height="10" rx="2" fill="#f87171"/>
-        <text x="369" y="155" text-anchor="middle" fill="white" font-family="system-ui,sans-serif" font-size="7" font-weight="700">X</text>
-        <rect x="468" y="108" width="42" height="13" rx="2" fill="#3a1a1a"/>
-        <text x="489" y="118" text-anchor="middle" fill="#f87171" font-family="system-ui,sans-serif" font-size="7">Blurry</text>
-        <text x="504" y="155" text-anchor="end" fill="#444" font-family="ui-monospace,monospace" font-size="7">0842</text>
-        <rect x="358" y="165" width="154" height="50" rx="3" fill="url(#cg3)"/>
-        <polygon points="358,215 386,185 420,200 458,178 512,215" fill="#050f05" opacity="0.6"/>
-        <rect x="356.5" y="163.5" width="157" height="53" rx="4" fill="none" stroke="#6c63ff" stroke-width="2.5"/>
-        <text x="504" y="210" text-anchor="end" fill="#444" font-family="ui-monospace,monospace" font-size="7">0843</text>
-        <!-- Key strip -->
-        <rect x="0" y="288" width="520" height="32" fill="#0a0a0c"/>
-        <line x1="0" y1="288" x2="520" y2="288" stroke="#2a2a2e" stroke-width="1"/>
-        <rect x="24" y="296" width="22" height="18" rx="3" fill="#2a2a2e"/>
-        <rect x="24" y="296" width="22" height="18" rx="3" fill="#34d399" opacity="0">
-          <animate attributeName="opacity" dur="5s" repeatCount="indefinite" values="0;0;0;0;0;0.9;0;0;0" keyTimes="0;0.59;0.61;0.62;0.63;0.66;0.68;0.9;1" calcMode="discrete"/>
-        </rect>
-        <text x="35" y="310" text-anchor="middle" fill="#e0e0e0" font-family="ui-monospace,monospace" font-size="11" font-weight="600">P</text>
-        <text x="50" y="310" fill="#555" font-family="system-ui,sans-serif" font-size="10">Pick</text>
-        <rect x="104" y="296" width="22" height="18" rx="3" fill="#2a2a2e"/>
-        <rect x="104" y="296" width="22" height="18" rx="3" fill="#f87171" opacity="0">
-          <animate attributeName="opacity" dur="5s" repeatCount="indefinite" values="0;0;0.9;0;0;0;0;0;0" keyTimes="0;0.11;0.13;0.16;0.4;0.6;0.8;0.9;1" calcMode="discrete"/>
-        </rect>
-        <text x="115" y="310" text-anchor="middle" fill="#e0e0e0" font-family="ui-monospace,monospace" font-size="11" font-weight="600">X</text>
-        <text x="130" y="310" fill="#555" font-family="system-ui,sans-serif" font-size="10">Reject</text>
-        <rect x="194" y="296" width="22" height="18" rx="3" fill="#2a2a2e"/>
-        <text x="205" y="310" text-anchor="middle" fill="#e0e0e0" font-family="system-ui,sans-serif" font-size="13">←</text>
-        <rect x="220" y="296" width="22" height="18" rx="3" fill="#2a2a2e">
-          <animate attributeName="fill" dur="5s" repeatCount="indefinite" values="#2a2a2e;#2a2a2e;#6c63ff;#2a2a2e;#6c63ff;#2a2a2e;#2a2a2e;#2a2a2e;#2a2a2e" keyTimes="0;0.28;0.32;0.36;0.62;0.66;0.72;0.9;1" calcMode="discrete"/>
-        </rect>
-        <text x="231" y="310" text-anchor="middle" fill="#e0e0e0" font-family="system-ui,sans-serif" font-size="13">→</text>
-        <text x="246" y="310" fill="#555" font-family="system-ui,sans-serif" font-size="10">Navigate</text>
-        <rect x="310" y="296" width="46" height="18" rx="3" fill="#2a2a2e"/>
-        <text x="333" y="310" text-anchor="middle" fill="#e0e0e0" font-family="ui-monospace,monospace" font-size="10">Space</text>
-        <text x="360" y="310" fill="#555" font-family="system-ui,sans-serif" font-size="10">Full res</text>
-        <rect x="420" y="296" width="16" height="18" rx="3" fill="#2a2a2e"/>
-        <text x="428" y="310" text-anchor="middle" fill="#e0e0e0" font-family="ui-monospace,monospace" font-size="11">1</text>
-        <text x="438" y="310" fill="#555" font-family="system-ui,sans-serif" font-size="10">–5 Rate</text>
-      </svg>
+      <picture>
+        <source media="(prefers-reduced-motion: reduce)" srcset="assets/demo/best-of.png">
+        <img src="assets/demo/best-of.gif" data-poster="assets/demo/best-of.png" alt="Keyboard culling and best-of selection demo" loading="lazy" width="720" height="444">
+      </picture>
     </div>
     <div class="gif-text">
       <h3>Cull at full speed — no mouse needed</h3>
@@ -703,112 +448,14 @@
   <!-- Demo 2: AI Review -->
   <div class="gif-row reverse">
     <div class="gif-frame">
-      <svg viewBox="0 0 520 320" xmlns="http://www.w3.org/2000/svg">
-        <defs>
-          <linearGradient id="ai1" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#1a2535"/><stop offset="100%" stop-color="#3a5070"/></linearGradient>
-          <linearGradient id="ai2" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#251a18"/><stop offset="100%" stop-color="#5a3020"/></linearGradient>
-          <linearGradient id="ai3" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#1a2518"/><stop offset="100%" stop-color="#304528"/></linearGradient>
-        </defs>
-        <rect width="520" height="320" fill="#0f0f11"/>
-        <rect width="520" height="28" fill="#0a0a0c"/>
-        <circle cx="12" cy="14" r="4.5" fill="#ff5f57"/>
-        <circle cx="24" cy="14" r="4.5" fill="#febc2e"/>
-        <circle cx="36" cy="14" r="4.5" fill="#28c840"/>
-        <text x="260" y="19" text-anchor="middle" fill="#555" font-family="system-ui,sans-serif" font-size="10">AI Review — 3,421 photos</text>
-
-        <!-- 4-up thumbnail grid with score overlays -->
-        <rect x="12" y="38" width="114" height="80" rx="4" fill="url(#ai1)"/>
-        <polygon points="12,118 35,86 60,98 90,73 126,118" fill="#0d1a2a" opacity="0.6"/>
-        <!-- face box -->
-        <rect x="52" y="52" width="32" height="40" rx="2" fill="none" stroke="#6c63ff" stroke-width="1.5" opacity="0">
-          <animate attributeName="opacity" dur="6s" repeatCount="indefinite" values="0;0;0;0;0.9;0.9;0.9;0.9;0" keyTimes="0;0.08;0.1;0.16;0.2;0.35;0.6;0.8;1" calcMode="discrete"/>
-        </rect>
-        <rect x="12" y="104" width="114" height="14" rx="0" fill="rgba(10,10,12,0.85)" opacity="0">
-          <animate attributeName="opacity" dur="6s" repeatCount="indefinite" values="0;0;0;0;0;1;1;1;0" keyTimes="0;0.1;0.18;0.28;0.33;0.36;0.8;0.95;1" calcMode="discrete"/>
-        </rect>
-        <text x="69" y="115" text-anchor="middle" fill="#34d399" font-family="ui-monospace,monospace" font-size="8" font-weight="700" opacity="0">
-          ⬆ 94 · 1 face
-          <animate attributeName="opacity" dur="6s" repeatCount="indefinite" values="0;0;0;0;0;1;1;1;0" keyTimes="0;0.1;0.18;0.28;0.33;0.36;0.8;0.95;1" calcMode="discrete"/>
-        </text>
-
-        <rect x="138" y="38" width="114" height="80" rx="4" fill="url(#ai2)"/>
-        <polygon points="138,118 162,88 188,103 220,78 252,118" fill="#1a0a05" opacity="0.6"/>
-        <rect x="138" y="104" width="114" height="14" rx="0" fill="rgba(10,10,12,0.85)" opacity="0">
-          <animate attributeName="opacity" dur="6s" repeatCount="indefinite" values="0;0;0;0;0;0;0;1;0" keyTimes="0;0.1;0.2;0.3;0.38;0.42;0.46;0.5;0.95" calcMode="discrete"/>
-        </rect>
-        <text x="195" y="115" text-anchor="middle" fill="#f87171" font-family="ui-monospace,monospace" font-size="8" font-weight="700" opacity="0">
-          ⚠ 12 · blurry
-          <animate attributeName="opacity" dur="6s" repeatCount="indefinite" values="0;0;0;0;0;0;0;1;0" keyTimes="0;0.1;0.2;0.3;0.38;0.42;0.46;0.5;0.95" calcMode="discrete"/>
-        </text>
-
-        <rect x="264" y="38" width="114" height="80" rx="4" fill="url(#ai3)"/>
-        <polygon points="264,118 287,88 312,103 342,78 378,118" fill="#050f05" opacity="0.6"/>
-        <rect x="264" y="104" width="114" height="14" rx="0" fill="rgba(10,10,12,0.85)" opacity="0">
-          <animate attributeName="opacity" dur="6s" repeatCount="indefinite" values="0;0;0;0;0;0;0;0;1" keyTimes="0;0.1;0.2;0.3;0.4;0.5;0.55;0.6;0.65" calcMode="discrete"/>
-        </rect>
-        <text x="321" y="115" text-anchor="middle" fill="#34d399" font-family="ui-monospace,monospace" font-size="8" font-weight="700" opacity="0">
-          ⬆ 87 · 2 faces
-          <animate attributeName="opacity" dur="6s" repeatCount="indefinite" values="0;0;0;0;0;0;0;0;1" keyTimes="0;0.1;0.2;0.3;0.4;0.5;0.55;0.6;0.65" calcMode="discrete"/>
-        </text>
-
-        <rect x="390" y="38" width="118" height="80" rx="4" fill="url(#ai1)"/>
-        <polygon points="390,118 414,86 442,100 472,76 508,118" fill="#0d1a2a" opacity="0.7"/>
-        <rect x="390" y="104" width="118" height="14" rx="0" fill="rgba(10,10,12,0.85)" opacity="0">
-          <animate attributeName="opacity" dur="6s" repeatCount="indefinite" values="0;0;0;0;0;0;0;0;0;1" keyTimes="0;0.1;0.2;0.3;0.4;0.5;0.6;0.65;0.72;0.76" calcMode="discrete"/>
-        </rect>
-        <text x="449" y="115" text-anchor="middle" fill="#f5a623" font-family="ui-monospace,monospace" font-size="8" font-weight="700" opacity="0">
-          ⬆ 63 · eyes closed
-          <animate attributeName="opacity" dur="6s" repeatCount="indefinite" values="0;0;0;0;0;0;0;0;0;1" keyTimes="0;0.1;0.2;0.3;0.4;0.5;0.6;0.65;0.72;0.76" calcMode="discrete"/>
-        </text>
-
-        <!-- Row 2 (dimmer / unscored still) -->
-        <rect x="12" y="130" width="114" height="80" rx="4" fill="url(#ai2)" opacity="0.5"/>
-        <rect x="138" y="130" width="114" height="80" rx="4" fill="url(#ai3)" opacity="0.5"/>
-        <rect x="264" y="130" width="114" height="80" rx="4" fill="url(#ai1)" opacity="0.5"/>
-        <rect x="390" y="130" width="118" height="80" rx="4" fill="url(#ai2)" opacity="0.5"/>
-
-        <!-- AI scan line sweeping over grid -->
-        <rect x="12" y="38" width="496" height="2" fill="#6c63ff" opacity="0">
-          <animate attributeName="y" dur="6s" repeatCount="indefinite" values="38;218;38"/>
-          <animate attributeName="opacity" dur="6s" repeatCount="indefinite" values="0;0.7;0.7;0;0" keyTimes="0;0.05;0.7;0.75;1"/>
-        </rect>
-
-        <!-- Results panel -->
-        <rect x="12" y="222" width="496" height="88" rx="6" fill="#141416" stroke="#2a2a2e" stroke-width="1"/>
-        <text x="26" y="242" fill="#888" font-family="system-ui,sans-serif" font-size="9" font-weight="600" letter-spacing="0.06em">AI REVIEW RESULTS</text>
-        <!-- Progress -->
-        <rect x="26" y="250" width="300" height="6" rx="3" fill="#1c1c1f"/>
-        <rect x="26" y="250" width="0" height="6" rx="3" fill="#6c63ff">
-          <animate attributeName="width" dur="6s" repeatCount="indefinite" values="0;60;120;180;240;300;300;300" keyTimes="0;0.12;0.24;0.36;0.48;0.6;0.8;1"/>
-        </rect>
-        <text x="336" y="257" fill="#555" font-family="ui-monospace,monospace" font-size="8">
-          <animate attributeName="textContent" dur="6s" repeatCount="indefinite" values="407/3,421;813/3,421;1,220/3,421;1,627/3,421;2,034/3,421;3,421/3,421;3,421/3,421;3,421/3,421" keyTimes="0;0.12;0.24;0.36;0.48;0.6;0.8;1" calcMode="discrete"/>
-        </text>
-        <!-- Stats -->
-        <text x="26" y="274" fill="#34d399" font-family="system-ui,sans-serif" font-size="10" font-weight="600" opacity="0">
-          ✓ Sharp 2,847
-          <animate attributeName="opacity" dur="6s" repeatCount="indefinite" values="0;0;0;0;0;1;1;1;1" keyTimes="0;0.1;0.2;0.5;0.59;0.62;0.8;0.95;1" calcMode="discrete"/>
-        </text>
-        <text x="150" y="274" fill="#f87171" font-family="system-ui,sans-serif" font-size="10" font-weight="600" opacity="0">
-          ⚠ Blurry 312
-          <animate attributeName="opacity" dur="6s" repeatCount="indefinite" values="0;0;0;0;0;1;1;1;1" keyTimes="0;0.1;0.2;0.5;0.59;0.62;0.8;0.95;1" calcMode="discrete"/>
-        </text>
-        <text x="268" y="274" fill="#6c63ff" font-family="system-ui,sans-serif" font-size="10" font-weight="600" opacity="0">
-          ◉ Faces 1,094
-          <animate attributeName="opacity" dur="6s" repeatCount="indefinite" values="0;0;0;0;0;1;1;1;1" keyTimes="0;0.1;0.2;0.5;0.59;0.62;0.8;0.95;1" calcMode="discrete"/>
-        </text>
-        <text x="390" y="274" fill="#f5a623" font-family="system-ui,sans-serif" font-size="10" font-weight="600" opacity="0">
-          ✦ Eyes closed 68
-          <animate attributeName="opacity" dur="6s" repeatCount="indefinite" values="0;0;0;0;0;1;1;1;1" keyTimes="0;0.1;0.2;0.5;0.59;0.62;0.8;0.95;1" calcMode="discrete"/>
-        </text>
-        <text x="26" y="298" fill="#444" font-family="system-ui,sans-serif" font-size="9">
-          <animate attributeName="textContent" dur="6s" repeatCount="indefinite" values="Running ONNX face model…;Sharpness scoring…;Face detection pass…;Eye-open check…;Scoring highlights…;✓ Analysis complete — blurry shots sorted to bottom;✓ Analysis complete;✓ Analysis complete" keyTimes="0;0.12;0.24;0.36;0.48;0.6;0.8;1" calcMode="discrete"/>
-        </text>
-      </svg>
+      <picture>
+        <source media="(prefers-reduced-motion: reduce)" srcset="assets/demo/face-review.png">
+        <img src="assets/demo/face-review.gif" data-poster="assets/demo/face-review.png" alt="Local face review with grouping demo" loading="lazy" width="720" height="444">
+      </picture>
     </div>
     <div class="gif-text">
-      <h3>AI spots the blurry shots so you don't have to</h3>
-      <p>Culler runs an ONNX neural net in the background while you browse — no GPU required, nothing leaves your machine. Every photo gets a sharpness score, a face count, and an eyes-open check.</p>
+      <h3>Local face review stays private and fast</h3>
+      <p>Keptra runs an ONNX neural net in the background while you browse — no GPU required, nothing leaves your machine. Every photo gets a sharpness score, a face count, and an eyes-open check.</p>
       <p>Blurry shots drift to the bottom of the grid. Eyes-closed flags appear before you import. You still make all the calls — the AI just removes the donkey work.</p>
       <div class="tag-list">
         <span class="tag">Sharpness score</span>
@@ -823,86 +470,13 @@
   <!-- Demo 3: Import -->
   <div class="gif-row">
     <div class="gif-frame">
-      <svg viewBox="0 0 520 320" xmlns="http://www.w3.org/2000/svg">
-        <defs>
-          <linearGradient id="imp1" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#1a2535"/><stop offset="100%" stop-color="#2d4060"/></linearGradient>
-        </defs>
-        <rect width="520" height="320" fill="#0f0f11"/>
-        <rect width="520" height="28" fill="#0a0a0c"/>
-        <circle cx="12" cy="14" r="4.5" fill="#ff5f57"/>
-        <circle cx="24" cy="14" r="4.5" fill="#febc2e"/>
-        <circle cx="36" cy="14" r="4.5" fill="#28c840"/>
-        <text x="260" y="19" text-anchor="middle" fill="#555" font-family="system-ui,sans-serif" font-size="10">Importing 18 picks — 3.4 GB</text>
-
-        <!-- File tree panel -->
-        <rect x="12" y="36" width="186" height="276" rx="6" fill="#0a0a0c" stroke="#2a2a2e" stroke-width="1"/>
-        <text x="24" y="54" fill="#555" font-family="system-ui,sans-serif" font-size="9" font-weight="600" letter-spacing="0.06em">DESTINATION</text>
-        <text x="22" y="72" fill="#888" font-family="ui-monospace,monospace" font-size="9">📁 Pictures/</text>
-        <text x="32" y="87" fill="#888" font-family="ui-monospace,monospace" font-size="9">📁 2025/</text>
-        <text x="42" y="102" fill="#888" font-family="ui-monospace,monospace" font-size="9">📁 05/</text>
-        <text x="52" y="117" fill="#e0e0e0" font-family="ui-monospace,monospace" font-size="9">📁 17/ ←</text>
-        <text x="64" y="132" fill="#666" font-family="ui-monospace,monospace" font-size="8">✓ DSC_0841.CR3</text>
-        <text x="64" y="145" fill="#666" font-family="ui-monospace,monospace" font-size="8">✓ DSC_0843.CR3</text>
-        <text x="64" y="158" fill="#666" font-family="ui-monospace,monospace" font-size="8">✓ DSC_0845.CR3</text>
-        <text x="64" y="171" fill="#666" font-family="ui-monospace,monospace" font-size="8">✓ DSC_0847.CR3</text>
-        <text x="64" y="184" fill="#34d399" font-family="ui-monospace,monospace" font-size="8" opacity="0">
-          DSC_0851.CR3
-          <animate attributeName="opacity" dur="4s" repeatCount="indefinite" values="0;0;0;0;1;1;1;1" keyTimes="0;0.25;0.35;0.44;0.46;0.6;0.9;1" calcMode="discrete"/>
-        </text>
-        <text x="64" y="197" fill="#34d399" font-family="ui-monospace,monospace" font-size="8" opacity="0">
-          DSC_0854.CR3
-          <animate attributeName="opacity" dur="4s" repeatCount="indefinite" values="0;0;0;0;0;0;1;1" keyTimes="0;0.25;0.4;0.5;0.55;0.62;0.66;1" calcMode="discrete"/>
-        </text>
-        <text x="64" y="210" fill="#34d399" font-family="ui-monospace,monospace" font-size="8" opacity="0">
-          DSC_0857.CR3
-          <animate attributeName="opacity" dur="4s" repeatCount="indefinite" values="0;0;0;0;0;0;0;1" keyTimes="0;0.25;0.4;0.5;0.6;0.7;0.74;0.78" calcMode="discrete"/>
-        </text>
-
-        <!-- Progress panel -->
-        <rect x="210" y="36" width="298" height="276" rx="6" fill="#141416" stroke="#2a2a2e" stroke-width="1"/>
-        <text x="226" y="62" fill="#e0e0e0" font-family="system-ui,sans-serif" font-size="14" font-weight="700">Importing picks</text>
-        <text x="226" y="78" fill="#555" font-family="system-ui,sans-serif" font-size="10">18 files · 3.4 GB · SD Card → NVMe</text>
-        <!-- Main progress bar -->
-        <rect x="226" y="92" width="264" height="10" rx="5" fill="#1c1c1f"/>
-        <rect x="226" y="92" width="0" height="10" rx="5" fill="#6c63ff">
-          <animate attributeName="width" dur="4s" repeatCount="indefinite" values="0;52;105;158;200;240;264;264;0" keyTimes="0;0.12;0.25;0.38;0.5;0.62;0.75;0.9;1"/>
-        </rect>
-        <text x="226" y="116" fill="#888" font-family="system-ui,sans-serif" font-size="10">
-          <animate attributeName="textContent" dur="4s" repeatCount="indefinite" values="Copying…  0 of 18;Copying…  3 of 18;Copying…  6 of 18;Copying…  9 of 18;Copying… 11 of 18;Copying… 14 of 18;✓ Copy complete — 18 files;✓ Copy complete;Copying…  0 of 18" keyTimes="0;0.1;0.25;0.38;0.5;0.62;0.75;0.9;1" calcMode="discrete"/>
-        </text>
-        <text x="226" y="132" fill="#444" font-family="ui-monospace,monospace" font-size="9">
-          <animate attributeName="textContent" dur="4s" repeatCount="indefinite" values="380 MB/s;412 MB/s;398 MB/s;425 MB/s;441 MB/s;407 MB/s;— done;—;380 MB/s" keyTimes="0;0.1;0.25;0.38;0.5;0.62;0.75;0.9;1" calcMode="discrete"/>
-        </text>
-        <line x1="226" y1="146" x2="490" y2="146" stroke="#2a2a2e" stroke-width="1"/>
-        <!-- Checksum block -->
-        <text x="226" y="163" fill="#888" font-family="system-ui,sans-serif" font-size="9" font-weight="600" letter-spacing="0.04em">CHECKSUM VERIFY</text>
-        <rect x="226" y="170" width="264" height="6" rx="3" fill="#1c1c1f"/>
-        <rect x="226" y="170" width="0" height="6" rx="3" fill="#34d399">
-          <animate attributeName="width" dur="4s" repeatCount="indefinite" values="0;0;0;0;0;0;0;130;264" keyTimes="0;0.1;0.25;0.38;0.5;0.62;0.74;0.82;0.93"/>
-        </rect>
-        <text x="226" y="188" fill="#34d399" font-family="system-ui,sans-serif" font-size="9">
-          <animate attributeName="textContent" dur="4s" repeatCount="indefinite" values="Waiting for copy…;Waiting…;Waiting…;Waiting…;Waiting…;Waiting…;Hashing…;Hashing  9/18;✓ All 18 files verified" keyTimes="0;0.1;0.25;0.38;0.5;0.62;0.74;0.82;0.93" calcMode="discrete"/>
-        </text>
-        <line x1="226" y1="200" x2="490" y2="200" stroke="#2a2a2e" stroke-width="1"/>
-        <!-- Folder pattern -->
-        <text x="226" y="216" fill="#888" font-family="system-ui,sans-serif" font-size="9" font-weight="600" letter-spacing="0.04em">FOLDER PATTERN</text>
-        <rect x="226" y="222" width="264" height="26" rx="4" fill="#0f0f11" stroke="#2a2a2e" stroke-width="1"/>
-        <text x="236" y="238" fill="#888" font-family="ui-monospace,monospace" font-size="9">~/Pictures/{YYYY}/{MM}/{DD}/</text>
-        <!-- Backup -->
-        <rect x="226" y="256" width="264" height="26" rx="4" fill="#0f0f11" stroke="#2a2a2e" stroke-width="1"/>
-        <text x="236" y="272" fill="#555" font-family="ui-monospace,monospace" font-size="9">↳ /Volumes/Backup/ mirrored</text>
-        <!-- Done banner -->
-        <rect x="210" y="278" width="298" height="34" rx="0" fill="#071a0e" opacity="0">
-          <animate attributeName="opacity" dur="4s" repeatCount="indefinite" values="0;0;0;0;0;0;0;0;0;1;1;0" keyTimes="0;0.1;0.2;0.3;0.4;0.5;0.6;0.7;0.88;0.91;0.96;1" calcMode="discrete"/>
-        </rect>
-        <text x="359" y="300" text-anchor="middle" fill="#34d399" font-family="system-ui,sans-serif" font-size="13" font-weight="700" opacity="0">
-          ✓ Done — card auto-ejected
-          <animate attributeName="opacity" dur="4s" repeatCount="indefinite" values="0;0;0;0;0;0;0;0;0;1;1;0" keyTimes="0;0.1;0.2;0.3;0.4;0.5;0.6;0.7;0.88;0.91;0.96;1" calcMode="discrete"/>
-        </text>
-      </svg>
+      <picture>
+        <source media="(prefers-reduced-motion: reduce)" srcset="assets/demo/gpu-diagnostics.png">
+        <img src="assets/demo/gpu-diagnostics.gif" data-poster="assets/demo/gpu-diagnostics.png" alt="GPU face diagnostics settings demo" loading="lazy" width="720" height="444">
+      </picture>
     </div>
     <div class="gif-text">
-      <h3>Import only what you picked</h3>
+      <h3>GPU diagnostics are plain to see</h3>
       <p>Hit import when you're done culling — only green-flagged picks go to disk. Every file is checksummed after the copy. If even one byte is off, you find out before the card gets reformatted.</p>
       <p>Files land in your folder pattern automatically. Add a backup destination and they mirror there too. Auto-eject fires when it's all done.</p>
       <div class="tag-list">
@@ -918,94 +492,14 @@
   <!-- Demo 4: Burst grouping -->
   <div class="gif-row reverse">
     <div class="gif-frame">
-      <svg viewBox="0 0 520 320" xmlns="http://www.w3.org/2000/svg">
-        <defs>
-          <linearGradient id="br1" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#1a2535"/><stop offset="100%" stop-color="#3a5070"/></linearGradient>
-          <linearGradient id="br2" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#251a18"/><stop offset="100%" stop-color="#5a3020"/></linearGradient>
-          <linearGradient id="br3" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#1a2518"/><stop offset="100%" stop-color="#304528"/></linearGradient>
-          <linearGradient id="br4" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#25201a"/><stop offset="100%" stop-color="#504028"/></linearGradient>
-          <linearGradient id="br5" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#1e1a2e"/><stop offset="100%" stop-color="#3e3660"/></linearGradient>
-        </defs>
-        <rect width="520" height="320" fill="#0f0f11"/>
-        <rect width="520" height="28" fill="#0a0a0c"/>
-        <circle cx="12" cy="14" r="4.5" fill="#ff5f57"/>
-        <circle cx="24" cy="14" r="4.5" fill="#febc2e"/>
-        <circle cx="36" cy="14" r="4.5" fill="#28c840"/>
-        <text x="260" y="19" text-anchor="middle" fill="#555" font-family="system-ui,sans-serif" font-size="10">
-          <animate attributeName="textContent" dur="5s" repeatCount="indefinite" values="Burst group · 8 shots · 0.6s window;Burst expanded · Sharpest: shot 5;Burst expanded · Sharpest: shot 5;✓ Best picked · moving on" keyTimes="0;0.28;0.7;0.88" calcMode="discrete"/>
-        </text>
-
-        <!-- Collapsed state -->
-        <g>
-          <animate attributeName="opacity" dur="5s" repeatCount="indefinite" values="1;1;0;0;1" keyTimes="0;0.27;0.3;0.87;0.9" calcMode="discrete"/>
-          <!-- Stack shadow layers -->
-          <rect x="28" y="58" width="156" height="104" rx="6" fill="#1a1a1e" stroke="#333" stroke-width="1" transform="translate(8,8)" opacity="0.4"/>
-          <rect x="28" y="58" width="156" height="104" rx="6" fill="#1a1a1e" stroke="#2e2e33" stroke-width="1" transform="translate(4,4)" opacity="0.6"/>
-          <rect x="28" y="58" width="156" height="104" rx="6" fill="url(#br1)"/>
-          <polygon points="28,162 60,118 96,136 136,104 184,162" fill="#0d1a2a" opacity="0.7"/>
-          <text x="106" y="118" text-anchor="middle" fill="rgba(255,255,255,0.5)" font-family="system-ui,sans-serif" font-size="24" font-weight="100">8</text>
-          <text x="106" y="136" text-anchor="middle" fill="rgba(255,255,255,0.3)" font-family="system-ui,sans-serif" font-size="11">shots</text>
-          <rect x="28" y="58" width="68" height="16" rx="3" fill="rgba(108,99,255,0.85)"/>
-          <text x="62" y="70" text-anchor="middle" fill="white" font-family="system-ui,sans-serif" font-size="8" font-weight="600">BURST ×8</text>
-          <rect x="28" y="176" width="460" height="22" rx="4" fill="#141416" stroke="#2a2a2e" stroke-width="1"/>
-          <text x="42" y="191" fill="#555" font-family="system-ui,sans-serif" font-size="9">B — expand and compare   ·   Shift+B — auto-pick sharpest frame   ·   0.6s window detected</text>
-        </g>
-
-        <!-- Expanded state: 8 thumbs + sharpness bars -->
-        <g>
-          <animate attributeName="opacity" dur="5s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.27;0.3;0.87;0.9" calcMode="discrete"/>
-          <rect x="12" y="48" width="54" height="36" rx="3" fill="url(#br1)"/>
-          <rect x="70" y="48" width="54" height="36" rx="3" fill="url(#br2)"/>
-          <rect x="128" y="48" width="54" height="36" rx="3" fill="url(#br3)"/>
-          <rect x="186" y="48" width="54" height="36" rx="3" fill="url(#br4)"/>
-          <!-- Shot 5 — sharpest, taller + green ring -->
-          <rect x="246" y="42" width="60" height="48" rx="4" fill="url(#br1)"/>
-          <rect x="245" y="41" width="62" height="50" rx="5" fill="none" stroke="#34d399" stroke-width="2.5"/>
-          <rect x="248" y="85" width="54" height="13" rx="2" fill="#34d399"/>
-          <text x="275" y="95" text-anchor="middle" fill="#0a1a0a" font-family="system-ui,sans-serif" font-size="7" font-weight="700">Sharpest ↑ 94</text>
-          <rect x="310" y="48" width="54" height="36" rx="3" fill="url(#br2)"/>
-          <rect x="368" y="48" width="54" height="36" rx="3" fill="url(#br3)"/>
-          <rect x="426" y="48" width="82" height="36" rx="3" fill="url(#br4)"/>
-
-          <!-- Sharpness bars -->
-          <rect x="12" y="88" width="54" height="4" rx="2" fill="#1c1c1f"/><rect x="12" y="88" width="24" height="4" rx="2" fill="#6c63ff" opacity="0.55"/>
-          <rect x="70" y="88" width="54" height="4" rx="2" fill="#1c1c1f"/><rect x="70" y="88" width="38" height="4" rx="2" fill="#6c63ff" opacity="0.65"/>
-          <rect x="128" y="88" width="54" height="4" rx="2" fill="#1c1c1f"/><rect x="128" y="88" width="30" height="4" rx="2" fill="#6c63ff" opacity="0.5"/>
-          <rect x="186" y="88" width="54" height="4" rx="2" fill="#1c1c1f"/><rect x="186" y="88" width="42" height="4" rx="2" fill="#6c63ff" opacity="0.72"/>
-          <rect x="310" y="88" width="54" height="4" rx="2" fill="#1c1c1f"/><rect x="310" y="88" width="26" height="4" rx="2" fill="#6c63ff" opacity="0.48"/>
-          <rect x="368" y="88" width="54" height="4" rx="2" fill="#1c1c1f"/><rect x="368" y="88" width="34" height="4" rx="2" fill="#6c63ff" opacity="0.6"/>
-          <rect x="426" y="88" width="82" height="4" rx="2" fill="#1c1c1f"/><rect x="426" y="88" width="56" height="4" rx="2" fill="#6c63ff" opacity="0.7"/>
-
-          <!-- Score labels -->
-          <text x="39" y="104" text-anchor="middle" fill="#555" font-family="ui-monospace,monospace" font-size="7">42</text>
-          <text x="97" y="104" text-anchor="middle" fill="#555" font-family="ui-monospace,monospace" font-size="7">61</text>
-          <text x="155" y="104" text-anchor="middle" fill="#555" font-family="ui-monospace,monospace" font-size="7">48</text>
-          <text x="213" y="104" text-anchor="middle" fill="#555" font-family="ui-monospace,monospace" font-size="7">72</text>
-          <text x="276" y="104" text-anchor="middle" fill="#34d399" font-family="ui-monospace,monospace" font-size="7" font-weight="700">94</text>
-          <text x="337" y="104" text-anchor="middle" fill="#555" font-family="ui-monospace,monospace" font-size="7">45</text>
-          <text x="395" y="104" text-anchor="middle" fill="#555" font-family="ui-monospace,monospace" font-size="7">58</text>
-          <text x="467" y="104" text-anchor="middle" fill="#555" font-family="ui-monospace,monospace" font-size="7">67</text>
-
-          <!-- Side-by-side comparison -->
-          <rect x="12" y="118" width="246" height="154" rx="6" fill="url(#br1)"/>
-          <polygon points="12,272 45,215 82,235 130,198 198,222 258,210 258,272" fill="#0d1a2a" opacity="0.7"/>
-          <rect x="14" y="120" width="68" height="16" rx="3" fill="rgba(52,211,153,0.85)"/>
-          <text x="48" y="132" text-anchor="middle" fill="#081a08" font-family="system-ui,sans-serif" font-size="8" font-weight="700">Sharpest — 94</text>
-
-          <rect x="266" y="118" width="242" height="154" rx="6" fill="url(#br4)"/>
-          <polygon points="266,272 300,220 338,240 380,204 448,225 508,215 508,272" fill="#100a00" opacity="0.7"/>
-          <rect x="268" y="120" width="60" height="16" rx="3" fill="rgba(60,60,70,0.85)"/>
-          <text x="298" y="132" text-anchor="middle" fill="#888" font-family="system-ui,sans-serif" font-size="8">2nd — 72</text>
-
-          <!-- Key hints -->
-          <rect x="12" y="284" width="496" height="24" rx="0" fill="rgba(10,10,12,0.9)"/>
-          <text x="24" y="300" fill="#444" font-family="system-ui,sans-serif" font-size="9">B — collapse   ·   Shift+B — pick sharpest &amp; move on   ·   ← → — step through frames</text>
-        </g>
-      </svg>
+      <picture>
+        <source media="(prefers-reduced-motion: reduce)" srcset="assets/demo/best-of.png">
+        <img src="assets/demo/best-of.gif" data-poster="assets/demo/best-of.png" alt="Best-of burst comparison demo" loading="lazy" width="720" height="444">
+      </picture>
     </div>
     <div class="gif-text">
       <h3>Bursts collapse into one tile</h3>
-      <p>When Culler spots a tight cluster — same subject, fraction of a second apart — it stacks the frames into one thumbnail with a count badge.</p>
+      <p>When Keptra spots a tight cluster — same subject, fraction of a second apart — it stacks the frames into one thumbnail with a count badge.</p>
       <p>Press B to fan them out and compare side by side. Sharpness scores sit below each frame. Shift+B picks the winner and moves you on without you lifting your eyes from the screen.</p>
       <div class="tag-list">
         <span class="tag">B — expand burst</span>
@@ -1020,96 +514,14 @@
   <!-- Demo 5: Auto-import -->
   <div class="gif-row">
     <div class="gif-frame">
-      <svg viewBox="0 0 520 320" xmlns="http://www.w3.org/2000/svg">
-        <defs>
-          <linearGradient id="au1" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#1a2535"/><stop offset="100%" stop-color="#3a5070"/></linearGradient>
-          <linearGradient id="au2" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#251a18"/><stop offset="100%" stop-color="#5a3020"/></linearGradient>
-          <linearGradient id="au3" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#1a2518"/><stop offset="100%" stop-color="#304528"/></linearGradient>
-        </defs>
-        <rect width="520" height="320" fill="#0f0f11"/>
-        <rect width="520" height="28" fill="#0a0a0c"/>
-        <circle cx="12" cy="14" r="4.5" fill="#ff5f57"/>
-        <circle cx="24" cy="14" r="4.5" fill="#febc2e"/>
-        <circle cx="36" cy="14" r="4.5" fill="#28c840"/>
-        <text x="260" y="19" text-anchor="middle" fill="#555" font-family="system-ui,sans-serif" font-size="10">Culler — Auto-import</text>
-
-        <!-- Phase 1: Idle / waiting -->
-        <g>
-          <animate attributeName="opacity" dur="8s" repeatCount="indefinite" values="1;1;0;0;0;0;0;0;1" keyTimes="0;0.16;0.2;0.4;0.55;0.7;0.9;0.94;1" calcMode="discrete"/>
-          <rect x="180" y="64" width="160" height="100" rx="8" fill="#1c1c1f" stroke="#333" stroke-width="2"/>
-          <rect x="196" y="108" width="128" height="14" rx="3" fill="#0a0a0c" stroke="#3a3a3e" stroke-width="1"/>
-          <text x="260" y="163" text-anchor="middle" fill="#444" font-family="system-ui,sans-serif" font-size="11">Waiting for card…</text>
-          <circle cx="260" cy="195" r="5" fill="#6c63ff" opacity="0.5">
-            <animate attributeName="opacity" dur="1.5s" repeatCount="indefinite" values="0.2;0.8;0.2"/>
-            <animate attributeName="r" dur="1.5s" repeatCount="indefinite" values="4;7;4"/>
-          </circle>
-          <rect x="170" y="218" width="180" height="24" rx="12" fill="#1a2820" stroke="#34d399" stroke-width="1"/>
-          <text x="260" y="234" text-anchor="middle" fill="#34d399" font-family="system-ui,sans-serif" font-size="10" font-weight="600">⚡ Auto-import ON</text>
-        </g>
-
-        <!-- Phase 2: Card detected toast -->
-        <g>
-          <animate attributeName="opacity" dur="8s" repeatCount="indefinite" values="0;0;1;1;0;0;0;0;0" keyTimes="0;0.16;0.2;0.28;0.32;0.4;0.6;0.8;1" calcMode="discrete"/>
-          <rect x="180" y="64" width="160" height="100" rx="8" fill="#1c1c1f" stroke="#6c63ff" stroke-width="2"/>
-          <rect x="196" y="108" width="128" height="14" rx="3" fill="#0a0a0c" stroke="#3a3a3e" stroke-width="1"/>
-          <rect x="210" y="99" width="74" height="36" rx="3" fill="#2a2a2e" stroke="#6c63ff" stroke-width="1.5"/>
-          <text x="247" y="122" text-anchor="middle" fill="#888" font-family="ui-monospace,monospace" font-size="9">SD</text>
-          <rect x="28" y="196" width="464" height="60" rx="10" fill="#1c1c1f" stroke="#6c63ff" stroke-width="1.5"/>
-          <text x="54" y="218" fill="#e0e0e0" font-family="system-ui,sans-serif" font-size="12" font-weight="600">SD Card detected — EOS R5</text>
-          <text x="54" y="237" fill="#888" font-family="system-ui,sans-serif" font-size="10">2,847 photos · 42.6 GB · Starting auto-import…</text>
-          <circle cx="42" cy="226" r="10" fill="#6c63ff" opacity="0.25"/>
-          <text x="42" y="230" text-anchor="middle" fill="#6c63ff" font-family="system-ui,sans-serif" font-size="11" font-weight="600">C</text>
-        </g>
-
-        <!-- Phase 3: Scanning -->
-        <g>
-          <animate attributeName="opacity" dur="8s" repeatCount="indefinite" values="0;0;0;0;1;1;0;0;0" keyTimes="0;0.16;0.28;0.32;0.4;0.48;0.52;0.6;1" calcMode="discrete"/>
-          <text x="260" y="68" text-anchor="middle" fill="#888" font-family="system-ui,sans-serif" font-size="11">Scanning card…</text>
-          <rect x="28" y="80" width="464" height="148" rx="6" fill="#141416" stroke="#2a2a2e" stroke-width="1"/>
-          <!-- Mini thumbs being discovered -->
-          <rect x="40" y="92" width="54" height="38" rx="3" fill="url(#au1)" opacity="0.9"/>
-          <rect x="98" y="92" width="54" height="38" rx="3" fill="url(#au2)" opacity="0.9"/>
-          <rect x="156" y="92" width="54" height="38" rx="3" fill="url(#au3)" opacity="0.9"/>
-          <rect x="214" y="92" width="54" height="38" rx="3" fill="url(#au1)" opacity="0.9"/>
-          <rect x="272" y="92" width="54" height="38" rx="3" fill="url(#au2)" opacity="0.9"/>
-          <rect x="330" y="92" width="54" height="38" rx="3" fill="url(#au3)" opacity="0.6"/>
-          <rect x="388" y="92" width="54" height="38" rx="3" fill="url(#au1)" opacity="0.35"/>
-          <rect x="446" y="92" width="42" height="38" rx="3" fill="url(#au2)" opacity="0.15"/>
-          <rect x="40" y="136" width="54" height="38" rx="3" fill="url(#au3)" opacity="0.8"/>
-          <rect x="98" y="136" width="54" height="38" rx="3" fill="url(#au1)" opacity="0.6"/>
-          <rect x="156" y="136" width="54" height="38" rx="3" fill="url(#au2)" opacity="0.4"/>
-          <rect x="214" y="136" width="54" height="38" rx="3" fill="url(#au3)" opacity="0.2"/>
-          <text x="260" y="246" text-anchor="middle" fill="#555" font-family="system-ui,sans-serif" font-size="10">Found 2,847 photos · checking for duplicates…</text>
-        </g>
-
-        <!-- Phase 4: Importing -->
-        <g>
-          <animate attributeName="opacity" dur="8s" repeatCount="indefinite" values="0;0;0;0;0;0;1;1;0" keyTimes="0;0.16;0.28;0.4;0.48;0.52;0.6;0.92;0.95" calcMode="discrete"/>
-          <text x="28" y="58" fill="#e0e0e0" font-family="system-ui,sans-serif" font-size="13" font-weight="700">Auto-importing…</text>
-          <text x="28" y="74" fill="#555" font-family="system-ui,sans-serif" font-size="10">2,847 photos · 134 duplicates skipped · 42.6 GB</text>
-          <rect x="28" y="86" width="464" height="12" rx="6" fill="#1c1c1f"/>
-          <rect x="28" y="86" width="0" height="12" rx="6" fill="#6c63ff">
-            <animate attributeName="width" dur="2s" repeatCount="indefinite" values="0;100;200;300;390;464"/>
-          </rect>
-          <text x="28" y="114" fill="#444" font-family="ui-monospace,monospace" font-size="9">
-            <animate attributeName="textContent" dur="2s" repeatCount="indefinite" values="418 MB/s · ~85s remaining;411 MB/s · ~68s remaining;423 MB/s · ~51s remaining;407 MB/s · ~34s remaining;432 MB/s · ~17s remaining;— · done"/>
-          </text>
-          <text x="28" y="130" fill="#34d399" font-family="system-ui,sans-serif" font-size="10">
-            <animate attributeName="textContent" dur="2s" repeatCount="indefinite" values="314 / 2,847 files;944 / 2,847 files;1,574 / 2,847 files;2,089 / 2,847 files;2,648 / 2,847 files;✓ 2,847 files imported"/>
-          </text>
-          <rect x="28" y="146" width="464" height="134" rx="6" fill="#0a0a0c" stroke="#2a2a2e" stroke-width="1"/>
-          <text x="42" y="166" fill="#555" font-family="system-ui,sans-serif" font-size="9" font-weight="600" letter-spacing="0.06em">ORGANISED INTO</text>
-          <text x="42" y="183" fill="#888" font-family="ui-monospace,monospace" font-size="9">📁 ~/Pictures/2025/05/17/  — 1,240 photos</text>
-          <text x="42" y="198" fill="#888" font-family="ui-monospace,monospace" font-size="9">📁 ~/Pictures/2025/05/16/  — 892 photos</text>
-          <text x="42" y="213" fill="#888" font-family="ui-monospace,monospace" font-size="9">📁 ~/Pictures/2025/05/15/  — 715 photos</text>
-          <text x="42" y="228" fill="#555" font-family="ui-monospace,monospace" font-size="9">📁 /Volumes/Backup/ ↳ mirrored</text>
-          <text x="42" y="268" fill="#555" font-family="system-ui,sans-serif" font-size="9">↷ 134 duplicates skipped (already on disk)</text>
-        </g>
-      </svg>
+      <picture>
+        <source media="(prefers-reduced-motion: reduce)" srcset="assets/demo/auto-import.png">
+        <img src="assets/demo/auto-import.gif" data-poster="assets/demo/auto-import.png" alt="Auto-import from card detection demo" loading="lazy" width="720" height="444">
+      </picture>
     </div>
     <div class="gif-text">
       <h3>Insert a card, walk away</h3>
-      <p>Turn on auto-import and Culler watches for any new card. The moment one is detected, it starts scanning — no clicking, no dialogs. Files land in your date-based folders automatically.</p>
+      <p>Turn on auto-import and Keptra watches for any new card. The moment one is detected, it starts scanning — no clicking, no dialogs. Files land in your date-based folders automatically.</p>
       <p>It checks for duplicates before copying, so re-inserting a card from yesterday skips anything already on disk. Handy when you're juggling multiple bodies or backing up mid-shoot.</p>
       <div class="tag-list">
         <span class="tag">Zero-click import</span>
@@ -1170,7 +582,7 @@
         <li>Everything in Free</li>
         <li id="proDeviceFeature">1 device included at checkout</li>
         <li>AI sharpness scoring</li>
-        <li>Face detection &amp; review</li>
+        <li>Local face detection, grouping, and GPU diagnostics</li>
         <li>Burst auto-pick (Shift+B)</li>
         <li>FTP mirror output</li>
         <li>Auto-import on card insert</li>
@@ -1195,7 +607,7 @@
     display: inline-flex;
     background: var(--surface-raised);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: 8px;
     padding: 4px;
     gap: 2px;
     margin: 2rem 0 0;
@@ -1206,7 +618,7 @@
   .plan-toggle::-webkit-scrollbar { display: none; }
   .plan-tab {
     padding: 0.45rem 1.1rem;
-    border-radius: 7px;
+    border-radius: 6px;
     border: none;
     background: transparent;
     color: var(--text-muted);
@@ -1222,7 +634,7 @@
     white-space: nowrap;
   }
   .plan-tab:hover { color: var(--text); }
-  .plan-tab.active { background: var(--accent); color: #fff; }
+  .plan-tab.active { background: var(--accent); color: #041210; font-weight: 700; }
   .save-badge {
     font-size: 0.65rem;
     font-weight: 700;
@@ -1232,7 +644,7 @@
     padding: 1px 5px;
     letter-spacing: .02em;
   }
-  .plan-tab.active .save-badge { background: rgba(255,255,255,0.2); color: #fff; }
+  .plan-tab.active .save-badge { background: rgba(4,18,16,0.16); color: #041210; }
   .price-loading { color: var(--text-faint); font-size: 1.2rem; font-weight: 400; }
   .pricing-period { font-size: 1rem; font-weight: 400; color: var(--text-muted); }
   @media (max-width: 560px) {
@@ -1431,17 +843,15 @@
   <h2>Give your next shoot a clean start</h2>
   <p>Download free. Your first card takes about two minutes to set up.</p>
   <a href="download.html" class="btn-primary" style="display:inline-flex;margin:0 auto;">
-    Download Culler — it's free →
+    Download Keptra — it's free →
   </a>
 </section>
 
 <!-- FOOTER -->
 <footer>
   <div class="footer-logo">
-    <svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path fill-rule="evenodd" clip-rule="evenodd" d="M128 252C196.483 252 252 196.483 252 128C252 59.5167 196.483 4 128 4C59.5167 4 4 59.5167 4 128C4 196.483 59.5167 252 128 252ZM128 226.694C182.507 226.694 226.694 182.507 226.694 128C226.694 73.4929 182.507 29.3061 128 29.3061C73.4929 29.3061 29.3061 73.4929 29.3061 128C29.3061 182.507 73.4929 226.694 128 226.694ZM188.633 131.549C181.333 137.253 172.145 140.653 162.163 140.653C138.404 140.653 119.143 121.392 119.143 97.6327C119.143 85.8325 123.894 75.1419 131.587 67.3695C130.4 67.3004 129.204 67.2653 128 67.2653C94.4572 67.2653 67.2653 94.4572 67.2653 128C67.2653 161.543 94.4572 188.735 128 188.735C160.352 188.735 186.795 163.44 188.633 131.549ZM117.878 148.245C123.468 148.245 128 143.713 128 138.122C128 132.532 123.468 128 117.878 128C112.287 128 107.755 132.532 107.755 138.122C107.755 143.713 112.287 148.245 117.878 148.245ZM107.755 153.306C107.755 156.101 105.489 158.367 102.694 158.367C99.8986 158.367 97.6327 156.101 97.6327 153.306C97.6327 150.511 99.8986 148.245 102.694 148.245C105.489 148.245 107.755 150.511 107.755 153.306ZM177.347 97.6326C177.347 106.018 170.549 112.816 162.163 112.816C161.21 112.816 160.278 112.729 159.373 112.561C163.87 111.53 167.225 107.503 167.225 102.694C167.225 97.1034 162.693 92.5714 157.102 92.5714C152.292 92.5714 148.266 95.9258 147.235 100.423C147.067 99.5183 146.98 98.5857 146.98 97.6326C146.98 89.2469 153.778 82.449 162.163 82.449C170.549 82.449 177.347 89.2469 177.347 97.6326Z" fill="white"/>
-    </svg>
-    Culler
+    <svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect width="256" height="256" rx="56" fill="#0D1416"/><rect x="13" y="13" width="230" height="230" rx="46" fill="#142629" stroke="#37B69F" stroke-width="12"/><path d="M128 49L178 136H78L128 49Z" fill="#37B69F"/><path d="M211 116L161 202L112 116H211Z" fill="#52D7B5"/><path d="M55 152L104 67L154 152H55Z" fill="#2585A1"/><path d="M88 139L121 173L190 92" stroke="#F6FBFA" stroke-width="21" stroke-linecap="round" stroke-linejoin="round"/><path d="M67 67H101M67 67V101M188 67H222M222 67V101M67 188V222H101M188 222H222V188" stroke="#F6FBFA" stroke-opacity=".78" stroke-width="11" stroke-linecap="round"/></svg>
+    Keptra
   </div>
   <div class="footer-links">
     <a href="download.html">Download</a>
@@ -1449,7 +859,7 @@
     <a href="https://updates.culler.z2hs.au/manage-license">Manage license</a>
     <a href="mailto:help@z2hs.au">Contact</a>
   </div>
-  <div>© 2025 Culler. All rights reserved.</div>
+  <div>© 2025 Keptra. All rights reserved.</div>
 </footer>
 
 </body>

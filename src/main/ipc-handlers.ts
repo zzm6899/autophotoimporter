@@ -13,7 +13,7 @@ import { generatePreview } from './services/exif-parser';
 import { checkForUpdate, fetchUpdateHistory } from './services/update-checker';
 import { probeFtp, mirrorFtp } from './services/ftp-source';
 import { activateLicenseInput, checkHostedLicenseStatus, validateLicenseKey } from './services/license';
-import { analyzeFaces, faceModelsAvailable, serializeEmbedding, isGpuAvailable, getActualExecutionProvider, configureGpuAcceleration, configureCpuOptimization, clearImageDecodeCache, diagnoseFaceEngine } from './services/face-engine';
+import { analyzeFaces, faceModelsAvailable, serializeEmbedding, isGpuAvailable, getActualExecutionProvider, getFaceProviderDiagnostics, configureGpuAcceleration, configureGpuDevice, configureCpuOptimization, configureFaceThroughput, clearImageDecodeCache, diagnoseFaceEngine, runFaceGpuStressTest } from './services/face-engine';
 import { getCachedFaceResult, setCachedFaceResult, clearFaceCache } from './services/face-cache';
 import { detectDeviceTier, applyDeviceTier } from './services/device-tier';
 import { setRawPreviewQuality } from './services/exif-parser';
@@ -84,6 +84,27 @@ function getSettingsPath(): string {
   return path.join(app.getPath('userData'), 'settings.json');
 }
 
+function getLegacySettingsPath(): string {
+  return path.join(app.getPath('appData'), 'Photo Importer', 'settings.json');
+}
+
+async function readSettingsData(): Promise<string> {
+  const currentPath = getSettingsPath();
+  try {
+    return await readFile(currentPath, 'utf-8');
+  } catch (currentError) {
+    const legacyPath = getLegacySettingsPath();
+    if (legacyPath !== currentPath) {
+      try {
+        return await readFile(legacyPath, 'utf-8');
+      } catch {
+        // Fall through to the original error so first-run behavior stays the same.
+      }
+    }
+    throw currentError;
+  }
+}
+
 const DEFAULT_SETTINGS: AppSettings = {
   lastDestination: '',
   skipDuplicates: true,
@@ -110,7 +131,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     user: '',
     password: '',
     secure: false,
-    remotePath: '/PhotoImporter',
+    remotePath: '/Keptra',
   },
   ftpSync: {
     enabled: false,
@@ -132,6 +153,12 @@ const DEFAULT_SETTINGS: AppSettings = {
   normalizeExposure: false,
   exposureMaxStops: 2,
   exposureAdjustmentStep: 0.33,
+  whiteBalanceTemperature: 0,
+  whiteBalanceTint: 0,
+  eventMode: 'general',
+  cullConfidence: 'balanced',
+  groupPhotoEveryoneGood: false,
+  keeperQuota: 'best-1',
   metadataKeywords: '',
   metadataTitle: '',
   metadataCaption: '',
@@ -148,6 +175,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   autoStraighten: true,
   // Performance optimizations
   gpuFaceAcceleration: true,    // Enable GPU by default if available
+  gpuDeviceId: -1,              // -1 = DirectML default adapter
+  gpuStressStreams: 8,
   rawPreviewCache: true,        // Cache RAW previews by default
   cpuOptimization: false,       // Disabled by default (only enable for older CPUs)
   rawPreviewQuality: 70,        // 70% JPEG quality for RAW previews
@@ -157,6 +186,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   licenseActivationCode: '',
   licenseStatus: { valid: false, message: 'No license activated.' },
   perfTier: 'auto',
+  performancePromptSeenVersion: '',
   fastKeeperMode: false,
   previewConcurrency: 2,
   faceConcurrency: 1,
@@ -185,7 +215,8 @@ function cancelPendingFaceJobs(): void {
 const STALE_FACE_JOB = 'stale-face-job';
 
 function setFaceConcurrency(n: number): void {
-  faceSemaphoreSlots = Math.max(1, Math.min(8, n));
+  faceSemaphoreSlots = Math.max(1, Math.min(32, Math.round(n)));
+  configureFaceThroughput(faceSemaphoreSlots);
   while (faceActiveCount < faceSemaphoreSlots && faceSemaphoreQueue.length > 0) {
     faceActiveCount++;
     faceSemaphoreQueue.shift()?.();
@@ -227,9 +258,40 @@ function releaseFaceSemaphore(): void {
   }
 }
 
+async function listWindowsGpus(): Promise<Array<{ id: number; name: string; adapterCompatibility?: string; videoMemoryMB?: number }>> {
+  if (process.platform !== 'win32') return [];
+  const script = [
+    '$ErrorActionPreference = "SilentlyContinue"',
+    'Get-CimInstance Win32_VideoController | ForEach-Object -Begin {$i=0} -Process {',
+    '  [PSCustomObject]@{ id=$i; name=$_.Name; adapterCompatibility=$_.AdapterCompatibility; videoMemoryMB=[math]::Round(($_.AdapterRAM / 1MB),0) }',
+    '  $i++',
+    '} | ConvertTo-Json -Compress',
+  ].join('; ');
+  const { stdout } = await execFileAsync(
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
+    { timeout: 8000, windowsHide: true },
+  );
+  const trimmed = stdout.trim();
+  if (!trimmed) return [];
+  const parsed = JSON.parse(trimmed) as unknown;
+  const list = Array.isArray(parsed) ? parsed : [parsed];
+  return list
+    .map((item, index) => {
+      const record = item as Record<string, unknown>;
+      return {
+        id: Number(record.id ?? index),
+        name: String(record.name ?? `GPU ${index}`),
+        adapterCompatibility: typeof record.adapterCompatibility === 'string' ? record.adapterCompatibility : undefined,
+        videoMemoryMB: typeof record.videoMemoryMB === 'number' ? record.videoMemoryMB : undefined,
+      };
+    })
+    .filter((gpu) => Number.isFinite(gpu.id) && gpu.name.trim().length > 0);
+}
+
 async function loadSettings(): Promise<AppSettings> {
   try {
-    const data = await readFile(getSettingsPath(), 'utf-8');
+    const data = await readSettingsData();
     const parsed = JSON.parse(data) as Partial<AppSettings>;
     const merged = { ...DEFAULT_SETTINGS, ...parsed };
     const storedActivationCode = merged.licenseActivationCode?.trim();
@@ -245,6 +307,7 @@ async function loadSettings(): Promise<AppSettings> {
     
     // Apply performance settings immediately
     configureGpuAcceleration(merged.gpuFaceAcceleration ?? true);
+    configureGpuDevice(merged.gpuDeviceId);
     configureCpuOptimization(merged.cpuOptimization ?? false);
     setRawPreviewQuality(merged.rawPreviewQuality ?? 70);
     setFaceConcurrency(merged.faceConcurrency ?? 1);
@@ -280,6 +343,7 @@ async function saveSettings(settings: Partial<AppSettings>): Promise<void> {
   
   // Reapply settings to running services
   configureGpuAcceleration(merged.gpuFaceAcceleration ?? true);
+  configureGpuDevice(merged.gpuDeviceId);
   configureCpuOptimization(merged.cpuOptimization ?? false);
   setRawPreviewQuality(merged.rawPreviewQuality ?? 70);
   setFaceConcurrency(merged.faceConcurrency ?? 1);
@@ -596,7 +660,7 @@ function sendToRenderer(channel: string, ...args: unknown[]): void {
 }
 
 function sanitizeDownloadName(value: string) {
-  return value.replace(/[<>:"/\\|?*\x00-\x1f]+/g, '-').trim() || 'Photo-Importer-Update';
+  return value.replace(/[<>:"/\\|?*\x00-\x1f]+/g, '-').trim() || 'Keptra-Update';
 }
 
 function installerExtensionForPlatform(downloadUrl: string) {
@@ -638,7 +702,7 @@ async function downloadInstallerAsset(downloadUrl: string, versionLabel: string)
   if (!fileNameFromHeader) {
     fileNameFromHeader = parseContentDispositionFilename(response.headers.get('content-disposition'));
   }
-  const fallbackName = `Photo-Importer-${versionLabel}${installerExtensionForPlatform(downloadUrl)}`;
+  const fallbackName = `Keptra-${versionLabel}${installerExtensionForPlatform(downloadUrl)}`;
   const fileName = sanitizeDownloadName(fileNameFromHeader || path.basename(new URL(downloadUrl).pathname) || fallbackName);
   const targetPath = path.join(updatesDir, fileName);
   const tempPath = `${targetPath}.partial`;
@@ -663,8 +727,8 @@ async function downloadInstallerAsset(downloadUrl: string, versionLabel: string)
         ...(lastUpdateState ?? { currentVersion: app.getVersion() }),
         status: 'downloading',
         message: progress == null
-          ? 'Downloading installer inside Photo Importer...'
-          : `Downloading installer inside Photo Importer... ${progress}%`,
+          ? 'Downloading installer inside Keptra...'
+          : `Downloading installer inside Keptra... ${progress}%`,
       } satisfies UpdateState);
     }
   } catch (error) {
@@ -1054,7 +1118,7 @@ export function registerIpcHandlers(): void {
       lastUpdateState = {
         ...latest,
         status: 'downloading',
-        message: 'Downloading installer inside Photo Importer...',
+        message: 'Downloading installer inside Keptra...',
       };
       sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
 
@@ -1078,7 +1142,7 @@ export function registerIpcHandlers(): void {
           status: 'error',
           message: error instanceof Error
             ? error.message
-            : 'Could not download the installer inside Photo Importer.',
+            : 'Could not download the installer inside Keptra.',
         };
         sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
         return {
@@ -1285,7 +1349,10 @@ export function registerIpcHandlers(): void {
    * The renderer uses this to show/hide face-related UI affordances.
    */
   ipcMain.handle(IPC.FACE_EXECUTION_PROVIDER, () => {
-    return getActualExecutionProvider();
+    return {
+      ep: getActualExecutionProvider(),
+      models: getFaceProviderDiagnostics(),
+    };
   });
 
   // Diagnostic: run a quick benchmark and return timing + EP info
@@ -1303,6 +1370,19 @@ export function registerIpcHandlers(): void {
    */
   ipcMain.handle(IPC.FACE_GPU_AVAILABLE, () => {
     return isGpuAvailable();
+  });
+
+  ipcMain.handle(IPC.FACE_CANCEL_QUEUE, () => {
+    cancelPendingFaceJobs();
+    return { ok: true };
+  });
+
+  ipcMain.handle(IPC.FACE_GPU_STRESS_TEST, async (_event, durationMs?: number, streams?: number) => {
+    return runFaceGpuStressTest(durationMs, streams);
+  });
+
+  ipcMain.handle(IPC.GPU_LIST, async () => {
+    return listWindowsGpus().catch(() => []);
   });
 
   /**

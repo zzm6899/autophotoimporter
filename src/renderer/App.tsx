@@ -13,6 +13,7 @@ import { ImportProgress } from './components/ImportProgress';
 import { ImportSummary } from './components/ImportSummary';
 import { UpdateBanner } from './components/UpdateBanner';
 import { AutoImportPrompt } from './components/AutoImportPrompt';
+import { SettingsOptimizationPrompt } from './components/SettingsOptimizationPrompt';
 import { HelpBar } from './components/HelpBar';
 import { TutorialOverlay } from './components/TutorialOverlay';
 import { LicenseOverlay } from './components/LicenseOverlay';
@@ -113,6 +114,7 @@ function AppInner() {
       <ImportSummary />
       <UpdateBanner />
       <AutoImportPrompt />
+      <SettingsOptimizationPrompt />
       <HelpBar />
       <TutorialOverlay />
       <LicenseOverlay />

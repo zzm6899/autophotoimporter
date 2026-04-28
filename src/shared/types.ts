@@ -54,6 +54,13 @@ export interface MediaFile {
    * consistent?" signal in the detail view.
    */
   exposureValue?: number;
+  /** GPS metadata from EXIF, when the camera/phone provided it. */
+  gps?: { latitude: number; longitude: number; altitude?: number };
+  /** Local, privacy-aware location label derived from GPS. */
+  locationName?: string;
+  /** Smart review bucket used for scene/event filters and Lightroom keywords. */
+  sceneBucket?: string;
+  sceneBucketId?: string;
   /**
    * When true, this file's exposure will be normalized to the anchor's EV on
    * import regardless of the global `normalizeExposure` toggle. Set via the
@@ -62,6 +69,8 @@ export interface MediaFile {
   normalizeToAnchor?: boolean;
   /** Manual exposure offset in stops, applied on import when transcoding. */
   exposureAdjustmentStops?: number;
+  /** Manual white-balance correction, applied on import when transcoding. */
+  whiteBalanceAdjustment?: WhiteBalanceAdjustment;
   /** Renderer-computed focus metric used to pick burst keepers. Higher = sharper. */
   sharpnessScore?: number;
   /** Face/subject-aware focus metric. Higher = sharper subject area. */
@@ -69,7 +78,7 @@ export interface MediaFile {
   /** Number of faces found by local browser face detection, when available. */
   faceCount?: number;
   /** Normalized face boxes from local browser face detection. eyeScore=2 means both eyes detected (open). */
-  faceBoxes?: Array<{ x: number; y: number; width: number; height: number; eyeScore?: number; score?: number }>;
+  faceBoxes?: Array<{ x: number; y: number; width: number; height: number; eyeScore?: number; smileScore?: number; expressionScore?: number; score?: number }>;
   /** Whether faces came from Chromium's detector or the conservative thumbnail fallback. */
   faceDetection?: 'native' | 'estimated';
   /** Number of person/body detections from the ONNX review pipeline. */
@@ -139,6 +148,86 @@ export interface FtpSyncStatus {
 
 export type SaveFormat = 'original' | 'jpeg' | 'tiff' | 'heic';
 export type RatingFilter = 'rating-1' | 'rating-2' | 'rating-3' | 'rating-4' | 'rating-5';
+export type CullConfidence = 'conservative' | 'balanced' | 'aggressive';
+export type KeeperQuota = 'best-1' | 'top-2' | 'all-rated' | 'smile-and-sharp';
+export type EventMode =
+  | 'general'
+  | 'stage'
+  | 'candids'
+  | 'cosplay'
+  | 'cars-itasha'
+  | 'vendor-booth'
+  | 'crowd'
+  | 'panels'
+  | 'meetups';
+
+export interface EventModePreset {
+  label: string;
+  description: string;
+  keywords: string[];
+  help: string;
+}
+
+export const EVENT_MODE_PRESETS: Record<EventMode, EventModePreset> = {
+  general: {
+    label: 'General event',
+    description: 'Balanced event ingest with broad selects and clean metadata.',
+    keywords: ['event', 'selects'],
+    help: 'Use this when the shoot mixes people, details, and general coverage.',
+  },
+  stage: {
+    label: 'Stage / performance',
+    description: 'Performance, spotlight, motion, and peak action coverage.',
+    keywords: ['stage', 'performance', 'spotlight', 'action', 'performer'],
+    help: 'Keeps performance context in sidecars so Lightroom collections can separate stage work from candids.',
+  },
+  candids: {
+    label: 'Candids',
+    description: 'Natural expressions, interactions, laughter, and story moments.',
+    keywords: ['candids', 'people', 'story', 'interaction', 'natural expression'],
+    help: 'Best for roaming event coverage where expressions and interactions matter more than posed perfection.',
+  },
+  cosplay: {
+    label: 'Cosplay / costumes',
+    description: 'Full costume, props, makeup, character details, and group cosplay.',
+    keywords: ['cosplay', 'costume', 'full costume', 'prop', 'makeup', 'character', 'detail'],
+    help: 'Use for convention shoots; full-body/person boxes and detail shots stay meaningful even when faces are small.',
+  },
+  'cars-itasha': {
+    label: 'Cars / itasha',
+    description: 'Full car, livery, artwork, interior, and detail coverage.',
+    keywords: ['cars', 'itasha', 'livery', 'vehicle', 'car detail', 'interior', 'artwork'],
+    help: 'Treats car coverage as its own story lane instead of duplicate-looking detail frames.',
+  },
+  'vendor-booth': {
+    label: 'Vendor / booth',
+    description: 'Booth overview, signage, products, and seller/customer moments.',
+    keywords: ['vendor', 'booth', 'signage', 'merch', 'product table'],
+    help: 'Good for convention and expo coverage where signs, tables, and products are deliverables.',
+  },
+  crowd: {
+    label: 'Crowd / atmosphere',
+    description: 'Venue scale, crowd energy, decorations, queues, and atmosphere.',
+    keywords: ['crowd', 'atmosphere', 'venue', 'wide shot', 'ambience'],
+    help: 'Use when you need variety and story-setting images, not only tight subject keepers.',
+  },
+  panels: {
+    label: 'Panels / talks',
+    description: 'Speakers, audience reaction, slides, and room coverage.',
+    keywords: ['panel', 'talk', 'speaker', 'audience', 'presentation'],
+    help: 'Useful for talks where both speaker and slide/audience context should survive into Lightroom.',
+  },
+  meetups: {
+    label: 'Meetups / groups',
+    description: 'Group coverage with everyone visible and duplicate stacks collapsed.',
+    keywords: ['meetup', 'group photo', 'group coverage', 'people'],
+    help: 'Pairs well with the group-photo culling logic that prefers more usable faces and people present.',
+  },
+};
+
+export function eventModeKeywords(mode: EventMode | undefined): string[] {
+  return EVENT_MODE_PRESETS[mode ?? 'general']?.keywords ?? EVENT_MODE_PRESETS.general.keywords;
+}
 
 export interface SelectionSet {
   name: string;
@@ -166,6 +255,13 @@ export interface WatermarkConfig {
   positionLandscape: WatermarkPosition;
   positionPortrait: WatermarkPosition;
   scale: number;
+}
+
+export interface WhiteBalanceAdjustment {
+  /** Warm/cool correction, -100 = cooler, +100 = warmer. */
+  temperature: number;
+  /** Green/magenta correction, -100 = greener, +100 = more magenta. */
+  tint: number;
 }
 
 export interface LicenseEntitlement {
@@ -270,6 +366,10 @@ export interface ImportConfig {
   normalizeAnchorPaths?: string[];
   /** Manual exposure offsets in stops, keyed by source path. */
   exposureAdjustments?: Record<string, number>;
+  /** Batch white-balance correction for converted outputs only. */
+  whiteBalance?: WhiteBalanceAdjustment;
+  /** Per-file white-balance corrections, keyed by source path. */
+  whiteBalanceAdjustments?: Record<string, WhiteBalanceAdjustment>;
   /** Optional batch metadata written as XMP sidecars next to imported files. */
   metadata?: BatchMetadata;
   /**
@@ -420,6 +520,15 @@ export interface AppSettings {
   normalizeExposure: boolean;
   exposureMaxStops: number;
   exposureAdjustmentStep?: number;
+  whiteBalanceTemperature?: number;
+  whiteBalanceTint?: number;
+  eventMode?: EventMode;
+  /** How strongly auto-cull rejects weaker burst/group alternates. */
+  cullConfidence?: CullConfidence;
+  /** Group-photo mode prefers frames where every detected face/person is usable. */
+  groupPhotoEveryoneGood?: boolean;
+  /** How many alternates to keep in burst and near-duplicate stacks. */
+  keeperQuota?: KeeperQuota;
   // Batch metadata + output transforms
   metadataKeywords?: string;
   metadataTitle?: string;
@@ -440,8 +549,14 @@ export interface AppSettings {
   rawPreviewCache?: boolean;       // Cache RAW preview extractions (default: true)
   cpuOptimization?: boolean;       // Use lighter models/settings for older CPUs (default: false)
   rawPreviewQuality?: number;      // 0-100 for RAW preview JPEG quality (default: 70)
+  /** DirectML adapter index. Undefined/-1 = system default GPU. */
+  gpuDeviceId?: number;
+  /** Number of parallel detector/embedder streams used by the diagnostic GPU load test. */
+  gpuStressStreams?: number;
   /** Device performance tier — 'auto' detects from CPU/RAM, or user override */
   perfTier?: 'auto' | 'low' | 'balanced' | 'high';
+  /** Last app version where the performance/setup prompt was shown or dismissed. */
+  performancePromptSeenVersion?: string;
   /** Fast Keeper Mode: score using sharpness/exposure/ratings only, skip ONNX */
   fastKeeperMode?: boolean;
   /** Renderer concurrency hint from device-tier (runtime only, not persisted) */
@@ -469,6 +584,10 @@ export interface JobPreset {
   skipDuplicates: boolean;
   separateProtected: boolean;
   protectedFolderName: string;
+  eventMode?: EventMode;
+  cullConfidence?: CullConfidence;
+  groupPhotoEveryoneGood?: boolean;
+  keeperQuota?: KeeperQuota;
 }
 
 export interface UpdateInfo {
@@ -636,6 +755,9 @@ export const IPC = {
   FACE_MODELS_AVAILABLE: 'face:models-available',
   FACE_GPU_AVAILABLE: 'face:gpu-available',
   FACE_EXECUTION_PROVIDER: 'face:execution-provider',
+  FACE_CANCEL_QUEUE: 'face:cancel-queue',
+  FACE_GPU_STRESS_TEST: 'face:gpu-stress-test',
+  GPU_LIST: 'gpu:list',
   FACE_MODEL_DOWNLOAD_PROGRESS: 'face:model-download-progress',
 
   // Cache management

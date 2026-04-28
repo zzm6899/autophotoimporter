@@ -84,6 +84,25 @@ export function useSettings() {
       if (typeof settings.exposureAdjustmentStep === 'number') {
         dispatch({ type: 'SET_EXPOSURE_ADJUSTMENT_STEP', step: settings.exposureAdjustmentStep });
       }
+      if (typeof settings.whiteBalanceTemperature === 'number' || typeof settings.whiteBalanceTint === 'number') {
+        dispatch({
+          type: 'SET_WHITE_BALANCE',
+          temperature: settings.whiteBalanceTemperature ?? 0,
+          tint: settings.whiteBalanceTint ?? 0,
+        });
+      }
+      if (settings.eventMode) {
+        dispatch({ type: 'SET_EVENT_MODE', mode: settings.eventMode });
+      }
+      if (settings.cullConfidence) {
+        dispatch({ type: 'SET_CULL_CONFIDENCE', confidence: settings.cullConfidence });
+      }
+      if (typeof settings.groupPhotoEveryoneGood === 'boolean') {
+        dispatch({ type: 'SET_GROUP_PHOTO_EVERYONE_GOOD', enabled: settings.groupPhotoEveryoneGood });
+      }
+      if (settings.keeperQuota) {
+        dispatch({ type: 'SET_KEEPER_QUOTA', quota: settings.keeperQuota });
+      }
       if (typeof settings.metadataKeywords === 'string') {
         dispatch({ type: 'SET_WORKFLOW_STRING', key: 'metadataKeywords', value: settings.metadataKeywords });
       }
@@ -132,6 +151,9 @@ export function useSettings() {
       // Performance settings
       if (typeof settings.gpuFaceAcceleration === 'boolean') {
         dispatch({ type: 'SET_PERFORMANCE_OPTION', key: 'gpuFaceAcceleration', value: settings.gpuFaceAcceleration });
+      }
+      if (typeof settings.gpuDeviceId === 'number') {
+        dispatch({ type: 'SET_GPU_DEVICE_ID', deviceId: settings.gpuDeviceId });
       }
       if (typeof settings.rawPreviewCache === 'boolean') {
         dispatch({ type: 'SET_PERFORMANCE_OPTION', key: 'rawPreviewCache', value: settings.rawPreviewCache });

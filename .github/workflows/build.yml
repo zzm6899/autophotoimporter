@@ -145,7 +145,7 @@ jobs:
               --token "$UPDATE_ADMIN_API_TOKEN" \
               --version "$VERSION" \
               --platform macos \
-              --release-name "Photo Importer $VERSION" \
+              --release-name "Keptra $VERSION" \
               --file "$MAC_DMG" \
               --release-url "${UPDATE_ADMIN_ENDPOINT%/}/releases/$VERSION" \
               --notes "Automated release for $TAG_NAME" \
@@ -158,7 +158,7 @@ jobs:
               --token "$UPDATE_ADMIN_API_TOKEN" \
               --version "$VERSION" \
               --platform windows \
-              --release-name "Photo Importer $VERSION" \
+              --release-name "Keptra $VERSION" \
               --file "$WINDOWS_EXE" \
               --release-url "${UPDATE_ADMIN_ENDPOINT%/}/releases/$VERSION" \
               --notes "Automated release for $TAG_NAME" \

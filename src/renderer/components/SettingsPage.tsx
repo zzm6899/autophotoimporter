@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
-import type { SaveFormat, KeybindMap, MetadataExportFlags, WatermarkMode, WatermarkPosition } from '../../shared/types';
+import type { CullConfidence, KeeperQuota, SaveFormat, KeybindMap, MetadataExportFlags, WatermarkMode, WatermarkPosition } from '../../shared/types';
 import { DEFAULT_KEYBINDS, FOLDER_PRESETS } from '../../shared/types';
+import { formatWhiteBalanceKelvin, kelvinToWhiteBalanceTemperature, WHITE_BALANCE_MAX_KELVIN, WHITE_BALANCE_MIN_KELVIN, whiteBalanceTemperatureToKelvin } from '../../shared/exposure';
 import { playCompletionSound } from '../utils/completionSound';
 import { useUpdateNotification } from '../hooks/useUpdateNotification';
+import { OPEN_PERFORMANCE_EVENT } from './SettingsOptimizationPrompt';
 
 interface SettingsPageProps {
   onClose: () => void;
@@ -97,15 +99,21 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     selectionSets,
     licenseStatus,
     gpuFaceAcceleration,
+    gpuDeviceId = -1,
     rawPreviewCache,
     cpuOptimization,
     rawPreviewQuality,
     perfTier,
     fastKeeperMode,
+    cullConfidence,
+    groupPhotoEveryoneGood,
+    keeperQuota,
     previewConcurrency,
     faceConcurrency,
     keybinds,
     metadataExport,
+    whiteBalanceTemperature,
+    whiteBalanceTint,
   } = useAppState();
   const dispatch = useAppDispatch();
   const { updateState, checkNow, downloadUpdate, installUpdate, openRelease } = useUpdateNotification();
@@ -114,6 +122,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const [licenseBusy, setLicenseBusy] = useState(false);
   const [licenseFeedback, setLicenseFeedback] = useState<string | null>(null);
   const [gpuStatus, setGpuStatus] = useState<boolean | null>(null);
+  const [gpus, setGpus] = useState<Array<{ id: number; name: string; adapterCompatibility?: string; videoMemoryMB?: number }>>([]);
   const [executionProvider, setExecutionProvider] = useState<string | null>(null);
   const [faceCacheClearing, setFaceCacheClearing] = useState(false);
   const [trialBusy, setTrialBusy] = useState(false);
@@ -128,11 +137,16 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const [buyNameInput, setBuyNameInput] = useState('');
   const [buyEmailInput, setBuyEmailInput] = useState('');
   const [activeTopic, setActiveTopic] = useState<SettingsTopic>('general');
+  const performanceSectionRef = useRef<HTMLDivElement | null>(null);
+  const [gpuLoadStreams, setGpuLoadStreams] = useState(8);
 
   const BASE_URL = 'https://updates.culler.z2hs.au';
   const [diagnosing, setDiagnosing] = useState(false);
   const [diagResult, setDiagResult] = useState<string | null>(null);
   const activationCode = licenseStatus?.activationCode?.trim() || '';
+  const wbTemperature = whiteBalanceTemperature ?? 0;
+  const wbTint = whiteBalanceTint ?? 0;
+  const wbKelvin = whiteBalanceTemperatureToKelvin(wbTemperature);
 
   const formatDisplayDate = (value?: string) => {
     if (!value) return 'Never';
@@ -180,10 +194,14 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
       try {
         const [gpu, ep] = await Promise.all([
           window.electronAPI.isGpuAvailable?.() ?? Promise.resolve(null),
-          window.electronAPI.getExecutionProvider?.() ?? Promise.resolve(null),
+          window.electronAPI.getExecutionProvider?.() ?? Promise.resolve({ ep: null, models: [] }),
         ]);
         setGpuStatus(gpu);
-        if (ep) setExecutionProvider(ep);
+        if (ep?.models?.length) {
+          setExecutionProvider(ep.models.map((m) => `${m.model}:${m.provider}${m.deviceId !== undefined ? `#${m.deviceId}` : ''}${m.avgInferenceMs ? ` ${m.avgInferenceMs.toFixed(0)}ms` : ''}`).join(' · '));
+        } else if (ep?.ep) {
+          setExecutionProvider(ep.ep);
+        }
         // If not yet determined, retry after 3s (ONNX may still be loading)
         if (gpu === null) setTimeout(fetchGpuStatus, 3000);
       } catch { /* ignore */ }
@@ -192,9 +210,36 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    window.electronAPI.getSettings()
+      .then((settings) => {
+        if (!cancelled && typeof settings.gpuStressStreams === 'number') {
+          setGpuLoadStreams(Math.max(1, Math.min(32, Math.round(settings.gpuStressStreams))));
+        }
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    window.electronAPI.listGpus?.().then((items) => setGpus(items ?? [])).catch(() => setGpus([]));
+  }, []);
+
+  useEffect(() => {
     setLicenseInput(licenseStatus?.activationCode ?? licenseStatus?.key ?? '');
     if (licenseStatus?.valid) setLicenseFeedback(null);
   }, [licenseStatus?.activationCode, licenseStatus?.key, licenseStatus?.valid]);
+
+  useEffect(() => {
+    const openPerformance = () => {
+      setActiveTopic('workflow');
+      window.setTimeout(() => {
+        performanceSectionRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      }, 80);
+    };
+    window.addEventListener(OPEN_PERFORMANCE_EVENT, openPerformance);
+    return () => window.removeEventListener(OPEN_PERFORMANCE_EVENT, openPerformance);
+  }, []);
 
   const set = <K extends string>(key: K, value: unknown) => {
     void window.electronAPI.setSettings({ [key]: value } as Record<string, unknown>);
@@ -287,6 +332,16 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     dispatch({ type: 'SET_PERFORMANCE_OPTION', key, value });
     void window.electronAPI.setSettings({ [key]: value });
   };
+  const handleGpuDevice = async (deviceId: number) => {
+    const next = Number.isFinite(deviceId) ? Math.max(-1, Math.round(deviceId)) : -1;
+    dispatch({ type: 'SET_GPU_DEVICE_ID', deviceId: next });
+    await window.electronAPI.setSettings({ gpuDeviceId: next });
+    setDiagResult(next >= 0 ? `DirectML will use GPU adapter ${next} after the face engine reloads.` : 'DirectML will use the Windows default GPU after reload.');
+  };
+  const handleWhiteBalance = (temperature: number, tint: number) => {
+    dispatch({ type: 'SET_WHITE_BALANCE', temperature, tint });
+    window.electronAPI.setSettings({ whiteBalanceTemperature: temperature, whiteBalanceTint: tint });
+  };
   const handleRawPreviewQuality = (quality: number) => {
     dispatch({ type: 'SET_RAW_PREVIEW_QUALITY', quality });
     void window.electronAPI.setSettings({ rawPreviewQuality: quality });
@@ -298,6 +353,18 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const handleFastKeeperMode = (enabled: boolean) => {
     dispatch({ type: 'SET_FAST_KEEPER_MODE', enabled });
     void window.electronAPI.setSettings({ fastKeeperMode: enabled });
+  };
+  const handleCullConfidence = (confidence: CullConfidence) => {
+    dispatch({ type: 'SET_CULL_CONFIDENCE', confidence });
+    void window.electronAPI.setSettings({ cullConfidence: confidence });
+  };
+  const handleGroupPhotoEveryoneGood = (enabled: boolean) => {
+    dispatch({ type: 'SET_GROUP_PHOTO_EVERYONE_GOOD', enabled });
+    void window.electronAPI.setSettings({ groupPhotoEveryoneGood: enabled });
+  };
+  const handleKeeperQuota = (quota: KeeperQuota) => {
+    dispatch({ type: 'SET_KEEPER_QUOTA', quota });
+    void window.electronAPI.setSettings({ keeperQuota: quota });
   };
 
   // ── Keybind handlers ─────────────────────────────────────────────────────
@@ -336,9 +403,100 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     void window.electronAPI.setSettings({ metadataExport: { ...metadataExport, [flag]: value } });
   };
   const handleFaceConcurrency = (concurrency: number) => {
-    dispatch({ type: 'SET_FACE_CONCURRENCY', concurrency });
-    void window.electronAPI.setSettings({ faceConcurrency: concurrency });
-    void window.electronAPI.setFaceAnalysisConcurrency?.(concurrency);
+    const next = Math.max(1, Math.min(32, Math.round(concurrency)));
+    dispatch({ type: 'SET_FACE_CONCURRENCY', concurrency: next });
+    void window.electronAPI.setSettings({ faceConcurrency: next });
+    void window.electronAPI.setFaceAnalysisConcurrency?.(next);
+  };
+
+  const handleGpuLoadStreams = (streams: number) => {
+    const next = Math.max(1, Math.min(32, Math.round(streams)));
+    setGpuLoadStreams(next);
+    void window.electronAPI.setSettings({ gpuStressStreams: next });
+  };
+
+  const handlePreviewConcurrency = (concurrency: number) => {
+    const next = Math.max(1, Math.min(12, Math.round(concurrency)));
+    dispatch({ type: 'SET_PREVIEW_CONCURRENCY', concurrency: next });
+    void window.electronAPI.setSettings({ previewConcurrency: next });
+  };
+
+  const handleOptimizeForDevice = async () => {
+    setDiagnosing(true);
+    setDiagResult('Checking this device...');
+    try {
+      const [profile, diag] = await Promise.all([
+        window.electronAPI.getDeviceTier?.(),
+        window.electronAPI.diagnoseFaceEngine?.(),
+      ]);
+      if (!profile) {
+        setDiagResult('Could not read device profile.');
+        return;
+      }
+
+      const dmlModels = diag?.models?.filter((m) => m.provider === 'dml') ?? [];
+      const dmlActive = dmlModels.some((m) => m.model === 'detector' || m.model === 'embedder');
+      const avgDmlMs = dmlModels.length
+        ? dmlModels.reduce((sum, model) => sum + (model.avgInferenceMs ?? model.dmlAvgInferenceMs ?? 0), 0) / dmlModels.length
+        : undefined;
+      const cpuCores = profile.cpuCores;
+      const faceTarget = dmlActive
+        ? avgDmlMs !== undefined && avgDmlMs < 8
+          ? 24
+          : avgDmlMs !== undefined && avgDmlMs < 16
+            ? 16
+            : avgDmlMs !== undefined && avgDmlMs < 45
+              ? 12
+              : Math.min(8, Math.max(4, Math.floor(cpuCores / 2)))
+        : profile.tier === 'high'
+          ? Math.min(8, Math.max(3, Math.floor(cpuCores / 4)))
+          : profile.tier === 'balanced'
+            ? 2
+            : 1;
+      const previewTarget = profile.tier === 'high'
+        ? Math.min(8, Math.max(profile.previewConcurrency, 4))
+        : profile.previewConcurrency;
+      const rawQualityTarget = dmlActive && profile.tier === 'high'
+        ? Math.max(80, profile.rawPreviewQuality)
+        : profile.rawPreviewQuality;
+      const gpuStressStreamsTarget = dmlActive
+        ? avgDmlMs !== undefined && avgDmlMs < 5
+          ? 16
+          : 8
+        : 4;
+      const cpuOptimizationTarget = !dmlActive && profile.cpuOptimization;
+      const fastKeeperTarget = profile.tier === 'low' && !dmlActive;
+      const spec = `${profile.cpuCores} CPU threads, ${profile.totalMemGB}GB RAM, ${dmlActive ? `DirectML ${avgDmlMs !== undefined ? `${avgDmlMs.toFixed(1)}ms avg` : `(${dmlModels.map((m) => m.model).join('/')})`}` : 'CPU face analysis'}`;
+      const summary = `Recommended for ${spec}: face scans ${faceTarget}, GPU load streams ${gpuStressStreamsTarget}, preview workers ${previewTarget}, RAW quality ${rawQualityTarget}%, ${cpuOptimizationTarget ? 'CPU optimization on' : 'CPU optimization off'}, ${fastKeeperTarget ? 'Fast Keeper on' : 'Fast Keeper off'}.`;
+      setDiagResult(summary);
+
+      if (!window.confirm(`${summary}\n\nApply these settings now?`)) return;
+
+      dispatch({ type: 'SET_PERF_TIER', tier: profile.tier });
+      dispatch({ type: 'SET_PREVIEW_CONCURRENCY', concurrency: previewTarget });
+      dispatch({ type: 'SET_FACE_CONCURRENCY', concurrency: faceTarget });
+      dispatch({ type: 'SET_RAW_PREVIEW_QUALITY', quality: rawQualityTarget });
+      dispatch({ type: 'SET_FAST_KEEPER_MODE', enabled: fastKeeperTarget });
+      dispatch({ type: 'SET_PERFORMANCE_OPTION', key: 'cpuOptimization', value: cpuOptimizationTarget });
+      dispatch({ type: 'SET_PERFORMANCE_OPTION', key: 'gpuFaceAcceleration', value: dmlActive || !!diag?.gpuAvailable });
+      setGpuLoadStreams(gpuStressStreamsTarget);
+      await window.electronAPI.setSettings({
+        perfTier: profile.tier,
+        previewConcurrency: previewTarget,
+        faceConcurrency: faceTarget,
+        gpuStressStreams: gpuStressStreamsTarget,
+        rawPreviewQuality: rawQualityTarget,
+        fastKeeperMode: fastKeeperTarget,
+        cpuOptimization: cpuOptimizationTarget,
+        gpuFaceAcceleration: dmlActive || !!diag?.gpuAvailable,
+      });
+      await window.electronAPI.setFaceAnalysisConcurrency?.(faceTarget);
+      setDiagResult(`${summary} Applied.`);
+    } catch (e) {
+      setDiagResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setDiagnosing(false);
+    }
   };
 
   const handleDiagnose = async () => {
@@ -348,12 +506,36 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
       const r = await window.electronAPI.diagnoseFaceEngine?.();
       if (r) {
         setDiagResult(
-          `EP: ${r.ep ?? 'unknown'} | GPU: ${r.gpuAvailable ? 'yes' : 'no'} | ` +
-          `Inference: ${r.avgInferenceMs.toFixed(0)}ms/img | Session load: ${r.sessionLoadMs}ms`
+          `${r.models?.length
+            ? r.models.map((m) => `${m.model}:${m.provider}${m.deviceId !== undefined ? `#${m.deviceId}` : ''}${m.avgInferenceMs ? ` ${m.avgInferenceMs.toFixed(0)}ms` : ''}`).join(' | ')
+            : `EP: ${r.ep ?? 'unknown'}`} | GPU: ${r.gpuAvailable ? 'yes' : 'no'} | ` +
+          `Detector check: ${r.avgInferenceMs.toFixed(0)}ms | Session load: ${r.sessionLoadMs}ms`
         );
       }
     } catch (e) {
       setDiagResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setDiagnosing(false);
+    }
+  };
+
+  const handleGpuStressTest = async () => {
+    setDiagnosing(true);
+    setDiagResult(`Running an 8 second DirectML load test with ${gpuLoadStreams} streams. Watch Task Manager > GPU > Compute.`);
+    try {
+      const r = await window.electronAPI.stressTestFaceGpu?.(8000, gpuLoadStreams);
+      if (!r) return;
+      const active = r.models
+        ?.filter((m) => m.provider === 'dml')
+        .map((m) => `${m.model}${m.deviceId !== undefined ? `#${m.deviceId}` : ''}`)
+        .join('/');
+      setDiagResult(
+        `Load test ${r.ep ?? 'unknown'}${active ? ` (${active})` : ''}, ${r.streams} streams: ${r.totalRuns} runs in ${(r.durationMs / 1000).toFixed(1)}s, ` +
+        `${r.runsPerSecond}/s. Detector ${r.detectorAvgMs.toFixed(2)}ms, embedder ${r.embedderAvgMs.toFixed(2)}ms. ` +
+        'If Task Manager is quiet, switch the graph to Compute_0/Compute_1 or CUDA/DirectML.'
+      );
+    } catch (e) {
+      setDiagResult(`Load test error: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setDiagnosing(false);
     }
@@ -857,7 +1039,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
               {updateState.status === 'available' && updateState.latestVersion && (
                 <div className="rounded border border-emerald-500/25 bg-emerald-500/8 px-3 py-2 text-[10px] text-emerald-200">
                   <div className="font-medium text-emerald-100">New installer ready</div>
-                  <div className="mt-1">Photo Importer {updateState.latestVersion} is available. Use the installer button below to replace your current {updateState.currentVersion} build.</div>
+                  <div className="mt-1">Keptra {updateState.latestVersion} is available. Use the installer button below to replace your current {updateState.currentVersion} build.</div>
                 </div>
               )}
               <div className="flex items-center gap-2">
@@ -1174,7 +1356,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                 <input
                   value={ftpDestConfig.remotePath}
                   onChange={(e) => handleFtpDestConfig({ remotePath: e.target.value })}
-                  placeholder="/PhotoImporter"
+                  placeholder="/Keptra"
                   className="w-full px-2 py-1 text-xs font-mono bg-surface-raised border border-border rounded text-text placeholder-text-muted focus:border-text focus:outline-none"
                 />
                 <label className="flex items-center gap-2 cursor-pointer">
@@ -1433,6 +1615,59 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                 </div>
               </div>
             )}
+          </section>
+
+          <section>
+            <h3 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-2">White Balance</h3>
+            <div className={`space-y-2 ${saveFormat === 'original' ? 'opacity-55' : ''}`}>
+              <div>
+                <div className="flex items-center justify-between mb-0.5">
+                  <span className="text-[10px] text-text-secondary">Temperature</span>
+                  <span className="text-[10px] text-text-secondary font-mono">{formatWhiteBalanceKelvin(wbTemperature)}</span>
+                </div>
+                <input
+                  type="range"
+                  min={WHITE_BALANCE_MIN_KELVIN}
+                  max={WHITE_BALANCE_MAX_KELVIN}
+                  step={50}
+                  value={wbKelvin}
+                  disabled={saveFormat === 'original'}
+                  onChange={(e) => handleWhiteBalance(kelvinToWhiteBalanceTemperature(Number(e.target.value)), wbTint)}
+                  className="w-full h-1 bg-surface-raised rounded appearance-none cursor-pointer accent-cyan-300 disabled:cursor-not-allowed"
+                />
+              </div>
+              <div>
+                <div className="flex items-center justify-between mb-0.5">
+                  <span className="text-[10px] text-text-secondary">Tint</span>
+                  <span className="text-[10px] text-text-secondary font-mono">{wbTint > 0 ? '+' : ''}{wbTint}</span>
+                </div>
+                <input
+                  type="range"
+                  min={-100}
+                  max={100}
+                  step={5}
+                  value={wbTint}
+                  disabled={saveFormat === 'original'}
+                  onChange={(e) => handleWhiteBalance(wbTemperature, Number(e.target.value))}
+                  className="w-full h-1 bg-surface-raised rounded appearance-none cursor-pointer accent-cyan-300 disabled:cursor-not-allowed"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={saveFormat === 'original'}
+                  onClick={() => handleWhiteBalance(0, 0)}
+                  className="rounded border border-surface-border px-2 py-1 text-[10px] text-text-secondary transition-colors hover:border-text-secondary hover:text-text disabled:opacity-50"
+                >
+                  Reset WB
+                </button>
+                <span className="text-[10px] text-text-muted">
+                  {saveFormat === 'original'
+                    ? 'Kelvin WB preview/export needs JPEG, TIFF, or HEIC output.'
+                    : 'Applies as bulk Kelvin-style WB to converted outputs and previews.'}
+                </span>
+              </div>
+            </div>
           </section>
 
           <section>
@@ -1729,6 +1964,59 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
 
           {activeTopic === 'workflow' && (
           <section>
+            <h3 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-2">Auto-cull decisions</h3>
+            <div className="mb-3 rounded border border-border bg-surface-alt px-2 py-2">
+              <div className="mb-2">
+                <span className="text-[10px] text-text-secondary block mb-1">Cull confidence</span>
+                <div className="flex flex-wrap gap-1">
+                  {(['conservative', 'balanced', 'aggressive'] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => handleCullConfidence(mode)}
+                      className={`px-2 py-0.5 text-[10px] rounded border transition-colors ${cullConfidence === mode ? 'bg-accent text-white border-accent' : 'bg-surface-raised border-surface-border text-text-secondary hover:text-text'}`}
+                      title={
+                        mode === 'conservative'
+                          ? 'Only reject obvious losers.'
+                          : mode === 'aggressive'
+                            ? 'Reject more burst duplicates automatically.'
+                            : 'Balanced automatic review.'
+                      }
+                    >
+                      {mode.charAt(0).toUpperCase() + mode.slice(1)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <label className="flex items-center gap-2 cursor-pointer mb-2">
+                <input
+                  type="checkbox"
+                  checked={groupPhotoEveryoneGood}
+                  onChange={(e) => handleGroupPhotoEveryoneGood(e.target.checked)}
+                />
+                <span className="text-xs text-text">Group photo: everyone good</span>
+              </label>
+              <p className="text-[10px] text-text-muted mb-2 ml-5">
+                Prefers frames with the most usable faces/people and treats blink or missing-face risk as a stronger reject reason.
+              </p>
+
+              <div>
+                <span className="text-[10px] text-text-secondary block mb-1">Keeper quota per burst</span>
+                <select
+                  value={keeperQuota}
+                  onChange={(e) => handleKeeperQuota(e.target.value as KeeperQuota)}
+                  className="w-full rounded border border-border bg-surface-raised px-2 py-1 text-[11px] text-text focus:border-text focus:outline-none"
+                >
+                  <option value="best-1">Keep 1 best</option>
+                  <option value="top-2">Keep top 2</option>
+                  <option value="all-rated">Keep all rated/protected</option>
+                  <option value="smile-and-sharp">Keep best smile + sharpest</option>
+                </select>
+              </div>
+            </div>
+
+            <div ref={performanceSectionRef} className="scroll-mt-16">
             <h3 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-2">Performance</h3>
 
             {/* Fast Keeper Mode */}
@@ -1796,13 +2084,102 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                 checked={gpuFaceAcceleration}
                 onChange={(e) => handlePerformanceOption('gpuFaceAcceleration', e.target.checked)}
               />
-              <span className="text-xs text-text">GPU face acceleration</span>
+              <span className="text-xs text-text">GPU face acceleration (DirectML)</span>
             </label>
             {gpuStatus !== null && (
               <p className="text-[10px] text-text-muted ml-5 mb-1">
-                {gpuStatus ? `Active (${executionProvider ?? 'GPU'})` : 'Not available on this machine — using CPU'}
+                {gpuStatus ? `Active (${executionProvider ?? 'GPU'})` : (executionProvider ? `CPU fallback (${executionProvider})` : 'Not available on this machine — using CPU')}
               </p>
             )}
+            <div className="mb-2 ml-5">
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <span className="text-[10px] text-text-secondary">DirectML GPU adapter</span>
+                <span className="text-[10px] font-mono text-text-muted">{gpuDeviceId >= 0 ? `#${gpuDeviceId}` : 'Auto'}</span>
+              </div>
+              <select
+                value={gpuDeviceId}
+                onChange={(e) => { void handleGpuDevice(Number(e.target.value)); }}
+                disabled={!gpuFaceAcceleration}
+                className="w-full rounded border border-border bg-surface-raised px-2 py-1 text-[11px] text-text focus:border-text focus:outline-none disabled:opacity-50"
+                title="DirectML adapter index. Auto uses Windows/driver default."
+              >
+                <option value={-1}>Auto - Windows default GPU</option>
+                {gpus.map((gpu) => (
+                  <option key={gpu.id} value={gpu.id}>
+                    #{gpu.id} {gpu.name}{gpu.videoMemoryMB ? ` (${Math.round(gpu.videoMemoryMB / 1024)}GB)` : ''}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-[10px] text-text-muted">
+                On dual-GPU laptops, pick the discrete GPU, then run Diagnose GPU. Adapter numbering follows Windows display order.
+              </p>
+            </div>
+
+            <div className="mb-2 rounded border border-border bg-surface-alt px-2 py-2">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  onClick={handleOptimizeForDevice}
+                  disabled={diagnosing}
+                  className="text-[10px] text-text-secondary border border-surface-border rounded px-2 py-1 hover:text-text hover:border-text-secondary transition-colors disabled:opacity-50"
+                >
+                  {diagnosing ? 'Testing device...' : 'Optimize settings'}
+                </button>
+                <button
+                  onClick={handleDiagnose}
+                  disabled={diagnosing}
+                  className="text-[10px] text-text-secondary border border-surface-border rounded px-2 py-1 hover:text-text hover:border-text-secondary transition-colors disabled:opacity-50"
+                >
+                  {diagnosing ? 'Running benchmark...' : 'Diagnose GPU'}
+                </button>
+                <button
+                  onClick={handleGpuStressTest}
+                  disabled={diagnosing}
+                  className="text-[10px] text-text-secondary border border-surface-border rounded px-2 py-1 hover:text-text hover:border-text-secondary transition-colors disabled:opacity-50"
+                  title="Runs detector/embedder continuously for 8 seconds so GPU Compute usage is easier to see."
+                >
+                  {diagnosing ? 'Testing...' : 'GPU load test'}
+                </button>
+              </div>
+              <p className="mt-1 text-[10px] text-text-muted">
+                Tests the face engine, reads this PC's CPU/RAM profile, then asks before applying recommended concurrency and preview settings. The load test is only for verification.
+              </p>
+              {diagResult && (
+                <p className="text-[10px] text-text-muted mt-1 font-mono leading-snug">{diagResult}</p>
+              )}
+            </div>
+
+            {/* GPU stress-test streams */}
+            <div className="mb-2">
+              <div className="flex items-center justify-between mb-0.5">
+                <span className="text-[10px] text-text-secondary">GPU load streams</span>
+                <span className="text-[10px] text-text-secondary font-mono">{gpuLoadStreams}</span>
+              </div>
+              <input
+                type="range"
+                min={1}
+                max={32}
+                step={1}
+                value={gpuLoadStreams}
+                onChange={(e) => handleGpuLoadStreams(Number(e.target.value))}
+                className="w-full h-1 bg-surface-raised rounded appearance-none cursor-pointer accent-accent"
+              />
+              <div className="mt-1 flex gap-1">
+                {[2, 4, 8, 12, 16, 24, 32].map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => handleGpuLoadStreams(value)}
+                    className={`rounded border px-1.5 py-0.5 text-[9px] transition-colors ${gpuLoadStreams === value ? 'border-accent bg-accent/20 text-accent' : 'border-border text-text-muted hover:text-text'}`}
+                    title={`Use ${value} parallel detector/embedder loops in the GPU load test`}
+                  >
+                    {value}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[10px] text-text-muted mt-0.5">
+                Raises only the diagnostic load test intensity. Real culling also waits on JPEG/RAW decode, crops, cache, disk, and CPU person checks, so 100% GPU is not always the fastest setting.
+              </p>
+            </div>
 
             {/* RAW preview cache */}
             <label className="flex items-center gap-2 cursor-pointer mb-2">
@@ -1814,6 +2191,24 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
               <span className="text-xs text-text">Cache RAW previews</span>
             </label>
 
+            {/* Preview concurrency */}
+            <div className="mb-2">
+              <div className="flex items-center justify-between mb-0.5">
+                <span className="text-[10px] text-text-secondary">Preview workers</span>
+                <span className="text-[10px] text-text-secondary font-mono">{previewConcurrency}</span>
+              </div>
+              <input
+                type="range"
+                min={1}
+                max={12}
+                step={1}
+                value={previewConcurrency}
+                onChange={(e) => handlePreviewConcurrency(Number(e.target.value))}
+                className="w-full h-1 bg-surface-raised rounded appearance-none cursor-pointer accent-accent"
+              />
+              <p className="text-[10px] text-text-muted mt-0.5">Controls thumbnail/full-preview prefetch. Higher helps fast SSDs and big CPUs.</p>
+            </div>
+
             {/* Face analysis concurrency */}
             <div className="mb-2">
               <div className="flex items-center justify-between mb-0.5">
@@ -1823,13 +2218,28 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
               <input
                 type="range"
                 min={1}
-                max={4}
+                max={32}
                 step={1}
                 value={faceConcurrency}
                 onChange={(e) => handleFaceConcurrency(Number(e.target.value))}
                 className="w-full h-1 bg-surface-raised rounded appearance-none cursor-pointer accent-accent"
               />
-              <p className="text-[10px] text-text-muted mt-0.5">Higher = faster scanning, but more CPU/GPU usage. Keep at 1 unless your machine is fast.</p>
+              <div className="mt-1 flex gap-1">
+                {[1, 4, 8, 12, 16, 24, 32].map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => handleFaceConcurrency(value)}
+                    className={`rounded border px-1.5 py-0.5 text-[9px] transition-colors ${faceConcurrency === value ? 'border-accent bg-accent/20 text-accent' : 'border-border text-text-muted hover:text-text'}`}
+                    title={`${value} simultaneous face analysis job${value === 1 ? '' : 's'}`}
+                  >
+                    {value}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[10px] text-text-muted mt-0.5">
+                Higher can push GPUs harder on large batches. Fast DirectML runs often like 16-24; use 32 only for stress testing if the UI stays smooth.
+              </p>
             </div>
 
             {/* Clear face cache */}
@@ -1844,18 +2254,12 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
               Forces re-analysis of all photos on next import. Use after swapping lenses or changing detection settings.
             </p>
 
-            {/* GPU Diagnose */}
-            <div className="mt-2">
-              <button
-                onClick={handleDiagnose}
-                disabled={diagnosing}
-                className="text-[10px] text-text-secondary border border-surface-border rounded px-2 py-1 hover:text-text hover:border-text-secondary transition-colors disabled:opacity-50"
-              >
-                {diagnosing ? 'Running benchmark…' : 'Diagnose GPU'}
-              </button>
-              {diagResult && (
-                <p className="text-[10px] text-text-muted mt-1 font-mono">{diagResult}</p>
-              )}
+            <div className="mt-2 rounded border border-border bg-surface-alt px-2 py-2">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-text-secondary">Performance help</p>
+              <p className="mt-1 text-[10px] text-text-muted">
+                Use Optimize settings first. RTX-class GPUs usually prefer 8-16 face scans; very fast systems can try 24. Laptops or older CPUs should stay at 1-4 or enable Fast Keeper Mode for huge imports.
+              </p>
+            </div>
             </div>
           </section>
           )}

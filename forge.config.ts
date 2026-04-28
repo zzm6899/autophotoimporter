@@ -31,7 +31,7 @@ const windowsIconPath = path.resolve(__dirname, 'assets/brand/icon.ico');
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
-    name: 'Photo Importer',
+    name: 'Keptra',
     icon: path.resolve(__dirname, 'assets/brand/icon'),
     extraResource: [
       // ONNX face models — loaded at runtime from process.resourcesPath/models
@@ -83,8 +83,8 @@ const config: ForgeConfig = {
     new MakerZIP({}, ['darwin']),
     // Windows — Squirrel installer (.exe) + portable ZIP fallback
     new MakerSquirrel({
-      name: 'photo-importer',
-      setupExe: 'PhotoImporter-Setup.exe',
+      name: 'keptra',
+      setupExe: 'Keptra-Setup.exe',
       iconUrl: 'https://raw.githubusercontent.com/zzm6899/importer/main/assets/brand/icon.ico',
       ...(fs.existsSync(windowsIconPath) ? { setupIcon: windowsIconPath } : {}),
       noMsi: true,

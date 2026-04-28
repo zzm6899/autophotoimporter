@@ -103,6 +103,13 @@ export function ImportSummary() {
           >
             Open Destination
           </button>
+          <button
+            onClick={handleOpenDestination}
+            className="flex-1 min-w-[9rem] py-2 rounded text-sm bg-surface-raised hover:bg-blue-500/10 text-blue-300 transition-colors"
+            title="Open the output folder. XMP sidecars, ratings, labels, keywords, GPS, and scene buckets are ready for Lightroom Classic import."
+          >
+            Lightroom Handoff
+          </button>
           {importResult.errors.length > 0 && (
             <button
               onClick={handleRetry}

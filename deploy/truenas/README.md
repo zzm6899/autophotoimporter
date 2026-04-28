@@ -71,8 +71,8 @@ node scripts/publish-update-release.mjs \
   --token "$UPDATE_ADMIN_API_TOKEN" \
   --version 1.1.1 \
   --platform windows \
-  --release-name "Photo Importer 1.1.1" \
-  --file ./out/make/squirrel.windows/x64/PhotoImporter-Setup.exe \
+  --release-name "Keptra 1.1.1" \
+  --file ./out/make/squirrel.windows/x64/Keptra-Setup.exe \
   --release-url https://admin.culler.z2hs.au/releases/1.1.1 \
   --notes "Improved culling and hosted updates" \
   --rollout live

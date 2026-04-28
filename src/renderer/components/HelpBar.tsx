@@ -23,6 +23,7 @@ export function HelpBar() {
   const dispatch = useAppDispatch();
   const { pauseScan, resumeScan } = useFileScanner();
   const [clearing, setClearing] = useState(false);
+  const [showAiStats, setShowAiStats] = useState(true);
 
   const picked = files.filter((f) => f.pick === 'selected').length;
   const rejected = files.filter((f) => f.pick === 'rejected').length;
@@ -62,7 +63,7 @@ export function HelpBar() {
           />
         </div>
       )}
-      {!isImporting && (showThumbnailProgress || showReviewProgress) && (
+      {!isImporting && showAiStats && (showThumbnailProgress || showReviewProgress) && (
         <div className="border-b border-border/60 bg-surface/70 px-3 py-1">
           <div className="flex items-center gap-3 text-[9px] text-text-faint">
             {showThumbnailProgress && (
@@ -87,6 +88,14 @@ export function HelpBar() {
                 </div>
               </div>
             )}
+            <button
+              type="button"
+              onClick={() => setShowAiStats(false)}
+              className="shrink-0 rounded px-1.5 py-0.5 text-text-faint transition-colors hover:bg-surface-raised hover:text-text-secondary"
+              title="Hide the thumbnail and AI progress strip"
+            >
+              x
+            </button>
           </div>
         </div>
       )}
@@ -149,6 +158,16 @@ export function HelpBar() {
             {faceGroups > 0 ? ` | groups ${faceGroups}` : ''}
             {blurRisk > 0 ? ` | blur ${blurRisk}` : ''}
           </span>
+        )}
+        {files.length > 0 && !showAiStats && (showThumbnailProgress || showReviewProgress) && (
+          <button
+            type="button"
+            onClick={() => setShowAiStats(true)}
+            className="shrink-0 rounded bg-surface-raised px-1.5 py-0.5 text-text-faint transition-colors hover:bg-border hover:text-text-secondary"
+            title="Show thumbnail and AI progress strip"
+          >
+            Stats
+          </button>
         )}
         {ftpSyncStatus.state === 'running' && (
           <span className="shrink-0 text-blue-300" title={ftpSyncStatus.message}>

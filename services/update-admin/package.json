@@ -2,7 +2,7 @@
   "name": "photo-importer-update-admin",
   "version": "1.0.0",
   "private": true,
-  "description": "Hosted update service and admin panel for Photo Importer",
+  "description": "Hosted update service and admin panel for Keptra",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

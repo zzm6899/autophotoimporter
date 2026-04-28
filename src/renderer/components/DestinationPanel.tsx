@@ -1,9 +1,10 @@
 import { useMemo, useEffect, useState } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import { useImport } from '../hooks/useImport';
-import type { SaveFormat, JobPreset } from '../../shared/types';
-import { FOLDER_PRESETS, resolvePattern } from '../../shared/types';
+import type { EventMode, SaveFormat, JobPreset } from '../../shared/types';
+import { EVENT_MODE_PRESETS, FOLDER_PRESETS, eventModeKeywords, resolvePattern } from '../../shared/types';
 import { formatSize } from '../utils/formatters';
+import { formatWhiteBalanceKelvin, kelvinToWhiteBalanceTemperature, WHITE_BALANCE_MAX_KELVIN, WHITE_BALANCE_MIN_KELVIN, whiteBalanceTemperatureToKelvin } from '../../shared/exposure';
 
 const FORMAT_EXT: Record<string, string> = {
   jpeg: '.jpg',
@@ -29,9 +30,10 @@ function applyFormat(destPath: string, format: SaveFormat): string {
 export function DestinationPanel() {
   const {
     destination, skipDuplicates, saveFormat, jpegQuality, folderPreset, customPattern,
-    files, phase, importProgress, selectedSource, selectedPaths, queuedPaths,
+    files, phase, importProgress, importResult, selectedSource, selectedPaths, queuedPaths,
     separateProtected, protectedFolderName, backupDestRoot, ftpDestEnabled, ftpDestConfig,
     metadataKeywords, metadataTitle, metadataCaption, watermarkEnabled, watermarkMode, watermarkText, watermarkImagePath, autoStraighten,
+    whiteBalanceTemperature, whiteBalanceTint, eventMode,
     licenseStatus,
   } = useAppState();
   const dispatch = useAppDispatch();
@@ -99,6 +101,20 @@ export function DestinationPanel() {
     window.electronAPI.setSettings({ [key]: value } as Record<string, unknown>);
   };
 
+  const handleWhiteBalance = (temperature: number, tint: number) => {
+    dispatch({ type: 'SET_WHITE_BALANCE', temperature, tint });
+    window.electronAPI.setSettings({ whiteBalanceTemperature: temperature, whiteBalanceTint: tint });
+  };
+
+  const handleOpenDestination = () => {
+    if (destination) void window.electronAPI.openPath(destination);
+  };
+
+  const handleEventMode = (mode: EventMode) => {
+    dispatch({ type: 'SET_EVENT_MODE', mode });
+    window.electronAPI.setSettings({ eventMode: mode });
+  };
+
   const handleFtpDestConfig = (config: Partial<typeof ftpDestConfig>) => {
     const next = { ...ftpDestConfig, ...config };
     dispatch({ type: 'SET_FTP_DEST_CONFIG', config });
@@ -116,6 +132,7 @@ export function DestinationPanel() {
     skipDuplicates,
     separateProtected,
     protectedFolderName,
+    eventMode,
   });
 
   const savePreset = () => {
@@ -138,6 +155,7 @@ export function DestinationPanel() {
     dispatch({ type: 'SET_SKIP_DUPLICATES', value: preset.skipDuplicates });
     dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'separateProtected', value: preset.separateProtected });
     dispatch({ type: 'SET_WORKFLOW_STRING', key: 'protectedFolderName', value: preset.protectedFolderName });
+    if (preset.eventMode) dispatch({ type: 'SET_EVENT_MODE', mode: preset.eventMode });
     window.electronAPI.setSettings({ ...preset, lastDestination: preset.destRoot });
   };
 
@@ -159,6 +177,10 @@ export function DestinationPanel() {
   const rejectedCount = files.filter((f) => f.pick === 'rejected').length;
   const protectedCount = files.filter((f) => f.isProtected).length;
   const adjustedCount = files.filter((f) => f.normalizeToAnchor || f.exposureAdjustmentStops).length;
+  const wbTemperature = whiteBalanceTemperature ?? 0;
+  const wbTint = whiteBalanceTint ?? 0;
+  const wbKelvin = whiteBalanceTemperatureToKelvin(wbTemperature);
+  const hasWhiteBalance = Math.abs(wbTemperature) >= 0.5 || Math.abs(wbTint) >= 0.5;
   const hasPicks = pickedCount > 0;
   const hasClickSelection = selectedPaths.length > 0;
   const hasQueue = queuedPaths.length > 0;
@@ -189,7 +211,21 @@ export function DestinationPanel() {
   const canImport = licenseValid && selectedSource && destination && ftpReady && importFiles.length > 0 && (phase === 'ready' || phase === 'scanning');
   const totalSize = importFiles.reduce((sum, f) => sum + f.size, 0);
   const exposureEditCount = importFiles.filter((f) => f.normalizeToAnchor || f.exposureAdjustmentStops).length;
+  const queuedRejectedCount = importFiles.filter((f) => f.pick === 'rejected').length;
+  const lowConfidenceCount = importFiles.filter((f) =>
+    f.type === 'photo' &&
+    (f.pick === 'selected' || queuedPaths.includes(f.path)) &&
+    (f.blurRisk === 'high' || (typeof f.reviewScore === 'number' && f.reviewScore < 58) || !f.reviewScore),
+  ).length;
+  const sceneLabels = [...new Set(importFiles.map((f) => f.sceneBucket).filter(Boolean) as string[])].sort();
+  const sceneCount = sceneLabels.length;
+  const sceneSummary = sceneLabels.length <= 2
+    ? sceneLabels.join(', ')
+    : `${sceneLabels.slice(0, 2).join(', ')} +${sceneLabels.length - 2}`;
+  const locationCount = new Set(importFiles.map((f) => f.locationName).filter(Boolean)).size;
   const metadataCount = metadataKeywords.split(/[\n,;]+/).map((value) => value.trim()).filter(Boolean).length;
+  const activeEventMode = EVENT_MODE_PRESETS[eventMode] ?? EVENT_MODE_PRESETS.general;
+  const activeEventKeywords = eventModeKeywords(eventMode);
   const backupSameAsPrimary = !!backupDestRoot && !!destination && backupDestRoot === destination;
   const hasRenderableWatermark = watermarkEnabled && (
     (watermarkMode === 'image' && watermarkImagePath.trim()) ||
@@ -303,6 +339,33 @@ export function DestinationPanel() {
           <div className="bg-surface-raised rounded px-1.5 py-1">Queued <span className="text-emerald-400">{queuedPaths.length}</span></div>
         </div>
       )}
+
+      <div className="px-2.5 mb-2.5">
+        <div className="rounded border border-border bg-surface-alt px-2 py-2">
+          <div className="flex items-center justify-between gap-2 mb-1">
+            <h3 className="text-[10px] text-text-secondary uppercase tracking-wider">Session type</h3>
+            <span className="text-[9px] text-text-muted">Lightroom XMP</span>
+          </div>
+          <select
+            value={eventMode}
+            onChange={(e) => handleEventMode(e.target.value as EventMode)}
+            className="w-full px-1.5 py-1 text-[11px] bg-surface-raised border border-border rounded text-text focus:border-text focus:outline-none appearance-none cursor-pointer"
+            title={activeEventMode.help}
+          >
+            {Object.entries(EVENT_MODE_PRESETS).map(([key, preset]) => (
+              <option key={key} value={key}>{preset.label}</option>
+            ))}
+          </select>
+          <p className="text-[10px] text-text-muted mt-1">{activeEventMode.description}</p>
+          <div className="mt-1 flex flex-wrap gap-1">
+            {activeEventKeywords.slice(0, 5).map((keyword) => (
+              <span key={keyword} className="rounded bg-surface-raised px-1.5 py-0.5 text-[9px] text-text-secondary">
+                {keyword}
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
 
       {phase === 'importing' && (
         <div className="mx-2.5 mb-2.5 rounded border border-accent/30 bg-accent/10 px-2 py-1.5">
@@ -448,6 +511,61 @@ export function DestinationPanel() {
         )}
       </div>
 
+      {/* Lightroom-style batch transforms */}
+      <div className="px-2.5 mb-2.5">
+        <h3 className="text-[10px] text-text-secondary mb-1 uppercase tracking-wider">Transforms</h3>
+        <div className={`space-y-2 rounded border border-border bg-surface-alt px-2 py-2 ${saveFormat === 'original' ? 'opacity-60' : ''}`}>
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] text-text">Bulk white balance</span>
+            <button
+              type="button"
+              onClick={() => handleWhiteBalance(0, 0)}
+              disabled={!hasWhiteBalance}
+              className="px-1.5 py-0.5 text-[10px] rounded bg-surface-raised hover:bg-border text-text-secondary disabled:opacity-50"
+            >
+              Reset
+            </button>
+          </div>
+          <div>
+            <div className="flex items-center justify-between mb-0.5">
+              <span className="text-[10px] text-text-secondary">Temperature</span>
+              <span className="text-[10px] text-text-secondary font-mono">{formatWhiteBalanceKelvin(wbTemperature)}</span>
+            </div>
+            <input
+              type="range"
+              min={WHITE_BALANCE_MIN_KELVIN}
+              max={WHITE_BALANCE_MAX_KELVIN}
+              step={50}
+              value={wbKelvin}
+              disabled={saveFormat === 'original'}
+              onChange={(e) => handleWhiteBalance(kelvinToWhiteBalanceTemperature(Number(e.target.value)), wbTint)}
+              className="w-full h-1 bg-surface-raised rounded appearance-none cursor-pointer accent-accent disabled:cursor-not-allowed"
+            />
+          </div>
+          <div>
+            <div className="flex items-center justify-between mb-0.5">
+              <span className="text-[10px] text-text-secondary">Tint</span>
+              <span className="text-[10px] text-text-secondary font-mono">{wbTint > 0 ? '+' : ''}{wbTint}</span>
+            </div>
+            <input
+              type="range"
+              min={-100}
+              max={100}
+              step={5}
+              value={wbTint}
+              disabled={saveFormat === 'original'}
+              onChange={(e) => handleWhiteBalance(wbTemperature, Number(e.target.value))}
+              className="w-full h-1 bg-surface-raised rounded appearance-none cursor-pointer accent-accent disabled:cursor-not-allowed"
+            />
+          </div>
+          <p className="text-[10px] text-text-muted">
+            {saveFormat === 'original'
+              ? 'White balance needs JPEG/TIFF/HEIC output.'
+              : 'Applied in the same output pass as exposure normalization.'}
+          </p>
+        </div>
+      </div>
+
       {/* Advanced workflow options — collapsed by default so the panel
           stays calm for casual users */}
       <div className="px-2.5 mb-2.5">
@@ -530,7 +648,7 @@ export function DestinationPanel() {
                   <input
                     value={ftpDestConfig.remotePath}
                     onChange={(e) => handleFtpDestConfig({ remotePath: e.target.value })}
-                    placeholder="/PhotoImporter"
+                    placeholder="/Keptra"
                     className="w-full px-1.5 py-1 text-[11px] font-mono bg-surface-raised border border-border rounded text-text placeholder-text-muted focus:border-text focus:outline-none"
                   />
                   <label className="flex items-center gap-1.5 cursor-pointer">
@@ -599,6 +717,9 @@ export function DestinationPanel() {
             {(hasRenderableWatermark || autoStraighten) && saveFormat === 'original' && (
               <div className="text-[10px] text-yellow-500">Watermark and auto-straighten need JPEG/TIFF/HEIC output.</div>
             )}
+            {hasWhiteBalance && saveFormat === 'original' && (
+              <div className="text-[10px] text-yellow-500">White balance needs JPEG/TIFF/HEIC output.</div>
+            )}
             {backupSameAsPrimary && (
               <div className="text-[10px] text-red-400">Backup destination matches primary.</div>
             )}
@@ -610,6 +731,12 @@ export function DestinationPanel() {
             )}
             {ftpDestEnabled && ftpReady && (
               <div className="text-[10px] text-emerald-500">FTP upload enabled.</div>
+            )}
+            {queuedRejectedCount > 0 && (
+              <div className="text-[10px] text-yellow-500">QA: {queuedRejectedCount} rejected photo{queuedRejectedCount === 1 ? '' : 's'} still in this import set.</div>
+            )}
+            {lowConfidenceCount > 0 && (
+              <div className="text-[10px] text-yellow-500">QA: {lowConfidenceCount} queued keeper{lowConfidenceCount === 1 ? '' : 's'} need a second-pass check.</div>
             )}
             {!licenseValid && (
               <div className="text-[10px] text-red-400">Importing is locked until a valid Full access license is activated.</div>
@@ -628,11 +755,23 @@ export function DestinationPanel() {
             {(metadataCount > 0 || metadataTitle.trim() || metadataCaption.trim()) && (
               <span className="text-sky-300/80"> &middot; metadata</span>
             )}
+            {eventMode !== 'general' && (
+              <span className="text-violet-300/80"> &middot; {activeEventMode.label}</span>
+            )}
+            {sceneCount > 0 && (
+              <span className="text-blue-300/80" title={sceneLabels.join(', ')}> &middot; Scenes: {sceneSummary}</span>
+            )}
+            {locationCount > 0 && (
+              <span className="text-cyan-300/80"> &middot; GPS tags</span>
+            )}
             {hasRenderableWatermark && saveFormat !== 'original' && (
               <span className="text-orange-300/80"> &middot; watermark</span>
             )}
             {autoStraighten && saveFormat !== 'original' && (
               <span className="text-emerald-300/80"> &middot; upright</span>
+            )}
+            {hasWhiteBalance && saveFormat !== 'original' && (
+              <span className="text-cyan-300/80"> &middot; WB</span>
             )}
           </div>
         )}
@@ -675,6 +814,24 @@ export function DestinationPanel() {
           >
             Clear Queue
           </button>
+        )}
+        {phase === 'complete' && importResult && destination && (
+          <div className="mt-2 grid grid-cols-2 gap-1">
+            <button
+              onClick={handleOpenDestination}
+              className="py-1 rounded text-[10px] bg-surface-raised hover:bg-border text-text-secondary transition-colors"
+              title="Open the output folder."
+            >
+              Open Folder
+            </button>
+            <button
+              onClick={handleOpenDestination}
+              className="py-1 rounded text-[10px] bg-surface-raised hover:bg-border text-text-secondary transition-colors"
+              title="Open the output folder with XMP sidecars ready for Lightroom Classic import."
+            >
+              Lightroom Handoff
+            </button>
+          </div>
         )}
       </div>
     </div>

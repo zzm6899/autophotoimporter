@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-Successfully implemented **GPU acceleration** for ONNX Runtime face recognition in Photo Importer. The implementation adds transparent GPU support with automatic platform-specific provider selection and fallback to CPU, delivering **30–100× performance improvement** on GPU-enabled systems while maintaining full backward compatibility.
+Successfully implemented **GPU acceleration** for ONNX Runtime face recognition in Keptra. The implementation adds transparent GPU support with automatic platform-specific provider selection and fallback to CPU, delivering **30–100× performance improvement** on GPU-enabled systems while maintaining full backward compatibility.
 
 ---
 

@@ -135,20 +135,70 @@ function modelPath(fileName: string): string {
 let detectorSession: any | null = null;
 let embedderSession: any | null = null;
 let personSession: any | null = null;
+let detectorInputName = 'input';
+let embedderInputName = 'input';
+let personInputName = 'image_tensor:0';
 let sessionLoadPromise: Promise<void> | null = null;
 let gpuAvailable: boolean | null = null;
-let actualExecutionProvider: string | null = null; // verified after first inference
+let actualExecutionProvider: string | null = null; // legacy summary: mixed, dml, or cpu
+
+export type FaceModelKey = 'detector' | 'embedder' | 'person';
+
+export interface FaceProviderDiagnostic {
+  model: FaceModelKey;
+  provider: string;
+  inputName?: string;
+  loadMs?: number;
+  avgInferenceMs?: number;
+  cpuAvgInferenceMs?: number;
+  dmlAvgInferenceMs?: number;
+  deviceId?: number;
+  fallbackReason?: string;
+}
+
+const providerDiagnostics: Record<FaceModelKey, FaceProviderDiagnostic> = {
+  detector: { model: 'detector', provider: 'cpu' },
+  embedder: { model: 'embedder', provider: 'cpu' },
+  person: { model: 'person', provider: 'cpu' },
+};
 
 // Settings-driven configuration
 let gpuFaceAccelerationEnabled = true;  // Can be disabled by user
 let cpuOptimizationMode = false;        // Lighter models for older CPUs
+let faceEmbeddingLimit = 8;
+let highThroughputFaceMode = false;
+let dmlDeviceId: number | undefined;
 
 export function configureGpuAcceleration(enabled: boolean): void {
+  const changed = gpuFaceAccelerationEnabled !== enabled;
   gpuFaceAccelerationEnabled = enabled;
+  if (changed && sessionLoadPromise) void disposeFaceEngine().catch(() => undefined);
+}
+
+export function configureGpuDevice(deviceId?: number): void {
+  const normalized = typeof deviceId === 'number' && Number.isFinite(deviceId) && deviceId >= 0
+    ? Math.round(deviceId)
+    : undefined;
+  const changed = dmlDeviceId !== normalized;
+  dmlDeviceId = normalized;
+  if (changed && sessionLoadPromise) void disposeFaceEngine().catch(() => undefined);
 }
 
 export function configureCpuOptimization(enabled: boolean): void {
+  const changed = cpuOptimizationMode !== enabled;
   cpuOptimizationMode = enabled;
+  if (changed && sessionLoadPromise) void disposeFaceEngine().catch(() => undefined);
+}
+
+export function configureFaceThroughput(concurrency: number): void {
+  const slots = Math.max(1, Math.min(32, Math.round(concurrency)));
+  highThroughputFaceMode = slots >= 8;
+  // Embedding every face in a crowded sports/event frame is the hidden cost:
+  // crop+resize+GPU dispatch dominates far more than the warm 3 ms model time.
+  // Keep all boxes for UI, but cap embeddings to the strongest faces for
+  // grouping. This keeps similar-face grouping useful without turning a
+  // 15-face crowd shot into 15 extra DML runs.
+  faceEmbeddingLimit = slots >= 16 ? 6 : slots >= 8 ? 8 : 10;
 }
 
 /**
@@ -157,11 +207,164 @@ export function configureCpuOptimization(enabled: boolean): void {
  * Caches result so we don't repeatedly probe unavailable GPUs.
  */
 function getExecutionProviders(): string[] {
-  // UltraFace (RFB-640) and MobileFaceNet ops don't fully fuse on DML/CoreML —
-  // unsupported ops fall back through a slow CPU<->GPU copy loop making DML ~4x
-  // SLOWER than optimised CPU (measured: 684ms/img DML vs ~180ms CPU on RTX 4070).
-  // Always use CPU with ORT's full graph optimisation for these models.
+  if (process.platform === 'win32' && gpuFaceAccelerationEnabled) return ['dml', 'cpu'];
   return ['cpu'];
+}
+
+function sessionOptions(provider: 'cpu' | 'dml', cpuCount: number): Record<string, unknown> {
+  return {
+    executionProviders: provider === 'dml'
+      ? [{ name: 'dml', ...(dmlDeviceId !== undefined ? { deviceId: dmlDeviceId } : {}) }]
+      : [provider],
+    graphOptimizationLevel: cpuOptimizationMode ? 'basic' : 'all',
+    intraOpNumThreads: provider === 'cpu'
+      ? (cpuOptimizationMode ? 2 : Math.min(cpuCount, 6))
+      : 1,
+    interOpNumThreads: 1,
+    logSeverityLevel: 3,
+  };
+}
+
+function warmupTensorSpec(model: FaceModelKey): { type: string; dims: number[] } {
+  switch (model) {
+    case 'embedder':
+      return { type: 'float32', dims: [1, 3, EMBED_H, EMBED_W] };
+    case 'person':
+      return { type: 'uint8', dims: [1, 320, 320, 3] };
+    case 'detector':
+    default:
+      return { type: 'float32', dims: [1, 3, DETECTOR_H, DETECTOR_W] };
+  }
+}
+
+function makeWarmupTensor(runtime: OrtModule, model: FaceModelKey): any {
+  const spec = warmupTensorSpec(model);
+  const size = spec.dims.reduce((product, value) => product * value, 1);
+  const data = spec.type === 'uint8' ? new Uint8Array(size) : new Float32Array(size);
+  return new runtime.Tensor(spec.type, data, spec.dims);
+}
+
+async function warmBenchmarkSession(
+  runtime: OrtModule,
+  model: FaceModelKey,
+  session: any,
+  iterations = 6,
+): Promise<number> {
+  const inputName = session.inputNames?.[0];
+  if (!inputName) throw new Error(`${model} session has no input name`);
+  const tensor = makeWarmupTensor(runtime, model);
+  const times: number[] = [];
+  for (let i = 0; i < iterations; i++) {
+    const t = performance.now();
+    await session.run({ [inputName]: tensor });
+    times.push(performance.now() - t);
+  }
+  const warm = times.slice(Math.min(2, Math.max(0, times.length - 1)));
+  return warm.reduce((sum, value) => sum + value, 0) / Math.max(1, warm.length);
+}
+
+export function choosePreferredProvider(input: {
+  model: FaceModelKey;
+  gpuEnabled: boolean;
+  platform: NodeJS.Platform | string;
+  cpuAvgMs?: number;
+  dmlAvgMs?: number;
+  dmlError?: string;
+}): { provider: 'cpu' | 'dml'; fallbackReason?: string } {
+  if (input.model === 'person') {
+    return { provider: 'cpu', fallbackReason: 'person detector is faster and more stable on CPU' };
+  }
+  if (!input.gpuEnabled) return { provider: 'cpu', fallbackReason: 'GPU acceleration disabled' };
+  if (input.platform !== 'win32') return { provider: 'cpu', fallbackReason: 'DirectML is only enabled on Windows' };
+  if (input.dmlError) return { provider: 'cpu', fallbackReason: input.dmlError };
+  if (typeof input.dmlAvgMs !== 'number') return { provider: 'cpu', fallbackReason: 'DirectML benchmark unavailable' };
+  if (typeof input.cpuAvgMs !== 'number') return { provider: 'dml' };
+  return input.dmlAvgMs < input.cpuAvgMs * 0.95
+    ? { provider: 'dml' }
+    : { provider: 'cpu', fallbackReason: `DirectML benchmark ${input.dmlAvgMs.toFixed(1)}ms was not faster than CPU ${input.cpuAvgMs.toFixed(1)}ms` };
+}
+
+async function createBenchmarkedSession(
+  runtime: OrtModule,
+  model: FaceModelKey,
+  modelFilePath: string,
+  cpuCount: number,
+): Promise<{ session: any; inputName: string; diagnostic: FaceProviderDiagnostic }> {
+  const cpuStart = Date.now();
+  const cpuSession = await runtime.InferenceSession.create(modelFilePath, sessionOptions('cpu', cpuCount));
+  const cpuLoadMs = Date.now() - cpuStart;
+  const cpuAvgInferenceMs = await warmBenchmarkSession(runtime, model, cpuSession);
+  const diagnostic: FaceProviderDiagnostic = {
+    model,
+    provider: 'cpu',
+    inputName: cpuSession.inputNames?.[0],
+    loadMs: cpuLoadMs,
+    avgInferenceMs: cpuAvgInferenceMs,
+    cpuAvgInferenceMs,
+  };
+
+  const providers = getExecutionProviders();
+  if (!providers.includes('dml') || model === 'person') {
+    const choice = choosePreferredProvider({
+      model,
+      gpuEnabled: gpuFaceAccelerationEnabled,
+      platform: process.platform,
+      cpuAvgMs: cpuAvgInferenceMs,
+    });
+    diagnostic.fallbackReason = choice.fallbackReason;
+    return { session: cpuSession, inputName: cpuSession.inputNames?.[0] ?? 'input', diagnostic };
+  }
+
+  let dmlSession: any | null = null;
+  let dmlLoadMs: number | undefined;
+  let dmlAvgInferenceMs: number | undefined;
+  let dmlError: string | undefined;
+  try {
+    const dmlStart = Date.now();
+    dmlSession = await runtime.InferenceSession.create(modelFilePath, sessionOptions('dml', cpuCount));
+    dmlLoadMs = Date.now() - dmlStart;
+    dmlAvgInferenceMs = await warmBenchmarkSession(runtime, model, dmlSession);
+  } catch (err) {
+    dmlError = err instanceof Error ? err.message : 'DirectML benchmark failed';
+  }
+
+  const choice = choosePreferredProvider({
+    model,
+    gpuEnabled: gpuFaceAccelerationEnabled,
+    platform: process.platform,
+    cpuAvgMs: cpuAvgInferenceMs,
+    dmlAvgMs: dmlAvgInferenceMs,
+    dmlError,
+  });
+
+  diagnostic.cpuAvgInferenceMs = cpuAvgInferenceMs;
+  diagnostic.dmlAvgInferenceMs = dmlAvgInferenceMs;
+
+  if (choice.provider === 'dml' && dmlSession) {
+    await cpuSession.release?.().catch(() => undefined);
+    return {
+      session: dmlSession,
+      inputName: dmlSession.inputNames?.[0] ?? 'input',
+      diagnostic: {
+        ...diagnostic,
+        provider: 'dml',
+        inputName: dmlSession.inputNames?.[0],
+        loadMs: dmlLoadMs,
+        avgInferenceMs: dmlAvgInferenceMs,
+        deviceId: dmlDeviceId,
+      },
+    };
+  }
+
+  await dmlSession?.release?.().catch(() => undefined);
+  return {
+    session: cpuSession,
+    inputName: cpuSession.inputNames?.[0] ?? 'input',
+    diagnostic: {
+      ...diagnostic,
+      fallbackReason: choice.fallbackReason ?? dmlError,
+    },
+  };
 }
 
 async function loadSessions(): Promise<void> {
@@ -171,31 +374,37 @@ async function loadSessions(): Promise<void> {
       const runtime = getOrt();
       const cpuCount = Math.max(2, require('os').cpus().length);
 
-      // CPU-optimised session options — 'all' graph optimisation fuses Conv+BN+ReLU
-      // chains for the best throughput on these small detection/embedding models.
-      const opts: Record<string, unknown> = {
-        executionProviders: ['cpu'],
-        graphOptimizationLevel: cpuOptimizationMode ? 'basic' : 'all',
-        intraOpNumThreads: cpuOptimizationMode ? 2 : Math.min(cpuCount, 6),
-        interOpNumThreads: 1,
-      };
-
       const [detPath, embPath, personPath] = [
         modelPath('version-RFB-640.onnx'),
         modelPath('w600k_mbf.onnx'),
         modelPath('ssd_mobilenet_v1_12.onnx'),
       ];
 
-      console.log('[face-engine] Loading sessions (CPU optimised, threads:', Math.min(cpuCount, 6), ')');
+      console.log('[face-engine] Loading sessions (providers:', getExecutionProviders().join(','), 'threads:', Math.min(cpuCount, 6), ')');
+      if (dmlDeviceId !== undefined && getExecutionProviders().includes('dml')) {
+        console.log(`[face-engine] DirectML adapter override: deviceId=${dmlDeviceId}`);
+      }
 
-      [detectorSession, embedderSession, personSession] = await Promise.all([
-        runtime.InferenceSession.create(detPath, opts),
-        runtime.InferenceSession.create(embPath, opts),
-        runtime.InferenceSession.create(personPath, opts),
+      const [detector, embedder, person] = await Promise.all([
+        createBenchmarkedSession(runtime, 'detector', detPath, cpuCount),
+        createBenchmarkedSession(runtime, 'embedder', embPath, cpuCount),
+        createBenchmarkedSession(runtime, 'person', personPath, cpuCount),
       ]);
-      gpuAvailable = false;
-      actualExecutionProvider = 'cpu';
-      console.log('[face-engine] Sessions loaded — EP: cpu');
+
+      detectorSession = detector.session;
+      detectorInputName = detector.inputName;
+      providerDiagnostics.detector = detector.diagnostic;
+      embedderSession = embedder.session;
+      embedderInputName = embedder.inputName;
+      providerDiagnostics.embedder = embedder.diagnostic;
+      personSession = person.session;
+      personInputName = person.inputName;
+      providerDiagnostics.person = person.diagnostic;
+
+      const providers = [detector.diagnostic.provider, embedder.diagnostic.provider, person.diagnostic.provider];
+      gpuAvailable = providers.includes('dml');
+      actualExecutionProvider = new Set(providers).size === 1 ? providers[0] : providers.join('+');
+      console.log('[face-engine] Sessions loaded - EP:', actualExecutionProvider, JSON.stringify(providerDiagnostics));
     } catch (e) {
       sessionLoadPromise = null;
       throw e;
@@ -209,6 +418,9 @@ export async function disposeFaceEngine(): Promise<void> {
   detectorSession = null;
   embedderSession = null;
   personSession = null;
+  detectorInputName = 'input';
+  embedderInputName = 'input';
+  personInputName = 'image_tensor:0';
   sessionLoadPromise = null;
   gpuAvailable = null;
   actualExecutionProvider = null;
@@ -237,6 +449,14 @@ export async function prewarmFaceEngine(): Promise<void> {
  */
 export function getActualExecutionProvider(): string | null {
   return actualExecutionProvider;
+}
+
+export function getFaceProviderDiagnostics(): FaceProviderDiagnostic[] {
+  return [
+    { ...providerDiagnostics.detector },
+    { ...providerDiagnostics.embedder },
+    { ...providerDiagnostics.person },
+  ];
 }
 
 // ---------------------------------------------------------------------------
@@ -279,6 +499,14 @@ async function loadNativeImageCached(imagePath: string): Promise<Electron.Native
 }
 
 async function loadNativeImage(imagePath: string): Promise<Electron.NativeImage> {
+  try {
+    const thumbnail = await nativeImage.createThumbnailFromPath(imagePath, { width: 1600, height: 1600 });
+    if (!thumbnail.isEmpty()) return thumbnail;
+  } catch {
+    // Fall back to the full decoder below. RAW files and some camera formats
+    // cannot be thumbnail-decoded by Electron directly.
+  }
+
   let img = nativeImage.createFromPath(imagePath);
   if (!img.isEmpty()) return img;
 
@@ -426,6 +654,16 @@ function nms(boxes: RawBox[]): RawBox[] {
   return kept;
 }
 
+function rankFacesForEmbedding(boxes: FaceBox[]): FaceBox[] {
+  return [...boxes].sort((a, b) => {
+    const aArea = a.width * a.height;
+    const bArea = b.width * b.height;
+    const aCenter = Math.hypot(a.x + a.width / 2 - 0.5, a.y + a.height / 2 - 0.45);
+    const bCenter = Math.hypot(b.x + b.width / 2 - 0.5, b.y + b.height / 2 - 0.45);
+    return (b.score * 2 + bArea * 8 - bCenter * 0.35) - (a.score * 2 + aArea * 8 - aCenter * 0.35);
+  });
+}
+
 async function detectFaces(imagePath: string, cachedImg?: Electron.NativeImage): Promise<FaceBox[]> {
   if (!detectorSession) throw new Error('Face engine not loaded');
 
@@ -435,7 +673,7 @@ async function detectFaces(imagePath: string, cachedImg?: Electron.NativeImage):
   const tensor = new (getOrt().Tensor)('float32', floats, [1, 3, height, width]);
 
   // UltraFace outputs: scores [1, N, 2], boxes [1, N, 4]
-  const feeds: Record<string, any> = { input: tensor };
+  const feeds: Record<string, any> = { [detectorInputName]: tensor };
   const result = await detectorSession.run(feeds);
 
   // Output names vary by export — try common variants
@@ -484,7 +722,7 @@ async function detectPersons(imagePath: string, cachedImg?: Electron.NativeImage
   const bitmap = (img.toBitmap?.() ?? img.getBitmap()) as unknown as Buffer;
   const input = pixelsToHWCUint8(bitmap, targetW, targetH);
   const tensor = new (getOrt().Tensor)('uint8', input, [1, targetH, targetW, 3]);
-  const result = await personSession.run({ 'image_tensor:0': tensor });
+  const result = await personSession.run({ [personInputName]: tensor });
 
   const countKey = Object.keys(result).find((k) => k.includes('num_detections')) ?? Object.keys(result)[0];
   const boxesKey = Object.keys(result).find((k) => k.includes('detection_boxes')) ?? Object.keys(result)[1];
@@ -553,7 +791,7 @@ async function embedFace(imagePath: string, box: FaceBox, cachedImg?: Electron.N
   const floats = pixelsToCHW(bitmap, EMBED_W, EMBED_H, EMB_MEAN, EMB_STD);
   const tensor = new (getOrt().Tensor)('float32', floats, [1, 3, EMBED_H, EMBED_W]);
 
-  const feeds: Record<string, any> = { input: tensor };
+  const feeds: Record<string, any> = { [embedderInputName]: tensor };
   const result = await embedderSession.run(feeds);
 
   // First (and only) output is the embedding vector
@@ -583,6 +821,9 @@ async function embedFace(imagePath: string, box: FaceBox, cachedImg?: Electron.N
  */
 let _analyzeCallCount = 0;
 let _analyzeTotalMs = 0;
+let _decodeTotalMs = 0;
+let _detectTotalMs = 0;
+let _embedTotalMs = 0;
 
 // Per-image inference timeout — if ONNX hangs (corrupt model, driver issue),
 // we reject after 30s so the semaphore slot is released and the loop recovers.
@@ -609,43 +850,59 @@ async function _analyzeFacesInner(imagePath: string): Promise<FaceAnalysisResult
   // Decode the image once — for RAW files this extracts the embedded JPEG preview.
   // We reuse the same nativeImage for detection, person detection, and embedding
   // so we don't re-read (and re-decode) the file multiple times.
+  const decodeStart = Date.now();
   const img = await loadNativeImageCached(imagePath);
+  const decodeMs = Date.now() - decodeStart;
 
-  // Run face detection and person detection in parallel — they use separate
-  // ONNX sessions (detectorSession vs personSession) with different model ops
-  // so they don't contend on the same execution unit. Parallel saves ~30ms/image.
-  const [boxes, personBoxes] = await Promise.all([
-    detectFaces(imagePath, img).catch(() => [] as FaceBox[]),
-    detectPersons(imagePath, img).catch(() => [] as FaceBox[]),
-  ]);
+  let boxes: FaceBox[] = [];
+  let personBoxes: FaceBox[] = [];
+  const detectStart = Date.now();
+  boxes = await detectFaces(imagePath, img).catch(() => [] as FaceBox[]);
+  const shouldRunPerson =
+    !highThroughputFaceMode ||
+    boxes.length === 0 ||
+    boxes.length === 1 && (boxes[0].width * boxes[0].height) < 0.012;
+  personBoxes = shouldRunPerson
+    ? await detectPersons(imagePath, img).catch(() => [] as FaceBox[])
+    : [];
+  const detectMs = Date.now() - detectStart;
 
-  if (boxes.length === 0) return { boxes, personBoxes, embeddings: [] };
+  const finishStats = (embedMs: number) => {
+    imageDecodeCache.delete(imagePath);
+    _analyzeCallCount++;
+    _decodeTotalMs += decodeMs;
+    _detectTotalMs += detectMs;
+    _embedTotalMs += embedMs;
+    _analyzeTotalMs += Date.now() - t0;
+    if (_analyzeCallCount % 10 === 0) {
+      const avg = (_analyzeTotalMs / _analyzeCallCount).toFixed(0);
+      const decodeAvg = (_decodeTotalMs / _analyzeCallCount).toFixed(0);
+      const detectAvg = (_detectTotalMs / _analyzeCallCount).toFixed(0);
+      const embedAvg = (_embedTotalMs / _analyzeCallCount).toFixed(0);
+      console.log(`[face-engine] EP:${actualExecutionProvider ?? '?'} avg=${avg}ms/img decode=${decodeAvg}ms detect=${detectAvg}ms embed=${embedAvg}ms over ${_analyzeCallCount} images`);
+    }
+  };
 
-  // Embed each detected face — capped at 8 to avoid unbounded inference time
-  // on crowd shots, but ALL detected boxes are returned so every face gets
-  // an overlay in the UI. Faces beyond the cap have no embedding entry.
-  const MAX_EMBEDDINGS = 8;
-  const facesToEmbed = boxes.slice(0, MAX_EMBEDDINGS);
+  if (boxes.length === 0) {
+    finishStats(0);
+    return { boxes, personBoxes, embeddings: [] };
+  }
+
+  // Embed detected faces with a cap that scales up on fast GPU/concurrency
+  // settings. All detected boxes are still returned for UI overlays.
+  const facesToEmbed = rankFacesForEmbedding(boxes).slice(0, faceEmbeddingLimit);
+  const embedStart = Date.now();
   const embeddings = await Promise.all(
     facesToEmbed.map((box) =>
       embedFace(imagePath, box, img).catch(() => new Float32Array(512)),
     ),
   );
+  const embedMs = Date.now() - embedStart;
 
-  // Clear cached decode now that all ONNX passes are done
-  imageDecodeCache.delete(imagePath);
+  finishStats(embedMs);
 
-  // Diagnostic timing — log every 10 images so we can see GPU vs CPU throughput
-  _analyzeCallCount++;
-  _analyzeTotalMs += Date.now() - t0;
-  if (_analyzeCallCount % 10 === 0) {
-    const avg = (_analyzeTotalMs / _analyzeCallCount).toFixed(0);
-    console.log(`[face-engine] EP:${actualExecutionProvider ?? '?'} avg=${avg}ms/img over ${_analyzeCallCount} images`);
-  }
-
-  // Return ALL detected boxes (not just facesToEmbed) so every face is visible
-  // in the UI. Embeddings array may be shorter — faces beyond MAX_EMBEDDINGS
-  // get no embedding but are still drawn as overlays.
+  // Return ALL detected boxes so every face is visible in the UI. Embeddings
+  // may be shorter when the per-image cap is hit.
   return { boxes, personBoxes, embeddings };
 }
 
@@ -660,6 +917,7 @@ export async function diagnoseFaceEngine(): Promise<{
   sessionLoadMs: number;
   platform: string;
   providers: string[];
+  models: FaceProviderDiagnostic[];
 }> {
   const t0 = Date.now();
   await loadSessions();
@@ -673,7 +931,7 @@ export async function diagnoseFaceEngine(): Promise<{
   const times: number[] = [];
   for (let i = 0; i < 5; i++) {
     const t = Date.now();
-    try { await detectorSession!.run({ input: tensor }); } catch { /* ignore */ }
+    try { await detectorSession!.run({ [detectorInputName]: tensor }); } catch { /* ignore */ }
     times.push(Date.now() - t);
   }
   const avgInferenceMs = times.reduce((a, b) => a + b, 0) / times.length;
@@ -688,6 +946,72 @@ export async function diagnoseFaceEngine(): Promise<{
     sessionLoadMs,
     platform: process.platform,
     providers,
+    models: getFaceProviderDiagnostics(),
+  };
+}
+
+export async function runFaceGpuStressTest(durationMs = 8000, streams = 8): Promise<{
+  ep: string | null;
+  gpuAvailable: boolean | null;
+  durationMs: number;
+  streams: number;
+  detectorRuns: number;
+  embedderRuns: number;
+  totalRuns: number;
+  runsPerSecond: number;
+  detectorAvgMs: number;
+  embedderAvgMs: number;
+  models: FaceProviderDiagnostic[];
+}> {
+  await loadSessions();
+  const runtime = getOrt();
+  const detectorTensor = makeWarmupTensor(runtime, 'detector');
+  const embedderTensor = makeWarmupTensor(runtime, 'embedder');
+  const boundedDurationMs = Math.max(2000, Math.min(30000, durationMs));
+  const streamCount = Math.max(1, Math.min(32, Math.round(streams)));
+  const startedAt = performance.now();
+  const targetEnd = startedAt + boundedDurationMs;
+  let detectorRuns = 0;
+  let embedderRuns = 0;
+  let detectorMs = 0;
+  let embedderMs = 0;
+
+  // Keep DML-backed sessions busy with independent loops. This is a
+  // verification tool, not the production pipeline, so it intentionally avoids
+  // decode/person/embedding-crop work and should show up under GPU Compute.
+  const loops = Array.from({ length: streamCount }, (_, index) => {
+    const runDetector = index % 2 === 0;
+    return (async () => {
+      while (performance.now() < targetEnd) {
+        const t = performance.now();
+        if (runDetector) {
+          await detectorSession!.run({ [detectorInputName]: detectorTensor });
+          detectorMs += performance.now() - t;
+          detectorRuns++;
+        } else {
+          await embedderSession!.run({ [embedderInputName]: embedderTensor });
+          embedderMs += performance.now() - t;
+          embedderRuns++;
+        }
+      }
+    })();
+  });
+  await Promise.all(loops);
+
+  const elapsed = Math.max(1, performance.now() - startedAt);
+  const totalRuns = detectorRuns + embedderRuns;
+  return {
+    ep: actualExecutionProvider,
+    gpuAvailable,
+    durationMs: elapsed,
+    streams: streamCount,
+    detectorRuns,
+    embedderRuns,
+    totalRuns,
+    runsPerSecond: Math.round((totalRuns / elapsed) * 1000),
+    detectorAvgMs: detectorRuns ? detectorMs / detectorRuns : 0,
+    embedderAvgMs: embedderRuns ? embedderMs / embedderRuns : 0,
+    models: getFaceProviderDiagnostics(),
   };
 }
 

@@ -2,7 +2,7 @@
 
 ## Summary
 
-Successfully implemented **GPU acceleration** for ONNX Runtime-based face recognition in Photo Importer. The system now automatically detects and uses GPU hardware when available, with a transparent fallback to CPU on incompatible systems.
+Successfully implemented **GPU acceleration** for ONNX Runtime-based face recognition in Keptra. The system now automatically detects and uses GPU hardware when available, with a transparent fallback to CPU on incompatible systems.
 
 **Expected Performance Improvement**: 30–100× faster face detection on GPU-enabled systems.
 

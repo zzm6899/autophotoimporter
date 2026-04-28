@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import { playCompletionSound } from '../utils/completionSound';
+import { eventModeKeywords } from '../../shared/types';
 
 let latestImportRunId = 0;
 
@@ -11,7 +12,8 @@ export function useImport() {
     separateProtected, protectedFolderName, backupDestRoot, ftpDestEnabled, ftpDestConfig,
     autoEject, playSoundOnComplete, completeSoundPath, openFolderOnComplete,
     verifyChecksums,
-    normalizeExposure, exposureAnchorPath, exposureMaxStops,
+    normalizeExposure, exposureAnchorPath, exposureMaxStops, whiteBalanceTemperature, whiteBalanceTint,
+    eventMode,
     metadataKeywords, metadataTitle, metadataCaption, metadataCreator, metadataCopyright,
     metadataExport,
     watermarkEnabled, watermarkMode, watermarkText, watermarkImagePath, watermarkOpacity, watermarkPositionLandscape, watermarkPositionPortrait, watermarkScale, autoStraighten,
@@ -81,10 +83,39 @@ export function useImport() {
           .filter((f) => (!importPathSet || importPathSet.has(f.path)) && typeof f.exposureAdjustmentStops === 'number' && Math.abs(f.exposureAdjustmentStops) >= 0.01)
           .map((f) => [f.path, f.exposureAdjustmentStops as number]))
       : {};
-    const metadataKeywordList = metadataKeywords
+    const wbTemperature = whiteBalanceTemperature ?? 0;
+    const wbTint = whiteBalanceTint ?? 0;
+    const whiteBalance = saveFormat !== 'original' && (Math.abs(wbTemperature) >= 0.5 || Math.abs(wbTint) >= 0.5)
+      ? { temperature: wbTemperature, tint: wbTint }
+      : undefined;
+    const whiteBalanceAdjustments = saveFormat !== 'original'
+      ? Object.fromEntries(files
+          .filter((f) => (!importPathSet || importPathSet.has(f.path)) && f.whiteBalanceAdjustment && (
+            Math.abs(f.whiteBalanceAdjustment.temperature) >= 0.5 ||
+            Math.abs(f.whiteBalanceAdjustment.tint) >= 0.5
+          ))
+          .map((f) => [f.path, f.whiteBalanceAdjustment!]))
+      : {};
+    const filesForImport = importPathSet
+      ? files.filter((f) => importPathSet.has(f.path))
+      : files.filter((f) => f.pick !== 'rejected' && (!skipDuplicates || !f.duplicate));
+    const smartKeywords = [
+      ...eventModeKeywords(eventMode),
+      ...(filesForImport.some((f) => (f.faceCount ?? 0) > 0) ? ['faces'] : []),
+      ...(filesForImport.some((f) => (f.personCount ?? 0) > 0) ? ['people'] : []),
+      ...(filesForImport.some((f) => f.type === 'video') ? ['video'] : []),
+      ...(filesForImport.some((f) => f.isProtected) ? ['protected selects'] : []),
+      ...(filesForImport.some((f) => f.visualGroupId || f.burstId) ? ['stacked selects'] : []),
+      ...(filesForImport.map((f) => f.sceneBucket).filter(Boolean) as string[]),
+      ...(filesForImport.map((f) => f.locationName).filter(Boolean) as string[]),
+    ];
+    const metadataKeywordList = [
+      ...metadataKeywords
       .split(/[\n,;]+/)
       .map((value) => value.trim())
-      .filter(Boolean);
+        .filter(Boolean),
+      ...smartKeywords,
+    ].filter((value, index, all) => value && all.findIndex((other) => other.toLowerCase() === value.toLowerCase()) === index);
 
     const runId = ++latestImportRunId;
     dispatch({ type: 'IMPORT_START' });
@@ -108,6 +139,8 @@ export function useImport() {
         exposureMaxStops,
         normalizeAnchorPaths: normalizeAnchorPaths.length > 0 ? normalizeAnchorPaths : undefined,
         exposureAdjustments: Object.keys(exposureAdjustments).length > 0 ? exposureAdjustments : undefined,
+        whiteBalance,
+        whiteBalanceAdjustments: Object.keys(whiteBalanceAdjustments).length > 0 ? whiteBalanceAdjustments : undefined,
         metadataExportFlags: metadataExport,
         metadata: metadataKeywordList.length > 0 || metadataTitle.trim() || metadataCaption.trim() || metadataCreator.trim() || metadataCopyright.trim()
           ? {
@@ -167,7 +200,7 @@ export function useImport() {
     separateProtected, protectedFolderName, backupDestRoot,
     ftpDestEnabled, ftpDestConfig,
     autoEject, playSoundOnComplete, completeSoundPath, openFolderOnComplete, verifyChecksums,
-    normalizeExposure, exposureAnchorPath, exposureMaxStops,
+    normalizeExposure, exposureAnchorPath, exposureMaxStops, whiteBalanceTemperature, whiteBalanceTint, eventMode,
     metadataKeywords, metadataTitle, metadataCaption, metadataCreator, metadataCopyright, metadataExport,
     watermarkEnabled, watermarkMode, watermarkText, watermarkImagePath, watermarkOpacity, watermarkPositionLandscape, watermarkPositionPortrait, watermarkScale, autoStraighten,
     licenseStatus,
