@@ -132,6 +132,7 @@ export type Action =
   | { type: 'IMPORT_COMPLETE'; result: ImportResult }
   | { type: 'DISMISS_SUMMARY' }
   | { type: 'SET_THUMBNAIL'; filePath: string; thumbnail: string }
+  | { type: 'SET_THUMBNAILS'; thumbnails: Record<string, string> }
   | { type: 'SET_DUPLICATE'; filePath: string }
   | { type: 'CLEAR_DUPLICATES' }
   | { type: 'SET_PICK'; filePath: string; pick: 'selected' | 'rejected' | undefined }
@@ -505,6 +506,17 @@ export function reducer(state: State, action: Action): State {
           f.path === action.filePath ? { ...f, thumbnail: action.thumbnail } : f,
         ),
       };
+    case 'SET_THUMBNAILS': {
+      const updates = action.thumbnails;
+      let changed = false;
+      const files = state.files.map((f) => {
+        const thumbnail = updates[f.path];
+        if (thumbnail === undefined || thumbnail === f.thumbnail) return f;
+        changed = true;
+        return { ...f, thumbnail };
+      });
+      return changed ? { ...state, files } : state;
+    }
     case 'SET_DUPLICATE':
       return {
         ...state,

@@ -10,6 +10,8 @@ export function useScanListeners() {
     protectedFolderName,
   } = useAppState();
   const dispatch = useAppDispatch();
+  const thumbnailBufferRef = useRef<Record<string, string>>({});
+  const thumbnailFlushTimerRef = useRef<number | null>(null);
 
   // Track whether we're in an active scan at the listener layer.
   // This ref stays in sync with the phase state and lets the onScanComplete
@@ -20,6 +22,20 @@ export function useScanListeners() {
   }, [phase]);
 
   useEffect(() => {
+    const flushThumbnails = () => {
+      thumbnailFlushTimerRef.current = null;
+      const thumbnails = thumbnailBufferRef.current;
+      thumbnailBufferRef.current = {};
+      if (Object.keys(thumbnails).length > 0) {
+        dispatch({ type: 'SET_THUMBNAILS', thumbnails });
+      }
+    };
+
+    const scheduleThumbnailFlush = () => {
+      if (thumbnailFlushTimerRef.current !== null) return;
+      thumbnailFlushTimerRef.current = window.setTimeout(flushThumbnails, 50);
+    };
+
     const unsubBatch = window.electronAPI.onScanBatch((files) => {
       dispatch({ type: 'SCAN_BATCH', files });
     });
@@ -33,7 +49,8 @@ export function useScanListeners() {
     });
 
     const unsubThumb = window.electronAPI.onScanThumbnail((filePath, thumbnail) => {
-      dispatch({ type: 'SET_THUMBNAIL', filePath, thumbnail });
+      thumbnailBufferRef.current[filePath] = thumbnail;
+      scheduleThumbnailFlush();
     });
 
     const unsubDuplicate = window.electronAPI.onScanDuplicate((filePath) => {
@@ -45,6 +62,11 @@ export function useScanListeners() {
       unsubComplete();
       unsubThumb();
       unsubDuplicate();
+      if (thumbnailFlushTimerRef.current !== null) {
+        window.clearTimeout(thumbnailFlushTimerRef.current);
+        thumbnailFlushTimerRef.current = null;
+      }
+      flushThumbnails();
     };
   }, [dispatch]);
 

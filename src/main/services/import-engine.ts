@@ -642,6 +642,13 @@ export async function importFiles(
     createdDirs.add(dirPath);
   }
 
+  function assertInside(root: string, target: string): void {
+    const relative = path.relative(path.resolve(root), path.resolve(target));
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+      throw new Error('Destination path escapes the selected folder');
+    }
+  }
+
   async function importOne(file: MediaFile): Promise<void> {
     if (!file.destPath) {
       errors.push({ file: file.name, error: 'No destination path computed' });
@@ -653,6 +660,15 @@ export async function importFiles(
     const backupFullPath = config.backupDestRoot
       ? path.join(config.backupDestRoot, finalRelPath)
       : null;
+    try {
+      assertInside(config.destRoot, destFullPath);
+      if (backupFullPath && config.backupDestRoot) {
+        assertInside(config.backupDestRoot, backupFullPath);
+      }
+    } catch (err) {
+      errors.push({ file: file.name, error: err instanceof Error ? err.message : 'Destination path rejected' });
+      return;
+    }
 
     if (config.skipDuplicates) {
       const dup = await isDuplicate(config.destRoot, finalRelPath, file.size);

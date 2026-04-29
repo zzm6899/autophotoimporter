@@ -33,6 +33,12 @@ const MIN_ZOOM = 1;
 const MAX_ZOOM = 5;
 const ZOOM_STEP = 0.008;
 const RAW_EXT_RE = /\.(nef|nrw|cr2|cr3|arw|raf|rw2|orf|dng|pef|srw)$/i;
+const EV_PRESETS = [-1, -0.33, 0, 0.33, 1] as const;
+const WB_PRESETS = [
+  { label: 'Cool', kelvin: 4800, tint: -5 },
+  { label: 'Day', kelvin: 5600, tint: 0 },
+  { label: 'Warm', kelvin: 6500, tint: 5 },
+] as const;
 
 function isRawPhoto(file: MediaFile) {
   return file.type === 'photo' && RAW_EXT_RE.test(file.name || file.extension);
@@ -168,7 +174,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
       if (e.code === 'Space') {
         e.preventDefault();
         setHoldOriginal(true);
-      } else if (e.key.toLowerCase() === 'r') {
+      } else if (e.altKey && e.key.toLowerCase() === 'r') {
         e.preventDefault();
         setManualQuarterTurns((turns) => (turns + (e.shiftKey ? 3 : 1)) % 4);
       }
@@ -445,6 +451,11 @@ export function SingleView({ file, index, total }: SingleViewProps) {
   const currentPhotoTint = photoWhiteBalance?.tint ?? 0;
   const currentPhotoKelvin = whiteBalanceTemperatureToKelvin(currentPhotoTemp);
   const hasPhotoWhiteBalance = !!photoWhiteBalance;
+  const hasActiveEdits =
+    Math.abs(manualStops) >= 0.01 ||
+    file.normalizeToAnchor ||
+    hasPhotoWhiteBalance ||
+    previewNormalized;
   const setPhotoExposure = useCallback((stops: number) => {
     if (editDisabled) return;
     dispatch({
@@ -466,7 +477,13 @@ export function SingleView({ file, index, total }: SingleViewProps) {
     dispatch({ type: 'SET_EXPOSURE_ADJUSTMENT', filePaths: [file.path], stops: 0 });
     dispatch({ type: 'SET_NORMALIZE_TO_ANCHOR', filePaths: [file.path], value: false });
     dispatch({ type: 'SET_WHITE_BALANCE_ADJUSTMENT', filePaths: [file.path], temperature: 0, tint: 0 });
+    setPreviewNormalized(false);
   }, [dispatch, file.path]);
+  const applyAnchorMatch = useCallback(() => {
+    if (!canPreviewAdjust || editDisabled) return;
+    dispatch({ type: 'SET_NORMALIZE_TO_ANCHOR', filePaths: [file.path], value: true });
+    setPreviewNormalized(true);
+  }, [canPreviewAdjust, dispatch, editDisabled, file.path]);
 
   useEffect(() => {
     if (!imageSrc) {
@@ -474,27 +491,30 @@ export function SingleView({ file, index, total }: SingleViewProps) {
       return;
     }
     let cancelled = false;
-    const img = new Image();
-    img.decoding = 'async';
-    img.onload = () => {
-      if (cancelled) return;
-      const canvas = document.createElement('canvas');
-      const width = 96;
-      const height = 72;
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d', { willReadFrequently: true });
-      if (!ctx) return;
-      ctx.drawImage(img, 0, 0, width, height);
-      const data = ctx.getImageData(0, 0, width, height).data;
-      if (!cancelled) setClipping(estimateClippingPercent(data, brightnessMultiplier));
-    };
-    img.onerror = () => {
-      if (!cancelled) setClipping(null);
-    };
-    img.src = imageSrc;
+    const timer = window.setTimeout(() => {
+      const img = new Image();
+      img.decoding = 'async';
+      img.onload = () => {
+        if (cancelled) return;
+        const canvas = document.createElement('canvas');
+        const width = 96;
+        const height = 72;
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) return;
+        ctx.drawImage(img, 0, 0, width, height);
+        const data = ctx.getImageData(0, 0, width, height).data;
+        if (!cancelled) setClipping(estimateClippingPercent(data, brightnessMultiplier));
+      };
+      img.onerror = () => {
+        if (!cancelled) setClipping(null);
+      };
+      img.src = imageSrc;
+    }, 90);
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
   }, [imageSrc, brightnessMultiplier]);
 
@@ -698,14 +718,14 @@ export function SingleView({ file, index, total }: SingleViewProps) {
             type="button"
             onClick={() => setManualQuarterTurns((turns) => (turns + 1) % 4)}
             className="rounded bg-black/65 px-2 py-1 text-[10px] font-mono text-white/90 hover:bg-black/80"
-            title="Rotate this view 90 degrees. Shortcut: R, Shift+R."
+            title="Rotate this view 90 degrees. Shortcut: Alt+R, Alt+Shift+R."
           >
             rotate
           </button>
         </div>
       )}
 
-      {!isZoomed && imageSrc && <Histogram src={file.thumbnail || imageSrc} />}
+      {!isZoomed && imageSrc && <Histogram src={imageSrc} filter={imageFilter} />}
 
       {!isZoomed && (file.isProtected || (file.rating && file.rating > 0)) && (
         <div className="absolute top-3 left-3 flex items-center gap-1.5 z-20">
@@ -917,10 +937,35 @@ export function SingleView({ file, index, total }: SingleViewProps) {
       )}
 
       {!isZoomed && imageSrc && (
-        <div className="absolute bottom-12 right-3 z-20 w-[min(260px,42vw)] rounded border border-white/10 bg-black/60 p-2 text-white/90 shadow backdrop-blur-sm">
+        <div className="absolute bottom-14 right-3 z-20 w-[min(300px,calc(100vw-1.5rem))] max-w-[42rem] rounded border border-white/10 bg-black/60 p-2 text-white/90 shadow backdrop-blur-sm">
           <div className="mb-1.5 flex items-center justify-between gap-2">
-            <span className="text-[9px] font-semibold uppercase tracking-wider text-white/65">Photo edits</span>
+            <span className="text-[9px] font-semibold uppercase tracking-wider text-white/65">
+              Photo edits{hasActiveEdits ? ' *' : ''}
+            </span>
             <div className="flex gap-1">
+              <button
+                type="button"
+                onPointerDown={() => setHoldOriginal(true)}
+                onPointerUp={() => setHoldOriginal(false)}
+                onPointerLeave={() => setHoldOriginal(false)}
+                className={`rounded px-1.5 py-0.5 text-[9px] hover:bg-white/20 ${
+                  holdOriginal ? 'bg-white/25 text-white' : 'bg-white/10 text-white/80'
+                }`}
+                title="Hold to compare the unedited original. Shortcut: hold Space."
+              >
+                Before
+              </button>
+              {canPreviewAdjust && (
+                <button
+                  type="button"
+                  onClick={applyAnchorMatch}
+                  disabled={editDisabled}
+                  className="rounded bg-white/10 px-1.5 py-0.5 text-[9px] text-white/80 hover:bg-white/20 disabled:opacity-45"
+                  title={`Apply the anchor-match correction (${formatEVDelta(normalizedEvDelta)}) to this photo`}
+                >
+                  Match
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => dispatch({ type: 'SYNC_EDITS_FROM_FOCUSED', filePath: file.path })}
@@ -962,6 +1007,23 @@ export function SingleView({ file, index, total }: SingleViewProps) {
               />
               <button type="button" onClick={() => setPhotoExposure(manualStops + 0.33)} className="rounded bg-white/10 px-2 py-0.5 text-[10px] hover:bg-white/20">+</button>
             </div>
+            <div className="mb-2 grid grid-cols-5 gap-1">
+              {EV_PRESETS.map((stops) => (
+                <button
+                  key={stops}
+                  type="button"
+                  onClick={() => setPhotoExposure(stops)}
+                  className={`rounded px-1 py-0.5 text-[9px] font-mono hover:bg-white/20 ${
+                    Math.abs(manualStops - stops) < 0.01
+                      ? 'bg-sky-500/40 text-sky-50'
+                      : 'bg-white/10 text-white/75'
+                  }`}
+                  title={`Set manual exposure to ${stops > 0 ? '+' : ''}${stops} EV`}
+                >
+                  {stops > 0 ? '+' : ''}{stops}
+                </button>
+              ))}
+            </div>
             <div className="mb-1 flex items-center justify-between text-[10px]">
               <span className="text-white/70">Photo WB</span>
               <span className="font-mono text-cyan-100">
@@ -993,6 +1055,23 @@ export function SingleView({ file, index, total }: SingleViewProps) {
                 className="min-w-0 accent-cyan-300"
               />
               <span className="text-right font-mono">{currentPhotoTint}</span>
+            </div>
+            <div className="mt-2 grid grid-cols-3 gap-1">
+              {WB_PRESETS.map((preset) => (
+                <button
+                  key={preset.label}
+                  type="button"
+                  onClick={() => setPhotoWhiteBalance(kelvinToWhiteBalanceTemperature(preset.kelvin), preset.tint)}
+                  className={`rounded px-1 py-0.5 text-[9px] hover:bg-white/20 ${
+                    currentPhotoKelvin === preset.kelvin && currentPhotoTint === preset.tint
+                      ? 'bg-cyan-500/40 text-cyan-50'
+                      : 'bg-white/10 text-white/75'
+                  }`}
+                  title={`Set white balance to ${preset.kelvin} K, tint ${preset.tint > 0 ? '+' : ''}${preset.tint}`}
+                >
+                  {preset.label}
+                </button>
+              ))}
             </div>
           </div>
         </div>

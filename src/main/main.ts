@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, globalShortcut } from 'electron';
+import { app, BrowserWindow, Menu, globalShortcut, shell } from 'electron';
 import path from 'node:path';
 import started from 'electron-squirrel-startup';
 import { registerIpcHandlers } from './ipc-handlers';
@@ -14,6 +14,20 @@ if (started) {
 app.commandLine.appendSwitch('enable-blink-features', 'ShapeDetection');
 
 let mainWindow: BrowserWindow | null = null;
+
+function isSafeExternalUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'https:') return false;
+    return [
+      'updates.culler.z2hs.au',
+      'github.com',
+      'checkout.stripe.com',
+    ].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
 
 const createWindow = () => {
   // Remove the native menu bar entirely (File / Edit / View / Window / Help).
@@ -34,8 +48,23 @@ const createWindow = () => {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
       enableBlinkFeatures: 'ShapeDetection',
     },
+  });
+
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (isSafeExternalUrl(url)) {
+      void shell.openExternal(url);
+    }
+    return { action: 'deny' };
+  });
+
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    const currentUrl = mainWindow?.webContents.getURL();
+    if (url !== currentUrl) {
+      event.preventDefault();
+    }
   });
 
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {

@@ -2,11 +2,12 @@ import { useEffect, useState } from 'react';
 
 interface HistogramProps {
   src?: string;
+  filter?: string;
 }
 
 const histogramCache = new Map<string, number[]>();
 
-export function Histogram({ src }: HistogramProps) {
+export function Histogram({ src, filter }: HistogramProps) {
   const [bins, setBins] = useState<number[]>([]);
 
   useEffect(() => {
@@ -14,7 +15,8 @@ export function Histogram({ src }: HistogramProps) {
       setBins([]);
       return;
     }
-    const cached = histogramCache.get(src);
+    const cacheKey = `${src}|${filter ?? ''}`;
+    const cached = histogramCache.get(cacheKey);
     if (cached) {
       setBins(cached);
       return;
@@ -33,6 +35,7 @@ export function Histogram({ src }: HistogramProps) {
       canvas.height = height;
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
       if (!ctx) return;
+      if (filter) ctx.filter = filter;
       ctx.drawImage(img, 0, 0, width, height);
       const data = ctx.getImageData(0, 0, width, height).data;
       const next = Array.from({ length: 64 }, () => 0);
@@ -42,7 +45,7 @@ export function Histogram({ src }: HistogramProps) {
       }
       const max = Math.max(1, ...next);
       const normalized = next.map((v) => v / max);
-      histogramCache.set(src, normalized);
+      histogramCache.set(cacheKey, normalized);
       if (histogramCache.size > 200) {
         const oldest = histogramCache.keys().next().value as string | undefined;
         if (oldest) histogramCache.delete(oldest);
@@ -65,7 +68,7 @@ export function Histogram({ src }: HistogramProps) {
         window.clearTimeout(idle);
       }
     };
-  }, [src]);
+  }, [src, filter]);
 
   if (bins.length === 0) return null;
 

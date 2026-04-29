@@ -1408,6 +1408,7 @@ export function ThumbnailGrid() {
             manualStops: source.exposureAdjustmentStops ?? 0,
             normalizeToAnchor: !!source.normalizeToAnchor,
             anchorPath: exposureAnchorPath,
+            whiteBalanceAdjustment: source.whiteBalanceAdjustment,
           });
           return;
         }
@@ -1443,6 +1444,12 @@ export function ThumbnailGrid() {
               type: 'SET_EXPOSURE_ADJUSTMENT',
               filePaths: targets,
               stops: exposureClipboard.manualStops,
+            });
+            dispatch({
+              type: 'SET_WHITE_BALANCE_ADJUSTMENT',
+              filePaths: targets,
+              temperature: exposureClipboard.whiteBalanceAdjustment?.temperature ?? 0,
+              tint: exposureClipboard.whiteBalanceAdjustment?.tint ?? 0,
             });
             return;
           }

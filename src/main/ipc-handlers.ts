@@ -61,6 +61,7 @@ function buildWatermarkConfig(settings: AppSettings): ImportConfig['watermark'] 
 const execFileAsync = promisify(execFile);
 
 let scannedFiles: MediaFile[] = [];
+let scannedFilesByPath = new Map<string, MediaFile>();
 let knownVolumePaths = new Set<string>();
 let autoImportQueue: Volume[] = [];
 let autoImportRunning = false;
@@ -791,11 +792,27 @@ async function ejectVolume(volumePath: string): Promise<{ ok: boolean; error?: s
 }
 
 async function getFreeSpace(dirPath: string): Promise<number | null> {
+  if (typeof dirPath !== 'string' || dirPath.trim().length === 0) return null;
   try {
     const stats = await statfs(dirPath);
     return stats.bavail * stats.bsize;
   } catch {
     return null;
+  }
+}
+
+function isSafeHttpsUrl(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'https:') return false;
+    return [
+      'updates.culler.z2hs.au',
+      'github.com',
+      'checkout.stripe.com',
+    ].includes(url.hostname);
+  } catch {
+    return false;
   }
 }
 
@@ -910,6 +927,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IPC.SCAN_START, async (_event, sourcePath: string, folderPattern?: string) => {
     console.log(`[scan] Starting scan of: ${sourcePath}`);
     scannedFiles = [];
+    scannedFilesByPath = new Map();
     clearImageDecodeCache(); // flush stale RAW decodes from previous source
     cancelPendingFaceJobs(); // drain queued face jobs from old source so they don't compete with new scan
     try {
@@ -917,10 +935,11 @@ export function registerIpcHandlers(): void {
         sourcePath,
         (batch) => {
           scannedFiles.push(...batch);
+          for (const file of batch) scannedFilesByPath.set(file.path, file);
           sendToRenderer(IPC.SCAN_BATCH, batch);
         },
         (filePath, thumbnail) => {
-          const file = scannedFiles.find((f) => f.path === filePath);
+          const file = scannedFilesByPath.get(filePath);
           if (file) file.thumbnail = thumbnail;
           sendToRenderer(IPC.SCAN_THUMBNAIL, filePath, thumbnail);
         },
@@ -956,6 +975,9 @@ export function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC.SCAN_PREVIEW, async (_event, filePath: string, variant?: 'preview' | 'detail') => {
+    if (typeof filePath !== 'string') return undefined;
+    if (variant !== undefined && variant !== 'preview' && variant !== 'detail') return undefined;
+    if (!scannedFilesByPath.has(filePath)) return undefined;
     return generatePreview(filePath, variant ?? 'preview');
   });
 
@@ -1037,6 +1059,7 @@ export function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC.DIALOG_OPEN_PATH, async (_event, filePath: string) => {
+    if (typeof filePath !== 'string' || filePath.trim().length === 0) return;
     await shell.openPath(filePath);
   });
 
@@ -1078,15 +1101,16 @@ export function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC.OPEN_EXTERNAL, async (_event, url: string) => {
-    // Only allow https URLs to prevent arbitrary protocol abuse
-    if (typeof url === 'string' && url.startsWith('https://')) {
+    if (isSafeHttpsUrl(url)) {
       await shell.openExternal(url);
     }
   });
 
   // Updates
   ipcMain.handle(IPC.UPDATE_OPEN_RELEASE, async (_event, url: string) => {
-    await shell.openExternal(url);
+    if (isSafeHttpsUrl(url)) {
+      await shell.openExternal(url);
+    }
   });
 
   ipcMain.handle(IPC.UPDATE_CHECK_NOW, async () => {
@@ -1599,6 +1623,7 @@ async function runAutoImport(volume: Volume): Promise<void> {
 
   try {
     scannedFiles = [];
+    scannedFilesByPath = new Map();
     const pattern = settings.folderPreset === 'custom'
       ? settings.customPattern
       : undefined; // main-process default is '{YYYY}-{MM}-{DD}/{filename}'
@@ -1606,10 +1631,11 @@ async function runAutoImport(volume: Volume): Promise<void> {
       volume.path,
       (batch) => {
         scannedFiles.push(...batch);
+        for (const file of batch) scannedFilesByPath.set(file.path, file);
         sendToRenderer(IPC.SCAN_BATCH, batch);
       },
       (filePath, thumbnail) => {
-        const file = scannedFiles.find((f) => f.path === filePath);
+        const file = scannedFilesByPath.get(filePath);
         if (file) file.thumbnail = thumbnail;
         sendToRenderer(IPC.SCAN_THUMBNAIL, filePath, thumbnail);
       },
