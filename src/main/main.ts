@@ -27,6 +27,7 @@ if (process.platform === 'win32' && process.env.KEPTRA_ENABLE_RENDERER_GPU !== '
 
 let mainWindow: BrowserWindow | null = null;
 const packageSmokeMode = process.env.KEPTRA_PACKAGE_SMOKE === '1';
+const packageSmokeShowWindow = process.env.KEPTRA_PACKAGE_SMOKE_SHOW === '1';
 
 function modelSmokeStatus() {
   const resourcesPath = process.resourcesPath;
@@ -63,6 +64,35 @@ function finishPackageSmoke(ok: boolean, details: Record<string, unknown>): void
 
 function serializeError(error: unknown): string {
   return error instanceof Error ? error.stack || error.message : String(error);
+}
+
+function imageSmokeStatus(image: Electron.NativeImage) {
+  const { width, height } = image.getSize();
+  const bitmap = image.toBitmap();
+  let sampled = 0;
+  let nonDark = 0;
+  let minLuma = 255;
+  let maxLuma = 0;
+  const stride = Math.max(4, Math.floor(bitmap.length / 50000 / 4) * 4);
+  for (let offset = 0; offset + 3 < bitmap.length; offset += stride) {
+    const blue = bitmap[offset] ?? 0;
+    const green = bitmap[offset + 1] ?? 0;
+    const red = bitmap[offset + 2] ?? 0;
+    const luma = Math.round((red * 0.2126) + (green * 0.7152) + (blue * 0.0722));
+    minLuma = Math.min(minLuma, luma);
+    maxLuma = Math.max(maxLuma, luma);
+    if (luma > 35) nonDark += 1;
+    sampled += 1;
+  }
+  const nonDarkRatio = sampled > 0 ? nonDark / sampled : 0;
+  return {
+    width,
+    height,
+    sampled,
+    nonDarkRatio: Number(nonDarkRatio.toFixed(4)),
+    lumaRange: maxLuma - minLuma,
+    ok: width > 0 && height > 0 && nonDarkRatio > 0.01 && (maxLuma - minLuma) > 8,
+  };
 }
 
 function isSafeExternalUrl(value: string): boolean {
@@ -104,11 +134,19 @@ const createWindow = () => {
     },
   });
 
-  mainWindow.once('ready-to-show', () => {
-    if (!packageSmokeMode) {
+  let windowShown = false;
+  const showMainWindow = () => {
+    if (windowShown) return;
+    if (!packageSmokeMode || packageSmokeShowWindow) {
+      windowShown = true;
       mainWindow?.show();
     }
+  };
+  mainWindow.once('ready-to-show', showMainWindow);
+  mainWindow.webContents.once('did-finish-load', () => {
+    setTimeout(showMainWindow, 250);
   });
+  setTimeout(showMainWindow, 3000);
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (isSafeExternalUrl(url)) {
@@ -174,6 +212,73 @@ const createWindow = () => {
         (async () => {
           await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
           await new Promise((resolve) => setTimeout(resolve, 250));
+          const smokeErrors = [];
+          const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+          window.addEventListener('error', (event) => {
+            smokeErrors.push(event.message || String(event.error || 'window error'));
+          });
+          window.addEventListener('unhandledrejection', (event) => {
+            smokeErrors.push(String(event.reason || 'unhandled rejection'));
+          });
+          const text = () => document.body?.innerText || '';
+          const visibleButtons = () => Array.from(document.querySelectorAll('button'))
+            .filter((button) => {
+              const rect = button.getBoundingClientRect();
+              return rect.width > 0 && rect.height > 0 && getComputedStyle(button).visibility !== 'hidden';
+            });
+          const buttonLabel = (button) => [button.innerText, button.title, button.getAttribute('aria-label')]
+            .filter(Boolean)
+            .join(' ')
+            .replace(/\\s+/g, ' ')
+            .trim();
+          const findButton = (pattern) => visibleButtons()
+            .find((button) => pattern.test(buttonLabel(button)));
+          const clickButton = async (name, pattern, expectedPatterns = []) => {
+            const button = findButton(pattern);
+            if (!button) return { name, found: false, ok: false };
+            const disabled = button.disabled || button.getAttribute('aria-disabled') === 'true';
+            if (!disabled) {
+              button.click();
+              await wait(180);
+            }
+            const bodyText = text();
+            const expectations = expectedPatterns.map((expected) => ({
+              expected: expected.source,
+              found: expected.test(bodyText),
+            }));
+            return {
+              name,
+              found: true,
+              disabled,
+              label: buttonLabel(button),
+              expectations,
+              ok: !disabled && expectations.every((item) => item.found),
+            };
+          };
+          const dismiss = async () => {
+            for (const pattern of [/Dismiss performance setup/i, /Got it/i, /Later/i, /^Close$/i]) {
+              const button = findButton(pattern);
+              if (button && /Quick Start|Activate Keptra|performance setup|Optimize settings/i.test(text())) {
+                button.click();
+                await wait(120);
+              }
+            }
+          };
+          await dismiss();
+          const interactions = [];
+          interactions.push(await clickButton('source ftp tab', /(^|\\s)FTP(\\s|$)/i, [/FTP Source/i, /Host/i, /Mirror and scan/i]));
+          interactions.push(await clickButton('source drive tab', /(^|\\s)Drive(\\s|$)/i, [/Choose Folder/i, /HOW IT WORKS/i]));
+          interactions.push(await clickButton('hide source panel', /(^|\\s)Source(\\s|$)/i, [/OUTPUT/i]));
+          interactions.push(await clickButton('show source panel', /(^|\\s)Source(\\s|$)/i, [/SOURCE/i, /Choose Folder/i]));
+          interactions.push(await clickButton('hide output panel', /(^|\\s)Output(\\s|$)/i, [/SOURCE/i]));
+          interactions.push(await clickButton('show output panel', /(^|\\s)Output(\\s|$)/i, [/OUTPUT/i, /SESSION TYPE/i]));
+          interactions.push(await clickButton('settings page', /(^|\\s)Settings(\\s|$)/i, [/General/i, /Workflow/i, /Account/i]));
+          interactions.push(await clickButton('settings workflow tab', /(^|\\s)Workflow(\\s|$)/i, [/Backup Copy/i, /Folder/i]));
+          interactions.push(await clickButton('settings account tab', /(^|\\s)Account(\\s|$)/i, [/License/i, /Buy license|Activate|Manage/i]));
+          interactions.push(await clickButton('settings close', /Back to grid|Close/i, [/Start with a camera card or folder/i]));
+          await dismiss();
+          interactions.push(await clickButton('help center', /(^|\\s)Help(\\s|$)/i, [/Help Center/i, /Fast Cull/i, /Fixed Shortcuts/i]));
+          interactions.push(await clickButton('help close', /(^|\\s)Close(\\s|$)/i, [/Start with a camera card or folder/i]));
           const api = window.electronAPI || {};
           const root = document.getElementById('root');
           const bodyText = document.body?.innerText || '';
@@ -191,6 +296,10 @@ const createWindow = () => {
               width: Math.round(rootRect.width),
               height: Math.round(rootRect.height),
             } : null,
+            visibleButtonCount: visibleButtons().length,
+            visibleButtonsSample: visibleButtons().slice(0, 80).map(buttonLabel),
+            interactions,
+            smokeErrors,
             bodyTextLength: bodyText.length,
             bodyTextSample: bodyText.slice(0, 1000),
             hasVisibleAppText: /Source|Review|Destination|Import|Settings|Help/.test(bodyText),
@@ -207,13 +316,49 @@ const createWindow = () => {
           Number(preload?.rootChildCount ?? 0) > 0 &&
           Number(preload?.rootHtmlLength ?? 0) > 0 &&
           preload?.hasVisibleAppText === true;
-        finishPackageSmoke(missingPreload.length === 0 && rendererMounted && resources.onnxRuntimeNode && missingModels.length === 0, {
-          preload,
-          missingPreload,
-          rendererMounted,
-          resources,
-          missingModels,
-          updateMode: process.platform === 'darwin' ? 'manual-dmg' : 'installer-or-native',
+        const interactionFailures = Array.isArray(preload?.interactions)
+          ? preload.interactions.filter((item: { ok?: boolean }) => !item.ok)
+          : [{ name: 'interactions unavailable' }];
+        const smokeErrors = Array.isArray(preload?.smokeErrors) ? preload.smokeErrors : [];
+        void mainWindow?.webContents.capturePage().then((image) => {
+          const imageStatus = imageSmokeStatus(image);
+          const output = process.env.KEPTRA_PACKAGE_SMOKE_OUTPUT;
+          if (output) {
+            try {
+              writeFileSync(output.replace(/\.json$/i, '.png'), image.toPNG());
+            } catch (error) {
+              log.warn('Could not write package smoke screenshot', error);
+            }
+          }
+          finishPackageSmoke(
+            missingPreload.length === 0 &&
+              rendererMounted &&
+              interactionFailures.length === 0 &&
+              smokeErrors.length === 0 &&
+              imageStatus.ok &&
+              resources.onnxRuntimeNode &&
+              missingModels.length === 0,
+            {
+              preload,
+              missingPreload,
+              rendererMounted,
+              interactionFailures,
+              smokeErrors,
+              imageStatus,
+              resources,
+              missingModels,
+              updateMode: process.platform === 'darwin' ? 'manual-dmg' : 'installer-or-native',
+            },
+          );
+        }).catch((error) => {
+          finishPackageSmoke(false, {
+            error: serializeError(error),
+            preload,
+            missingPreload,
+            rendererMounted,
+            resources,
+            missingModels,
+          });
         });
       }).catch((error) => {
         clearTimeout(timeout);

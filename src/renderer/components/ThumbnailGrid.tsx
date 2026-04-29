@@ -2293,10 +2293,14 @@ export function ThumbnailGrid() {
     return { count: evs.length, min, max, range: max - min };
   }, [files, normalizeTargetPaths]);
 
+  const shortcutsOverlay = showShortcuts
+    ? <ShortcutsOverlay onClose={() => setShowShortcuts(false)} />
+    : null;
+
   if (viewMode === 'settings') {
     return (
       <div className="h-full flex flex-col relative">
-        {showShortcuts && <ShortcutsOverlay onClose={() => setShowShortcuts(false)} />}
+        {shortcutsOverlay}
         <SettingsPage
           inline
           onClose={() => dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' })}
@@ -2306,41 +2310,52 @@ export function ThumbnailGrid() {
   }
 
   if (!selectedSource) {
-    return <EmptyState />;
+    return (
+      <div className="h-full relative">
+        {shortcutsOverlay}
+        <EmptyState />
+      </div>
+    );
   }
 
   if (phase === 'scanning' && files.length === 0) {
     return (
-      <div className="h-full flex flex-col items-center justify-center gap-3">
-        <div className={`w-8 h-8 border-2 border-text-muted border-t-text rounded-full ${scanPaused ? '' : 'animate-spin'}`} />
-        <p className="text-sm text-text-secondary">{scanPaused ? 'Scan paused' : 'Scanning files...'}</p>
-        <button
-          onClick={() => scanPaused ? resumeScan() : pauseScan()}
-          className="px-3 py-1 text-xs bg-surface-raised hover:bg-border rounded text-text-secondary transition-colors"
-        >
-          {scanPaused ? 'Resume Scan' : 'Pause Scan'}
-        </button>
+      <div className="h-full relative">
+        {shortcutsOverlay}
+        <div className="h-full flex flex-col items-center justify-center gap-3">
+          <div className={`w-8 h-8 border-2 border-text-muted border-t-text rounded-full ${scanPaused ? '' : 'animate-spin'}`} />
+          <p className="text-sm text-text-secondary">{scanPaused ? 'Scan paused' : 'Scanning files...'}</p>
+          <button
+            onClick={() => scanPaused ? resumeScan() : pauseScan()}
+            className="px-3 py-1 text-xs bg-surface-raised hover:bg-border rounded text-text-secondary transition-colors"
+          >
+            {scanPaused ? 'Resume Scan' : 'Pause Scan'}
+          </button>
+        </div>
       </div>
     );
   }
 
   if (files.length === 0 && phase !== 'scanning') {
     return (
-      <div className="h-full flex flex-col items-center justify-center gap-2">
-        {scanError ? (
-          <p className="text-sm text-red-400">{scanError}</p>
-        ) : (
-          <>
-            <p className="text-sm text-text-secondary">No supported files found</p>
-            <p className="text-xs text-text-muted">Supports JPG, RAW, HEIC, MOV, MP4</p>
-          </>
-        )}
-        <button
-          onClick={() => startScan()}
-          className="mt-2 px-3 py-1 text-xs bg-surface-raised hover:bg-border rounded text-text-secondary transition-colors"
-        >
-          Rescan
-        </button>
+      <div className="h-full relative">
+        {shortcutsOverlay}
+        <div className="h-full flex flex-col items-center justify-center gap-2">
+          {scanError ? (
+            <p className="text-sm text-red-400">{scanError}</p>
+          ) : (
+            <>
+              <p className="text-sm text-text-secondary">No supported files found</p>
+              <p className="text-xs text-text-muted">Supports JPG, RAW, HEIC, MOV, MP4</p>
+            </>
+          )}
+          <button
+            onClick={() => startScan()}
+            className="mt-2 px-3 py-1 text-xs bg-surface-raised hover:bg-border rounded text-text-secondary transition-colors"
+          >
+            Rescan
+          </button>
+        </div>
       </div>
     );
   }

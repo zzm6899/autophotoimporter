@@ -76,6 +76,7 @@ if (process.env.PACKAGE_SMOKE_LAUNCH !== '0') {
     env: {
       ...process.env,
       KEPTRA_PACKAGE_SMOKE: '1',
+      KEPTRA_PACKAGE_SMOKE_SHOW: '1',
       KEPTRA_PACKAGE_SMOKE_OUTPUT: launchManifestPath,
       ELECTRON_ENABLE_LOGGING: '1',
     },
