@@ -14,12 +14,13 @@ const SLOW_THUMB_TIMEOUT_MS = 8000; // Per-file timeout; corrupted/huge files ab
 
 /** Wraps a promise with a hard deadline — rejects if it exceeds timeoutMs. */
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
-  return Promise.race([
-    p,
-    new Promise<T>((_, reject) =>
-      setTimeout(() => reject(new Error(`timeout after ${ms}ms`)), ms),
-    ),
-  ]);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<T>((_, reject) => {
+    timeout = setTimeout(() => reject(new Error(`timeout after ${ms}ms`)), ms);
+  });
+  return Promise.race([p, deadline]).finally(() => {
+    if (timeout) clearTimeout(timeout);
+  });
 }
 const RAW_PRIORITY_EXTENSIONS = new Set([
   '.cr2', '.cr3', '.crw',
@@ -99,6 +100,7 @@ export async function scanFiles(
   options?: { generateThumbnails?: boolean },
 ): Promise<number> {
   currentJob?.cancel();
+  while (pauseWaiters.length) pauseWaiters.shift()?.();
   currentJob = new JobController('file-scan');
   currentJob.start();
   paused = false;

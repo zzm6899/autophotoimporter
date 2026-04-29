@@ -28,7 +28,7 @@ export function ImportSummary() {
   };
 
   const handleRetry = () => {
-    void startImport();
+    void startImport({ retryFailed: true });
   };
 
   return (
@@ -115,7 +115,7 @@ export function ImportSummary() {
               onClick={handleRetry}
               className="flex-1 min-w-[9rem] py-2 rounded text-sm bg-surface-raised hover:bg-red-500/10 text-red-300 transition-colors"
             >
-              Retry Import
+              Retry Failed
             </button>
           )}
           <button

@@ -3,6 +3,7 @@ import type { UpdateReleaseSummary, UpdateState } from '../../shared/types';
 import { getDeviceIdentity } from './device-id';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
+import { log } from '../logger';
 
 const UPDATE_BASE_URL = 'https://updates.culler.z2hs.au';
 const UPDATE_ALLOWED_HOSTS = new Set(['updates.culler.z2hs.au']);
@@ -43,7 +44,7 @@ export interface PersistedUpdateMetadata {
 }
 
 function logUpdateDiagnostic(event: string, details: Record<string, unknown>) {
-  console.info('[updates]', JSON.stringify({ event, ...details }));
+  log.info('[updates]', JSON.stringify({ event, ...details }));
 }
 
 function isNewer(local: string, remote: string): boolean {

@@ -21,7 +21,7 @@ vi.mock('node:fs/promises', () => ({
 import { readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { execFile } from 'node:child_process';
-import { listVolumes } from '../volume-watcher';
+import { listVolumes, parseDiskutilVolumeInfo } from '../volume-watcher';
 
 const mockReaddir = vi.mocked(readdir);
 const mockExistsSync = vi.mocked(existsSync);
@@ -32,6 +32,45 @@ const mockExecFile = vi.mocked(execFile);
 // doesn't touch any of the mocked primitives. Skip rather than invent a
 // brittle process.platform override.
 const runOnMac = process.platform === 'darwin' ? describe : describe.skip;
+
+describe('parseDiskutilVolumeInfo', () => {
+  it('parses macOS plist booleans regardless of whitespace', () => {
+    const info = parseDiskutilVolumeInfo(`
+      <plist>
+        <dict>
+          <key>Internal</key>
+          <false/>
+          <key>RemovableMedia</key><true />
+          <key>Network</key>
+          <false/>
+          <key>TotalSize</key><integer>64000000000</integer>
+          <key>APFSContainerFree</key>
+          <integer>32000000000</integer>
+        </dict>
+      </plist>
+    `);
+
+    expect(info).toEqual({
+      isRemovable: true,
+      isExternal: true,
+      isNetwork: false,
+      totalSize: 64000000000,
+      freeSpace: 32000000000,
+    });
+  });
+
+  it('treats network volumes as network and internal disks as non-external', () => {
+    const info = parseDiskutilVolumeInfo(`
+      <key>Internal</key><true/>
+      <key>Network</key><true/>
+      <key>FreeSpace</key><integer>100</integer>
+    `);
+
+    expect(info.isExternal).toBe(false);
+    expect(info.isNetwork).toBe(true);
+    expect(info.freeSpace).toBe(100);
+  });
+});
 
 runOnMac('listVolumes (macOS)', () => {
   beforeEach(() => {

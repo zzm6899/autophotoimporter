@@ -137,6 +137,7 @@ export async function mirrorFtp(
   try {
     const entries = await listMediaRecursive(client, config.remotePath);
     let done = 0;
+    const failures: Array<{ remotePath: string; message: string }> = [];
 
     for (const e of entries) {
       if (signal?.aborted) break;
@@ -160,10 +161,17 @@ export async function mirrorFtp(
         done++;
         onProgress(done, entries.length, e.name);
       } catch (err) {
-        // Count failed downloads so the progress bar doesn't stall.
-        console.warn(`[ftp] download failed for ${e.remotePath}:`, err);
+        done++;
+        failures.push({
+          remotePath: e.remotePath,
+          message: err instanceof Error ? err.message : 'download failed',
+        });
         onProgress(done, entries.length, e.name);
       }
+    }
+    if (failures.length > 0) {
+      const sample = failures.slice(0, 3).map((f) => `${f.remotePath}: ${f.message}`).join('; ');
+      throw new Error(`FTP mirror failed for ${failures.length}/${entries.length} file(s): ${sample}`);
     }
 
     return stagingDir;

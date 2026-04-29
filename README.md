@@ -36,7 +36,7 @@
 
 ## Download
 
-**macOS** — download the `.dmg`. macOS will block the first launch; go to **System Settings → Privacy & Security** and click **Open Anyway**.
+**macOS** — download the matching Intel (`x64`) or Apple Silicon (`arm64`) `.dmg`, open it, then drag Keptra to Applications. Updates are manual DMG downloads until the signed/notarized updater path is finalized.
 
 **Windows** — download `Keptra-Setup.exe`. SmartScreen may warn on first run — click **More info → Run anyway**. Portable `.zip` builds are also attached to each release if you'd rather avoid the installer.
 
@@ -130,10 +130,10 @@ No setup needed — CoreML is native on M-series Macs and automatically used.
 | OS | FTP | GPU provider | Auto-updates |
 | --- | --- | --- | --- |
 | Windows 10/11 | Supported | DirectML (all GPUs), CUDA (NVIDIA), CPU fallback | Supported (Squirrel + hosted feed) |
-| macOS 13+ (Intel/Apple Silicon) | Supported | CoreML (Apple Silicon), CUDA (NVIDIA eGPU), CPU fallback | Supported (hosted feed) |
+| macOS 13+ (Intel/Apple Silicon) | Supported | CoreML (Apple Silicon), CUDA (NVIDIA eGPU), CPU fallback | Manual DMG download/install |
 | Linux (dev/test) | Supported | CUDA (NVIDIA), CPU fallback | Not packaged for end users |
 
-_Generated from `docs/support-matrix.json` on 2026-04-29._
+_Generated from `docs/support-matrix.json` on 2026-04-30._
 <!-- SUPPORT_MATRIX:END -->
 
 ## Build from Source

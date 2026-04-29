@@ -1,7 +1,8 @@
 import { useMemo, useEffect, useState } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import { useImport } from '../hooks/useImport';
-import type { EventMode, SaveFormat, JobPreset } from '../../shared/types';
+import { ImportResumeView } from './ImportResumeView';
+import type { EventMode, SaveFormat, JobPreset, ImportConfig, ImportPreflight } from '../../shared/types';
 import { EVENT_MODE_PRESETS, FOLDER_PRESETS, eventModeKeywords, resolvePattern } from '../../shared/types';
 import { formatSize } from '../utils/formatters';
 import { formatWhiteBalanceKelvin, kelvinToWhiteBalanceTemperature, WHITE_BALANCE_MAX_KELVIN, WHITE_BALANCE_MIN_KELVIN, whiteBalanceTemperatureToKelvin } from '../../shared/exposure';
@@ -32,8 +33,11 @@ export function DestinationPanel() {
     destination, skipDuplicates, saveFormat, jpegQuality, folderPreset, customPattern,
     files, phase, importProgress, importResult, selectedSource, selectedPaths, queuedPaths,
     separateProtected, protectedFolderName, backupDestRoot, ftpDestEnabled, ftpDestConfig,
-    metadataKeywords, metadataTitle, metadataCaption, watermarkEnabled, watermarkMode, watermarkText, watermarkImagePath, autoStraighten,
-    whiteBalanceTemperature, whiteBalanceTint, eventMode,
+    metadataKeywords, metadataTitle, metadataCaption, metadataCreator, metadataCopyright,
+    watermarkEnabled, watermarkMode, watermarkText, watermarkImagePath, watermarkOpacity, watermarkPositionLandscape, watermarkPositionPortrait, watermarkScale,
+    autoStraighten,
+    whiteBalanceTemperature, whiteBalanceTint, eventMode, metadataExport,
+    verifyChecksums,
     licenseStatus,
   } = useAppState();
   const dispatch = useAppDispatch();
@@ -41,6 +45,8 @@ export function DestinationPanel() {
   const [freeBytes, setFreeBytes] = useState<number | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [jobPresets, setJobPresets] = useState<JobPreset[]>([]);
+  const [preflight, setPreflight] = useState<ImportPreflight | null>(null);
+  const [preflightOpen, setPreflightOpen] = useState(false);
 
   useEffect(() => {
     void window.electronAPI.getSettings().then((s) => setJobPresets(s.jobPresets ?? []));
@@ -184,6 +190,10 @@ export function DestinationPanel() {
   const hasPicks = pickedCount > 0;
   const hasClickSelection = selectedPaths.length > 0;
   const hasQueue = queuedPaths.length > 0;
+  const hasRenderableWatermark = watermarkEnabled && (
+    (watermarkMode === 'image' && watermarkImagePath.trim()) ||
+    (watermarkMode !== 'image' && watermarkText.trim())
+  );
 
   // Selection priority mirrors `useImport.ts`:
   //   1. Click-selection in the grid (selectedPaths)
@@ -206,6 +216,48 @@ export function DestinationPanel() {
       : files.filter((f) => f.pick !== 'rejected');
   }, [files, hasClickSelection, hasPicks, hasQueue, queuedPaths, skipDuplicates, selectedPaths]);
 
+  const buildImportConfig = (dryRun = false): ImportConfig | null => {
+    if (!selectedSource || !destination) return null;
+    return {
+      sourcePath: selectedSource,
+      destRoot: destination,
+      skipDuplicates,
+      saveFormat,
+      jpegQuality,
+      selectedPaths: importFiles.map((file) => file.path),
+      separateProtected,
+      protectedFolderName,
+      backupDestRoot: backupDestRoot || undefined,
+      ftpDestEnabled,
+      ftpDestConfig: ftpDestEnabled ? ftpDestConfig : undefined,
+      verifyChecksums,
+      metadataExportFlags: metadataExport,
+      metadata: metadataKeywords.trim() || metadataTitle.trim() || metadataCaption.trim() || metadataCreator.trim() || metadataCopyright.trim()
+        ? {
+            keywords: metadataKeywords.split(/[\n,;]+/).map((value) => value.trim()).filter(Boolean),
+            title: metadataTitle.trim() || undefined,
+            caption: metadataCaption.trim() || undefined,
+            creator: metadataCreator.trim() || undefined,
+            copyright: metadataCopyright.trim() || undefined,
+          }
+        : undefined,
+      watermark: hasRenderableWatermark
+        ? {
+            enabled: true,
+            mode: watermarkMode,
+            text: watermarkMode === 'text' ? watermarkText.trim() : undefined,
+            imagePath: watermarkMode === 'image' ? watermarkImagePath.trim() : undefined,
+            opacity: watermarkOpacity,
+            positionLandscape: watermarkPositionLandscape,
+            positionPortrait: watermarkPositionPortrait,
+            scale: watermarkScale,
+          }
+        : undefined,
+      autoStraighten,
+      dryRun,
+    };
+  };
+
   const ftpReady = !ftpDestEnabled || (!!ftpDestConfig.host && !!ftpDestConfig.remotePath);
   const licenseValid = !!licenseStatus?.valid;
   const canImport = licenseValid && selectedSource && destination && ftpReady && importFiles.length > 0 && (phase === 'ready' || phase === 'scanning');
@@ -227,10 +279,17 @@ export function DestinationPanel() {
   const activeEventMode = EVENT_MODE_PRESETS[eventMode] ?? EVENT_MODE_PRESETS.general;
   const activeEventKeywords = eventModeKeywords(eventMode);
   const backupSameAsPrimary = !!backupDestRoot && !!destination && backupDestRoot === destination;
-  const hasRenderableWatermark = watermarkEnabled && (
-    (watermarkMode === 'image' && watermarkImagePath.trim()) ||
-    (watermarkMode !== 'image' && watermarkText.trim())
-  );
+  const refreshPreflight = async (dryRun = false) => {
+    const config = buildImportConfig(dryRun);
+    if (!config) return;
+    const result = await window.electronAPI.preflightImport(config);
+    setPreflight(result);
+    setPreflightOpen(true);
+  };
+
+  const handlePreviewImport = async () => {
+    await refreshPreflight(true);
+  };
 
   // Free-space check on the destination. Re-runs when the destination or
   // the set of files-to-import changes so the warning reflects reality.
@@ -388,6 +447,12 @@ export function DestinationPanel() {
           <div className="mt-1 text-[10px] text-text-muted truncate" title={importProgress?.currentFile}>
             {importProgress?.currentFile ?? 'Scanning card...'}
           </div>
+        </div>
+      )}
+
+      {showAdvanced && (
+        <div className="px-2.5 mb-2.5">
+          <ImportResumeView />
         </div>
       )}
 
@@ -782,8 +847,67 @@ export function DestinationPanel() {
               : `Tight on space — ${formatSize(freeBytes)} free for ${formatSize(totalSize)} import`}
           </div>
         )}
+        {preflightOpen && preflight && (
+          <div className="mb-2 rounded border border-border bg-surface-alt px-2 py-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-[10px] font-medium text-text">Preflight</div>
+              <button
+                onClick={() => setPreflightOpen(false)}
+                className="text-[10px] text-text-muted hover:text-text"
+              >
+                Hide
+              </button>
+            </div>
+            <div className="mt-1 grid grid-cols-2 gap-1 text-[10px] text-text-secondary">
+              <div>Will import <span className="text-emerald-400">{preflight.willImport}</span></div>
+              <div>Duplicates <span className="text-yellow-400">{preflight.duplicates}</span></div>
+              <div>Conflicts <span className={preflight.conflicts ? 'text-red-400' : 'text-text-muted'}>{preflight.conflicts}</span></div>
+              <div>Warnings <span className={preflight.lowConfidence ? 'text-yellow-400' : 'text-text-muted'}>{preflight.lowConfidence}</span></div>
+            </div>
+            <div className="mt-1 text-[10px] text-text-muted">
+              {preflight.backupEnabled && 'Backup enabled. '}
+              {preflight.ftpEnabled && 'FTP upload enabled. '}
+              {preflight.checksumEnabled && 'Checksums enabled. '}
+              {preflight.metadataEnabled && 'XMP metadata enabled. '}
+              {preflight.watermarkEnabled && 'Watermark enabled. '}
+              {preflight.dryRun && 'Dry-run preview only.'}
+            </div>
+            {preflight.items.some((item) => item.status !== 'will-import' || (item.warnings?.length ?? 0) > 0) && (
+              <div className="mt-1 max-h-20 overflow-y-auto space-y-0.5">
+                {preflight.items
+                  .filter((item) => item.status !== 'will-import' || (item.warnings?.length ?? 0) > 0)
+                  .slice(0, 8)
+                  .map((item) => (
+                    <div key={item.sourcePath} className="truncate text-[10px] text-text-muted" title={`${item.name}: ${item.reason || item.warnings?.join(', ') || item.status}`}>
+                      <span className={item.status === 'will-import' ? 'text-yellow-400' : item.status === 'duplicate' ? 'text-text-muted' : 'text-red-400'}>
+                        {item.status}
+                      </span>
+                      {' '}{item.name}
+                    </div>
+                  ))}
+              </div>
+            )}
+          </div>
+        )}
+        <div className="mb-1 grid grid-cols-2 gap-1">
+          <button
+            onClick={() => { void handlePreviewImport(); }}
+            disabled={!destination || importFiles.length === 0}
+            className="py-1 rounded text-[10px] bg-surface-raised hover:bg-border text-text-secondary disabled:text-text-muted disabled:cursor-not-allowed"
+            title="Preview the exact import plan without copying files."
+          >
+            Preview Import
+          </button>
+          <button
+            onClick={() => { void refreshPreflight(false); }}
+            disabled={!destination || importFiles.length === 0}
+            className="py-1 rounded text-[10px] bg-surface-raised hover:bg-border text-text-secondary disabled:text-text-muted disabled:cursor-not-allowed"
+          >
+            Check Plan
+          </button>
+        </div>
         <button
-          onClick={startImport}
+          onClick={() => { void startImport(); }}
           disabled={!canImport || insufficientSpace}
           className={`w-full py-1.5 rounded text-xs font-medium transition-colors ${
             canImport && !insufficientSpace

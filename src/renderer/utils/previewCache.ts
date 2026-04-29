@@ -1,7 +1,12 @@
 type PreviewVariant = 'preview' | 'detail';
+type PreviewPriority = 'high' | 'normal' | 'low';
 
 const previewCache = new Map<string, string | undefined>();
-const previewInflight = new Map<string, Promise<string | undefined>>();
+const previewInflight = new Map<string, {
+  id: number;
+  priority: PreviewPriority;
+  promise: Promise<string | undefined>;
+}>();
 const decodedCache = new Set<string>();
 // Keep enough thumbnails so the review loop always has candidates with f.thumbnail set.
 // At 24 the cache evicted photos before analysis could reach them → "stuck at 24".
@@ -13,20 +18,46 @@ const MAX_ACTIVE_REQUESTS = 6;
 const MAX_QUEUED_REQUESTS = 500;
 let activeRequests = 0;
 let backgroundPaused = false;
-const queuedRequests: Array<{ priority: 'high' | 'normal' | 'low'; run: () => void }> = [];
+let inflightSeq = 0;
+const queuedRequests: Array<{
+  priority: PreviewPriority;
+  run: () => void;
+  cancel: () => void;
+}> = [];
+
+const priorityRank: Record<PreviewPriority, number> = {
+  low: 0,
+  normal: 1,
+  high: 2,
+};
 
 function takeNextQueuedRequest(): (() => void) | undefined {
-  for (let i = 0; i < queuedRequests.length; i++) {
-    const next = queuedRequests[i];
-    if (backgroundPaused && next.priority === 'low') {
+  const priorityOrder: Array<'high' | 'normal' | 'low'> = ['high', 'normal', 'low'];
+  for (const priority of priorityOrder) {
+    for (let i = 0; i < queuedRequests.length; i++) {
+      const next = queuedRequests[i];
+      if (next.priority !== priority) continue;
+      if (backgroundPaused && next.priority === 'low') {
+        queuedRequests.splice(i, 1);
+        next.cancel();
+        i--;
+        continue;
+      }
       queuedRequests.splice(i, 1);
-      i--;
-      continue;
+      return next.run;
     }
-    queuedRequests.splice(i, 1);
-    return next.run;
   }
   return undefined;
+}
+
+function cancelQueuedLowPriorityRequests(): void {
+  for (let i = queuedRequests.length - 1; i >= 0; i--) {
+    const next = queuedRequests[i];
+    if (next.priority === 'low') {
+      queuedRequests.splice(i, 1);
+      next.cancel();
+    }
+  }
 }
 
 function previewKey(filePath: string, variant: PreviewVariant): string {
@@ -44,7 +75,7 @@ function rememberPreview(filePath: string, variant: PreviewVariant, preview: str
   }
 }
 
-function schedule<T>(task: () => Promise<T>, priority: 'high' | 'normal' | 'low'): Promise<T> {
+function schedule<T>(task: () => Promise<T>, priority: PreviewPriority): Promise<T> {
   if (priority === 'low' && backgroundPaused) {
     return Promise.resolve(undefined as T);
   }
@@ -61,12 +92,13 @@ function schedule<T>(task: () => Promise<T>, priority: 'high' | 'normal' | 'low'
           takeNextQueuedRequest()?.();
         });
     };
+    const cancel = () => resolve(undefined as T);
     if (activeRequests < MAX_ACTIVE_REQUESTS) {
       run();
     } else if (priority === 'high') {
-      queuedRequests.unshift({ priority, run });
+      queuedRequests.unshift({ priority, run, cancel });
     } else {
-      queuedRequests.push({ priority, run });
+      queuedRequests.push({ priority, run, cancel });
     }
   });
 }
@@ -74,14 +106,17 @@ function schedule<T>(task: () => Promise<T>, priority: 'high' | 'normal' | 'low'
 export function getCachedPreview(
   filePath: string,
   variant: PreviewVariant = 'preview',
-  priority: 'high' | 'normal' | 'low' = 'normal',
+  priority: PreviewPriority = 'normal',
 ): Promise<string | undefined> {
   const key = previewKey(filePath, variant);
   if (previewCache.has(key)) {
     return Promise.resolve(previewCache.get(key));
   }
   const existing = previewInflight.get(key);
-  if (existing) return existing;
+  if (existing && priorityRank[existing.priority] >= priorityRank[priority]) {
+    return existing.promise;
+  }
+  const id = ++inflightSeq;
   const promise = schedule(() => window.electronAPI.getPreview(filePath, variant), priority)
     .then((preview) => {
       if (preview !== undefined) {
@@ -90,9 +125,11 @@ export function getCachedPreview(
       return preview;
     })
     .finally(() => {
-      previewInflight.delete(key);
+      if (previewInflight.get(key)?.id === id) {
+        previewInflight.delete(key);
+      }
     });
-  previewInflight.set(key, promise);
+  previewInflight.set(key, { id, priority, promise });
   return promise;
 }
 
@@ -130,9 +167,7 @@ export function warmPreview(filePath: string, priority: 'normal' | 'low' = 'low'
 export function setBackgroundPreviewPaused(paused: boolean): void {
   backgroundPaused = paused;
   if (paused) {
-    for (let i = queuedRequests.length - 1; i >= 0; i--) {
-      if (queuedRequests[i].priority === 'low') queuedRequests.splice(i, 1);
-    }
+    cancelQueuedLowPriorityRequests();
   }
 }
 

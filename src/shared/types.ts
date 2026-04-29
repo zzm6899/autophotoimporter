@@ -310,6 +310,13 @@ export interface ImportConfig {
   sourcePath: string;
   destRoot: string;
   skipDuplicates: boolean;
+  /**
+   * How to handle a destination path that already exists but is not a duplicate.
+   * Defaults to 'skip' for backwards-compatible COPYFILE_EXCL behavior.
+   */
+  conflictPolicy?: ImportConflictPolicy;
+  /** Subfolder name used when conflictPolicy is 'conflicts-folder'. Default: "_Conflicts". */
+  conflictFolderName?: string;
   saveFormat: SaveFormat;
   jpegQuality: number; // 1-100, only used when saveFormat is 'jpeg'
   /**
@@ -410,11 +417,99 @@ export interface ImportResult {
   errors: ImportError[];
   totalBytes: number;
   durationMs: number;
+  ledgerId?: string;
+  recoveryCount?: number;
+  ledgerItems?: ImportLedgerItem[];
 }
 
 export interface ImportError {
   file: string;
   error: string;
+}
+
+export type UpdateInstallMode = 'native' | 'installer' | 'manual-dmg';
+
+export type ImportConflictPolicy = 'skip' | 'rename' | 'overwrite' | 'conflicts-folder';
+
+export type ImportPlanStatus = 'will-import' | 'duplicate' | 'conflict' | 'invalid';
+
+export interface ImportPlanItem {
+  sourcePath: string;
+  name: string;
+  size: number;
+  destRelPath?: string;
+  destFullPath?: string;
+  backupFullPath?: string;
+  status: ImportPlanStatus;
+  reason?: string;
+  warnings?: string[];
+}
+
+export interface ImportPreflight {
+  totalFiles: number;
+  totalBytes: number;
+  willImport: number;
+  duplicates: number;
+  conflicts: number;
+  invalid: number;
+  lowConfidence: number;
+  backupEnabled: boolean;
+  ftpEnabled: boolean;
+  checksumEnabled: boolean;
+  metadataEnabled: boolean;
+  watermarkEnabled: boolean;
+  dryRun: boolean;
+  items: ImportPlanItem[];
+}
+
+export type ImportLedgerStatus = 'planned' | 'imported' | 'skipped' | 'failed' | 'verified' | 'pending';
+
+export interface ImportLedgerItem {
+  sourcePath: string;
+  name: string;
+  size: number;
+  destRelPath?: string;
+  destFullPath?: string;
+  backupFullPath?: string;
+  status: ImportLedgerStatus;
+  error?: string;
+}
+
+export interface ImportLedger {
+  id: string;
+  createdAt: string;
+  sourcePath: string;
+  destRoot: string;
+  saveFormat: SaveFormat;
+  totalFiles: number;
+  imported: number;
+  skipped: number;
+  failed: number;
+  pending: number;
+  verified?: number;
+  checksumVerified?: number;
+  totalBytes: number;
+  durationMs: number;
+  items: ImportLedgerItem[];
+}
+
+export interface MacFirstRunDoctor {
+  platform: NodeJS.Platform;
+  arch: string;
+  supported: boolean;
+  appVersion: string;
+  updateMode: UpdateInstallMode;
+  resources: {
+    resourcesPath: string;
+    onnxRuntimeNode: boolean;
+    models: Array<{ name: string; exists: boolean; bytes?: number }>;
+  };
+  checks: Array<{
+    id: string;
+    label: string;
+    ok: boolean;
+    detail: string;
+  }>;
 }
 
 /**
@@ -625,6 +720,7 @@ export interface UpdateState {
   releaseUrl?: string;
   downloadUrl?: string;
   feedUrl?: string;
+  installMode?: UpdateInstallMode;
   lastCheckedAt?: string;
   message?: string;
   history?: UpdateReleaseSummary[];
@@ -714,6 +810,9 @@ export const IPC = {
 
   // Import
   IMPORT_START: 'import:start',
+  IMPORT_PREFLIGHT: 'import:preflight',
+  IMPORT_RETRY_FAILED: 'import:retry-failed',
+  IMPORT_LEDGER_LATEST: 'import:ledger-latest',
   IMPORT_PROGRESS: 'import:progress',
   IMPORT_COMPLETE: 'import:complete',
   IMPORT_CANCEL: 'import:cancel',
@@ -722,6 +821,10 @@ export const IPC = {
   DIALOG_SELECT_FOLDER: 'dialog:select-folder',
   DIALOG_SELECT_FILE: 'dialog:select-file',
   DIALOG_OPEN_PATH: 'dialog:open-path',
+  DIAGNOSTICS_EXPORT: 'diagnostics:export',
+  BENCHMARK_SMOKE_RUN: 'benchmark:smoke-run',
+  BENCHMARK_OPEN_OUTPUT: 'benchmark:open-output',
+  MAC_FIRST_RUN_DOCTOR: 'diagnostics:mac-first-run-doctor',
 
   // Settings
   SETTINGS_GET: 'settings:get',

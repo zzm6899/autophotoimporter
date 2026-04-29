@@ -1,13 +1,13 @@
 import { ipcMain, dialog, shell, app, BrowserWindow, autoUpdater } from 'electron';
-import { readFile, writeFile, mkdir, open, rm, rename, statfs } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, open, rm, rename, statfs, readdir, stat, copyFile } from 'node:fs/promises';
 import { execFile, spawn } from 'node:child_process';
-import { promisify } from 'node:util';
+import { performance } from 'node:perf_hooks';
 import path from 'node:path';
 import { IPC } from '../shared/types';
-import type { ImportConfig, ImportResult, AppSettings, MediaFile, FtpConfig, FtpSyncStatus, Volume, UpdateState } from '../shared/types';
+import type { ImportConfig, ImportResult, AppSettings, MediaFile, FtpConfig, FtpSyncStatus, Volume, UpdateState, ImportLedger, MacFirstRunDoctor } from '../shared/types';
 import { listVolumes, startWatching, stopWatching } from './services/volume-watcher';
 import { scanFiles, cancelScan, pauseScan, resumeScan } from './services/file-scanner';
-import { importFiles, cancelImport } from './services/import-engine';
+import { importFiles, cancelImport, planImportFiles } from './services/import-engine';
 import { isDuplicate } from './services/duplicate-detector';
 import { generatePreview } from './services/exif-parser';
 import { checkForUpdate, fetchUpdateHistory, readLastKnownGoodUpdateMetadata } from './services/update-checker';
@@ -24,6 +24,7 @@ import { registerUpdateHandlers } from './ipc/update-handlers';
 import { registerFtpHandlers } from './ipc/ftp-handlers';
 import { registerLicenseHandlers } from './ipc/license-handlers';
 import { registerFaceHandlers } from './ipc/face-handlers';
+import { log } from './logger';
 
 
 
@@ -66,7 +67,9 @@ function isImportConfig(value: unknown): value is ImportConfig {
   return isNonEmptyString(value.sourcePath)
     && isNonEmptyString(value.destRoot)
     && isBoolean(value.skipDuplicates)
-    && (value.saveFormat === 'original' || value.saveFormat === 'jpeg')
+    && (value.conflictPolicy == null || value.conflictPolicy === 'skip' || value.conflictPolicy === 'rename' || value.conflictPolicy === 'overwrite' || value.conflictPolicy === 'conflicts-folder')
+    && (value.conflictFolderName == null || typeof value.conflictFolderName === 'string')
+    && (value.saveFormat === 'original' || value.saveFormat === 'jpeg' || value.saveFormat === 'tiff' || value.saveFormat === 'heic')
     && isNumber(value.jpegQuality);
 }
 
@@ -102,7 +105,7 @@ function handleIpc(channel: string, handler: (event: Electron.IpcMainInvokeEvent
       return await handler(event, ...args);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unexpected IPC failure';
-      console.error(`[ipc:${channel}]`, error);
+      log.error(`[ipc:${channel}]`, error);
       return ipcError('INTERNAL_ERROR', message);
     }
   });
@@ -148,7 +151,21 @@ function buildWatermarkConfig(settings: AppSettings): ImportConfig['watermark'] 
   };
 }
 
-const execFileAsync = promisify(execFile);
+function execFileAsync(
+  file: string,
+  args: string[],
+  options: Parameters<typeof execFile>[2] = {},
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    execFile(file, args, options, (error, stdout, stderr) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve({ stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
+    });
+  });
+}
 
 let scannedFiles: MediaFile[] = [];
 let scannedFilesByPath = new Map<string, MediaFile>();
@@ -195,6 +212,205 @@ function getSettingsPath(): string {
 
 function getLegacySettingsPath(): string {
   return path.join(app.getPath('appData'), 'Photo Importer', 'settings.json');
+}
+
+function getLedgersDir(): string {
+  return path.join(app.getPath('userData'), 'import-ledgers');
+}
+
+function getLatestLedgerPath(): string {
+  return path.join(getLedgersDir(), 'latest.json');
+}
+
+function getDiagnosticsDir(): string {
+  return path.join(app.getPath('userData'), 'diagnostics');
+}
+
+function getBenchmarkOutputDir(): string {
+  return path.resolve(process.cwd(), 'artifacts', 'benchmarks');
+}
+
+function roundMs(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+async function walkFiles(dirPath: string): Promise<string[]> {
+  const files: string[] = [];
+  const entries = await readdir(dirPath, { withFileTypes: true });
+  await Promise.all(entries.map(async (entry) => {
+    const entryPath = path.join(dirPath, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...await walkFiles(entryPath));
+      return;
+    }
+    if (entry.isFile()) files.push(entryPath);
+  }));
+  return files;
+}
+
+async function runSmokeBenchmark(): Promise<{ ok: boolean; outPath: string; files: number; bytes: number; records: number; error?: string }> {
+  const fixtureDir = path.resolve(process.cwd(), 'fixtures', 'smoke');
+  const outDir = getBenchmarkOutputDir();
+  const outPath = path.join(outDir, 'smoke.jsonl');
+  await mkdir(outDir, { recursive: true });
+
+  const runId = new Date().toISOString().replace(/[:.]/g, '-');
+  const startedAt = new Date().toISOString();
+  const start = performance.now();
+  const records: Array<Record<string, unknown>> = [];
+  const mark = (phase: string, status: string, extra: Record<string, unknown> = {}) => {
+    records.push({
+      at: new Date().toISOString(),
+      runId,
+      suite: 'smoke-fixtures',
+      phase,
+      status,
+      ...extra,
+    });
+  };
+
+  try {
+    mark('run', 'started');
+    const discoverStart = performance.now();
+    const files = await Promise.all((await walkFiles(fixtureDir)).map(async (filePath) => {
+      const info = await stat(filePath);
+      return {
+        path: path.relative(process.cwd(), filePath),
+        bytes: info.size,
+        ext: path.extname(filePath).toLowerCase() || '(none)',
+      };
+    }));
+    mark('discover', 'completed', {
+      files: files.length,
+      wallMs: roundMs(performance.now() - discoverStart),
+    });
+
+    const aggregateStart = performance.now();
+    const extensionMix = Object.fromEntries(
+      [...new Set(files.map((file) => file.ext))].sort().map((ext) => [
+        ext,
+        files.filter((file) => file.ext === ext).length,
+      ]),
+    );
+    const bytes = files.reduce((sum, file) => sum + file.bytes, 0);
+    mark('aggregate', 'completed', {
+      bytes,
+      extensionMix,
+      wallMs: roundMs(performance.now() - aggregateStart),
+    });
+
+    const wallMs = roundMs(performance.now() - start);
+    const summary = {
+      at: startedAt,
+      runId,
+      suite: 'smoke-fixtures',
+      phase: 'summary',
+      status: 'completed',
+      files: files.length,
+      bytes,
+      extensionMix,
+      wallMs,
+      p50Ms: wallMs,
+      p95Ms: wallMs,
+      cacheHitRate: null,
+      provider: getActualExecutionProvider(),
+      faceConcurrency: faceSemaphoreSlots,
+      previewConcurrency: null,
+    };
+    mark('run', 'completed', { files: files.length, bytes, wallMs });
+    const outputRecords = [...records, summary];
+    await writeFile(outPath, outputRecords.map((record) => JSON.stringify(record)).join('\n') + '\n', { encoding: 'utf8', flag: 'a' });
+    return { ok: true, outPath, files: files.length, bytes, records: outputRecords.length };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Smoke benchmark failed.';
+    mark('run', 'failed', { error: message, wallMs: roundMs(performance.now() - start) });
+    await writeFile(outPath, records.map((record) => JSON.stringify(record)).join('\n') + '\n', { encoding: 'utf8', flag: 'a' });
+    return { ok: false, outPath, files: 0, bytes: 0, records: records.length, error: message };
+  }
+}
+
+async function getDirectoryStats(dirPath: string): Promise<{ files: number; bytes: number; missing?: boolean }> {
+  let files = 0;
+  let bytes = 0;
+  async function walk(current: string): Promise<void> {
+    const entries = await readdir(current, { withFileTypes: true });
+    await Promise.all(entries.map(async (entry) => {
+      const entryPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        await walk(entryPath);
+        return;
+      }
+      if (entry.isFile()) {
+        files++;
+        const info = await stat(entryPath);
+        bytes += info.size;
+      }
+    }));
+  }
+  try {
+    await walk(dirPath);
+  } catch {
+    return { files: 0, bytes: 0, missing: true };
+  }
+  return { files, bytes };
+}
+
+async function getModelResourceStatus(): Promise<MacFirstRunDoctor['resources']> {
+  const resourcesPath = process.resourcesPath;
+  const models = ['version-RFB-640.onnx', 'w600k_mbf.onnx', 'ssd_mobilenet_v1_12.onnx'];
+  return {
+    resourcesPath,
+    onnxRuntimeNode: await stat(path.join(resourcesPath, 'onnxruntime-node', 'dist', 'index.js')).then(() => true).catch(() => false),
+    models: await Promise.all(models.map(async (name) => {
+      const modelPath = path.join(resourcesPath, 'models', name);
+      const info = await stat(modelPath).catch(() => null);
+      return { name, exists: !!info, bytes: info?.size };
+    })),
+  };
+}
+
+function makeLedgerId(): string {
+  return new Date().toISOString().replace(/[:.]/g, '-');
+}
+
+async function persistImportLedger(config: ImportConfig, result: ImportResult): Promise<ImportLedger> {
+  const items = result.ledgerItems ?? [];
+  const failed = items.filter((item) => item.status === 'failed').length;
+  const pending = items.filter((item) => item.status === 'pending').length;
+  const id = result.ledgerId || makeLedgerId();
+  const ledger: ImportLedger = {
+    id,
+    createdAt: new Date().toISOString(),
+    sourcePath: config.sourcePath,
+    destRoot: config.destRoot,
+    saveFormat: config.saveFormat,
+    totalFiles: items.length,
+    imported: result.imported,
+    skipped: result.skipped,
+    failed,
+    pending,
+    verified: result.verified,
+    checksumVerified: result.checksumVerified,
+    totalBytes: result.totalBytes,
+    durationMs: result.durationMs,
+    items,
+  };
+  const dir = getLedgersDir();
+  await mkdir(dir, { recursive: true });
+  const content = JSON.stringify(ledger, null, 2);
+  await writeFile(path.join(dir, `${id}.json`), content, 'utf8');
+  await writeFile(getLatestLedgerPath(), content, 'utf8');
+  result.ledgerId = id;
+  result.recoveryCount = items.filter((item) => item.status === 'failed' || item.status === 'pending').length;
+  return ledger;
+}
+
+async function readLatestImportLedger(): Promise<ImportLedger | null> {
+  try {
+    return JSON.parse(await readFile(getLatestLedgerPath(), 'utf8')) as ImportLedger;
+  } catch {
+    return null;
+  }
 }
 
 async function readSettingsData(): Promise<string> {
@@ -439,16 +655,26 @@ async function loadSettings(): Promise<AppSettings> {
   }
 }
 
+let settingsSaveQueue: Promise<void> = Promise.resolve();
+
+async function writeSettingsFile(settings: AppSettings): Promise<void> {
+  const settingsPath = getSettingsPath();
+  const dir = path.dirname(settingsPath);
+  await mkdir(dir, { recursive: true });
+  const tempPath = `${settingsPath}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(tempPath, JSON.stringify(settings, null, 2));
+  await rename(tempPath, settingsPath);
+}
+
 async function saveSettings(settings: Partial<AppSettings>): Promise<void> {
+  const write = async (): Promise<void> => {
   const current = await loadSettings();
   const merged: AppSettings = {
     ...current,
     ...settings,
     licenseStatus: settings.licenseStatus ?? current.licenseStatus,
   };
-  const dir = path.dirname(getSettingsPath());
-  await mkdir(dir, { recursive: true });
-  await writeFile(getSettingsPath(), JSON.stringify(merged, null, 2));
+  await writeSettingsFile(merged);
   
   // Reapply settings to running services
   configureGpuAcceleration(merged.gpuFaceAcceleration ?? true);
@@ -456,6 +682,11 @@ async function saveSettings(settings: Partial<AppSettings>): Promise<void> {
   configureCpuOptimization(merged.cpuOptimization ?? false);
   setRawPreviewQuality(merged.rawPreviewQuality ?? 70);
   setFaceConcurrency(merged.faceConcurrency ?? 1);
+  };
+
+  const nextSave = settingsSaveQueue.then(write, write);
+  settingsSaveQueue = nextSave.catch(() => undefined);
+  return nextSave;
 }
 
 function publishFtpSyncStatus(status: FtpSyncStatus): FtpSyncStatus {
@@ -693,7 +924,11 @@ async function refreshUpdateState() {
   const history = update.status !== 'error'
     ? await fetchUpdateHistory(licenseKey).catch(() => [])
     : [];
-  lastUpdateState = { ...update, history };
+  lastUpdateState = {
+    ...update,
+    history,
+    installMode: process.platform === 'darwin' ? 'manual-dmg' : update.downloadUrl ? 'installer' : canUseNativeUpdater() ? 'native' : undefined,
+  };
   if (update.status === 'error') {
     const fallback = await readLastKnownGoodUpdateMetadata();
     if (fallback) {
@@ -705,6 +940,7 @@ async function refreshUpdateState() {
         releaseUrl: fallback.releaseUrl,
         downloadUrl: fallback.downloadUrl,
         feedUrl: fallback.feedUrl,
+        installMode: process.platform === 'darwin' ? 'manual-dmg' : fallback.downloadUrl ? 'installer' : canUseNativeUpdater() ? 'native' : undefined,
         message: `${update.message ?? 'Update check failed.'} Using last known update metadata from ${fallback.savedAt}.`,
       };
       logUpdateDiagnostic('fallback-last-known-good', { fallbackVersion: fallback.latestVersion, savedAt: fallback.savedAt });
@@ -1129,6 +1365,15 @@ export function registerIpcHandlers(): void {
   });
 
   // Import
+  handleIpc(IPC.IMPORT_PREFLIGHT, async (_event, config: ImportConfig) => {
+    const filesToImport = filterFilesForImport(scannedFiles, config);
+    return planImportFiles(filesToImport, config);
+  }, ([config]) => isImportConfig(config) ? null : ipcError('VALIDATION_ERROR', 'Invalid import config payload.'));
+
+  handleIpc(IPC.IMPORT_LEDGER_LATEST, async () => {
+    return readLatestImportLedger();
+  });
+
   handleIpc(IPC.IMPORT_START, async (_event, config: ImportConfig) => {
     try {
       const licenseStatus = await getLicenseStatus();
@@ -1146,6 +1391,7 @@ export function registerIpcHandlers(): void {
       const result = await importFiles(filesToImport, config, (progress) => {
         sendToRenderer(IPC.IMPORT_PROGRESS, progress);
       });
+      await persistImportLedger(config, result);
       if (config.autoEject && result.imported > 0 && config.sourcePath) {
         const eject = await ejectVolume(config.sourcePath);
         if (!eject.ok) {
@@ -1167,6 +1413,53 @@ export function registerIpcHandlers(): void {
         durationMs: 0,
       } satisfies ImportResult;
     }
+  }, ([config]) => isImportConfig(config) ? null : ipcError('VALIDATION_ERROR', 'Invalid import config payload.'));
+
+  handleIpc(IPC.IMPORT_RETRY_FAILED, async (_event, config: ImportConfig) => {
+    const licenseStatus = await getLicenseStatus();
+    if (!licenseStatus.valid) {
+      return {
+        imported: 0,
+        skipped: 0,
+        verified: 0,
+        errors: [{ file: 'license', error: licenseStatus.message || 'A valid license is required to retry import recovery.' }],
+        totalBytes: 0,
+        durationMs: 0,
+      } satisfies ImportResult;
+    }
+    const latest = await readLatestImportLedger();
+    if (!latest) {
+      return {
+        imported: 0,
+        skipped: 0,
+        verified: 0,
+        errors: [{ file: 'ledger', error: 'No previous import ledger found.' }],
+        totalBytes: 0,
+        durationMs: 0,
+      } satisfies ImportResult;
+    }
+    const retryPaths = latest.items
+      .filter((item) => item.status === 'failed' || item.status === 'pending')
+      .map((item) => item.sourcePath);
+    if (retryPaths.length === 0) {
+      return {
+        imported: 0,
+        skipped: 0,
+        verified: 0,
+        errors: [],
+        totalBytes: 0,
+        durationMs: 0,
+        recoveryCount: 0,
+      } satisfies ImportResult;
+    }
+    const retryConfig: ImportConfig = { ...config, selectedPaths: retryPaths };
+    const filesToImport = filterFilesForImport(scannedFiles, retryConfig);
+    const result = await importFiles(filesToImport, retryConfig, (progress) => {
+      sendToRenderer(IPC.IMPORT_PROGRESS, progress);
+    });
+    result.recoveryCount = retryPaths.length;
+    await persistImportLedger(retryConfig, result);
+    return result;
   }, ([config]) => isImportConfig(config) ? null : ipcError('VALIDATION_ERROR', 'Invalid import config payload.'));
 
   handleIpc(IPC.IMPORT_CANCEL, async () => {
@@ -1196,6 +1489,144 @@ export function registerIpcHandlers(): void {
   handleIpc(IPC.DIALOG_OPEN_PATH, async (_event, filePath: string) => {
     await shell.openPath(filePath);
   }, ([filePath]) => isSafePath(filePath) ? null : ipcError('VALIDATION_ERROR', 'Invalid path payload.'));
+
+  handleIpc(IPC.BENCHMARK_SMOKE_RUN, async () => {
+    return runSmokeBenchmark();
+  });
+
+  handleIpc(IPC.BENCHMARK_OPEN_OUTPUT, async () => {
+    const dir = getBenchmarkOutputDir();
+    await mkdir(dir, { recursive: true });
+    const error = await shell.openPath(dir);
+    if (error) throw new Error(error);
+    return dir;
+  });
+
+  handleIpc(IPC.DIAGNOSTICS_EXPORT, async () => {
+    const dir = path.join(getDiagnosticsDir(), new Date().toISOString().replace(/[:.]/g, '-'));
+    await mkdir(dir, { recursive: true });
+    const [settings, ledger] = await Promise.all([
+      loadSettings().catch(() => null),
+      readLatestImportLedger(),
+    ]);
+    const device = detectDeviceTier(settings?.perfTier && settings.perfTier !== 'auto' ? settings.perfTier : undefined);
+    const provider = {
+      ep: getActualExecutionProvider(),
+      models: getFaceProviderDiagnostics(),
+    };
+    const cacheStats = {
+      face: await getDirectoryStats(path.join(app.getPath('userData'), 'face-cache')),
+      thumbnails: await getDirectoryStats(path.join(app.getPath('temp'), 'photo-importer-thumbs')),
+      importLedgers: await getDirectoryStats(getLedgersDir()),
+    };
+    const benchmarkDir = getBenchmarkOutputDir();
+    const benchmarkSummaries: Array<{ name: string; bytes: number }> = [];
+    try {
+      const outputDir = path.join(dir, 'benchmarks');
+      await mkdir(outputDir, { recursive: true });
+      for (const entry of await readdir(benchmarkDir, { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
+        const source = path.join(benchmarkDir, entry.name);
+        const info = await stat(source);
+        benchmarkSummaries.push({ name: entry.name, bytes: info.size });
+        await copyFile(source, path.join(outputDir, entry.name));
+      }
+    } catch {
+      // Benchmark output is optional and often absent on end-user machines.
+    }
+    await writeFile(path.join(dir, 'diagnostics.json'), JSON.stringify({
+      exportedAt: new Date().toISOString(),
+      version: app.getVersion(),
+      platform: process.platform,
+      arch: process.arch,
+      device,
+      provider,
+      cacheStats,
+      benchmarkSummaries,
+      latestLedger: ledger,
+      scannedFiles: scannedFiles.length,
+      faceQueue: {
+        active: faceActiveCount,
+        queued: faceSemaphoreQueue.length,
+        slots: faceSemaphoreSlots,
+      },
+    }, null, 2), 'utf8');
+    if (settings) {
+      const redacted = {
+        ...settings,
+        licenseKey: settings.licenseKey ? '[redacted]' : '',
+        licenseActivationCode: settings.licenseActivationCode ? '[redacted]' : '',
+        ftpConfig: { ...settings.ftpConfig, password: settings.ftpConfig.password ? '[redacted]' : '' },
+        ftpDestConfig: { ...settings.ftpDestConfig, password: settings.ftpDestConfig.password ? '[redacted]' : '' },
+      };
+      await writeFile(path.join(dir, 'settings-redacted.json'), JSON.stringify(redacted, null, 2), 'utf8');
+    }
+    try {
+      const file = log.transports.file.getFile();
+      if (file?.path) await copyFile(file.path, path.join(dir, 'keptra.log'));
+    } catch {
+      // Log export is best-effort; diagnostics JSON is still useful.
+    }
+    return dir;
+  });
+
+  handleIpc(IPC.MAC_FIRST_RUN_DOCTOR, async (): Promise<MacFirstRunDoctor> => {
+    const resources = await getModelResourceStatus();
+    const checks: MacFirstRunDoctor['checks'] = [
+      {
+        id: 'manual-dmg',
+        label: 'Manual DMG updates',
+        ok: process.platform === 'darwin',
+        detail: process.platform === 'darwin'
+          ? 'macOS updates are presented as DMG downloads and manual drag-to-Applications installs.'
+          : 'This doctor is intended for macOS release checks.',
+      },
+      {
+        id: 'onnx-runtime',
+        label: 'ONNX runtime resource',
+        ok: resources.onnxRuntimeNode,
+        detail: resources.onnxRuntimeNode ? 'Packaged onnxruntime-node resource found.' : 'Missing packaged onnxruntime-node resource.',
+      },
+      {
+        id: 'models',
+        label: 'Face model resources',
+        ok: resources.models.every((model) => model.exists && (model.bytes ?? 0) > 0),
+        detail: resources.models.map((model) => `${model.name}:${model.exists ? `${model.bytes ?? 0} bytes` : 'missing'}`).join(', '),
+      },
+    ];
+
+    if (process.platform === 'darwin') {
+      const appPath = app.getPath('exe');
+      const quarantine = await execFileAsync('xattr', ['-p', 'com.apple.quarantine', appPath], { timeout: 5000 })
+        .then((result) => result.stdout.trim())
+        .catch(() => '');
+      checks.push({
+        id: 'quarantine',
+        label: 'Quarantine flag',
+        ok: quarantine.length === 0,
+        detail: quarantine ? `Quarantine attribute present: ${quarantine}` : 'No quarantine attribute reported on the executable.',
+      });
+      const spctl = await execFileAsync('spctl', ['--assess', '--type', 'execute', '--verbose=2', appPath], { timeout: 10000 })
+        .then((result) => result.stderr.trim() || result.stdout.trim())
+        .catch((error) => error instanceof Error ? error.message : String(error));
+      checks.push({
+        id: 'gatekeeper',
+        label: 'Gatekeeper assessment',
+        ok: /accepted/i.test(spctl),
+        detail: spctl || 'No Gatekeeper output.',
+      });
+    }
+
+    return {
+      platform: process.platform,
+      arch: process.arch,
+      supported: process.platform === 'darwin',
+      appVersion: app.getVersion(),
+      updateMode: process.platform === 'darwin' ? 'manual-dmg' : 'installer',
+      resources,
+      checks,
+    };
+  });
 
   // Settings
   handleIpc(IPC.SETTINGS_GET, async () => {
@@ -1267,7 +1698,10 @@ export function registerIpcHandlers(): void {
         lastUpdateState = {
           ...latest,
           status: 'ready',
-          message: 'Installer already downloaded. Install update when you are ready.',
+          installMode: process.platform === 'darwin' ? 'manual-dmg' : 'installer',
+          message: process.platform === 'darwin'
+            ? 'DMG already downloaded. Open it and drag Keptra to Applications.'
+            : 'Installer already downloaded. Install update when you are ready.',
         };
         sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
         return { ok: true as const };
@@ -1276,7 +1710,8 @@ export function registerIpcHandlers(): void {
       lastUpdateState = {
         ...latest,
         status: 'downloading',
-        message: 'Downloading installer inside Keptra...',
+        installMode: process.platform === 'darwin' ? 'manual-dmg' : 'installer',
+        message: process.platform === 'darwin' ? 'Downloading DMG inside Keptra...' : 'Downloading installer inside Keptra...',
       };
       sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
 
@@ -1290,7 +1725,10 @@ export function registerIpcHandlers(): void {
         lastUpdateState = {
           ...latest,
           status: 'ready',
-          message: 'Installer downloaded. Install update to finish switching versions.',
+          installMode: process.platform === 'darwin' ? 'manual-dmg' : 'installer',
+          message: process.platform === 'darwin'
+            ? 'DMG downloaded. Open it and drag Keptra to Applications.'
+            : 'Installer downloaded. Install update to finish switching versions.',
         };
         sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
         return { ok: true as const };
@@ -1811,6 +2249,7 @@ async function runAutoImport(volume: Volume): Promise<void> {
     const result = await importFiles(filesToImport, importConfig, (progress) => {
       sendToRenderer(IPC.IMPORT_PROGRESS, progress);
     });
+    await persistImportLedger(importConfig, result);
 
     if (settings.autoEject && result.imported > 0) {
       void ejectVolume(volume.path);

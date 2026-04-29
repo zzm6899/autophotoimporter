@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC } from '../shared/types';
-import type { ImportConfig, AppSettings, MediaFile, Volume, ImportProgress, ImportResult, UpdateInfo, UpdateReleaseSummary, UpdateState, FtpConfig, FtpSyncStatus, ImportError, LicenseValidation } from '../shared/types';
+import type { ImportConfig, AppSettings, MediaFile, Volume, ImportProgress, ImportResult, UpdateInfo, UpdateReleaseSummary, UpdateState, FtpConfig, FtpSyncStatus, ImportError, LicenseValidation, ImportPreflight, ImportLedger, MacFirstRunDoctor } from '../shared/types';
 import type { FaceBox } from './services/face-engine';
 import type { ModelDownloadProgress } from './services/model-downloader';
 
@@ -70,6 +70,12 @@ const api = {
   // Import
   startImport: (config: ImportConfig): Promise<ImportResult> =>
     ipcRenderer.invoke(IPC.IMPORT_START, config),
+  preflightImport: (config: ImportConfig): Promise<ImportPreflight> =>
+    ipcRenderer.invoke(IPC.IMPORT_PREFLIGHT, config),
+  retryFailedImport: (config: ImportConfig): Promise<ImportResult> =>
+    ipcRenderer.invoke(IPC.IMPORT_RETRY_FAILED, config),
+  getLatestImportLedger: (): Promise<ImportLedger | null> =>
+    ipcRenderer.invoke(IPC.IMPORT_LEDGER_LATEST),
   onImportProgress: (cb: (progress: ImportProgress) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, progress: ImportProgress) => cb(progress);
     ipcRenderer.on(IPC.IMPORT_PROGRESS, handler);
@@ -85,6 +91,14 @@ const api = {
     ipcRenderer.invoke(IPC.DIALOG_SELECT_FILE, title, filters),
   openPath: (path: string): Promise<void> =>
     ipcRenderer.invoke(IPC.DIALOG_OPEN_PATH, path),
+  exportDiagnostics: (): Promise<string> =>
+    ipcRenderer.invoke(IPC.DIAGNOSTICS_EXPORT),
+  runBenchmarkSmoke: (): Promise<{ ok: boolean; outPath: string; files: number; bytes: number; records: number; error?: string }> =>
+    ipcRenderer.invoke(IPC.BENCHMARK_SMOKE_RUN),
+  openBenchmarkOutput: (): Promise<string> =>
+    ipcRenderer.invoke(IPC.BENCHMARK_OPEN_OUTPUT),
+  runMacFirstRunDoctor: (): Promise<MacFirstRunDoctor> =>
+    ipcRenderer.invoke(IPC.MAC_FIRST_RUN_DOCTOR),
 
   // Settings
   getSettings: (): Promise<AppSettings> =>

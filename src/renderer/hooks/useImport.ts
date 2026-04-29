@@ -24,7 +24,7 @@ export function useImport() {
   const dispatch = useAppDispatch();
   const importStateRef = useRef<NormalizedJobState>('queued');
 
-  const startImport = useCallback(async () => {
+  const startImport = useCallback(async (options?: { retryFailed?: boolean; dryRun?: boolean }) => {
     if (!selectedSource || !destination) return;
     if (!licenseStatus?.valid) {
       importStateRef.current = 'failed';
@@ -125,7 +125,7 @@ export function useImport() {
     importStateRef.current = 'running';
     dispatch({ type: 'IMPORT_START' });
     try {
-      const result = await window.electronAPI.startImport({
+      const config = {
         sourcePath: selectedSource,
         destRoot: destination,
         skipDuplicates,
@@ -169,10 +169,14 @@ export function useImport() {
               positionLandscape: watermarkPositionLandscape,
               positionPortrait: watermarkPositionPortrait,
               scale: watermarkScale,
-            }
+        }
           : undefined,
         autoStraighten,
-      });
+        dryRun: !!options?.dryRun,
+      };
+      const result = options?.retryFailed
+        ? await window.electronAPI.retryFailedImport(config)
+        : await window.electronAPI.startImport(config);
       if (runId !== latestImportRunId) return;
       importStateRef.current = result.errors.length > 0 ? 'failed' : 'completed';
       dispatch({ type: 'IMPORT_COMPLETE', result });

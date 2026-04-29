@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-04-29",
+  "generatedAt": "2026-04-30",
   "features": ["FTP source", "GPU provider", "Auto-updates"],
   "platforms": [
     {
@@ -12,7 +12,7 @@
       "os": "macOS 13+ (Intel/Apple Silicon)",
       "ftpSource": "Supported",
       "gpuProvider": "CoreML (Apple Silicon), CUDA (NVIDIA eGPU), CPU fallback",
-      "autoUpdates": "Supported (hosted feed)"
+      "autoUpdates": "Manual DMG download/install"
     },
     {
       "os": "Linux (dev/test)",

@@ -556,7 +556,6 @@ async function embeddedFallbackForThumbnail(
   }
 
   // Fast path: exifr parses the IFD1 thumbnail without reading the whole file.
-  let exifrFailed = false;
   try {
     const thumbData = await exifr.thumbnail(filePath);
     if (thumbData && thumbData.byteLength > 0) {
@@ -571,26 +570,25 @@ async function embeddedFallbackForThumbnail(
       return result;
     }
   } catch {
-    exifrFailed = true;
+    // Fall through to the byte-scan path. Some RAW files have no IFD1 thumb
+    // but still contain a usable embedded JPEG preview.
   }
 
   // Slow path: only when exifr returned nothing (missing/no IFD1 thumbnail).
   // This reads up to 3MB (fast pass) then up to 12MB if needed.
-  if (!exifrFailed || true) { // always try when exifr returned empty
-    try {
-      const big = await extractLargestEmbeddedJpeg(filePath);
-      if (big && big.length > 32 * 1024) {
-        const resized = outPath
-          ? await resizeEmbeddedJpegToDataUri(big, outPath, THUMB_WIDTH, 60)
-          : undefined;
-        const result = resized
-          ?? (big.length <= MAX_DIRECT_THUMB_BYTES ? `data:image/jpeg;base64,${big.toString('base64')}` : undefined);
-        if (result && memKey) thumbMemCacheSet(memKey, result);
-        return result;
-      }
-    } catch {
-      // fall through
+  try {
+    const big = await extractLargestEmbeddedJpeg(filePath);
+    if (big && big.length > 32 * 1024) {
+      const resized = outPath
+        ? await resizeEmbeddedJpegToDataUri(big, outPath, THUMB_WIDTH, 60)
+        : undefined;
+      const result = resized
+        ?? (big.length <= MAX_DIRECT_THUMB_BYTES ? `data:image/jpeg;base64,${big.toString('base64')}` : undefined);
+      if (result && memKey) thumbMemCacheSet(memKey, result);
+      return result;
     }
+  } catch {
+    // fall through
   }
 
   return undefined;

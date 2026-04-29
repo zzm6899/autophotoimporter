@@ -26,6 +26,7 @@
 import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { app } from 'electron';
+import { log } from '../logger';
 
 // onnxruntime-node is a native addon — it must be outside the asar.
 // The forge config sets unpackDir for it. Require at runtime to avoid
@@ -104,12 +105,13 @@ export interface FaceAnalysisResult {
  * Resolves the path to a bundled model file.
  *
  * In dev mode: looks in <projectRoot>/models/
- * In packaged app: looks in process.resourcesPath/models/ (extraResources)
+ * In packaged app: looks in userData/models first, then bundled resources.
  */
 function modelPath(fileName: string): string {
   const candidates: string[] = [];
 
   if (app.isPackaged) {
+    candidates.push(path.join(app.getPath('userData'), 'models', fileName));
     candidates.push(path.join(process.resourcesPath, 'models', fileName));
   } else {
     // Dev: relative to the project root (two levels up from src/main/services/)
@@ -380,9 +382,9 @@ async function loadSessions(): Promise<void> {
         modelPath('ssd_mobilenet_v1_12.onnx'),
       ];
 
-      console.log('[face-engine] Loading sessions (providers:', getExecutionProviders().join(','), 'threads:', Math.min(cpuCount, 6), ')');
+      log.info('[face-engine] Loading sessions (providers:', getExecutionProviders().join(','), 'threads:', Math.min(cpuCount, 6), ')');
       if (dmlDeviceId !== undefined && getExecutionProviders().includes('dml')) {
-        console.log(`[face-engine] DirectML adapter override: deviceId=${dmlDeviceId}`);
+        log.info(`[face-engine] DirectML adapter override: deviceId=${dmlDeviceId}`);
       }
 
       const [detector, embedder, person] = await Promise.all([
@@ -404,7 +406,7 @@ async function loadSessions(): Promise<void> {
       const providers = [detector.diagnostic.provider, embedder.diagnostic.provider, person.diagnostic.provider];
       gpuAvailable = providers.includes('dml');
       actualExecutionProvider = new Set(providers).size === 1 ? providers[0] : providers.join('+');
-      console.log('[face-engine] Sessions loaded - EP:', actualExecutionProvider, JSON.stringify(providerDiagnostics));
+      log.info('[face-engine] Sessions loaded - EP:', actualExecutionProvider, JSON.stringify(providerDiagnostics));
     } catch (e) {
       sessionLoadPromise = null;
       throw e;
@@ -879,7 +881,7 @@ async function _analyzeFacesInner(imagePath: string): Promise<FaceAnalysisResult
       const decodeAvg = (_decodeTotalMs / _analyzeCallCount).toFixed(0);
       const detectAvg = (_detectTotalMs / _analyzeCallCount).toFixed(0);
       const embedAvg = (_embedTotalMs / _analyzeCallCount).toFixed(0);
-      console.log(`[face-engine] EP:${actualExecutionProvider ?? '?'} avg=${avg}ms/img decode=${decodeAvg}ms detect=${detectAvg}ms embed=${embedAvg}ms over ${_analyzeCallCount} images`);
+      log.info(`[face-engine] EP:${actualExecutionProvider ?? '?'} avg=${avg}ms/img decode=${decodeAvg}ms detect=${detectAvg}ms embed=${embedAvg}ms over ${_analyzeCallCount} images`);
     }
   };
 
@@ -936,7 +938,7 @@ export async function diagnoseFaceEngine(): Promise<{
   }
   const avgInferenceMs = times.reduce((a, b) => a + b, 0) / times.length;
 
-  console.log('[face-engine] DIAG: EP=%s sessionLoad=%dms avgInference=%dms times=%s',
+  log.info('[face-engine] DIAG: EP=%s sessionLoad=%dms avgInference=%dms times=%s',
     actualExecutionProvider, sessionLoadMs, avgInferenceMs.toFixed(1), JSON.stringify(times));
 
   return {

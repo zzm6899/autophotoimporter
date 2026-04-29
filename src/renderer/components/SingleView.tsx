@@ -19,9 +19,10 @@ import {
   WHITE_BALANCE_MIN_KELVIN,
   whiteBalanceTemperatureToKelvin,
 } from '../../shared/exposure';
-import { bestShotScore, faceQuality, humanMomentQuality } from '../../shared/review';
+import { bestShotScore } from '../../shared/review';
 import { Histogram } from './Histogram';
 import { decodeImage, getCachedPreview } from '../utils/previewCache';
+import { buildAiReasons } from '../utils/aiReasons';
 
 interface SingleViewProps {
   file: MediaFile;
@@ -42,33 +43,6 @@ const WB_PRESETS = [
 
 function isRawPhoto(file: MediaFile) {
   return file.type === 'photo' && RAW_EXT_RE.test(file.name || file.extension);
-}
-
-function buildAiReasons(file: MediaFile): string[] {
-  const reasons = new Set<string>();
-  if (file.pick === 'selected') reasons.add('picked keeper');
-  if (file.pick === 'rejected') reasons.add('marked reject');
-  for (const reason of file.reviewReasons ?? []) reasons.add(reason);
-  for (const reason of file.subjectReasons ?? []) reasons.add(reason);
-  const faceCount = file.faceCount ?? file.faceBoxes?.length ?? 0;
-  const personCount = file.personCount ?? file.personBoxes?.length ?? 0;
-  if (faceCount > 0) {
-    const bestEye = (file.faceBoxes ?? []).reduce((best, box) => Math.max(best, box.eyeScore ?? 0), 0);
-    reasons.add(`${faceCount} face${faceCount === 1 ? '' : 's'} detected`);
-    if (bestEye >= 2) reasons.add('best eyes open');
-    else if (bestEye === 1) reasons.add('blink/side-face risk');
-    if (humanMomentQuality(file) >= 75) reasons.add('strong expression moment');
-    if (faceQuality(file) < 45) reasons.add('weak face detail');
-  }
-  if (personCount > 0) reasons.add(`${personCount} person${personCount === 1 ? '' : 's'} detected`);
-  if ((file.subjectSharpnessScore ?? 0) >= 120) reasons.add('sharpest subject candidate');
-  if ((file.subjectSharpnessScore ?? 0) > 0 && (file.subjectSharpnessScore ?? 0) < 35) reasons.add('softer subject');
-  if (file.blurRisk === 'high') reasons.add('high blur risk');
-  if (file.visualGroupSize && file.visualGroupSize > 1) reasons.add(`duplicate stack ${file.visualGroupSize}`);
-  if (file.burstSize && file.burstSize > 1) reasons.add(`burst frame ${file.burstIndex ?? '?'} of ${file.burstSize}`);
-  if (file.faceGroupSize && file.faceGroupSize > 1) reasons.add(`similar face group ${file.faceGroupSize}`);
-  if (bestShotScore(file) >= 185) reasons.add('high best-shot score');
-  return [...reasons].slice(0, 5);
 }
 
 function orientationTransform(orientation?: number) {

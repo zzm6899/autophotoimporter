@@ -1,21 +1,42 @@
 import { copyFile, mkdir, stat, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import path from 'node:path';
 import { constants, createReadStream } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { Client } from 'basic-ftp';
-import type { MediaFile, ImportConfig, ImportProgress, ImportResult, ImportError, SaveFormat, BatchMetadata, WatermarkConfig, WatermarkPosition, MetadataExportFlags } from '../../shared/types';
+import type { MediaFile, ImportConfig, ImportProgress, ImportResult, ImportError, SaveFormat, BatchMetadata, WatermarkConfig, WatermarkPosition, MetadataExportFlags, ImportLedgerItem, ImportPreflight, ImportPlanItem, ImportConflictPolicy } from '../../shared/types';
 import { DEFAULT_METADATA_EXPORT } from '../../shared/types';
 import { isDuplicate } from './duplicate-detector';
 import { stopsToSafeMultiplier, getEffectiveExposureStops, hasWhiteBalanceAdjustment, whiteBalanceMultipliers } from '../../shared/exposure';
 import { JobController } from './job-controller';
 
-const execFileAsync = promisify(execFile);
+function execFileAsync(
+  file: string,
+  args: string[],
+  options: Parameters<typeof execFile>[2] = {},
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    execFile(file, args, options, (error, stdout, stderr) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve({ stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
+    });
+  });
+}
 
 let currentJob: JobController | null = null;
 
 const COPY_CONCURRENCY = 8;
+
+function importPlanWarnings(file: MediaFile): string[] {
+  const warnings: string[] = [];
+  if (file.blurRisk === 'high') warnings.push('High blur risk');
+  if (typeof file.reviewScore === 'number' && file.reviewScore < 58) warnings.push('Low AI review score');
+  if (file.pick === 'selected' && !file.reviewScore) warnings.push('Selected before AI review completed');
+  return warnings;
+}
 
 function remoteJoin(...parts: string[]): string {
   const joined = parts
@@ -201,7 +222,7 @@ function isPortraitOrientation(orientation?: number): boolean {
   return orientation === 5 || orientation === 6 || orientation === 7 || orientation === 8;
 }
 
-function watermarkPositionForOrientation(
+export function watermarkPositionForOrientation(
   watermark: WatermarkConfig | undefined,
   orientation?: number,
 ): WatermarkPosition {
@@ -264,6 +285,191 @@ export function composeDestPath(
     rel = path.join(folder, rel);
   }
   return convertedDestPath(rel, config.saveFormat);
+}
+
+function fullDestPaths(file: MediaFile, config: ImportConfig): {
+  destRelPath?: string;
+  destFullPath?: string;
+  backupFullPath?: string;
+  error?: string;
+} {
+  if (!file.destPath) return { error: 'No destination path computed' };
+  return fullDestPathsFromRel(composeDestPath(file, file.destPath, config), config);
+}
+
+function fullDestPathsFromRel(destRelPath: string, config: ImportConfig): {
+  destRelPath?: string;
+  destFullPath?: string;
+  backupFullPath?: string;
+  error?: string;
+} {
+  const destFullPath = path.join(config.destRoot, destRelPath);
+  const backupFullPath = config.backupDestRoot ? path.join(config.backupDestRoot, destRelPath) : undefined;
+  const primaryRelative = path.relative(path.resolve(config.destRoot), path.resolve(destFullPath));
+  if (primaryRelative.startsWith('..') || path.isAbsolute(primaryRelative)) {
+    return { destRelPath, destFullPath, backupFullPath, error: 'Destination path escapes the selected folder' };
+  }
+  if (backupFullPath && config.backupDestRoot) {
+    const backupRelative = path.relative(path.resolve(config.backupDestRoot), path.resolve(backupFullPath));
+    if (backupRelative.startsWith('..') || path.isAbsolute(backupRelative)) {
+      return { destRelPath, destFullPath, backupFullPath, error: 'Backup path escapes the selected folder' };
+    }
+  }
+  return { destRelPath, destFullPath, backupFullPath };
+}
+
+type ResolvedImportPaths = ReturnType<typeof fullDestPaths> & {
+  conflict: boolean;
+  policy: ImportConflictPolicy;
+  skipped?: boolean;
+  reason?: string;
+};
+
+function conflictPolicyFor(config: ImportConfig): ImportConflictPolicy {
+  return config.conflictPolicy ?? 'skip';
+}
+
+function cleanConflictFolderName(config: ImportConfig): string {
+  const folder = (config.conflictFolderName || '_Conflicts').replace(/^[/\\]+|[/\\]+$/g, '').trim();
+  return folder || '_Conflicts';
+}
+
+async function destinationExists(fullPath?: string): Promise<boolean> {
+  if (!fullPath) return false;
+  try {
+    await stat(fullPath);
+    return true;
+  } catch (err: unknown) {
+    const error = err as NodeJS.ErrnoException;
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return false;
+    throw err;
+  }
+}
+
+async function anyDestinationExists(paths: ReturnType<typeof fullDestPaths>): Promise<boolean> {
+  return await destinationExists(paths.destFullPath) || await destinationExists(paths.backupFullPath);
+}
+
+function renameCandidateRelPath(destRelPath: string, index: number): string {
+  const parsed = path.parse(destRelPath);
+  const suffix = index === 0 ? '' : ` (${index})`;
+  return path.join(parsed.dir, `${parsed.name}${suffix}${parsed.ext}`);
+}
+
+async function findAvailableDestPaths(
+  startRelPath: string,
+  config: ImportConfig,
+  startIndex: number,
+): Promise<ReturnType<typeof fullDestPaths>> {
+  for (let index = startIndex; index < 10000; index++) {
+    const candidate = fullDestPathsFromRel(renameCandidateRelPath(startRelPath, index), config);
+    if (candidate.error) return candidate;
+    if (!await anyDestinationExists(candidate)) return candidate;
+  }
+  return {
+    ...fullDestPathsFromRel(startRelPath, config),
+    error: 'Could not find an available destination name',
+  };
+}
+
+async function resolveImportDestPaths(file: MediaFile, config: ImportConfig): Promise<ResolvedImportPaths> {
+  const paths = fullDestPaths(file, config);
+  const policy = conflictPolicyFor(config);
+  if (paths.error) return { ...paths, conflict: false, policy };
+  const conflict = await anyDestinationExists(paths);
+  if (!conflict) return { ...paths, conflict: false, policy };
+
+  if (policy === 'skip') {
+    return { ...paths, conflict: true, policy, skipped: true, reason: 'Destination file already exists' };
+  }
+
+  if (policy === 'overwrite') {
+    return { ...paths, conflict: true, policy, reason: 'Destination exists; will overwrite' };
+  }
+
+  if (policy === 'conflicts-folder' && paths.destRelPath) {
+    const conflictRelPath = path.join(cleanConflictFolderName(config), paths.destRelPath);
+    const resolved = await findAvailableDestPaths(conflictRelPath, config, 0);
+    return { ...resolved, conflict: true, policy, reason: 'Destination exists; will import to conflicts folder' };
+  }
+
+  if (paths.destRelPath) {
+    const resolved = await findAvailableDestPaths(paths.destRelPath, config, 1);
+    return { ...resolved, conflict: true, policy, reason: 'Destination exists; will rename' };
+  }
+
+  return { ...paths, conflict: true, policy, skipped: true, reason: 'Destination file already exists' };
+}
+
+export async function planImportFiles(files: MediaFile[], config: ImportConfig): Promise<ImportPreflight> {
+  const items: ImportPlanItem[] = [];
+  let duplicates = 0;
+  let conflicts = 0;
+  let invalid = 0;
+  let willImport = 0;
+  let lowConfidence = 0;
+
+  for (const file of files) {
+    const paths = fullDestPaths(file, config);
+    const warnings = importPlanWarnings(file);
+    if (warnings.length > 0) lowConfidence++;
+    const base = {
+      sourcePath: file.path,
+      name: file.name,
+      size: file.size,
+      destRelPath: paths.destRelPath,
+      destFullPath: paths.destFullPath,
+      backupFullPath: paths.backupFullPath,
+      warnings,
+    };
+    if (paths.error) {
+      invalid++;
+      items.push({ ...base, status: 'invalid', reason: paths.error });
+      continue;
+    }
+    if (config.skipDuplicates && paths.destRelPath && await isDuplicate(config.destRoot, paths.destRelPath, file.size)) {
+      duplicates++;
+      items.push({ ...base, status: 'duplicate', reason: 'Already exists at destination with matching size' });
+      continue;
+    }
+    const resolved = await resolveImportDestPaths(file, config);
+    if (resolved.error) {
+      invalid++;
+      items.push({ ...base, status: 'invalid', reason: resolved.error });
+      continue;
+    }
+    if (resolved.conflict) conflicts++;
+    if (resolved.skipped) {
+      items.push({ ...base, status: 'conflict', reason: resolved.reason });
+      continue;
+    }
+    willImport++;
+    items.push({
+      ...base,
+      destRelPath: resolved.destRelPath,
+      destFullPath: resolved.destFullPath,
+      backupFullPath: resolved.backupFullPath,
+      status: 'will-import',
+      reason: resolved.reason,
+    });
+  }
+
+  return {
+    totalFiles: files.length,
+    totalBytes: files.reduce((sum, file) => sum + file.size, 0),
+    willImport,
+    duplicates,
+    conflicts,
+    invalid,
+    lowConfidence,
+    backupEnabled: !!config.backupDestRoot,
+    ftpEnabled: !!config.ftpDestEnabled,
+    checksumEnabled: !!config.verifyChecksums,
+    metadataEnabled: !!config.metadata || !!config.metadataExportFlags,
+    watermarkEnabled: !!config.watermark?.enabled,
+    dryRun: !!config.dryRun,
+    items,
+  };
 }
 
 function psQuote(p: string): string {
@@ -355,15 +561,7 @@ async function convertWithPowerShell(
           $g.DrawImage($src, 0, 0, $src.Width, $src.Height)
         }
         ${hasWatermark ? `
-        switch ('${gravity}') {
-          'southwest' { $format.Alignment = [System.Drawing.StringAlignment]::Near; $format.LineAlignment = [System.Drawing.StringAlignment]::Far; $x = ${margin}; $y = $bmp.Height - ${margin} }
-          'northeast' { $format.Alignment = [System.Drawing.StringAlignment]::Far; $format.LineAlignment = [System.Drawing.StringAlignment]::Near; $x = $bmp.Width - ${margin}; $y = ${margin} }
-          'northwest' { $format.Alignment = [System.Drawing.StringAlignment]::Near; $format.LineAlignment = [System.Drawing.StringAlignment]::Near; $x = ${margin}; $y = ${margin} }
-          'center' { $format.Alignment = [System.Drawing.StringAlignment]::Center; $format.LineAlignment = [System.Drawing.StringAlignment]::Center; $x = $bmp.Width / 2; $y = $bmp.Height / 2 }
-          default { $format.Alignment = [System.Drawing.StringAlignment]::Far; $format.LineAlignment = [System.Drawing.StringAlignment]::Far; $x = $bmp.Width - ${margin}; $y = $bmp.Height - ${margin} }
-        }
         ${watermark?.mode === 'image' ? `
-        $format = New-Object System.Drawing.StringFormat
         $wm = [System.Drawing.Image]::FromFile(${psQuote(watermarkImagePath)})
         try {
           $targetWidth = [Math]::Max(48, [int]($bmp.Width * (${watermarkScalePercent} / 100.0)))
@@ -384,13 +582,19 @@ async function convertWithPowerShell(
           $wmAttrs.Dispose()
         } finally {
           $wm.Dispose()
-          $format.Dispose()
         }
         ` : `
         $font = New-Object System.Drawing.Font('Arial', [float]${pointSize}, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
         $shadowBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb([int](255 * ${shadowOpacity}), 0, 0, 0))
         $textBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb([int](255 * ${opacity}), 255, 255, 255))
         $format = New-Object System.Drawing.StringFormat
+        switch ('${gravity}') {
+          'southwest' { $format.Alignment = [System.Drawing.StringAlignment]::Near; $format.LineAlignment = [System.Drawing.StringAlignment]::Far; $x = ${margin}; $y = $bmp.Height - ${margin} }
+          'northeast' { $format.Alignment = [System.Drawing.StringAlignment]::Far; $format.LineAlignment = [System.Drawing.StringAlignment]::Near; $x = $bmp.Width - ${margin}; $y = ${margin} }
+          'northwest' { $format.Alignment = [System.Drawing.StringAlignment]::Near; $format.LineAlignment = [System.Drawing.StringAlignment]::Near; $x = ${margin}; $y = ${margin} }
+          'center' { $format.Alignment = [System.Drawing.StringAlignment]::Center; $format.LineAlignment = [System.Drawing.StringAlignment]::Center; $x = $bmp.Width / 2; $y = $bmp.Height / 2 }
+          default { $format.Alignment = [System.Drawing.StringAlignment]::Far; $format.LineAlignment = [System.Drawing.StringAlignment]::Far; $x = $bmp.Width - ${margin}; $y = $bmp.Height - ${margin} }
+        }
         $g.DrawString('${text}', $font, $shadowBrush, [float]($x + 2), [float]($y + 2), $format)
         $g.DrawString('${text}', $font, $textBrush, [float]$x, [float]$y, $format)
         $textBrush.Dispose()
@@ -430,10 +634,13 @@ async function convertWithPowerShell(
 
 // Does this system have an ImageMagick binary on PATH? Cached so we don't
 // shell out once per file. Null = unknown / not yet checked.
-let imageMagickBinary: 'magick' | 'convert' | null | undefined;
-async function detectImageMagick(): Promise<'magick' | 'convert' | null> {
+let imageMagickBinary: string | null | undefined;
+async function detectImageMagick(): Promise<string | null> {
   if (imageMagickBinary !== undefined) return imageMagickBinary;
-  for (const bin of ['magick', 'convert'] as const) {
+  const candidates = process.platform === 'darwin'
+    ? ['magick', '/opt/homebrew/bin/magick', '/usr/local/bin/magick', 'convert', '/opt/homebrew/bin/convert', '/usr/local/bin/convert']
+    : ['magick', 'convert'];
+  for (const bin of candidates) {
     try {
       await execFileAsync(bin, ['-version'], { timeout: 5000 });
       imageMagickBinary = bin;
@@ -453,8 +660,9 @@ async function convertWithImageMagick(
   jpegQuality: number,
   brightness: number,
   whiteBalance: ImportConfig['whiteBalance'] | undefined,
-  binary: 'magick' | 'convert',
+  binary: string,
   autoStraighten = false,
+  orientation?: number,
   watermark?: WatermarkConfig,
 ): Promise<ConvertResult> {
   // magick is the v7 unified entry point; `convert` is v6 legacy. Arg
@@ -480,7 +688,7 @@ async function convertWithImageMagick(
     );
   }
   if (hasWatermark) {
-    const gravity = watermarkGravity(watermarkPositionForOrientation(watermark, autoStraighten ? undefined : undefined));
+    const gravity = watermarkGravity(watermarkPositionForOrientation(watermark, orientation));
     if (watermark?.mode === 'image' && watermark.imagePath?.trim()) {
       args.push(
         '(',
@@ -533,7 +741,7 @@ async function convertAndCopy(
   const wantsStraighten = !!autoStraighten && !!rotateFlipType(orientation);
 
   if (process.platform === 'win32') {
-    return convertWithPowerShell(srcPath, destFullPath, format, jpegQuality, brightness, whiteBalance, wantsStraighten ? orientation : undefined, watermark);
+    return convertWithPowerShell(srcPath, destFullPath, format, jpegQuality, brightness, whiteBalance, orientation, watermark);
   }
 
   // For darwin + linux: prefer ImageMagick when brightness matters or when
@@ -541,7 +749,7 @@ async function convertAndCopy(
   if (needsBrightness || wantsWhiteBalance || wantsWatermark || wantsStraighten) {
     const bin = await detectImageMagick();
     if (bin) {
-      return convertWithImageMagick(srcPath, destFullPath, format, jpegQuality, brightness, whiteBalance, bin, wantsStraighten, watermark);
+      return convertWithImageMagick(srcPath, destFullPath, format, jpegQuality, brightness, whiteBalance, bin, wantsStraighten, orientation, watermark);
     }
     // No IM available — we can't run advanced transforms. Fall through to plain conversion
     // and report the miss to the caller so it can surface a warning.
@@ -620,6 +828,7 @@ export async function importFiles(
   let watermarkMissing = 0;
   let straightenMissing = 0;
   let whiteBalanceMissing = 0;
+  const ledgerItems: ImportLedgerItem[] = [];
 
   function brightnessFor(file: MediaFile): number {
     const shouldNormalize = normalizeActive || perFileNormalizePaths.has(file.path);
@@ -652,38 +861,81 @@ export async function importFiles(
   }
 
   async function importOne(file: MediaFile): Promise<void> {
-    if (!file.destPath) {
-      errors.push({ file: file.name, error: 'No destination path computed' });
+    const plannedPaths = fullDestPaths(file, config);
+    const ledgerBase: ImportLedgerItem = {
+      sourcePath: file.path,
+      name: file.name,
+      size: file.size,
+      destRelPath: plannedPaths.destRelPath,
+      destFullPath: plannedPaths.destFullPath,
+      backupFullPath: plannedPaths.backupFullPath,
+      status: 'pending',
+    };
+    if (plannedPaths.error) {
+      errors.push({ file: file.name, error: plannedPaths.error });
+      ledgerItems.push({ ...ledgerBase, status: 'failed', error: plannedPaths.error });
       return;
     }
 
-    const finalRelPath = composeDestPath(file, file.destPath, config);
-    const destFullPath = path.join(config.destRoot, finalRelPath);
-    const backupFullPath = config.backupDestRoot
-      ? path.join(config.backupDestRoot, finalRelPath)
-      : null;
     try {
-      assertInside(config.destRoot, destFullPath);
-      if (backupFullPath && config.backupDestRoot) {
-        assertInside(config.backupDestRoot, backupFullPath);
+      if (plannedPaths.destFullPath) assertInside(config.destRoot, plannedPaths.destFullPath);
+      if (plannedPaths.backupFullPath && config.backupDestRoot) {
+        assertInside(config.backupDestRoot, plannedPaths.backupFullPath);
       }
     } catch (err) {
-      errors.push({ file: file.name, error: err instanceof Error ? err.message : 'Destination path rejected' });
+      const message = err instanceof Error ? err.message : 'Destination path rejected';
+      errors.push({ file: file.name, error: message });
+      ledgerItems.push({ ...ledgerBase, status: 'failed', error: message });
       return;
     }
 
     if (config.skipDuplicates) {
-      const dup = await isDuplicate(config.destRoot, finalRelPath, file.size);
+      const dup = plannedPaths.destRelPath
+        ? await isDuplicate(config.destRoot, plannedPaths.destRelPath, file.size)
+        : false;
       if (dup) {
         skipped++;
+        ledgerItems.push({ ...ledgerBase, status: 'skipped', error: 'Duplicate at destination' });
         return;
       }
     }
+
+    const resolvedPaths = (config.dryRun || config.conflictPolicy)
+      ? await resolveImportDestPaths(file, config)
+      : { ...plannedPaths, conflict: false, policy: conflictPolicyFor(config) };
+    const resolvedLedgerBase: ImportLedgerItem = {
+      ...ledgerBase,
+      destRelPath: resolvedPaths.destRelPath,
+      destFullPath: resolvedPaths.destFullPath,
+      backupFullPath: resolvedPaths.backupFullPath,
+    };
+    if (resolvedPaths.error) {
+      errors.push({ file: file.name, error: resolvedPaths.error });
+      ledgerItems.push({ ...resolvedLedgerBase, status: 'failed', error: resolvedPaths.error });
+      return;
+    }
+    if (resolvedPaths.skipped) {
+      skipped++;
+      ledgerItems.push({ ...resolvedLedgerBase, status: 'skipped', error: resolvedPaths.reason || 'Destination already exists' });
+      return;
+    }
+
+    const finalRelPath = resolvedPaths.destRelPath;
+    const destFullPath = resolvedPaths.destFullPath;
+    const backupFullPath = resolvedPaths.backupFullPath ?? null;
+    if (!finalRelPath || !destFullPath) {
+      const message = 'No destination path computed';
+      errors.push({ file: file.name, error: message });
+      ledgerItems.push({ ...resolvedLedgerBase, status: 'failed', error: message });
+      return;
+    }
+    const copyMode = conflictPolicyFor(config) === 'overwrite' ? undefined : constants.COPYFILE_EXCL;
 
     // Dry run — count what would happen, don't touch disk
     if (config.dryRun) {
       imported++;
       bytesTransferred += file.size;
+      ledgerItems.push({ ...resolvedLedgerBase, status: 'planned' });
       return;
     }
 
@@ -691,7 +943,7 @@ export async function importFiles(
       await ensureDir(path.dirname(destFullPath));
 
       if (saveFormat === 'original') {
-        await copyFile(file.path, destFullPath, constants.COPYFILE_EXCL);
+        await copyFile(file.path, destFullPath, copyMode);
       } else {
         const brightness = brightnessFor(file);
         const whiteBalance = whiteBalanceFor(file);
@@ -724,9 +976,9 @@ export async function importFiles(
           await ensureDir(path.dirname(backupFullPath));
           // Always copy from the (possibly converted) primary destination so
           // the backup is identical to what was written there.
-          await copyFile(destFullPath, backupFullPath, constants.COPYFILE_EXCL);
+          await copyFile(destFullPath, backupFullPath, copyMode);
           if (primarySidecarPath) {
-            await copyFile(primarySidecarPath, sidecarPathFor(backupFullPath), constants.COPYFILE_EXCL);
+            await copyFile(primarySidecarPath, sidecarPathFor(backupFullPath), copyMode);
           }
         } catch (mirrorErr: unknown) {
           const e = mirrorErr as NodeJS.ErrnoException;
@@ -755,6 +1007,7 @@ export async function importFiles(
       }
 
       imported++;
+      let finalStatus: ImportLedgerItem['status'] = 'imported';
       try {
         const s = await stat(destFullPath);
         if (s.size > 0 || saveFormat !== 'original') verified++;
@@ -767,6 +1020,7 @@ export async function importFiles(
             errors.push({ file: `${file.name} (checksum)`, error: 'Primary copy checksum mismatch' });
           } else {
             checksumVerified++;
+            finalStatus = 'verified';
           }
           if (backupFullPath) {
             const backupHash = await sha256File(backupFullPath);
@@ -780,19 +1034,25 @@ export async function importFiles(
         errors.push({ file: `${file.name} (verify)`, error: e.message || 'Verification failed' });
       }
       bytesTransferred += file.size;
+      ledgerItems.push({ ...resolvedLedgerBase, status: finalStatus });
     } catch (err: unknown) {
       const error = err as NodeJS.ErrnoException;
 
       if (error.code === 'ENOSPC') {
-        errors.push({ file: file.name, error: 'Disk full' });
+        const message = 'Disk full';
+        errors.push({ file: file.name, error: message });
+        ledgerItems.push({ ...resolvedLedgerBase, status: 'failed', error: message });
         currentJob?.cancel();
         return;
       }
 
       if (error.code === 'EEXIST') {
         skipped++;
+        ledgerItems.push({ ...resolvedLedgerBase, status: 'skipped', error: 'Destination already exists' });
       } else {
-        errors.push({ file: file.name, error: error.message || 'Import failed' });
+        const message = error.message || 'Import failed';
+        errors.push({ file: file.name, error: message });
+        ledgerItems.push({ ...resolvedLedgerBase, status: 'failed', error: message });
       }
     }
   }
@@ -929,6 +1189,7 @@ export async function importFiles(
     errors,
     totalBytes: bytesTransferred,
     durationMs: Date.now() - startTime,
+    ledgerItems,
   };
 }
 

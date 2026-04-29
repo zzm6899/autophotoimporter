@@ -27,12 +27,34 @@ function copyDirSync(src: string, dst: string): void {
 }
 
 const windowsIconPath = path.resolve(__dirname, 'assets/brand/icon.ico');
+const macSigningIdentity = process.env.APPLE_SIGNING_IDENTITY;
+const macNotarizeEnabled = !!(
+  process.env.APPLE_ID &&
+  process.env.APPLE_APP_SPECIFIC_PASSWORD &&
+  process.env.APPLE_TEAM_ID
+);
 
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
     name: 'Keptra',
     icon: path.resolve(__dirname, 'assets/brand/icon'),
+    ...(process.platform === 'darwin' && macSigningIdentity ? {
+      osxSign: {
+        identity: macSigningIdentity,
+        hardenedRuntime: true,
+        entitlements: path.resolve(__dirname, 'assets/entitlements.mac.plist'),
+        'entitlements-inherit': path.resolve(__dirname, 'assets/entitlements.mac.inherit.plist'),
+        'gatekeeper-assess': false,
+      },
+      ...(macNotarizeEnabled ? {
+        osxNotarize: {
+          appleId: process.env.APPLE_ID,
+          appleIdPassword: process.env.APPLE_APP_SPECIFIC_PASSWORD,
+          teamId: process.env.APPLE_TEAM_ID,
+        },
+      } : {}),
+    } : {}),
     extraResource: [
       // ONNX face models — loaded at runtime from process.resourcesPath/models
       path.resolve(__dirname, 'models'),
@@ -45,20 +67,23 @@ const config: ForgeConfig = {
     // into onnxruntime-node/node_modules/ so bare require() calls inside
     // onnxruntime-node/dist/index.js resolve correctly from the resources path.
     afterCopy: [
-      async (buildPath: string, _electronVersion: string, _platform: string, _arch: string, done: () => void) => {
+      async (buildPath: string, _electronVersion: string, _platform: string, _arch: string, done: (error?: Error) => void) => {
         try {
           const ortNodeModules = path.join(buildPath, '..', 'onnxruntime-node', 'node_modules');
           const projectNodeModules = path.resolve(__dirname, 'node_modules');
           for (const pkg of ['onnxruntime-common', 'global-agent', 'semver']) {
             const src = path.join(projectNodeModules, pkg);
             const dst = path.join(ortNodeModules, pkg);
+            if (!fs.existsSync(src)) {
+              throw new Error(`Required onnxruntime-node dependency missing: ${pkg}`);
+            }
             if (fs.existsSync(src) && !fs.existsSync(dst)) {
               copyDirSync(src, dst);
             }
           }
           done();
         } catch (e) {
-          done();
+          done(e instanceof Error ? e : new Error(String(e)));
         }
       },
     ],

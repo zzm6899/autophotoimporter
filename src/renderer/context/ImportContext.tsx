@@ -1129,8 +1129,11 @@ export function ImportProvider({ children }: { children: ReactNode }) {
     // reducer but the overlay would re-merge them on top — clear it too.
     if (
       action.type === 'SELECT_SOURCE' ||
+      action.type === 'SCAN_START' ||
+      action.type === 'SCAN_ERROR' ||
       action.type === 'RESET_FILES' ||
-      action.type === 'CLEAR_FACE_DATA'
+      action.type === 'CLEAR_FACE_DATA' ||
+      action.type === 'ADVANCE_VOLUME_IMPORT_QUEUE'
     ) {
       reviewScoresRef.current.clear();
       setReviewVersion((v) => v + 1);

@@ -24,25 +24,36 @@ let changeCallback: ((volumes: Volume[]) => void) | null = null;
 // macOS
 // --------------------------------------------------------------
 
+function plistBoolean(plist: string, key: string): boolean {
+  const pattern = new RegExp(`<key>${key}</key>\\s*<true\\s*/>`, 'i');
+  return pattern.test(plist);
+}
+
+function plistInteger(plist: string, key: string): number | undefined {
+  const pattern = new RegExp(`<key>${key}</key>\\s*<integer>(\\d+)</integer>`, 'i');
+  const match = plist.match(pattern);
+  return match ? Number(match[1]) : undefined;
+}
+
+export function parseDiskutilVolumeInfo(plist: string): Pick<Volume, 'isRemovable' | 'isExternal' | 'totalSize' | 'freeSpace'> & { isNetwork: boolean } {
+  return {
+    isRemovable: plistBoolean(plist, 'Removable') || plistBoolean(plist, 'RemovableMedia'),
+    isExternal: plistBoolean(plist, 'Internal') ? false : /<key>Internal<\/key>\s*<false\s*\/>/i.test(plist),
+    isNetwork: plistBoolean(plist, 'Network'),
+    totalSize: plistInteger(plist, 'TotalSize'),
+    freeSpace:
+      plistInteger(plist, 'ContainerFree') ??
+      plistInteger(plist, 'APFSContainerFree') ??
+      plistInteger(plist, 'FreeSpace'),
+  };
+}
+
 async function getMacVolumeInfo(volumePath: string): Promise<Volume | null> {
   try {
     const { stdout } = await execFileAsync('diskutil', ['info', '-plist', volumePath]);
-    const isRemovable = stdout.includes('<key>Removable</key>\n\t<true/>') ||
-      stdout.includes('<key>RemovableMedia</key>\n\t<true/>');
-    const isExternal = stdout.includes('<key>Internal</key>\n\t<false/>');
-    const isNetwork = stdout.includes('<key>Network</key>\n\t<true/>');
+    const { isRemovable, isExternal, isNetwork, totalSize, freeSpace } = parseDiskutilVolumeInfo(stdout);
 
     if (isNetwork) return null;
-
-    let totalSize: number | undefined;
-    let freeSpace: number | undefined;
-    const totalMatch = stdout.match(/<key>TotalSize<\/key>\s*<integer>(\d+)<\/integer>/);
-    const freeMatch = stdout.match(/<key>ContainerFree<\/key>\s*<integer>(\d+)<\/integer>/) ||
-      stdout.match(/<key>APFSContainerFree<\/key>\s*<integer>(\d+)<\/integer>/) ||
-      stdout.match(/<key>FreeSpace<\/key>\s*<integer>(\d+)<\/integer>/);
-
-    if (totalMatch) totalSize = parseInt(totalMatch[1], 10);
-    if (freeMatch) freeSpace = parseInt(freeMatch[1], 10);
 
     const hasDcim = await detectDcim(volumePath);
 

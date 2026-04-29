@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useAppDispatch, useAppState, useMergedFiles } from '../context/ImportContext';
 import { useFileScanner } from '../hooks/useFileScanner';
+import { useImport } from '../hooks/useImport';
 
 const isMac = typeof window !== 'undefined' && window.electronAPI?.platform === 'darwin';
 const MOD = isMac ? 'Cmd' : 'Ctrl';
@@ -22,6 +23,7 @@ export function HelpBar() {
   const files = useMergedFiles();
   const dispatch = useAppDispatch();
   const { pauseScan, resumeScan } = useFileScanner();
+  const { startImport } = useImport();
   const [clearing, setClearing] = useState(false);
   const [showAiStats, setShowAiStats] = useState(true);
 
@@ -48,6 +50,21 @@ export function HelpBar() {
   const isImporting = phase === 'importing' && importProgress;
   const isScanning = phase === 'scanning';
   const tip = getContextTip(phase, files.length, picked, queuedPaths.length);
+  const pickedPaths = files.filter((f) => f.pick === 'selected').map((f) => f.path);
+  const cta = (() => {
+    if (isImporting || isScanning) return null;
+    if (files.length === 0) return { label: 'Choose Source', title: 'Show the source panel', run: () => dispatch({ type: 'TOGGLE_LEFT_PANEL' }) };
+    if (queuedPaths.length > 0) return { label: 'Import', title: 'Start importing queued files', run: () => { void startImport(); } };
+    if (pickedPaths.length > 0) return { label: 'Queue Picks', title: 'Add picked photos to the import queue', run: () => dispatch({ type: 'QUEUE_ADD_PATHS', paths: pickedPaths }) };
+    return {
+      label: 'Start Review',
+      title: 'Open detail review on the first photo',
+      run: () => {
+        if (focusedIndex < 0) dispatch({ type: 'SET_FOCUSED', index: 0 });
+        dispatch({ type: 'SET_VIEW_MODE', mode: 'single' });
+      },
+    };
+  })();
 
   const importPct = isImporting
     ? Math.round((importProgress.currentIndex / Math.max(1, importProgress.totalFiles)) * 100)
@@ -188,6 +205,16 @@ export function HelpBar() {
         )}
 
         {tip && <span className="hidden shrink-0 italic text-text-faint lg:inline">{tip}</span>}
+        {cta && (
+          <button
+            type="button"
+            onClick={cta.run}
+            className="shrink-0 rounded bg-blue-500/15 px-2 py-0.5 text-blue-200 transition-colors hover:bg-blue-500/25"
+            title={cta.title}
+          >
+            {cta.label}
+          </button>
+        )}
 
         <div className="ml-auto flex shrink-0 items-center gap-1">
           {files.length > 0 && !isImporting && (

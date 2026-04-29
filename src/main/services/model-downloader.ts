@@ -61,15 +61,24 @@ const MODELS: ModelSpec[] = [
 // Path resolution (mirrors face-engine.ts modelPath logic)
 // ---------------------------------------------------------------------------
 
-function modelsDir(): string {
+function downloadModelsDir(): string {
+  return app.isPackaged
+    ? path.join(app.getPath('userData'), 'models')
+    : path.join(app.getAppPath(), 'models');
+}
+
+function modelSearchDirs(): string[] {
   if (app.isPackaged) {
-    return path.join(process.resourcesPath, 'models');
+    return [
+      path.join(app.getPath('userData'), 'models'),
+      path.join(process.resourcesPath, 'models'),
+    ];
   }
-  return path.join(app.getAppPath(), 'models');
+  return [path.join(app.getAppPath(), 'models')];
 }
 
 function modelExists(name: string): boolean {
-  return existsSync(path.join(modelsDir(), name));
+  return modelSearchDirs().some((dir) => existsSync(path.join(dir, name)));
 }
 
 function allModelsPresent(): boolean {
@@ -183,13 +192,14 @@ export async function ensureModelsDownloaded(win: BrowserWindow | null): Promise
   broadcast(win, { status: 'checking' });
 
   try {
-    await mkdir(modelsDir(), { recursive: true });
+    const targetDir = downloadModelsDir();
+    await mkdir(targetDir, { recursive: true });
 
     const missing = MODELS.filter((m) => !modelExists(m.name));
     broadcast(win, { status: 'downloading', remaining: missing.length });
 
     for (const model of missing) {
-      const dest = path.join(modelsDir(), model.name);
+      const dest = path.join(targetDir, model.name);
 
       await downloadFile(
         model.url,

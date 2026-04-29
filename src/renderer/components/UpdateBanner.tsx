@@ -17,14 +17,16 @@ export function UpdateBanner() {
   const title =
     visibleState.status === 'denied' ? 'Updates locked' :
     visibleState.status === 'error' ? 'Update check failed' :
-    visibleState.status === 'ready' ? 'Update ready' :
+    visibleState.status === 'ready' ? (visibleState.installMode === 'manual-dmg' ? 'DMG ready' : 'Update ready') :
     visibleState.status === 'downloading' ? 'Preparing update...' :
     'Update available';
 
   const body =
     visibleState.status === 'denied' ? (visibleState.message || 'This license is not entitled to updates.') :
     visibleState.status === 'error' ? (visibleState.message || 'The update service could not be reached.') :
-    visibleState.status === 'ready' ? (visibleState.message || 'Update downloaded and ready to install.') :
+    visibleState.status === 'ready' ? (visibleState.message || (visibleState.installMode === 'manual-dmg'
+      ? 'DMG downloaded. Open it and drag Keptra to Applications.'
+      : 'Update downloaded and ready to install.')) :
     visibleState.status === 'downloading' ? (visibleState.message || 'Downloading the latest update...') :
     `v${visibleState.latestVersion} is available${visibleState.releaseDate ? ` · ${formatDate(visibleState.releaseDate)}` : ''}.`;
 
@@ -63,7 +65,7 @@ export function UpdateBanner() {
               onClick={() => { void installUpdate(); }}
               className="flex-1 py-1.5 rounded text-xs font-medium bg-accent hover:bg-accent-hover text-white transition-colors"
             >
-              Install update
+              {visibleState.installMode === 'manual-dmg' ? 'Open DMG' : 'Install update'}
             </button>
           )}
           {visibleState.releaseUrl && (visibleState.status === 'available' || visibleState.status === 'ready') && (

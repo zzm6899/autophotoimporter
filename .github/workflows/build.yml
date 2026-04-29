@@ -20,9 +20,14 @@ jobs:
       matrix:
         include:
           - os: macos-latest
-            label: macos
+            label: macos-arm64
+            arch: arm64
+          - os: macos-13
+            label: macos-x64
+            arch: x64
           - os: windows-latest
             label: windows
+            arch: x64
 
     runs-on: ${{ matrix.os }}
 
@@ -36,9 +41,15 @@ jobs:
 
       - run: npm ci
 
+      - run: npm run typecheck
+
       - run: npm test
 
-      - run: npm run make
+      - run: npm run audit:runtime
+
+      - run: npm run make -- --arch=${{ matrix.arch }}
+
+      - run: npm run package:smoke
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4

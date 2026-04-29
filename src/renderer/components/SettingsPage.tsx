@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
-import type { CullConfidence, KeeperQuota, SaveFormat, KeybindMap, MetadataExportFlags, WatermarkMode, WatermarkPosition } from '../../shared/types';
+import type { CullConfidence, KeeperQuota, SaveFormat, KeybindMap, MacFirstRunDoctor, MetadataExportFlags, WatermarkMode, WatermarkPosition } from '../../shared/types';
 import { DEFAULT_KEYBINDS, FOLDER_PRESETS } from '../../shared/types';
 import { formatWhiteBalanceKelvin, kelvinToWhiteBalanceTemperature, WHITE_BALANCE_MAX_KELVIN, WHITE_BALANCE_MIN_KELVIN, whiteBalanceTemperatureToKelvin } from '../../shared/exposure';
 import { playCompletionSound } from '../utils/completionSound';
 import { useUpdateNotification } from '../hooks/useUpdateNotification';
 import { OPEN_PERFORMANCE_EVENT } from './SettingsOptimizationPrompt';
+import { ImportResumeView } from './ImportResumeView';
 
 interface SettingsPageProps {
   onClose: () => void;
@@ -43,6 +44,16 @@ const METADATA_EXPORT_ITEMS: Array<{ flag: keyof MetadataExportFlags; label: str
   { flag: 'pickLabel', label: 'Pick label', hint: 'pick / reject flag' },
   { flag: 'stripGps', label: 'Strip GPS', hint: 'privacy-safe export' },
 ];
+
+function keyDisplayName(key: string): string {
+  if (key === 'ArrowRight') return '→';
+  if (key === 'ArrowLeft') return '←';
+  if (key === 'ArrowUp') return '↑';
+  if (key === 'ArrowDown') return '↓';
+  if (key === 'Tab') return 'Tab';
+  if (key === ' ') return 'Space';
+  return key;
+}
 
 const SETTINGS_TOPICS = [
   { id: 'general', label: 'General' },
@@ -143,6 +154,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const BASE_URL = 'https://updates.culler.z2hs.au';
   const [diagnosing, setDiagnosing] = useState(false);
   const [diagResult, setDiagResult] = useState<string | null>(null);
+  const [macDoctor, setMacDoctor] = useState<MacFirstRunDoctor | null>(null);
   const activationCode = licenseStatus?.activationCode?.trim() || '';
   const wbTemperature = whiteBalanceTemperature ?? 0;
   const wbTint = whiteBalanceTint ?? 0;
@@ -516,6 +528,61 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
       setDiagResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setDiagnosing(false);
+    }
+  };
+
+  const handleExportDiagnostics = async () => {
+    setDiagnosing(true);
+    setDiagResult('Exporting diagnostics...');
+    try {
+      const dir = await window.electronAPI.exportDiagnostics();
+      setDiagResult(`Diagnostics exported: ${dir}`);
+      await window.electronAPI.openPath(dir);
+    } catch (e) {
+      setDiagResult(`Diagnostics export error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setDiagnosing(false);
+    }
+  };
+
+  const handleMacFirstRunDoctor = async () => {
+    setDiagnosing(true);
+    setDiagResult('Running macOS first-run doctor...');
+    try {
+      const result = await window.electronAPI.runMacFirstRunDoctor();
+      setMacDoctor(result);
+      const failed = result.checks.filter((check) => !check.ok).length;
+      setDiagResult(`${result.supported ? 'macOS' : 'Current platform'} doctor: ${result.checks.length - failed}/${result.checks.length} checks passed.`);
+    } catch (e) {
+      setDiagResult(`macOS doctor error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setDiagnosing(false);
+    }
+  };
+
+  const handleRunBenchmarkSmoke = async () => {
+    setDiagnosing(true);
+    setDiagResult('Running smoke benchmark...');
+    try {
+      const result = await window.electronAPI.runBenchmarkSmoke();
+      if (result.ok) {
+        setDiagResult(`Smoke benchmark wrote ${result.records} records for ${result.files} fixtures (${result.bytes} bytes): ${result.outPath}`);
+      } else {
+        setDiagResult(`Smoke benchmark failed: ${result.error ?? 'unknown error'}`);
+      }
+    } catch (e) {
+      setDiagResult(`Smoke benchmark error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setDiagnosing(false);
+    }
+  };
+
+  const handleOpenBenchmarkOutput = async () => {
+    try {
+      const dir = await window.electronAPI.openBenchmarkOutput();
+      setDiagResult(`Benchmark output opened: ${dir}`);
+    } catch (e) {
+      setDiagResult(`Could not open benchmark output: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
 
@@ -1739,20 +1806,22 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                   {KEYBIND_ITEMS.map(({ action, label, hint }) => {
                     const isRebinding = rebindingAction === action;
                     const currentKey = keybinds[action] || DEFAULT_KEYBINDS[action];
-                    const displayKey =
-                      currentKey === 'ArrowRight' ? '→' :
-                      currentKey === 'ArrowLeft' ? '←' :
-                      currentKey === 'ArrowUp' ? '↑' :
-                      currentKey === 'ArrowDown' ? '↓' :
-                      currentKey === 'Tab' ? 'Tab' :
-                      currentKey === ' ' ? 'Space' :
-                      currentKey;
+                    const displayKey = keyDisplayName(currentKey);
+                    const conflict = KEYBIND_ITEMS.find((item) =>
+                      item.action !== action &&
+                      (keybinds[item.action] || DEFAULT_KEYBINDS[item.action]) === currentKey
+                    );
 
                     return (
-                      <div key={action} className="flex items-center justify-between gap-2 rounded-lg border border-border bg-surface px-2.5 py-2">
+                      <div key={action} className={`flex items-center justify-between gap-2 rounded-lg border bg-surface px-2.5 py-2 ${conflict ? 'border-yellow-500/50' : 'border-border'}`}>
                         <div className="min-w-0">
                           <div className="truncate text-[11px] font-medium text-text">{label}</div>
                           <div className="truncate text-[10px] text-text-muted">{hint}</div>
+                          {conflict && (
+                            <div className="mt-0.5 truncate text-[10px] text-yellow-300">
+                              Also used by {conflict.label}
+                            </div>
+                          )}
                         </div>
                         {isRebinding ? (
                           <button
@@ -1964,6 +2033,10 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
 
           {activeTopic === 'workflow' && (
           <section>
+            <div className="mb-3">
+              <ImportResumeView tone="settings" />
+            </div>
+
             <h3 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-2">Auto-cull decisions</h3>
             <div className="mb-3 rounded border border-border bg-surface-alt px-2 py-2">
               <div className="mb-2">
@@ -2139,12 +2212,52 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                 >
                   {diagnosing ? 'Testing...' : 'GPU load test'}
                 </button>
+                <button
+                  onClick={handleExportDiagnostics}
+                  disabled={diagnosing}
+                  className="text-[10px] text-text-secondary border border-surface-border rounded px-2 py-1 hover:text-text hover:border-text-secondary transition-colors disabled:opacity-50"
+                >
+                  {diagnosing ? 'Working...' : 'Export diagnostics'}
+                </button>
+                <button
+                  onClick={handleMacFirstRunDoctor}
+                  disabled={diagnosing}
+                  className="text-[10px] text-text-secondary border border-surface-border rounded px-2 py-1 hover:text-text hover:border-text-secondary transition-colors disabled:opacity-50"
+                >
+                  {diagnosing ? 'Checking...' : 'Mac doctor'}
+                </button>
+                <button
+                  onClick={handleRunBenchmarkSmoke}
+                  disabled={diagnosing}
+                  className="text-[10px] text-text-secondary border border-surface-border rounded px-2 py-1 hover:text-text hover:border-text-secondary transition-colors disabled:opacity-50"
+                >
+                  {diagnosing ? 'Working...' : 'Run smoke bench'}
+                </button>
+                <button
+                  onClick={handleOpenBenchmarkOutput}
+                  disabled={diagnosing}
+                  className="text-[10px] text-text-secondary border border-surface-border rounded px-2 py-1 hover:text-text hover:border-text-secondary transition-colors disabled:opacity-50"
+                >
+                  Open bench output
+                </button>
               </div>
               <p className="mt-1 text-[10px] text-text-muted">
-                Tests the face engine, reads this PC's CPU/RAM profile, then asks before applying recommended concurrency and preview settings. The load test is only for verification.
+                Tests the face engine, reads this PC's CPU/RAM profile, and exports logs, provider details, recent import ledgers, settings, and cache/benchmark summaries for support.
               </p>
               {diagResult && (
                 <p className="text-[10px] text-text-muted mt-1 font-mono leading-snug">{diagResult}</p>
+              )}
+              {macDoctor && (
+                <div className="mt-1 space-y-0.5">
+                  {macDoctor.checks.map((check) => (
+                    <div key={check.id} className="flex items-start justify-between gap-2 text-[10px]">
+                      <span className={check.ok ? 'text-emerald-400' : 'text-yellow-400'}>{check.ok ? 'OK' : 'Check'}</span>
+                      <span className="min-w-0 flex-1 text-text-muted">
+                        {check.label}: {check.detail}
+                      </span>
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
 

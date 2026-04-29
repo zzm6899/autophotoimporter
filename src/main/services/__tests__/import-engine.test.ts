@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { MediaFile, ImportConfig, ImportProgress } from '../../../shared/types';
+import type { MediaFile, ImportConfig, ImportProgress, WatermarkConfig } from '../../../shared/types';
 
 // Mocks
 vi.mock('node:fs/promises', () => ({
@@ -23,7 +23,7 @@ vi.mock('../duplicate-detector', () => ({
 import { copyFile, mkdir, stat } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { isDuplicate } from '../duplicate-detector';
-import { importFiles, cancelImport, convertedDestPath } from '../import-engine';
+import { importFiles, cancelImport, convertedDestPath, planImportFiles, watermarkPositionForOrientation } from '../import-engine';
 
 const mockCopyFile = vi.mocked(copyFile);
 const mockMkdir = vi.mocked(mkdir);
@@ -72,6 +72,119 @@ describe('convertedDestPath', () => {
   });
 });
 
+describe('watermarkPositionForOrientation', () => {
+  const watermark: WatermarkConfig = {
+    enabled: true,
+    mode: 'text',
+    text: 'Keptra',
+    opacity: 0.4,
+    positionLandscape: 'bottom-right',
+    positionPortrait: 'top-left',
+    scale: 0.045,
+  };
+
+  it('uses portrait placement for EXIF portrait orientations', () => {
+    expect(watermarkPositionForOrientation(watermark, 6)).toBe('top-left');
+    expect(watermarkPositionForOrientation(watermark, 8)).toBe('top-left');
+  });
+
+  it('uses landscape placement when orientation is landscape or unknown', () => {
+    expect(watermarkPositionForOrientation(watermark, 1)).toBe('bottom-right');
+    expect(watermarkPositionForOrientation(watermark)).toBe('bottom-right');
+  });
+});
+
+describe('planImportFiles', () => {
+  beforeEach(() => {
+    mockStat.mockResolvedValue({ size: 5000 } as any);
+    mockIsDuplicate.mockResolvedValue(false);
+  });
+
+  it('returns planned import counts and destination targets without copying', async () => {
+    mockStat.mockRejectedValue(Object.assign(new Error('missing'), { code: 'ENOENT' }));
+    const plan = await planImportFiles([
+      makeFile({ path: '/src/a.jpg', name: 'a.jpg', destPath: '2024/a.jpg' }),
+      makeFile({ path: '/src/b.jpg', name: 'b.jpg', destPath: '2024/b.jpg' }),
+    ], makeConfig({ backupDestRoot: '/backup', verifyChecksums: true }));
+
+    expect(plan.willImport).toBe(2);
+    expect(plan.checksumEnabled).toBe(true);
+    expect(plan.backupEnabled).toBe(true);
+    expect(plan.items[0]).toEqual(expect.objectContaining({
+      status: 'will-import',
+      destRelPath: expect.stringContaining('2024'),
+      backupFullPath: expect.stringContaining('backup'),
+    }));
+    expect(mockCopyFile).not.toHaveBeenCalled();
+  });
+
+  it('flags duplicate and low-confidence files in the dry plan', async () => {
+    mockIsDuplicate.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    mockStat.mockRejectedValue(Object.assign(new Error('missing'), { code: 'ENOENT' }));
+
+    const plan = await planImportFiles([
+      makeFile({ path: '/src/dup.jpg', name: 'dup.jpg', destPath: '2024/dup.jpg' }),
+      makeFile({ path: '/src/soft.jpg', name: 'soft.jpg', destPath: '2024/soft.jpg', blurRisk: 'high', reviewScore: 42 }),
+    ], makeConfig());
+
+    expect(plan.duplicates).toBe(1);
+    expect(plan.lowConfidence).toBe(1);
+    expect(plan.items.map((item) => item.status)).toEqual(['duplicate', 'will-import']);
+    expect(plan.items[1].warnings).toEqual(expect.arrayContaining(['High blur risk', 'Low AI review score']));
+  });
+
+  it('marks destination conflicts as skipped by default', async () => {
+    mockStat.mockResolvedValue({ size: 1234 } as any);
+
+    const plan = await planImportFiles([makeFile()], makeConfig());
+
+    expect(plan.willImport).toBe(0);
+    expect(plan.conflicts).toBe(1);
+    expect(plan.items[0]).toEqual(expect.objectContaining({
+      status: 'conflict',
+      reason: 'Destination file already exists',
+    }));
+  });
+
+  it('renames conflicting destinations in the dry plan', async () => {
+    mockStat.mockImplementation(async (p) => {
+      if (String(p).includes('IMG_001 (1).jpg')) {
+        throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+      }
+      return { size: 1234 } as any;
+    });
+
+    const plan = await planImportFiles([makeFile()], makeConfig({ conflictPolicy: 'rename' }));
+
+    expect(plan.willImport).toBe(1);
+    expect(plan.conflicts).toBe(1);
+    expect(plan.items[0]).toEqual(expect.objectContaining({
+      status: 'will-import',
+      reason: 'Destination exists; will rename',
+      destFullPath: expect.stringContaining('IMG_001 (1).jpg'),
+    }));
+  });
+
+  it('routes conflicting destinations into a conflicts folder in the dry plan', async () => {
+    mockStat.mockImplementation(async (p) => {
+      if (String(p).includes('_Conflicts')) {
+        throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+      }
+      return { size: 1234 } as any;
+    });
+
+    const plan = await planImportFiles([makeFile()], makeConfig({ conflictPolicy: 'conflicts-folder' }));
+
+    expect(plan.willImport).toBe(1);
+    expect(plan.conflicts).toBe(1);
+    expect(plan.items[0]).toEqual(expect.objectContaining({
+      status: 'will-import',
+      reason: 'Destination exists; will import to conflicts folder',
+      destFullPath: expect.stringContaining('_Conflicts'),
+    }));
+  });
+});
+
 describe('importFiles', () => {
   let onProgress: ReturnType<typeof vi.fn<(progress: ImportProgress) => void>>;
 
@@ -81,7 +194,10 @@ describe('importFiles', () => {
     mockCopyFile.mockResolvedValue(undefined);
     mockStat.mockResolvedValue({ size: 5000 } as any);
     mockIsDuplicate.mockResolvedValue(false);
-    mockExecFile.mockResolvedValue({ stdout: '', stderr: '' } as any);
+    mockExecFile.mockImplementation((_file: any, _args: any, _options: any, callback?: any) => {
+      callback?.(null, '', '');
+      return {} as any;
+    });
   });
 
   // --- Happy path ---
@@ -93,8 +209,24 @@ describe('importFiles', () => {
     expect(result.imported).toBe(1);
     expect(result.skipped).toBe(0);
     expect(result.errors).toHaveLength(0);
+    expect(result.ledgerItems).toEqual([
+      expect.objectContaining({ sourcePath: '/src/IMG_001.jpg', status: 'imported' }),
+    ]);
     expect(mockMkdir).toHaveBeenCalledWith(expect.stringContaining('2024-01-15'), { recursive: true });
     expect(mockCopyFile).toHaveBeenCalledOnce();
+  });
+
+  it('dry-run records planned ledger items without writing files', async () => {
+    mockStat.mockRejectedValue(Object.assign(new Error('missing'), { code: 'ENOENT' }));
+
+    const result = await importFiles([makeFile()], makeConfig({ dryRun: true }), onProgress);
+
+    expect(result.imported).toBe(1);
+    expect(result.ledgerItems).toEqual([
+      expect.objectContaining({ status: 'planned', sourcePath: '/src/IMG_001.jpg' }),
+    ]);
+    expect(mockMkdir).not.toHaveBeenCalled();
+    expect(mockCopyFile).not.toHaveBeenCalled();
   });
 
   it('copies multiple files and tracks bytesTransferred', async () => {
@@ -141,12 +273,14 @@ describe('importFiles', () => {
         'powershell.exe',
         expect.arrayContaining(['-Command', expect.stringContaining('image/jpeg')]),
         expect.objectContaining({ timeout: 60000 }),
+        expect.any(Function),
       );
     } else {
       expect(mockExecFile).toHaveBeenCalledWith(
         'sips',
         expect.arrayContaining(['-s', 'format', 'jpeg', '-s', 'formatOptions', '85']),
         expect.objectContaining({ timeout: 60000 }),
+        expect.any(Function),
       );
     }
     expect(mockCopyFile).not.toHaveBeenCalled();
@@ -161,12 +295,14 @@ describe('importFiles', () => {
         'powershell.exe',
         expect.arrayContaining(['-Command', expect.stringContaining('image/tiff')]),
         expect.any(Object),
+        expect.any(Function),
       );
     } else {
       expect(mockExecFile).toHaveBeenCalledWith(
         'sips',
         expect.arrayContaining(['-s', 'format', 'tiff']),
         expect.any(Object),
+        expect.any(Function),
       );
     }
   });
@@ -180,12 +316,14 @@ describe('importFiles', () => {
         'powershell.exe',
         expect.arrayContaining(['-Command', expect.stringContaining('image/jpeg')]),
         expect.any(Object),
+        expect.any(Function),
       );
     } else {
       expect(mockExecFile).toHaveBeenCalledWith(
         'sips',
         expect.arrayContaining(['-s', 'format', 'heic']),
         expect.any(Object),
+        expect.any(Function),
       );
     }
   });
@@ -235,6 +373,7 @@ describe('importFiles', () => {
         'powershell.exe',
         expect.arrayContaining(['-Command', expect.stringContaining('$matrix.Matrix00')]),
         expect.any(Object),
+        expect.any(Function),
       );
     } else {
       expect(mockExecFile).toHaveBeenCalled();
@@ -254,9 +393,34 @@ describe('importFiles', () => {
         'powershell.exe',
         expect.arrayContaining(['-Command', expect.stringContaining('$matrix.Matrix22')]),
         expect.any(Object),
+        expect.any(Function),
       );
     } else {
       expect(mockExecFile).toHaveBeenCalled();
+    }
+  });
+
+  it('initializes PowerShell text watermark formatting before setting alignment', async () => {
+    await importFiles([
+      makeFile({ orientation: 6 }),
+    ], makeConfig({
+      saveFormat: 'jpeg',
+      watermark: {
+        enabled: true,
+        mode: 'text',
+        text: 'Keptra',
+        opacity: 0.4,
+        positionLandscape: 'bottom-right',
+        positionPortrait: 'top-left',
+        scale: 0.045,
+      },
+    }), onProgress);
+
+    if (process.platform === 'win32') {
+      const commandArgs = mockExecFile.mock.calls[0][1] as string[];
+      const script = commandArgs[commandArgs.indexOf('-Command') + 1];
+      expect(script.indexOf('$format = New-Object System.Drawing.StringFormat'))
+        .toBeLessThan(script.indexOf("switch ('northwest')"));
     }
   });
 
@@ -275,6 +439,9 @@ describe('importFiles', () => {
 
     expect(result.skipped).toBe(1);
     expect(result.imported).toBe(0);
+    expect(result.ledgerItems).toEqual([
+      expect.objectContaining({ status: 'skipped', error: 'Duplicate at destination' }),
+    ]);
     expect(mockCopyFile).not.toHaveBeenCalled();
   });
 
@@ -319,6 +486,81 @@ describe('importFiles', () => {
     expect(result.errors).toHaveLength(0);
   });
 
+  it('explicit skip conflict policy skips existing destination before copying', async () => {
+    mockStat.mockResolvedValue({ size: 1234 } as any);
+
+    const result = await importFiles([makeFile()], makeConfig({ conflictPolicy: 'skip' }), onProgress);
+
+    expect(result.skipped).toBe(1);
+    expect(result.errors).toHaveLength(0);
+    expect(result.ledgerItems).toEqual([
+      expect.objectContaining({ status: 'skipped', error: 'Destination file already exists' }),
+    ]);
+    expect(mockCopyFile).not.toHaveBeenCalled();
+  });
+
+  it('rename conflict policy writes to the first available destination name', async () => {
+    mockStat.mockImplementation(async (p) => {
+      const target = String(p);
+      if (target.includes('IMG_001 (1).jpg')) {
+        if (mockCopyFile.mock.calls.length > 0) return { size: 5000 } as any;
+        throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+      }
+      return { size: 1234 } as any;
+    });
+
+    const result = await importFiles([makeFile()], makeConfig({ conflictPolicy: 'rename' }), onProgress);
+
+    expect(result.imported).toBe(1);
+    expect(result.errors).toHaveLength(0);
+    expect(mockCopyFile).toHaveBeenCalledWith(
+      '/src/IMG_001.jpg',
+      expect.stringContaining('IMG_001 (1).jpg'),
+      expect.any(Number),
+    );
+    expect(result.ledgerItems).toEqual([
+      expect.objectContaining({ status: 'imported', destFullPath: expect.stringContaining('IMG_001 (1).jpg') }),
+    ]);
+  });
+
+  it('overwrite conflict policy replaces the existing destination', async () => {
+    mockStat.mockResolvedValue({ size: 1234 } as any);
+
+    const result = await importFiles([makeFile()], makeConfig({ conflictPolicy: 'overwrite' }), onProgress);
+
+    expect(result.imported).toBe(1);
+    expect(result.errors).toHaveLength(0);
+    expect(mockCopyFile).toHaveBeenCalledWith(
+      '/src/IMG_001.jpg',
+      expect.stringContaining('IMG_001.jpg'),
+      undefined,
+    );
+  });
+
+  it('conflicts-folder policy writes conflicts under _Conflicts', async () => {
+    mockStat.mockImplementation(async (p) => {
+      const target = String(p);
+      if (target.includes('_Conflicts')) {
+        if (mockCopyFile.mock.calls.length > 0) return { size: 5000 } as any;
+        throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+      }
+      return { size: 1234 } as any;
+    });
+
+    const result = await importFiles([makeFile()], makeConfig({ conflictPolicy: 'conflicts-folder' }), onProgress);
+
+    expect(result.imported).toBe(1);
+    expect(result.errors).toHaveLength(0);
+    expect(mockCopyFile).toHaveBeenCalledWith(
+      '/src/IMG_001.jpg',
+      expect.stringContaining('_Conflicts'),
+      expect.any(Number),
+    );
+    expect(result.ledgerItems).toEqual([
+      expect.objectContaining({ status: 'imported', destFullPath: expect.stringContaining('_Conflicts') }),
+    ]);
+  });
+
   it('EACCES is recorded as error and continues to next file', async () => {
     const eacces = Object.assign(new Error('permission denied'), { code: 'EACCES' });
     mockCopyFile.mockRejectedValueOnce(eacces).mockResolvedValueOnce(undefined);
@@ -359,7 +601,10 @@ describe('importFiles', () => {
   });
 
   it('sips failure records error', async () => {
-    mockExecFile.mockRejectedValueOnce(new Error('sips crashed'));
+    mockExecFile.mockImplementationOnce((_file: any, _args: any, _options: any, callback?: any) => {
+      callback?.(new Error('sips crashed'));
+      return {} as any;
+    });
     const config = makeConfig({ saveFormat: 'jpeg' });
 
     const result = await importFiles([makeFile()], config, onProgress);

@@ -91,6 +91,11 @@ typings/
 # Electron-Forge
 out/
 
+# Benchmark output and local large-shoot fixtures
+artifacts/benchmarks/*.jsonl
+fixtures/perf-local/*
+!fixtures/perf-local/.gitkeep
+
 # Claude Code
 CLAUDE.md
 .claude/settings.local.json
