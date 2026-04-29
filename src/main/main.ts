@@ -12,16 +12,10 @@ if (started) {
   app.quit();
 }
 
-// Enable the Shape Detection API (FaceDetector, BarcodeDetector, TextDetector)
-// in the Chromium renderer. Must be set before app ready — webPreferences alone
-// is not sufficient in newer Electron versions.
-app.commandLine.appendSwitch('enable-blink-features', 'ShapeDetection');
-
-// Some Windows GPU/driver combinations can load the renderer DOM but fail to
-// present it, leaving customers with a solid black window. ONNX DirectML runs in
-// the main process, so disabling Chromium compositing keeps the UI reliable
-// without turning off the photo analysis GPU path.
-if (process.platform === 'win32' && process.env.KEPTRA_ENABLE_RENDERER_GPU !== '1') {
+// ONNX DirectML runs in the main process and is independent of Chromium
+// compositing. Keep the renderer on Chromium defaults unless support needs to
+// force software rendering for a specific machine.
+if (process.platform === 'win32' && process.env.KEPTRA_DISABLE_RENDERER_GPU === '1') {
   app.disableHardwareAcceleration();
 }
 
@@ -130,7 +124,6 @@ const createWindow = () => {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      enableBlinkFeatures: 'ShapeDetection',
     },
   });
 
