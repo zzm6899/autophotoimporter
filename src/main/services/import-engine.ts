@@ -9,10 +9,11 @@ import type { MediaFile, ImportConfig, ImportProgress, ImportResult, ImportError
 import { DEFAULT_METADATA_EXPORT } from '../../shared/types';
 import { isDuplicate } from './duplicate-detector';
 import { stopsToSafeMultiplier, getEffectiveExposureStops, hasWhiteBalanceAdjustment, whiteBalanceMultipliers } from '../../shared/exposure';
+import { JobController } from './job-controller';
 
 const execFileAsync = promisify(execFile);
 
-let currentAbortController: AbortController | null = null;
+let currentJob: JobController | null = null;
 
 const COPY_CONCURRENCY = 8;
 
@@ -575,9 +576,10 @@ export async function importFiles(
   config: ImportConfig,
   onProgress: (progress: ImportProgress) => void,
 ): Promise<ImportResult> {
-  currentAbortController?.abort();
-  currentAbortController = new AbortController();
-  const { signal } = currentAbortController;
+  currentJob?.cancel();
+  currentJob = new JobController('import');
+  currentJob.start();
+  const { signal } = currentJob;
 
   const startTime = Date.now();
   let imported = 0;
@@ -783,7 +785,7 @@ export async function importFiles(
 
       if (error.code === 'ENOSPC') {
         errors.push({ file: file.name, error: 'Disk full' });
-        currentAbortController?.abort();
+        currentJob?.cancel();
         return;
       }
 
@@ -911,6 +913,14 @@ export async function importFiles(
     });
   }
 
+  if (signal.aborted) {
+    currentJob?.cancel();
+  } else if (errors.length > 0) {
+    currentJob?.fail(new Error('Import completed with errors'));
+  } else {
+    currentJob?.complete({ current: files.length, total: files.length, percent: 100 });
+  }
+
   return {
     imported,
     skipped,
@@ -923,6 +933,6 @@ export async function importFiles(
 }
 
 export function cancelImport(): void {
-  currentAbortController?.abort();
-  currentAbortController = null;
+  currentJob?.cancel();
+  currentJob = null;
 }

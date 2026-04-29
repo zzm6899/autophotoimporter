@@ -11,7 +11,7 @@ The Node service listens on `0.0.0.0:5071` inside the app container, and the rev
 
 If you want this to show up in the TrueNAS Apps UI as a Custom App, use:
 
-- [custom-app.yaml](/C:/Users/24681/Documents/Claude/importer/deploy/truenas/custom-app.yaml)
+- [custom-app.yaml](deploy/truenas/custom-app.yaml)
 
 Recommended image:
 
@@ -19,7 +19,7 @@ Recommended image:
 
 This image is published from the private GitHub repo by:
 
-- [publish-update-admin-image.yml](/C:/Users/24681/Documents/Claude/importer/.github/workflows/publish-update-admin-image.yml)
+- `publish-update-admin-image.yml` (private workflow in release infra repo)
 
 In TrueNAS:
 
@@ -59,7 +59,7 @@ If you are using the Apps UI instead of `docker compose`, create these host path
 - `/mnt/tank/apps/photo-importer/scripts/license-keys/public.pem`
 - `/mnt/tank/apps/photo-importer/scripts/license-keys/private.pem`
 
-The included [custom-app.yaml](/C:/Users/24681/Documents/Claude/importer/deploy/truenas/custom-app.yaml) mounts both `public.pem` and `private.pem`, so the Licenses page can generate and store customer keys directly in the web UI.
+The included [custom-app.yaml](deploy/truenas/custom-app.yaml) mounts both `public.pem` and `private.pem`, so the Licenses page can generate and store customer keys directly in the web UI.
 
 ## Publish Flow
 
@@ -85,4 +85,4 @@ If your repo is private, you can also configure the admin panel to inspect the l
 - `GITHUB_RELEASE_TOKEN`
 - `GITHUB_API_BASE_URL` (optional)
 
-Those values are now exposed in [custom-app.yaml](/C:/Users/24681/Documents/Claude/importer/deploy/truenas/custom-app.yaml), so they stay easy to edit from the TrueNAS Apps UI.
+Those values are now exposed in [custom-app.yaml](deploy/truenas/custom-app.yaml), so they stay easy to edit from the TrueNAS Apps UI.

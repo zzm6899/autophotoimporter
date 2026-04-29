@@ -10,13 +10,103 @@ import { scanFiles, cancelScan, pauseScan, resumeScan } from './services/file-sc
 import { importFiles, cancelImport } from './services/import-engine';
 import { isDuplicate } from './services/duplicate-detector';
 import { generatePreview } from './services/exif-parser';
-import { checkForUpdate, fetchUpdateHistory } from './services/update-checker';
+import { checkForUpdate, fetchUpdateHistory, readLastKnownGoodUpdateMetadata } from './services/update-checker';
 import { probeFtp, mirrorFtp } from './services/ftp-source';
 import { activateLicenseInput, checkHostedLicenseStatus, validateLicenseKey } from './services/license';
 import { analyzeFaces, faceModelsAvailable, serializeEmbedding, isGpuAvailable, getActualExecutionProvider, getFaceProviderDiagnostics, configureGpuAcceleration, configureGpuDevice, configureCpuOptimization, configureFaceThroughput, clearImageDecodeCache, diagnoseFaceEngine, runFaceGpuStressTest } from './services/face-engine';
 import { getCachedFaceResult, setCachedFaceResult, clearFaceCache } from './services/face-cache';
 import { detectDeviceTier, applyDeviceTier } from './services/device-tier';
 import { setRawPreviewQuality } from './services/exif-parser';
+import { registerSettingsHandlers } from './ipc/settings-handlers';
+import { registerScanHandlers } from './ipc/scan-handlers';
+import { registerImportHandlers } from './ipc/import-handlers';
+import { registerUpdateHandlers } from './ipc/update-handlers';
+import { registerFtpHandlers } from './ipc/ftp-handlers';
+import { registerLicenseHandlers } from './ipc/license-handlers';
+import { registerFaceHandlers } from './ipc/face-handlers';
+
+
+
+type IpcErrorResponse = { ok: false; code: string; message: string };
+
+function ipcError(code: string, message: string): IpcErrorResponse {
+  return { ok: false, code, message };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isBoolean(value: unknown): value is boolean {
+  return typeof value === 'boolean';
+}
+
+function isNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isFtpConfig(value: unknown): value is FtpConfig {
+  if (!isRecord(value)) return false;
+  return isNonEmptyString(value.host)
+    && isNumber(value.port)
+    && value.port >= 1
+    && value.port <= 65535
+    && isNonEmptyString(value.user)
+    && typeof value.password === 'string'
+    && isBoolean(value.secure)
+    && isNonEmptyString(value.remotePath);
+}
+
+function isImportConfig(value: unknown): value is ImportConfig {
+  if (!isRecord(value)) return false;
+  return isNonEmptyString(value.sourcePath)
+    && isNonEmptyString(value.destRoot)
+    && isBoolean(value.skipDuplicates)
+    && (value.saveFormat === 'original' || value.saveFormat === 'jpeg')
+    && isNumber(value.jpegQuality);
+}
+
+function isSafeHttpUrl(value: unknown): value is string {
+  if (!isNonEmptyString(value)) return false;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+  } catch {
+    return false;
+  }
+}
+
+function isSafePath(value: unknown): value is string {
+  return isNonEmptyString(value) && !value.includes('\0');
+}
+
+function isSettingsPatch(value: unknown): value is Partial<AppSettings> {
+  if (!isRecord(value)) return false;
+  if (value.ftpConfig != null && !isFtpConfig(value.ftpConfig)) return false;
+  if (value.ftpDestConfig != null && !isFtpConfig(value.ftpDestConfig)) return false;
+  if (value.lastDestination != null && typeof value.lastDestination !== 'string') return false;
+  return true;
+}
+
+type IpcValidator = (args: unknown[]) => IpcErrorResponse | null;
+
+function handleIpc(channel: string, handler: (event: Electron.IpcMainInvokeEvent, ...args: any[]) => unknown | Promise<unknown>, validator?: IpcValidator): void {
+  ipcMain.handle(channel, async (event, ...args) => {
+    const invalid = validator?.(args);
+    if (invalid) return invalid;
+    try {
+      return await handler(event, ...args);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unexpected IPC failure';
+      console.error(`[ipc:${channel}]`, error);
+      return ipcError('INTERNAL_ERROR', message);
+    }
+  });
+}
 
 function buildImportMetadata(settings: AppSettings): ImportConfig['metadata'] {
   const keywords = settings.metadataKeywords
@@ -80,6 +170,24 @@ let lastFtpSyncStatus: FtpSyncStatus = {
   stage: 'idle',
   message: 'FTP sync is idle.',
 };
+
+const UPDATE_ALLOWED_HOSTS = new Set(['updates.culler.z2hs.au']);
+const UPDATE_ALLOWED_SCHEMES = new Set(['https:']);
+
+function logUpdateDiagnostic(event: string, details: Record<string, unknown>) {
+  console.info('[updates-ipc]', JSON.stringify({ event, ...details }));
+}
+
+function isAllowlistedUpdateUrl(value?: unknown): boolean {
+  if (value == null) return true;
+  if (typeof value !== 'string') return false;
+  try {
+    const parsed = new URL(value);
+    return UPDATE_ALLOWED_SCHEMES.has(parsed.protocol) && UPDATE_ALLOWED_HOSTS.has(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
 
 function getSettingsPath(): string {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -586,6 +694,22 @@ async function refreshUpdateState() {
     ? await fetchUpdateHistory(licenseKey).catch(() => [])
     : [];
   lastUpdateState = { ...update, history };
+  if (update.status === 'error') {
+    const fallback = await readLastKnownGoodUpdateMetadata();
+    if (fallback) {
+      lastUpdateState = {
+        ...lastUpdateState,
+        latestVersion: fallback.latestVersion,
+        releaseName: fallback.releaseName,
+        releaseDate: fallback.releaseDate,
+        releaseUrl: fallback.releaseUrl,
+        downloadUrl: fallback.downloadUrl,
+        feedUrl: fallback.feedUrl,
+        message: `${update.message ?? 'Update check failed.'} Using last known update metadata from ${fallback.savedAt}.`,
+      };
+      logUpdateDiagnostic('fallback-last-known-good', { fallbackVersion: fallback.latestVersion, savedAt: fallback.savedAt });
+    }
+  }
   sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
   return lastUpdateState;
 }
@@ -596,6 +720,9 @@ function canUseNativeUpdater() {
 
 function ensureAutoUpdaterConfigured(feedUrl?: string) {
   if (!feedUrl || !canUseNativeUpdater()) return;
+  if (!isAllowlistedUpdateUrl(feedUrl)) {
+    throw new Error('Feed URL failed allowlist trust checks.');
+  }
 
   if (!autoUpdaterReady) {
     const updater = autoUpdater as unknown as {
@@ -875,8 +1002,16 @@ async function contactSheetFiles(files: MediaFile[]): Promise<MediaFile[]> {
 }
 
 export function registerIpcHandlers(): void {
+  // Composition root: domain modules are registered here.
+  registerSettingsHandlers();
+  registerScanHandlers();
+  registerImportHandlers();
+  registerUpdateHandlers();
+  registerFtpHandlers();
+  registerLicenseHandlers();
+  registerFaceHandlers();
   // Volumes
-  ipcMain.handle(IPC.VOLUMES_LIST, async () => {
+  handleIpc(IPC.VOLUMES_LIST, async () => {
     return listVolumes();
   });
 
@@ -924,7 +1059,7 @@ export function registerIpcHandlers(): void {
   });
 
   // Scanning
-  ipcMain.handle(IPC.SCAN_START, async (_event, sourcePath: string, folderPattern?: string) => {
+  handleIpc(IPC.SCAN_START, async (_event, sourcePath: string, folderPattern?: string) => {
     console.log(`[scan] Starting scan of: ${sourcePath}`);
     scannedFiles = [];
     scannedFilesByPath = new Map();
@@ -953,7 +1088,7 @@ export function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle(IPC.SCAN_CHECK_DUPLICATES, async (_event, destRoot: string) => {
+  handleIpc(IPC.SCAN_CHECK_DUPLICATES, async (_event, destRoot: string) => {
     // Use the same path composition as the import pipeline so protected files
     // land in _Protected/ and are matched there (otherwise they look like new
     // files forever because we'd check `destRoot/destPath` while they're
@@ -974,27 +1109,27 @@ export function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle(IPC.SCAN_PREVIEW, async (_event, filePath: string, variant?: 'preview' | 'detail') => {
+  handleIpc(IPC.SCAN_PREVIEW, async (_event, filePath: string, variant?: 'preview' | 'detail') => {
     if (typeof filePath !== 'string') return undefined;
     if (variant !== undefined && variant !== 'preview' && variant !== 'detail') return undefined;
     if (!scannedFilesByPath.has(filePath)) return undefined;
     return generatePreview(filePath, variant ?? 'preview');
   });
 
-  ipcMain.handle(IPC.SCAN_CANCEL, async () => {
+  handleIpc(IPC.SCAN_CANCEL, async () => {
     cancelScan();
   });
 
-  ipcMain.handle(IPC.SCAN_PAUSE, async () => {
+  handleIpc(IPC.SCAN_PAUSE, async () => {
     pauseScan();
   });
 
-  ipcMain.handle(IPC.SCAN_RESUME, async () => {
+  handleIpc(IPC.SCAN_RESUME, async () => {
     resumeScan();
   });
 
   // Import
-  ipcMain.handle(IPC.IMPORT_START, async (_event, config: ImportConfig) => {
+  handleIpc(IPC.IMPORT_START, async (_event, config: ImportConfig) => {
     try {
       const licenseStatus = await getLicenseStatus();
       if (!licenseStatus.valid) {
@@ -1032,14 +1167,14 @@ export function registerIpcHandlers(): void {
         durationMs: 0,
       } satisfies ImportResult;
     }
-  });
+  }, ([config]) => isImportConfig(config) ? null : ipcError('VALIDATION_ERROR', 'Invalid import config payload.'));
 
-  ipcMain.handle(IPC.IMPORT_CANCEL, async () => {
+  handleIpc(IPC.IMPORT_CANCEL, async () => {
     cancelImport();
   });
 
   // Dialogs
-  ipcMain.handle(IPC.DIALOG_SELECT_FOLDER, async (_event, title: string) => {
+  handleIpc(IPC.DIALOG_SELECT_FOLDER, async (_event, title: string) => {
     const result = await dialog.showOpenDialog({
       title,
       properties: ['openDirectory', 'createDirectory'],
@@ -1048,7 +1183,7 @@ export function registerIpcHandlers(): void {
     return result.filePaths[0];
   });
 
-  ipcMain.handle(IPC.DIALOG_SELECT_FILE, async (_event, title: string, filters?: Electron.FileFilter[]) => {
+  handleIpc(IPC.DIALOG_SELECT_FILE, async (_event, title: string, filters?: Electron.FileFilter[]) => {
     const result = await dialog.showOpenDialog({
       title,
       properties: ['openFile'],
@@ -1058,23 +1193,22 @@ export function registerIpcHandlers(): void {
     return result.filePaths[0];
   });
 
-  ipcMain.handle(IPC.DIALOG_OPEN_PATH, async (_event, filePath: string) => {
-    if (typeof filePath !== 'string' || filePath.trim().length === 0) return;
+  handleIpc(IPC.DIALOG_OPEN_PATH, async (_event, filePath: string) => {
     await shell.openPath(filePath);
-  });
+  }, ([filePath]) => isSafePath(filePath) ? null : ipcError('VALIDATION_ERROR', 'Invalid path payload.'));
 
   // Settings
-  ipcMain.handle(IPC.SETTINGS_GET, async () => {
+  handleIpc(IPC.SETTINGS_GET, async () => {
     return loadSettings();
   });
 
-  ipcMain.handle(IPC.SETTINGS_SET, async (_event, settings: Partial<AppSettings>) => {
+  handleIpc(IPC.SETTINGS_SET, async (_event, settings: Partial<AppSettings>) => {
     await saveSettings(settings);
     const merged = await loadSettings();
     await scheduleFtpSync(merged);
-  });
+  }, ([settings]) => isSettingsPatch(settings) ? null : ipcError('VALIDATION_ERROR', 'Invalid settings patch payload.'));
 
-  ipcMain.handle(IPC.LICENSE_ACTIVATE, async (_event, key: string) => {
+  handleIpc(IPC.LICENSE_ACTIVATE, async (_event, key: string) => {
     const status = await activateLicenseInput(key);
     if (status.valid && status.key) {
       await saveSettings({
@@ -1091,7 +1225,7 @@ export function registerIpcHandlers(): void {
     return status;
   });
 
-  ipcMain.handle(IPC.LICENSE_CLEAR, async () => {
+  handleIpc(IPC.LICENSE_CLEAR, async () => {
     await saveSettings({
       licenseKey: '',
       licenseActivationCode: '',
@@ -1100,35 +1234,35 @@ export function registerIpcHandlers(): void {
     return { valid: false, message: 'License removed.', status: 'unknown' as const };
   });
 
-  ipcMain.handle(IPC.OPEN_EXTERNAL, async (_event, url: string) => {
-    if (isSafeHttpsUrl(url)) {
-      await shell.openExternal(url);
-    }
-  });
+  handleIpc(IPC.OPEN_EXTERNAL, async (_event, url: string) => {
+    await shell.openExternal(url);
+  }, ([url]) => isSafeHttpsUrl(url) ? null : ipcError('VALIDATION_ERROR', 'Invalid URL payload.'));
 
   // Updates
-  ipcMain.handle(IPC.UPDATE_OPEN_RELEASE, async (_event, url: string) => {
-    if (isSafeHttpsUrl(url)) {
-      await shell.openExternal(url);
-    }
-  });
+  handleIpc(IPC.UPDATE_OPEN_RELEASE, async (_event, url: string) => {
+    await shell.openExternal(url);
+  }, ([url]) => isAllowlistedUpdateUrl(url) ? null : ipcError('VALIDATION_ERROR', 'Release URL failed allowlist trust checks.'));
 
-  ipcMain.handle(IPC.UPDATE_CHECK_NOW, async () => {
+  handleIpc(IPC.UPDATE_CHECK_NOW, async () => {
     return refreshUpdateState();
   });
 
-  ipcMain.handle(IPC.UPDATE_FETCH_HISTORY, async () => {
+  handleIpc(IPC.UPDATE_FETCH_HISTORY, async () => {
     const licenseKey = await getStoredLicenseKey();
     return fetchUpdateHistory(licenseKey);
   });
 
-  ipcMain.handle(IPC.UPDATE_DOWNLOAD, async () => {
+  handleIpc(IPC.UPDATE_DOWNLOAD, async () => {
     const latest = lastUpdateState ?? await refreshUpdateState();
     const downloadUrl = latest.downloadUrl;
 
     // Prefer the hosted installer/package link. It's more reliable than the
     // legacy native updater feed and works for both Windows and macOS builds.
     if (downloadUrl) {
+      if (!isAllowlistedUpdateUrl(downloadUrl)) {
+        logUpdateDiagnostic('blocked-download-url', { latestVersion: latest.latestVersion });
+        return { ok: false as const, message: 'Update download URL failed trust checks.' };
+      }
       if (downloadedInstallerPath && downloadedInstallerVersion === latest.latestVersion) {
         lastUpdateState = {
           ...latest,
@@ -1177,6 +1311,10 @@ export function registerIpcHandlers(): void {
     }
 
     if (latest.releaseUrl) {
+      if (!isAllowlistedUpdateUrl(latest.releaseUrl)) {
+        logUpdateDiagnostic('blocked-release-url', { latestVersion: latest.latestVersion });
+        return { ok: false as const, message: 'Release URL failed trust checks.' };
+      }
       return {
         ok: false as const,
         message: 'This release only has notes right now. Add a hosted installer package to download inside the app.',
@@ -1205,7 +1343,7 @@ export function registerIpcHandlers(): void {
     return { ok: false as const, message: 'No download is available for this release yet.' };
   });
 
-  ipcMain.handle(IPC.UPDATE_INSTALL, async () => {
+  handleIpc(IPC.UPDATE_INSTALL, async () => {
     if (downloadedInstallerPath && downloadedUpdateKind === 'installer') {
       // Verify the file still exists — it may have been cleared since download
       const { existsSync } = await import('node:fs');
@@ -1251,12 +1389,12 @@ export function registerIpcHandlers(): void {
   });
 
   // FTP source
-  ipcMain.handle(IPC.FTP_PROBE, async (_event, config: FtpConfig) => {
+  handleIpc(IPC.FTP_PROBE, async (_event, config: FtpConfig) => {
     return probeFtp(config);
-  });
+  }, ([config]) => isFtpConfig(config) ? null : ipcError('VALIDATION_ERROR', 'Invalid FTP config payload.'));
 
   let ftpAbort: AbortController | null = null;
-  ipcMain.handle(IPC.FTP_MIRROR_START, async (_event, config: FtpConfig) => {
+  handleIpc(IPC.FTP_MIRROR_START, async (_event, config: FtpConfig) => {
     ftpAbort?.abort();
     ftpAbort = new AbortController();
     try {
@@ -1272,30 +1410,30 @@ export function registerIpcHandlers(): void {
       const message = err instanceof Error ? err.message : 'FTP mirror failed';
       return { ok: false as const, error: message };
     }
-  });
+  }, ([config]) => isFtpConfig(config) ? null : ipcError('VALIDATION_ERROR', 'Invalid FTP config payload.'));
 
-  ipcMain.handle(IPC.FTP_MIRROR_CANCEL, async () => {
+  handleIpc(IPC.FTP_MIRROR_CANCEL, async () => {
     ftpAbort?.abort();
     ftpAbort = null;
   });
 
-  ipcMain.handle(IPC.FTP_SYNC_RUN, async () => {
+  handleIpc(IPC.FTP_SYNC_RUN, async () => {
     const status = await runAutomatedFtpSync('manual');
     return { ok: status.state !== 'error', status };
   });
 
   // Eject
-  ipcMain.handle(IPC.EJECT_VOLUME, async (_event, volumePath: string) => {
+  handleIpc(IPC.EJECT_VOLUME, async (_event, volumePath: string) => {
     return ejectVolume(volumePath);
-  });
+  }, ([volumePath]) => isSafePath(volumePath) ? null : ipcError('VALIDATION_ERROR', 'Invalid volume path payload.'));
 
   // Free space
-  ipcMain.handle(IPC.DISK_FREE_SPACE, async (_event, dirPath: string) => {
+  handleIpc(IPC.DISK_FREE_SPACE, async (_event, dirPath: string) => {
     return getFreeSpace(dirPath);
-  });
+  }, ([dirPath]) => isSafePath(dirPath) ? null : ipcError('VALIDATION_ERROR', 'Invalid directory path payload.'));
 
   // Workflow — manifest export (CSV/JSON of the current scan list)
-  ipcMain.handle(IPC.EXPORT_MANIFEST, async (_event, format: 'csv' | 'json') => {
+  handleIpc(IPC.EXPORT_MANIFEST, async (_event, format: 'csv' | 'json') => {
     const result = await dialog.showSaveDialog({
       title: 'Export import manifest',
       defaultPath: `import-manifest.${format}`,
@@ -1331,7 +1469,7 @@ export function registerIpcHandlers(): void {
     return result.filePath;
   });
 
-  ipcMain.handle(IPC.EXPORT_CONTACT_SHEET, async (_event, files: MediaFile[]) => {
+  handleIpc(IPC.EXPORT_CONTACT_SHEET, async (_event, files: MediaFile[]) => {
     const result = await dialog.showSaveDialog({
       title: 'Export contact sheet',
       defaultPath: 'import-contact-sheet.pdf',
@@ -1372,7 +1510,7 @@ export function registerIpcHandlers(): void {
    * Returns true when the ONNX face models are present on disk.
    * The renderer uses this to show/hide face-related UI affordances.
    */
-  ipcMain.handle(IPC.FACE_EXECUTION_PROVIDER, () => {
+  handleIpc(IPC.FACE_EXECUTION_PROVIDER, () => {
     return {
       ep: getActualExecutionProvider(),
       models: getFaceProviderDiagnostics(),
@@ -1380,11 +1518,11 @@ export function registerIpcHandlers(): void {
   });
 
   // Diagnostic: run a quick benchmark and return timing + EP info
-  ipcMain.handle('face:diagnose', async () => {
+  handleIpc('face:diagnose', async () => {
     return diagnoseFaceEngine();
   });
 
-  ipcMain.handle(IPC.FACE_MODELS_AVAILABLE, () => {
+  handleIpc(IPC.FACE_MODELS_AVAILABLE, () => {
     return faceModelsAvailable();
   });
 
@@ -1392,20 +1530,20 @@ export function registerIpcHandlers(): void {
    * Returns GPU availability status (null = not yet determined, true/false after first analysis).
    * The renderer can show this in UI or logging for diagnostics.
    */
-  ipcMain.handle(IPC.FACE_GPU_AVAILABLE, () => {
+  handleIpc(IPC.FACE_GPU_AVAILABLE, () => {
     return isGpuAvailable();
   });
 
-  ipcMain.handle(IPC.FACE_CANCEL_QUEUE, () => {
+  handleIpc(IPC.FACE_CANCEL_QUEUE, () => {
     cancelPendingFaceJobs();
     return { ok: true };
   });
 
-  ipcMain.handle(IPC.FACE_GPU_STRESS_TEST, async (_event, durationMs?: number, streams?: number) => {
+  handleIpc(IPC.FACE_GPU_STRESS_TEST, async (_event, durationMs?: number, streams?: number) => {
     return runFaceGpuStressTest(durationMs, streams);
   });
 
-  ipcMain.handle(IPC.GPU_LIST, async () => {
+  handleIpc(IPC.GPU_LIST, async () => {
     return listWindowsGpus().catch(() => []);
   });
 
@@ -1427,7 +1565,7 @@ export function registerIpcHandlers(): void {
    */
   // Semaphore is now module-level (see top of file) so loadSettings can init it.
 
-  ipcMain.handle(IPC.FACE_ANALYZE, (_event, input: string | string[]) => {
+  handleIpc(IPC.FACE_ANALYZE, (_event, input: string | string[]) => {
     const paths = Array.isArray(input) ? input : [input];
 
     const task = async (): Promise<object[]> => {
@@ -1512,12 +1650,12 @@ export function registerIpcHandlers(): void {
   });
 
   // Allow renderer to update face concurrency at runtime
-  ipcMain.handle('face:set-concurrency', (_event, n: number) => {
+  handleIpc('face:set-concurrency', (_event, n: number) => {
     setFaceConcurrency(n);
   });
 
   // Clear the on-disk thumbnail/preview cache (temp folder).
-  ipcMain.handle(IPC.CACHE_CLEAR, async () => {
+  handleIpc(IPC.CACHE_CLEAR, async () => {
     try {
       const tmpDir = path.join(app.getPath('temp'), 'photo-importer-thumbs');
       await rm(tmpDir, { recursive: true, force: true });
@@ -1529,7 +1667,7 @@ export function registerIpcHandlers(): void {
   });
 
   // Clear the persistent face-analysis result cache
-  ipcMain.handle(IPC.FACE_CACHE_CLEAR, async () => {
+  handleIpc(IPC.FACE_CACHE_CLEAR, async () => {
     try {
       await clearFaceCache();
       return { success: true };
@@ -1539,7 +1677,7 @@ export function registerIpcHandlers(): void {
   });
 
   // Return the detected device performance tier profile
-  ipcMain.handle(IPC.DEVICE_TIER_GET, async () => {
+  handleIpc(IPC.DEVICE_TIER_GET, async () => {
     const settings = await loadSettings();
     return detectDeviceTier(
       settings.perfTier && settings.perfTier !== 'auto' ? settings.perfTier : undefined

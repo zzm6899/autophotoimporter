@@ -18,7 +18,9 @@
     "models:publish": "node scripts/publish-models.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "docs:sync-matrix": "node scripts/sync-support-matrix.mjs",
+    "docs:check": "node scripts/check-doc-links.mjs"
   },
   "keywords": [],
   "author": {

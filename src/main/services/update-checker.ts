@@ -1,8 +1,12 @@
 import { app, net } from 'electron';
 import type { UpdateReleaseSummary, UpdateState } from '../../shared/types';
 import { getDeviceIdentity } from './device-id';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import path from 'node:path';
 
 const UPDATE_BASE_URL = 'https://updates.culler.z2hs.au';
+const UPDATE_ALLOWED_HOSTS = new Set(['updates.culler.z2hs.au']);
+const UPDATE_ALLOWED_SCHEMES = new Set(['https:']);
 const TIMEOUT_MS = 10_000;
 
 type CheckResponse = {
@@ -27,6 +31,20 @@ type HistoryResponse = {
     channel?: string;
   }>;
 };
+
+export interface PersistedUpdateMetadata {
+  latestVersion: string;
+  releaseName?: string;
+  releaseDate?: string;
+  releaseUrl?: string;
+  downloadUrl?: string;
+  feedUrl?: string;
+  savedAt: string;
+}
+
+function logUpdateDiagnostic(event: string, details: Record<string, unknown>) {
+  console.info('[updates]', JSON.stringify({ event, ...details }));
+}
 
 function isNewer(local: string, remote: string): boolean {
   const lp = local.split('.').map(Number);
@@ -57,6 +75,35 @@ function currentPlatform() {
   if (process.platform === 'win32') return 'windows';
   if (process.platform === 'darwin') return 'macos';
   return process.platform;
+}
+
+function isAllowedUpdateUrl(value?: string): boolean {
+  if (!value) return true;
+  try {
+    const parsed = new URL(value);
+    return UPDATE_ALLOWED_SCHEMES.has(parsed.protocol) && UPDATE_ALLOWED_HOSTS.has(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function getUpdateMetadataPath() {
+  return path.join(app.getPath('userData'), 'update-metadata.json');
+}
+
+async function writeLastKnownGoodUpdateMetadata(data: PersistedUpdateMetadata) {
+  const metadataPath = getUpdateMetadataPath();
+  await mkdir(path.dirname(metadataPath), { recursive: true });
+  await writeFile(metadataPath, JSON.stringify(data, null, 2), 'utf-8');
+}
+
+export async function readLastKnownGoodUpdateMetadata(): Promise<PersistedUpdateMetadata | null> {
+  try {
+    const raw = await readFile(getUpdateMetadataPath(), 'utf-8');
+    return JSON.parse(raw) as PersistedUpdateMetadata;
+  } catch {
+    return null;
+  }
 }
 
 async function fetchJson<T>(url: string, licenseKey?: string): Promise<T> {
@@ -102,7 +149,20 @@ export async function checkForUpdate(licenseKey?: string): Promise<UpdateState> 
       };
     }
 
-    if (!data.latestVersion || !isNewer(version, data.latestVersion)) {
+    if (!data.latestVersion) {
+      logUpdateDiagnostic('metadata-malformed', { reason: 'missing-latest-version' });
+      return {
+        status: 'error',
+        currentVersion: version,
+        lastCheckedAt: checkedAt,
+        message: 'Update metadata is malformed. Showing your last known update state.',
+      };
+    }
+
+    if (!isNewer(version, data.latestVersion)) {
+      if (data.latestVersion !== version) {
+        logUpdateDiagnostic('downgrade-blocked', { currentVersion: version, offeredVersion: data.latestVersion });
+      }
       return {
         status: 'up-to-date',
         currentVersion: version,
@@ -111,6 +171,27 @@ export async function checkForUpdate(licenseKey?: string): Promise<UpdateState> 
         message: data.message || 'You already have the latest version.',
       };
     }
+
+    if (!isAllowedUpdateUrl(data.feedUrl) || !isAllowedUpdateUrl(data.downloadUrl) || !isAllowedUpdateUrl(data.releaseUrl)) {
+      logUpdateDiagnostic('metadata-malformed', { reason: 'url-not-allowlisted' });
+      return {
+        status: 'error',
+        currentVersion: version,
+        lastCheckedAt: checkedAt,
+        message: 'Update metadata failed trust checks. Please contact support.',
+      };
+    }
+
+    await writeLastKnownGoodUpdateMetadata({
+      latestVersion: data.latestVersion,
+      releaseName: data.releaseName,
+      releaseDate: data.releaseDate,
+      releaseUrl: data.releaseUrl,
+      downloadUrl: data.downloadUrl,
+      feedUrl: data.feedUrl,
+      savedAt: checkedAt,
+    });
+    logUpdateDiagnostic('metadata-saved', { latestVersion: data.latestVersion, platform });
 
     return {
       status: 'available',
@@ -126,6 +207,7 @@ export async function checkForUpdate(licenseKey?: string): Promise<UpdateState> 
       message: data.message,
     };
   } catch (err) {
+    logUpdateDiagnostic('check-failed', { message: err instanceof Error ? err.message : 'unknown-error' });
     return {
       status: 'error',
       currentVersion: version,
@@ -141,6 +223,10 @@ export async function fetchUpdateHistory(licenseKey?: string): Promise<UpdateRel
   const data = await fetchJson<HistoryResponse>(url, licenseKey);
   const unique = new Map<string, UpdateReleaseSummary>();
   for (const release of data.releases ?? []) {
+    if (!release.version) {
+      logUpdateDiagnostic('history-malformed-entry', { reason: 'missing-version' });
+      continue;
+    }
     if (!unique.has(release.version)) {
       unique.set(release.version, {
         version: release.version,

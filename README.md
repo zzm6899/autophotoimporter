@@ -124,6 +124,18 @@ No setup needed — CoreML is native on M-series Macs and automatically used.
 - **App is slow (face analysis takes 20+ sec/photo)** — Likely CPU-only. Verify GPU detection: open DevTools (F12) and run `window.electronAPI.isGpuAvailable()`. Returns `true` = GPU active, `false` = CPU only, `null` = not yet run.
 - **CUDA errors on Linux/macOS** — Verify `nvidia-smi` shows your GPU. If not, CUDA is not installed or detected.
 
+## Compatibility & Support Matrix
+
+<!-- SUPPORT_MATRIX:START -->
+| OS | FTP | GPU provider | Auto-updates |
+| --- | --- | --- | --- |
+| Windows 10/11 | Supported | DirectML (all GPUs), CUDA (NVIDIA), CPU fallback | Supported (Squirrel + hosted feed) |
+| macOS 13+ (Intel/Apple Silicon) | Supported | CoreML (Apple Silicon), CUDA (NVIDIA eGPU), CPU fallback | Supported (hosted feed) |
+| Linux (dev/test) | Supported | CUDA (NVIDIA), CPU fallback | Not packaged for end users |
+
+_Generated from `docs/support-matrix.json` on 2026-04-29._
+<!-- SUPPORT_MATRIX:END -->
+
 ## Build from Source
 
 ```bash
@@ -201,7 +213,7 @@ Without a valid license, the app stays in browse/review mode and importing is bl
 
 ## License
 
-[MIT](./LICENSE)
+MIT
 "# autophotoimporter"
 "# autophotoimporter"
 # Hosted Updates
@@ -223,7 +235,7 @@ Public endpoints:
 
 If you prefer the TrueNAS Apps UI instead of shell-driven `docker compose`, use:
 
-- [deploy/truenas/custom-app.yaml](/C:/Users/24681/Documents/Claude/importer/deploy/truenas/custom-app.yaml)
+- [deploy/truenas/custom-app.yaml](deploy/truenas/custom-app.yaml)
 
 The hosted admin image is published from the private GitHub repo to:
 

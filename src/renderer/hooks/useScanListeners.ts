@@ -1,6 +1,8 @@
 import { useEffect, useRef } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 
+type NormalizedJobState = 'queued' | 'running' | 'paused' | 'cancelled' | 'completed' | 'failed';
+
 export function useScanListeners() {
   const {
     destination,
@@ -17,8 +19,10 @@ export function useScanListeners() {
   // This ref stays in sync with the phase state and lets the onScanComplete
   // callback discard stale IPC events that arrive after the phase left 'scanning'.
   const isActiveRef = useRef(false);
+  const scanStateRef = useRef<NormalizedJobState>('queued');
   useEffect(() => {
     isActiveRef.current = phase === 'scanning';
+    scanStateRef.current = phase === 'scanning' ? 'running' : scanStateRef.current;
   }, [phase]);
 
   useEffect(() => {
@@ -45,6 +49,7 @@ export function useScanListeners() {
       // superseded. The reducer also guards on phase === 'scanning', so this
       // is belt-and-suspenders — but it avoids a spurious dispatch entirely.
       if (!isActiveRef.current) return;
+      scanStateRef.current = 'completed';
       dispatch({ type: 'SCAN_COMPLETE' });
     });
 

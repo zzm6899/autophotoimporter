@@ -20,6 +20,8 @@
 
 import { useState, useCallback, useRef } from 'react';
 
+type NormalizedJobState = 'queued' | 'running' | 'paused' | 'cancelled' | 'completed' | 'failed';
+
 export interface FaceResult {
   path: string;
   faceCount: number;
@@ -58,15 +60,18 @@ export function useFaceAnalysis(): UseFaceAnalysisReturn {
   const [processedCount, setProcessedCount] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
   const cancelledRef = useRef(false);
+  const stateRef = useRef<NormalizedJobState>('queued');
 
   const cancel = useCallback(() => {
     cancelledRef.current = true;
+    stateRef.current = 'cancelled';
   }, []);
 
   const analyze = useCallback(async (paths: string[]) => {
     if (paths.length === 0) return;
 
     cancelledRef.current = false;
+    stateRef.current = 'running';
 
     // Check model availability. Re-check on every call until models are confirmed
     // present — never cache a false result, because models may finish downloading
@@ -174,6 +179,8 @@ export function useFaceAnalysis(): UseFaceAnalysisReturn {
       }
       flush(); // final flush
     } finally {
+      if (cancelledRef.current) stateRef.current = 'cancelled';
+      else stateRef.current = 'completed';
       setAnalyzing(false);
     }
   }, [modelsAvailable]);

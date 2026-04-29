@@ -7,13 +7,17 @@ const mockOn = vi.fn();
 const mockGetAllWindows = vi.fn(() => []);
 const mockShowOpenDialog = vi.fn();
 const mockOpenPath = vi.fn();
+const mockOpenExternal = vi.fn();
 const mockGetPath = vi.fn((_name: string) => '/tmp/userData');
 
 vi.mock('electron', () => ({
   ipcMain: { handle: (channel: string, handler: Function) => mockHandle(channel, handler) },
   dialog: { showOpenDialog: (...args: unknown[]) => mockShowOpenDialog(...args) },
-  shell: { openPath: (...args: unknown[]) => mockOpenPath(...args) },
-  app: { getPath: (name: string) => mockGetPath(name), on: (event: string, cb: Function) => mockOn(event, cb) },
+  shell: {
+    openPath: (...args: unknown[]) => mockOpenPath(...args),
+    openExternal: (...args: unknown[]) => mockOpenExternal(...args),
+  },
+  app: { getPath: (name: string) => mockGetPath(name), getVersion: () => '1.1.0', on: (event: string, cb: Function) => mockOn(event, cb) },
   BrowserWindow: { getAllWindows: () => mockGetAllWindows() },
   autoUpdater: {
     on: vi.fn(),
@@ -63,6 +67,7 @@ vi.mock('../services/ftp-source', () => ({
 vi.mock('../services/update-checker', () => ({
   checkForUpdate: vi.fn().mockResolvedValue({ status: 'up-to-date', currentVersion: '1.1.0', latestVersion: '1.1.0' }),
   fetchUpdateHistory: vi.fn().mockResolvedValue([]),
+  readLastKnownGoodUpdateMetadata: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock('../services/license', () => ({
@@ -99,12 +104,15 @@ vi.mock('../services/license', () => ({
 import { registerIpcHandlers } from '../ipc-handlers';
 import { importFiles } from '../services/import-engine';
 import { scanFiles } from '../services/file-scanner';
+import { checkForUpdate, fetchUpdateHistory } from '../services/update-checker';
 import { readFile, writeFile } from 'node:fs/promises';
 
 const mockImportFiles = vi.mocked(importFiles);
 const mockScanFiles = vi.mocked(scanFiles);
 const mockReadFile = vi.mocked(readFile);
 const mockWriteFile = vi.mocked(writeFile);
+const mockCheckForUpdate = vi.mocked(checkForUpdate);
+const mockFetchUpdateHistory = vi.mocked(fetchUpdateHistory);
 
 // Helper: register all handlers, then extract the handler function for a given channel
 function getHandler(channel: string): (...args: unknown[]) => Promise<unknown> {
@@ -121,6 +129,10 @@ describe('IPC Handlers', () => {
     mockReadFile.mockReset();
     mockReadFile.mockRejectedValue(new Error('ENOENT'));
     mockWriteFile.mockClear();
+    mockCheckForUpdate.mockReset();
+    mockCheckForUpdate.mockResolvedValue({ status: 'up-to-date', currentVersion: '1.1.0', latestVersion: '1.1.0' });
+    mockFetchUpdateHistory.mockReset();
+    mockFetchUpdateHistory.mockResolvedValue([]);
   });
 
   describe('IMPORT_START', () => {
@@ -280,6 +292,77 @@ describe('IPC Handlers', () => {
         deviceSlotsUsed: 1,
         deviceSlotsTotal: 2,
       }));
+    });
+  });
+
+  describe('Payload validation', () => {
+    it('rejects malformed import config', async () => {
+      const handler = getHandler('import:start');
+      const result = await handler({}, { sourcePath: 42 }) as any;
+      expect(result).toEqual({
+        ok: false,
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid import config payload.',
+      });
+    });
+
+    it('rejects malformed FTP config', async () => {
+      const handler = getHandler('ftp:probe');
+      const result = await handler({}, { host: '', port: '21' }) as any;
+      expect(result).toEqual({
+        ok: false,
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid FTP config payload.',
+      });
+    });
+
+    it('rejects malformed open-external URL', async () => {
+      const handler = getHandler('shell:open-external');
+      const result = await handler({}, 'javascript:alert(1)') as any;
+      expect(result).toEqual({
+        ok: false,
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid URL payload.',
+      });
+      expect(mockOpenExternal).not.toHaveBeenCalled();
+    });
+
+    it('rejects malformed settings patch', async () => {
+      const handler = getHandler('settings:set');
+      const result = await handler({}, { ftpConfig: { host: 'bad' } }) as any;
+      expect(result).toEqual({
+        ok: false,
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid settings patch payload.',
+      });
+    });
+  });
+
+  describe('Updates', () => {
+    it('blocks non-allowlisted release URLs from renderer', async () => {
+      const handler = getHandler('update:open-release');
+      const result = await handler({}, 'http://evil.example.com/release') as any;
+      expect(result).toEqual({
+        ok: false,
+        code: 'VALIDATION_ERROR',
+        message: 'Release URL failed allowlist trust checks.',
+      });
+      expect(mockOpenExternal).not.toHaveBeenCalled();
+    });
+
+    it('returns trust-check error when download URL is not allowlisted', async () => {
+      mockCheckForUpdate.mockResolvedValue({
+        status: 'available',
+        currentVersion: '1.1.0',
+        latestVersion: '1.2.0',
+        downloadUrl: 'http://evil.example.com/update.exe',
+      } as any);
+      const checkNow = getHandler('update:check-now');
+      const download = getHandler('update:download');
+      await checkNow({});
+      const result = await download({}) as any;
+      expect(result.ok).toBe(false);
+      expect(result.message).toMatch(/trust checks/i);
     });
   });
 });

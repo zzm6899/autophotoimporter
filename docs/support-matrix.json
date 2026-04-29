@@ -1,0 +1,24 @@
+{
+  "generatedAt": "2026-04-29",
+  "features": ["FTP source", "GPU provider", "Auto-updates"],
+  "platforms": [
+    {
+      "os": "Windows 10/11",
+      "ftpSource": "Supported",
+      "gpuProvider": "DirectML (all GPUs), CUDA (NVIDIA), CPU fallback",
+      "autoUpdates": "Supported (Squirrel + hosted feed)"
+    },
+    {
+      "os": "macOS 13+ (Intel/Apple Silicon)",
+      "ftpSource": "Supported",
+      "gpuProvider": "CoreML (Apple Silicon), CUDA (NVIDIA eGPU), CPU fallback",
+      "autoUpdates": "Supported (hosted feed)"
+    },
+    {
+      "os": "Linux (dev/test)",
+      "ftpSource": "Supported",
+      "gpuProvider": "CUDA (NVIDIA), CPU fallback",
+      "autoUpdates": "Not packaged for end users"
+    }
+  ]
+}

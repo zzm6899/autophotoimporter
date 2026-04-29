@@ -1,4 +1,6 @@
-import { useCallback } from 'react';
+import { useCallback, useRef } from 'react';
+
+type NormalizedJobState = 'queued' | 'running' | 'paused' | 'cancelled' | 'completed' | 'failed';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import { playCompletionSound } from '../utils/completionSound';
 import { eventModeKeywords } from '../../shared/types';
@@ -20,10 +22,12 @@ export function useImport() {
     licenseStatus,
   } = useAppState();
   const dispatch = useAppDispatch();
+  const importStateRef = useRef<NormalizedJobState>('queued');
 
   const startImport = useCallback(async () => {
     if (!selectedSource || !destination) return;
     if (!licenseStatus?.valid) {
+      importStateRef.current = 'failed';
       dispatch({
         type: 'IMPORT_COMPLETE',
         result: {
@@ -118,6 +122,7 @@ export function useImport() {
     ].filter((value, index, all) => value && all.findIndex((other) => other.toLowerCase() === value.toLowerCase()) === index);
 
     const runId = ++latestImportRunId;
+    importStateRef.current = 'running';
     dispatch({ type: 'IMPORT_START' });
     try {
       const result = await window.electronAPI.startImport({
@@ -169,6 +174,7 @@ export function useImport() {
         autoStraighten,
       });
       if (runId !== latestImportRunId) return;
+      importStateRef.current = result.errors.length > 0 ? 'failed' : 'completed';
       dispatch({ type: 'IMPORT_COMPLETE', result });
 
       // Optional post-import actions, renderer-side
@@ -183,6 +189,7 @@ export function useImport() {
     } catch (err: unknown) {
       if (runId !== latestImportRunId) return;
       const message = err instanceof Error ? err.message : 'Import failed unexpectedly';
+      importStateRef.current = 'failed';
       dispatch({
         type: 'IMPORT_COMPLETE',
         result: {
@@ -207,6 +214,7 @@ export function useImport() {
   ]);
 
   const cancelImport = useCallback(async () => {
+    importStateRef.current = 'cancelled';
     await window.electronAPI.cancelImport();
   }, []);
 

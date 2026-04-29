@@ -4,12 +4,15 @@ import { mkdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { FtpConfig, MediaFile } from '../../shared/types';
 import { PHOTO_EXTENSIONS, VIDEO_EXTENSIONS } from '../../shared/types';
+import { JobController } from './job-controller';
 
 // FTP source: pulls the remote DCIM tree down to a local staging directory,
 // then the rest of the pipeline (scan → import) runs against that staging
 // directory as if it were a plain folder. This keeps the scanner, EXIF
 // reader, and import engine unchanged, and lets the FTP mirror be re-scanned
 // quickly if the user picks the same camera twice.
+
+let ftpJob: JobController | null = null;
 
 function getFileType(ext: string): 'photo' | 'video' | null {
   if (PHOTO_EXTENSIONS.has(ext)) return 'photo';
@@ -51,6 +54,9 @@ export async function probeFtp(config: FtpConfig): Promise<{
   fileCount?: number;
   totalBytes?: number;
 }> {
+  ftpJob?.cancel();
+  ftpJob = new JobController('ftp-mirror');
+  ftpJob.start();
   let client: Client | undefined;
   try {
     client = await openClient(config, 30_000);
@@ -62,6 +68,7 @@ export async function probeFtp(config: FtpConfig): Promise<{
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : 'FTP connection failed';
+    ftpJob?.fail(message);
     return { ok: false, error: message };
   } finally {
     client?.close();

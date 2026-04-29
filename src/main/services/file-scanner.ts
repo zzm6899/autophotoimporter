@@ -3,9 +3,12 @@ import path from 'node:path';
 import { PHOTO_EXTENSIONS, VIDEO_EXTENSIONS } from '../../shared/types';
 import type { MediaFile } from '../../shared/types';
 import { parseExifDate, generateThumbnail, extractEmbeddedThumbnail, EXIFR_SUPPORTED, clearThumbnailMemCache } from './exif-parser';
+import { JobController } from './job-controller';
 
 const BATCH_SIZE = 50;
-const FAST_THUMB_CONCURRENCY = 60;  // exifr embedded thumbs — I/O bound, saturate disk queue
+const FAST_THUMB_CONCURRENCY_MIN = 8;
+const FAST_THUMB_CONCURRENCY_DEFAULT = 48;
+const FAST_THUMB_CONCURRENCY_MAX = 64;
 const SLOW_THUMB_CONCURRENCY = 4;   // PowerShell resize — one per process, keep low
 const SLOW_THUMB_TIMEOUT_MS = 8000; // Per-file timeout; corrupted/huge files abort
 
@@ -27,7 +30,7 @@ const RAW_PRIORITY_EXTENSIONS = new Set([
   '.dng',
 ]);
 
-let currentAbortController: AbortController | null = null;
+let currentJob: JobController | null = null;
 let paused = false;
 const pauseWaiters: Array<() => void> = [];
 
@@ -95,20 +98,21 @@ export async function scanFiles(
   folderPattern?: string,
   options?: { generateThumbnails?: boolean },
 ): Promise<number> {
-  currentAbortController?.abort();
-  currentAbortController = new AbortController();
+  currentJob?.cancel();
+  currentJob = new JobController('file-scan');
+  currentJob.start();
   paused = false;
   clearThumbnailMemCache(); // clear before each scan so modified files get fresh thumbnails
-  const { signal } = currentAbortController;
+  const { signal } = currentJob;
 
   // Phase 1: Walk directory and get metadata + dates (fast)
   const allFiles: MediaFile[] = [];
   await walkDirectory(sourcePath, allFiles, signal);
-  if (signal.aborted) return 0;
+  if (signal.aborted) { currentJob?.cancel(); return 0; }
 
   // Enrich with dates only (no thumbnails yet)
   for (let i = 0; i < allFiles.length; i += BATCH_SIZE) {
-    if (signal.aborted) return 0;
+    if (signal.aborted) { currentJob?.cancel(); return 0; }
     await waitIfPaused(signal);
     const batch = allFiles.slice(i, i + BATCH_SIZE);
     const enriched = await Promise.all(
@@ -118,6 +122,7 @@ export async function scanFiles(
       }),
     );
     onBatch(enriched);
+    currentJob?.progress({ current: Math.min(i + BATCH_SIZE, allFiles.length), total: allFiles.length, percent: allFiles.length ? Math.round(((i + BATCH_SIZE) / allFiles.length) * 100) : 0 });
   }
 
   // Thumbnails load in the background — don't block scan completion
@@ -125,7 +130,38 @@ export async function scanFiles(
     generateThumbnailsInBackground(allFiles, onThumbnail, signal);
   }
 
+  currentJob?.complete({ current: allFiles.length, total: allFiles.length, percent: 100 });
   return allFiles.length;
+}
+
+type FastThumbConcurrencyController = {
+  value: number;
+  onBatch: (elapsedMs: number, batchSize: number) => void;
+};
+
+function createFastThumbConcurrencyController(): FastThumbConcurrencyController {
+  let concurrency = FAST_THUMB_CONCURRENCY_DEFAULT;
+
+  const onBatch = (elapsedMs: number, batchSize: number): void => {
+    if (batchSize <= 0) return;
+    const msPerFile = elapsedMs / batchSize;
+
+    if (msPerFile < 8 && concurrency < FAST_THUMB_CONCURRENCY_MAX) {
+      concurrency = Math.min(FAST_THUMB_CONCURRENCY_MAX, concurrency + 4);
+      return;
+    }
+
+    if (msPerFile > 40 && concurrency > FAST_THUMB_CONCURRENCY_MIN) {
+      concurrency = Math.max(FAST_THUMB_CONCURRENCY_MIN, concurrency - 8);
+    }
+  };
+
+  return {
+    get value() {
+      return concurrency;
+    },
+    onBatch,
+  };
 }
 
 function generateThumbnailsInBackground(
@@ -145,10 +181,13 @@ function generateThumbnailsInBackground(
       });
     const slowFiles: MediaFile[] = [];
 
-    for (let i = 0; i < fastFiles.length; i += FAST_THUMB_CONCURRENCY) {
+    const fastThumbConcurrency = createFastThumbConcurrencyController();
+    for (let i = 0; i < fastFiles.length;) {
       if (signal.aborted) break;
       await waitIfPaused(signal);
-      const batch = fastFiles.slice(i, i + FAST_THUMB_CONCURRENCY);
+      const batchSize = fastThumbConcurrency.value;
+      const batch = fastFiles.slice(i, i + batchSize);
+      const startedAt = Date.now();
       await Promise.all(
         batch.map(async (file) => {
           if (signal.aborted) return;
@@ -167,6 +206,8 @@ function generateThumbnailsInBackground(
           }
         }),
       );
+      fastThumbConcurrency.onBatch(Date.now() - startedAt, batch.length);
+      i += batch.length;
     }
 
     // Phase 2B: Slow thumbnails — PowerShell/sips for unsupported formats.
@@ -205,18 +246,21 @@ function generateThumbnailsInBackground(
 }
 
 export function cancelScan(): void {
-  currentAbortController?.abort();
-  currentAbortController = null;
+  const job = currentJob;
+  job?.cancel();
+  currentJob = null;
   paused = false;
+  job?.resume();
   while (pauseWaiters.length) pauseWaiters.shift()?.();
   clearThumbnailMemCache(); // free memory when scan is cancelled / source changes
 }
 
 export function pauseScan(): void {
-  if (currentAbortController && !currentAbortController.signal.aborted) paused = true;
+  if (currentJob && !currentJob.signal.aborted) { paused = true; currentJob.pause(); }
 }
 
 export function resumeScan(): void {
   paused = false;
+  currentJob?.resume();
   while (pauseWaiters.length) pauseWaiters.shift()?.();
 }
