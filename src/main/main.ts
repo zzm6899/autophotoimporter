@@ -146,7 +146,10 @@ const createWindow = () => {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true,
+      // Keep packaged builds sandboxed. The Forge/Vite dev server can crash
+      // Chromium's sandboxed renderer on some Windows setups before React
+      // starts, so local `npm start` runs without the renderer sandbox.
+      sandbox: !rendererDevServerUrl,
     },
   });
 
@@ -211,7 +214,9 @@ const createWindow = () => {
     }
   });
 
-  if (rendererDevServerUrl) {
+  if (rendererDevServerUrl && process.env.KEPTRA_DEV_BLANK_RENDERER === '1') {
+    mainWindow.loadURL('data:text/html;charset=utf-8,<main style="font:16px sans-serif;padding:24px">Keptra renderer probe</main>');
+  } else if (rendererDevServerUrl) {
     mainWindow.loadURL(rendererDevServerUrl);
   } else {
     mainWindow.loadFile(
