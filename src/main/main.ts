@@ -17,6 +17,14 @@ if (started) {
 // is not sufficient in newer Electron versions.
 app.commandLine.appendSwitch('enable-blink-features', 'ShapeDetection');
 
+// Some Windows GPU/driver combinations can load the renderer DOM but fail to
+// present it, leaving customers with a solid black window. ONNX DirectML runs in
+// the main process, so disabling Chromium compositing keeps the UI reliable
+// without turning off the photo analysis GPU path.
+if (process.platform === 'win32' && process.env.KEPTRA_ENABLE_RENDERER_GPU !== '1') {
+  app.disableHardwareAcceleration();
+}
+
 let mainWindow: BrowserWindow | null = null;
 const packageSmokeMode = process.env.KEPTRA_PACKAGE_SMOKE === '1';
 
@@ -53,6 +61,10 @@ function finishPackageSmoke(ok: boolean, details: Record<string, unknown>): void
   app.exit(ok ? 0 : 1);
 }
 
+function serializeError(error: unknown): string {
+  return error instanceof Error ? error.stack || error.message : String(error);
+}
+
 function isSafeExternalUrl(value: string): boolean {
   try {
     const url = new URL(value);
@@ -78,7 +90,7 @@ const createWindow = () => {
     minWidth: 960,
     minHeight: 600,
     titleBarStyle: 'hiddenInset',
-    show: !packageSmokeMode,
+    show: false,
     // On Windows, hiddenInset alone doesn't remove the menu bar frame —
     // autoHideMenuBar ensures it is fully suppressed even if Menu is non-null.
     autoHideMenuBar: true,
@@ -92,11 +104,50 @@ const createWindow = () => {
     },
   });
 
+  mainWindow.once('ready-to-show', () => {
+    if (!packageSmokeMode) {
+      mainWindow?.show();
+    }
+  });
+
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (isSafeExternalUrl(url)) {
       void shell.openExternal(url);
     }
     return { action: 'deny' };
+  });
+
+  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    const payload = { level, sourceId, line };
+    if (level >= 2) {
+      log.warn(`[renderer] ${message}`, payload);
+    } else {
+      log.info(`[renderer] ${message}`, payload);
+    }
+  });
+
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    log.error('Renderer failed to load', { errorCode, errorDescription, validatedURL });
+    if (packageSmokeMode) {
+      finishPackageSmoke(false, {
+        error: 'Renderer failed to load',
+        errorCode,
+        errorDescription,
+        validatedURL,
+        resources: modelSmokeStatus(),
+      });
+    }
+  });
+
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    log.error('Renderer process gone', details);
+    if (packageSmokeMode) {
+      finishPackageSmoke(false, {
+        error: 'Renderer process gone',
+        details,
+        resources: modelSmokeStatus(),
+      });
+    }
   });
 
   mainWindow.webContents.on('will-navigate', (event, url) => {
@@ -120,13 +171,29 @@ const createWindow = () => {
     }, 15000);
     mainWindow.webContents.once('did-finish-load', () => {
       void mainWindow?.webContents.executeJavaScript(`
-        (() => {
+        (async () => {
+          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          await new Promise((resolve) => setTimeout(resolve, 250));
           const api = window.electronAPI || {};
+          const root = document.getElementById('root');
+          const bodyText = document.body?.innerText || '';
+          const rootRect = root?.getBoundingClientRect();
           return {
             hasApi: !!window.electronAPI,
             preloadFunctions: ['getSettings', 'startImport', 'preflightImport', 'retryFailedImport', 'exportDiagnostics', 'checkForUpdates', 'downloadUpdate', 'installUpdate']
               .filter((key) => typeof api[key] === 'function'),
             platform: api.platform,
+            href: window.location.href,
+            title: document.title,
+            rootChildCount: root?.childElementCount ?? 0,
+            rootHtmlLength: root?.innerHTML.length ?? 0,
+            rootRect: rootRect ? {
+              width: Math.round(rootRect.width),
+              height: Math.round(rootRect.height),
+            } : null,
+            bodyTextLength: bodyText.length,
+            bodyTextSample: bodyText.slice(0, 1000),
+            hasVisibleAppText: /Source|Review|Destination|Import|Settings|Help/.test(bodyText),
           };
         })()
       `, true).then((preload) => {
@@ -136,16 +203,21 @@ const createWindow = () => {
         const preloadFunctions = Array.isArray(preload?.preloadFunctions) ? preload.preloadFunctions : [];
         const missingPreload = requiredPreload.filter((name) => !preloadFunctions.includes(name));
         const missingModels = resources.models.filter((model) => !model.exists).map((model) => model.name);
-        finishPackageSmoke(missingPreload.length === 0 && resources.onnxRuntimeNode && missingModels.length === 0, {
+        const rendererMounted =
+          Number(preload?.rootChildCount ?? 0) > 0 &&
+          Number(preload?.rootHtmlLength ?? 0) > 0 &&
+          preload?.hasVisibleAppText === true;
+        finishPackageSmoke(missingPreload.length === 0 && rendererMounted && resources.onnxRuntimeNode && missingModels.length === 0, {
           preload,
           missingPreload,
+          rendererMounted,
           resources,
           missingModels,
           updateMode: process.platform === 'darwin' ? 'manual-dmg' : 'installer-or-native',
         });
       }).catch((error) => {
         clearTimeout(timeout);
-        finishPackageSmoke(false, { error: error instanceof Error ? error.message : String(error), resources: modelSmokeStatus() });
+        finishPackageSmoke(false, { error: serializeError(error), resources: modelSmokeStatus() });
       });
     });
   }
