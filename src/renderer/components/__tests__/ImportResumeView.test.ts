@@ -33,4 +33,35 @@ describe('summarizeImportLedger', () => {
     const names = summarizeImportLedger(baseLedger).orderedItems.map((item) => item.name);
     expect(names.slice(0, 2)).toEqual(['bad.jpg', 'later.jpg']);
   });
+
+  it('explains pending files as retryable recovery work', () => {
+    const summary = summarizeImportLedger(baseLedger);
+
+    expect(summary.failedCount).toBe(1);
+    expect(summary.pendingCount).toBe(1);
+    expect(summary.statusMessage).toBe('2 of 4 files are accounted for.');
+    expect(summary.recoveryMessage).toBe('Retry resumes pending files and re-attempts failed copies from this ledger.');
+  });
+
+  it('reports a clean ledger without recovery work', () => {
+    const cleanLedger: ImportLedger = {
+      ...baseLedger,
+      totalFiles: 2,
+      imported: 2,
+      skipped: 0,
+      failed: 0,
+      pending: 0,
+      verified: 2,
+      items: [
+        { sourcePath: 'E:\\DCIM\\ok-1.jpg', name: 'ok-1.jpg', size: 100, status: 'verified' },
+        { sourcePath: 'E:\\DCIM\\ok-2.jpg', name: 'ok-2.jpg', size: 100, status: 'verified' },
+      ],
+    };
+
+    const summary = summarizeImportLedger(cleanLedger);
+
+    expect(summary.actionableCount).toBe(0);
+    expect(summary.completionPercent).toBe(100);
+    expect(summary.recoveryMessage).toBe('No failed or pending files need attention.');
+  });
 });

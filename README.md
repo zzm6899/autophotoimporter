@@ -170,6 +170,20 @@ git push origin v1.1.6
 
 That tag triggers GitHub Actions to build both macOS and Windows. If the TrueNAS publish secrets are configured, the workflow also mirrors the public artifacts into the hosted update feed automatically.
 
+### Release readiness
+
+Before tagging, follow [docs/release-checklist.md](docs/release-checklist.md). The short version is:
+
+```bash
+npm run verify
+npm run make
+npm run package:smoke
+npm run bench:smoke
+npm run release:manifest
+```
+
+`npm run release:manifest` writes `artifacts/release/release-readiness-manifest.json` with the package version, git commit, smoke manifests, benchmark summaries, support matrix, artifact list, and key release commands.
+
 ## License keys
 
 The app now supports signed offline license keys.

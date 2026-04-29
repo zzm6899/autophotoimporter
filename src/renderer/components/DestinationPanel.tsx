@@ -349,6 +349,7 @@ export function DestinationPanel() {
         <button
           onClick={handleChooseDestination}
           className="w-full px-2 py-1 text-xs bg-surface-raised hover:bg-border rounded text-text transition-colors text-left cursor-pointer"
+          aria-label={destination ? `Change destination folder, currently ${destination}` : 'Choose destination folder'}
         >
           {destination ? (
             <span className="truncate block" title={destination}>{destination.split(/[/\\]/).pop()}</span>
@@ -789,7 +790,7 @@ export function DestinationPanel() {
               <div className="text-[10px] text-red-400">Backup destination matches primary.</div>
             )}
             {backupDestRoot && !backupSameAsPrimary && (
-              <div className="text-[10px] text-emerald-500">Backup copy enabled.</div>
+              <div className="text-[10px] text-emerald-500">Backup copy enabled for this import.</div>
             )}
             {ftpDestEnabled && !ftpReady && (
               <div className="text-[10px] text-red-400">FTP output needs host and remote folder.</div>
@@ -801,7 +802,7 @@ export function DestinationPanel() {
               <div className="text-[10px] text-yellow-500">QA: {queuedRejectedCount} rejected photo{queuedRejectedCount === 1 ? '' : 's'} still in this import set.</div>
             )}
             {lowConfidenceCount > 0 && (
-              <div className="text-[10px] text-yellow-500">QA: {lowConfidenceCount} queued keeper{lowConfidenceCount === 1 ? '' : 's'} need a second-pass check.</div>
+              <div className="text-[10px] text-yellow-500">QA: {lowConfidenceCount} queued keeper{lowConfidenceCount === 1 ? '' : 's'} may need a quick check before import.</div>
             )}
             {!licenseValid && (
               <div className="text-[10px] text-red-400">Importing is locked until a valid Full access license is activated.</div>
@@ -838,6 +839,9 @@ export function DestinationPanel() {
             {hasWhiteBalance && saveFormat !== 'original' && (
               <span className="text-cyan-300/80"> &middot; WB</span>
             )}
+            {verifyChecksums && (
+              <span className="text-emerald-300/80"> &middot; verify after copy</span>
+            )}
           </div>
         )}
         {freeBytes !== null && totalSize > 0 && (spaceWarning || insufficientSpace) && (
@@ -862,12 +866,12 @@ export function DestinationPanel() {
               <div>Will import <span className="text-emerald-400">{preflight.willImport}</span></div>
               <div>Duplicates <span className="text-yellow-400">{preflight.duplicates}</span></div>
               <div>Conflicts <span className={preflight.conflicts ? 'text-red-400' : 'text-text-muted'}>{preflight.conflicts}</span></div>
-              <div>Warnings <span className={preflight.lowConfidence ? 'text-yellow-400' : 'text-text-muted'}>{preflight.lowConfidence}</span></div>
+              <div>Review flags <span className={preflight.lowConfidence ? 'text-yellow-400' : 'text-text-muted'}>{preflight.lowConfidence}</span></div>
             </div>
             <div className="mt-1 text-[10px] text-text-muted">
               {preflight.backupEnabled && 'Backup enabled. '}
               {preflight.ftpEnabled && 'FTP upload enabled. '}
-              {preflight.checksumEnabled && 'Checksums enabled. '}
+              {preflight.checksumEnabled && 'Post-copy verification enabled. '}
               {preflight.metadataEnabled && 'XMP metadata enabled. '}
               {preflight.watermarkEnabled && 'Watermark enabled. '}
               {preflight.dryRun && 'Dry-run preview only.'}
@@ -895,6 +899,7 @@ export function DestinationPanel() {
             disabled={!destination || importFiles.length === 0}
             className="py-1 rounded text-[10px] bg-surface-raised hover:bg-border text-text-secondary disabled:text-text-muted disabled:cursor-not-allowed"
             title="Preview the exact import plan without copying files."
+            aria-label="Preview the import plan without copying files"
           >
             Preview Import
           </button>
@@ -902,6 +907,8 @@ export function DestinationPanel() {
             onClick={() => { void refreshPreflight(false); }}
             disabled={!destination || importFiles.length === 0}
             className="py-1 rounded text-[10px] bg-surface-raised hover:bg-border text-text-secondary disabled:text-text-muted disabled:cursor-not-allowed"
+            title="Check destination conflicts, duplicates, and review flags before copying."
+            aria-label="Check destination conflicts, duplicates, and review flags"
           >
             Check Plan
           </button>
@@ -944,7 +951,7 @@ export function DestinationPanel() {
             <button
               onClick={handleOpenDestination}
               className="py-1 rounded text-[10px] bg-surface-raised hover:bg-border text-text-secondary transition-colors"
-              title="Open the output folder."
+              title="Open the output folder for this completed import."
             >
               Open Folder
             </button>

@@ -93,6 +93,7 @@ out/
 
 # Benchmark output and local large-shoot fixtures
 artifacts/benchmarks/*.jsonl
+artifacts/release/*.json
 fixtures/perf-local/*
 !fixtures/perf-local/.gitkeep
 

@@ -33,11 +33,17 @@ export function summarizeImportLedger(ledger: ImportLedger | null) {
   if (!ledger) {
     return {
       actionableCount: 0,
+      failedCount: 0,
+      pendingCount: 0,
       completionPercent: 0,
+      statusMessage: 'No import history has been written yet.',
+      recoveryMessage: 'Run an import to create a recovery ledger.',
       orderedItems: [] as ImportLedgerItem[],
     };
   }
-  const actionableCount = ledger.items.filter((item) => item.status === 'failed' || item.status === 'pending').length;
+  const failedCount = ledger.items.filter((item) => item.status === 'failed').length;
+  const pendingCount = ledger.items.filter((item) => item.status === 'pending').length;
+  const actionableCount = failedCount + pendingCount;
   const completed = ledger.imported + ledger.skipped + (ledger.verified ?? 0);
   const completionPercent = ledger.totalFiles > 0
     ? Math.min(100, Math.round((completed / ledger.totalFiles) * 100))
@@ -52,7 +58,17 @@ export function summarizeImportLedger(ledger: ImportLedger | null) {
   };
   return {
     actionableCount,
+    failedCount,
+    pendingCount,
     completionPercent,
+    statusMessage: actionableCount > 0
+      ? `${completed} of ${ledger.totalFiles} ${ledger.totalFiles === 1 ? 'file is' : 'files are'} accounted for.`
+      : `Last import completed cleanly in ${formatDuration(ledger.durationMs)}.`,
+    recoveryMessage: actionableCount > 0
+      ? pendingCount > 0
+        ? 'Retry resumes pending files and re-attempts failed copies from this ledger.'
+        : 'Retry re-attempts only the failed copies from this ledger.'
+      : 'No failed or pending files need attention.',
     orderedItems: [...ledger.items].sort((a, b) => rank[a.status] - rank[b.status] || a.name.localeCompare(b.name)),
   };
 }
@@ -131,7 +147,7 @@ export function ImportResumeView({ tone = 'panel' }: ImportResumeViewProps) {
 
   if (loading) {
     return (
-      <div className="rounded border border-border bg-surface-alt px-2 py-2 text-[10px] text-text-muted">
+      <div className="rounded border border-border bg-surface-alt px-2 py-2 text-[10px] text-text-muted" aria-live="polite">
         Loading import history...
       </div>
     );
@@ -151,7 +167,7 @@ export function ImportResumeView({ tone = 'panel' }: ImportResumeViewProps) {
   }
 
   return (
-    <div className="rounded border border-border bg-surface-alt px-2 py-2">
+    <div className="rounded border border-border bg-surface-alt px-2 py-2" aria-live="polite">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <h3 className="text-[10px] font-semibold uppercase tracking-wider text-text-secondary">Import resume</h3>
@@ -173,14 +189,19 @@ export function ImportResumeView({ tone = 'panel' }: ImportResumeViewProps) {
         <div className="rounded bg-surface-raised px-1.5 py-1 text-text-secondary">Size <span className="text-text">{formatSize(ledger.totalBytes)}</span></div>
       </div>
 
+      <div className="mt-2 rounded border border-border bg-surface-raised px-2 py-1.5">
+        <p className="text-[10px] text-text-secondary">{summary.statusMessage}</p>
+        <p className="mt-0.5 text-[10px] text-text-muted">{summary.recoveryMessage}</p>
+      </div>
+
       {!currentSessionMatches && summary.actionableCount > 0 && (
         <p className="mt-2 text-[10px] text-yellow-500">
-          Restore this source and destination, then retry failed files.
+          Restore this source and destination before retrying so the recovery pass uses the same paths.
         </p>
       )}
       {summary.actionableCount === 0 && (
         <p className="mt-2 text-[10px] text-text-muted">
-          Last import has no failed or pending files. Duration {formatDuration(ledger.durationMs)}.
+          Verification count: {ledger.checksumVerified ?? ledger.verified ?? 0}.
         </p>
       )}
       {message && <p className="mt-2 text-[10px] text-text-muted">{message}</p>}
@@ -197,8 +218,9 @@ export function ImportResumeView({ tone = 'panel' }: ImportResumeViewProps) {
           onClick={handleRetry}
           disabled={retryDisabled}
           className="rounded bg-surface-raised px-2 py-1 text-[10px] text-red-300 hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+          title={currentSessionMatches ? summary.recoveryMessage : 'Restore the matching source and destination before retrying.'}
         >
-          Retry Failed
+          Retry Failed/Pending
         </button>
         <button
           onClick={handleOpenDestination}
@@ -211,7 +233,7 @@ export function ImportResumeView({ tone = 'panel' }: ImportResumeViewProps) {
             onClick={handleOpenFirstFailure}
             className="rounded bg-surface-raised px-2 py-1 text-[10px] text-text-secondary hover:bg-border"
           >
-            Open Failure
+            Open First Issue
           </button>
         )}
       </div>
@@ -221,8 +243,12 @@ export function ImportResumeView({ tone = 'panel' }: ImportResumeViewProps) {
           {summary.orderedItems.slice(0, compact ? 8 : 14).map((item) => (
             <div key={`${item.sourcePath}-${item.destRelPath ?? item.name}`} className="grid grid-cols-[4.25rem_1fr] gap-2 text-[10px]">
               <span className={STATUS_CLASS[item.status]}>{STATUS_LABELS[item.status]}</span>
-              <span className="truncate text-text-muted" title={`${item.sourcePath}${item.error ? `: ${item.error}` : ''}`}>
+              <span
+                className="truncate text-text-muted"
+                title={`${item.sourcePath}${item.error ? `: ${item.error}` : item.status === 'pending' ? ': Waiting for retry' : ''}`}
+              >
                 {item.name}{item.error ? ` · ${item.error}` : ''}
+                {!item.error && item.status === 'pending' ? ' · Waiting for retry' : ''}
               </span>
             </div>
           ))}
