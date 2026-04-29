@@ -6,11 +6,23 @@ import { registerIpcHandlers } from './ipc-handlers';
 import { ensureModelsDownloaded } from './services/model-downloader';
 import { initializeLogging, log } from './logger';
 
-initializeLogging();
-
 if (started) {
   app.quit();
 }
+
+function getRendererDevServerUrl(): string | undefined {
+  return typeof MAIN_WINDOW_VITE_DEV_SERVER_URL === 'string'
+    ? MAIN_WINDOW_VITE_DEV_SERVER_URL
+    : undefined;
+}
+
+const rendererDevServerUrl = getRendererDevServerUrl();
+
+if (rendererDevServerUrl) {
+  app.setPath('userData', path.join(app.getPath('appData'), 'Keptra Dev'));
+}
+
+initializeLogging();
 
 // ONNX DirectML runs in the main process and is independent of Chromium
 // compositing. Keep the renderer on Chromium defaults unless support needs to
@@ -113,7 +125,7 @@ const createWindow = () => {
     height: 800,
     minWidth: 960,
     minHeight: 600,
-    titleBarStyle: 'hiddenInset',
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     show: false,
     // On Windows, hiddenInset alone doesn't remove the menu bar frame —
     // autoHideMenuBar ensures it is fully suppressed even if Menu is non-null.
@@ -188,8 +200,8 @@ const createWindow = () => {
     }
   });
 
-  if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
-    mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
+  if (rendererDevServerUrl) {
+    mainWindow.loadURL(rendererDevServerUrl);
   } else {
     mainWindow.loadFile(
       path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`),

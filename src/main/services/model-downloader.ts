@@ -103,7 +103,12 @@ export interface ModelDownloadProgress {
 
 function broadcast(win: BrowserWindow | null, progress: ModelDownloadProgress): void {
   if (!win || win.isDestroyed()) return;
-  win.webContents.send(IPC.FACE_MODEL_DOWNLOAD_PROGRESS, progress);
+  if (win.webContents.isDestroyed() || win.webContents.isCrashed()) return;
+  try {
+    win.webContents.send(IPC.FACE_MODEL_DOWNLOAD_PROGRESS, progress);
+  } catch {
+    // Progress is best-effort; the renderer may be restarting or shutting down.
+  }
 }
 
 // ---------------------------------------------------------------------------
