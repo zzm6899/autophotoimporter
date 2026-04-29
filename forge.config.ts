@@ -67,7 +67,7 @@ const config: ForgeConfig = {
     // into onnxruntime-node/node_modules/ so bare require() calls inside
     // onnxruntime-node/dist/index.js resolve correctly from the resources path.
     afterCopy: [
-      async (buildPath: string, _electronVersion: string, _platform: string, _arch: string, done: (error?: Error) => void) => {
+      (buildPath: string, _electronVersion: string, _platform: string, _arch: string, done: (error?: Error) => void) => {
         try {
           const ortNodeModules = path.join(buildPath, '..', 'onnxruntime-node', 'node_modules');
           const projectNodeModules = path.resolve(__dirname, 'node_modules');
