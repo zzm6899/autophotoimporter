@@ -17,3 +17,23 @@ admin.keptra.z2hs.au {
 updates.keptra.z2hs.au {
 	reverse_proxy app:5071
 }
+
+culler.z2hs.au {
+	@app_paths path /api/* /stripe/* /artifacts/* /releases/* /healthz
+	handle @app_paths {
+		reverse_proxy app:5071
+	}
+	handle {
+		root * /srv/web
+		try_files {path} {path}.html /index.html
+		file_server
+	}
+}
+
+admin.culler.z2hs.au {
+	reverse_proxy app:5071
+}
+
+updates.culler.z2hs.au {
+	reverse_proxy app:5071
+}

@@ -409,13 +409,24 @@
       return String(v || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
     }
 
+    function canonicalKeptraUrl(value) {
+      if (!value) return '';
+      return String(value)
+        .replace(/^https:\/\/updates\.culler\.z2hs\.au/i, API_BASE)
+        .replace(/^https:\/\/admin\.culler\.z2hs\.au/i, API_BASE)
+        .replace(/^https:\/\/culler\.z2hs\.au/i, API_BASE)
+        .replace(/^https:\/\/updates\.keptra\.z2hs\.au/i, API_BASE)
+        .replace(/^https:\/\/admin\.keptra\.z2hs\.au/i, API_BASE);
+    }
+
     function renderReleases() {
       const list = document.getElementById('release-list');
       if (!dataLoaded) { list.innerHTML = '<div class="state-block"><div class="spinner"></div>Loading release…</div>'; return; }
       const r = releases[0];
       const pLabel = currentPlatform === 'mac' ? 'macOS' : 'Windows';
       if (!r) { list.innerHTML = `<div class="state-block">No ${pLabel} stable release available yet.</div>`; return; }
-      const artifactUrl = r.artifactUrl || r.downloadUrl || '';
+      const artifactUrl = canonicalKeptraUrl(r.artifactUrl || r.downloadUrl || '');
+      const releaseUrl = canonicalKeptraUrl(r.releaseUrl || '');
       const notes = r.notes || r.releaseNotes || '';
       list.innerHTML = `
         <div class="release-card">
@@ -439,7 +450,7 @@
                 </a>`
               : `<span class="btn secondary" style="cursor:default;opacity:.5">No installer uploaded yet</span>`
             }
-            ${r.releaseUrl ? `<a href="${esc(r.releaseUrl)}" class="btn secondary">Release notes</a>` : ''}
+            ${releaseUrl ? `<a href="${esc(releaseUrl)}" class="btn secondary">Release notes</a>` : ''}
           </div>
         </div>`;
     }
