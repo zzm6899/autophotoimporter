@@ -276,10 +276,6 @@ const createWindow = () => {
           const interactions = [];
           interactions.push(await clickButton('source ftp tab', /(^|\\s)FTP(\\s|$)/i, [/FTP Source/i, /Host/i, /Mirror and scan/i]));
           interactions.push(await clickButton('source drive tab', /(^|\\s)Drive(\\s|$)/i, [/Choose Folder/i, /HOW IT WORKS/i]));
-          interactions.push(await clickButton('hide source panel', /(^|\\s)Source(\\s|$)/i, [/OUTPUT/i]));
-          interactions.push(await clickButton('show source panel', /(^|\\s)Source(\\s|$)/i, [/SOURCE/i, /Choose Folder/i]));
-          interactions.push(await clickButton('hide output panel', /(^|\\s)Output(\\s|$)/i, [/SOURCE/i]));
-          interactions.push(await clickButton('show output panel', /(^|\\s)Output(\\s|$)/i, [/OUTPUT/i, /SESSION TYPE/i]));
           interactions.push(await clickButton('settings page', /(^|\\s)Settings(\\s|$)/i, [/General/i, /Workflow/i, /Account/i]));
           interactions.push(await clickButton('settings workflow tab', /(^|\\s)Workflow(\\s|$)/i, [/Backup Copy/i, /Folder/i]));
           interactions.push(await clickButton('settings account tab', /(^|\\s)Account(\\s|$)/i, [/License/i, /Buy license|Activate|Manage/i]));

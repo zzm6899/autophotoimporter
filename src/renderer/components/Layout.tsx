@@ -78,22 +78,28 @@ export function Layout({ left, center, right }: LayoutProps) {
       {/* Titlebar drag region */}
       <div className="h-8 shrink-0 bg-surface-alt [-webkit-app-region:drag] relative flex items-center justify-center px-2">
         <BrandMark className="h-4 w-4 shrink-0" />
-        <div className="absolute left-2 flex items-center gap-1 [-webkit-app-region:no-drag]">
-          <button
-            onClick={() => dispatch({ type: 'TOGGLE_LEFT_PANEL' })}
-            className={`px-1.5 py-0.5 rounded text-[10px] transition-colors ${showLeftPanel ? 'bg-surface-raised text-text' : 'text-text-muted hover:text-text'}`}
-            title="Show/hide source panel"
-          >
-            Source
-          </button>
-          <button
-            onClick={() => dispatch({ type: 'TOGGLE_RIGHT_PANEL' })}
-            className={`px-1.5 py-0.5 rounded text-[10px] transition-colors ${showRightPanel ? 'bg-surface-raised text-text' : 'text-text-muted hover:text-text'}`}
-            title="Show/hide output panel"
-          >
-            Output
-          </button>
-        </div>
+        {(!showLeftPanel || !showRightPanel) && (
+          <div className="absolute left-2 flex items-center gap-1 [-webkit-app-region:no-drag]">
+            {!showLeftPanel && (
+              <button
+                onClick={() => dispatch({ type: 'TOGGLE_LEFT_PANEL' })}
+                className="px-1.5 py-0.5 rounded text-[10px] text-text-secondary hover:text-text hover:bg-surface-raised transition-colors"
+                title="Show source panel"
+              >
+                Show Source
+              </button>
+            )}
+            {!showRightPanel && (
+              <button
+                onClick={() => dispatch({ type: 'TOGGLE_RIGHT_PANEL' })}
+                className="px-1.5 py-0.5 rounded text-[10px] text-text-secondary hover:text-text hover:bg-surface-raised transition-colors"
+                title="Show output panel"
+              >
+                Show Output
+              </button>
+            )}
+          </div>
+        )}
         <div className="absolute right-2 flex items-center gap-1 [-webkit-app-region:no-drag]">
         <button
           onClick={() => dispatch({ type: 'SET_VIEW_MODE', mode: 'settings' })}

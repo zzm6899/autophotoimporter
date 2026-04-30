@@ -566,7 +566,7 @@ async function visualHash(src: string): Promise<string> {
 }
 
 export function ThumbnailGrid() {
-  const { phase, selectedSource, scanError, focusedIndex, viewMode, showLeftPanel, showRightPanel, filter, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, exposureAdjustmentStep, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused, fastKeeperMode, faceConcurrency, gpuFaceAcceleration, keybinds, metadataKeywords, whiteBalanceTemperature, whiteBalanceTint, destination, licenseStatus, ftpDestEnabled, ftpDestConfig } = useAppState();
+  const { phase, selectedSource, scanError, focusedIndex, viewMode, filter, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, exposureAdjustmentStep, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused, fastKeeperMode, faceConcurrency, gpuFaceAcceleration, keybinds, metadataKeywords, whiteBalanceTemperature, whiteBalanceTint, destination, licenseStatus, ftpDestEnabled, ftpDestConfig } = useAppState();
   // useMergedFiles() overlays face/review scores without re-running the full
   // reducer map — O(n) only when scores.size > 0, otherwise returns the same array.
   const files = useMergedFiles();
@@ -2885,20 +2885,6 @@ export function ThumbnailGrid() {
       )}
       {/* Unified header */}
       <div className="shrink-0 px-2 py-1 flex items-center gap-1 border-b border-border">
-        {/* Left panel toggle */}
-        <button
-          onClick={() => dispatch({ type: 'TOGGLE_LEFT_PANEL' })}
-          className="p-0.5 rounded hover:bg-surface-raised shrink-0"
-          title={showLeftPanel ? 'Hide source panel' : 'Show source panel'}
-        >
-          <svg className="w-4 h-4" viewBox="0 0 16 16" fill="none">
-            <rect x="0.5" y="0.5" width="15" height="15" rx="1.5" stroke="var(--color-text-muted)" strokeWidth="1" />
-            <rect x="2" y="2" width="3.5" height="12" rx="0.75" fill={showLeftPanel ? 'var(--color-text-secondary)' : 'var(--color-text-faint)'} />
-          </svg>
-        </button>
-
-        <div className="w-px h-3 bg-border mx-1 shrink-0" />
-
         {/* File count / selection label */}
         <div className="flex items-center gap-1.5 min-w-0 shrink-0">
           {hasBatchSelection ? (
@@ -2958,41 +2944,7 @@ export function ThumbnailGrid() {
                 <div className="w-px h-3 bg-border mx-1" />
                 <button onClick={selectAllVisible} title="Select all visible files (Ctrl/Cmd+A)" className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-blue-300 hover:bg-blue-500/10 rounded transition-colors">Select all</button>
               </>
-            ) : (
-              <>
-                <button
-                  onClick={() => { const paths = sortedFiles.map((f) => f.path); dispatch({ type: 'SET_PICK_BATCH', filePaths: paths, pick: 'selected' }); }}
-                  title="Pick all visible files for import"
-                  className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-yellow-400 hover:bg-yellow-400/10 rounded transition-colors"
-                >Pick All</button>
-                <button
-                  onClick={() => {
-                    dispatch({ type: 'CLEAR_PICKS' });
-                    if (filter === 'picked' || filter === 'rejected') dispatch({ type: 'SET_FILTER', filter: 'all' });
-                  }}
-                  title="Clear all pick/reject flags from every visible file"
-                  className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-red-300 hover:bg-red-500/10 rounded transition-colors"
-                >Clear All</button>
-              </>
-            )}
-          </div>
-        )}
-
-        {/* ── Session stats ─────────────────────────────────────────── */}
-        {files.length > 0 && phase !== 'scanning' && (
-          <div className="flex items-center gap-2 shrink-0 ml-2 px-2 py-0.5 rounded bg-surface-raised/60 border border-border/50">
-            {(() => {
-              const keptCount = files.filter((f) => f.pick === 'selected').length;
-              const rejectedCount = files.filter((f) => f.pick === 'rejected').length;
-              const pendingCount = files.filter((f) => f.pick === undefined).length;
-              return (
-                <>
-                  <span className="text-[10px] text-emerald-400 font-mono" title="Picked (kept)">✓ {keptCount}</span>
-                  <span className="text-[10px] text-red-400 font-mono" title="Rejected">✕ {rejectedCount}</span>
-                  <span className="text-[10px] text-text-muted font-mono" title="Unreviewed">? {pendingCount}</span>
-                </>
-              );
-            })()}
+            ) : null}
           </div>
         )}
 
@@ -3010,22 +2962,6 @@ export function ThumbnailGrid() {
               title="Search by filename, camera, lens, date or file type"
             />
 
-            {/* Core filter pills */}
-            {(['all', 'picked', 'rejected'] as const).map((f) => (
-              <button
-                key={f}
-                onClick={() => dispatch({ type: 'SET_FILTER', filter: f })}
-                className={`px-1.5 py-0.5 text-[10px] rounded transition-colors ${filter === f ? 'bg-surface-raised text-text' : 'text-text-muted hover:text-text'}`}
-              >
-                {f === 'all' ? 'All' : f[0].toUpperCase() + f.slice(1)}
-              </button>
-            ))}
-            <button
-              onClick={() => dispatch({ type: 'SET_FILTER', filter: 'queue' })}
-              className={`px-1.5 py-0.5 text-[10px] rounded transition-colors ${filter === 'queue' ? 'bg-surface-raised text-text' : 'text-text-muted hover:text-text'}`}
-            >
-              Queue{queuedPaths.length > 0 ? ` ${queuedPaths.length}` : ''}
-            </button>
             {filter.startsWith('burst:') && (
               <button
                 onClick={() => dispatch({ type: 'SET_FILTER', filter: 'queue' })}
@@ -3036,19 +2972,23 @@ export function ThumbnailGrid() {
               </button>
             )}
 
-            {/* Single consolidated filter dropdown — replaces 6 individual ones */}
             <select
-              value={['all', 'picked', 'rejected', 'queue'].includes(filter) || filter.startsWith('burst:') ? '' : filter}
+              value={filter.startsWith('burst:') ? '' : filter}
               onChange={(e) => {
                 if (!e.target.value) return;
                 dispatch({ type: 'SET_FILTER', filter: e.target.value as typeof filter });
               }}
               className="px-1 py-0.5 text-[10px] bg-surface border border-border rounded text-text-muted hover:text-text focus:outline-none focus:border-text cursor-pointer"
-              title={filter === 'all' ? 'More filters' : `Active filter: ${filter}`}
+              title={filter === 'all' ? 'Filter photos' : `Active filter: ${filter}`}
             >
-              <option value="">Filter ▾</option>
-              <optgroup label="Status">
+              <optgroup label="Review">
+                <option value="all">All photos</option>
                 <option value="unmarked">Unmarked</option>
+                <option value="picked">Picked</option>
+                <option value="rejected">Rejected</option>
+                <option value="queue">Queue{queuedPaths.length > 0 ? ` (${queuedPaths.length})` : ''}</option>
+              </optgroup>
+              <optgroup label="Status">
                 <option value="protected">Protected</option>
                 <option value="unrated">Unrated</option>
                 <option value="duplicates">Duplicates</option>
@@ -3140,19 +3080,6 @@ export function ThumbnailGrid() {
           </button>
         </div>
 
-        <div className="w-px h-3 bg-border mx-1 shrink-0" />
-
-        {/* Right panel toggle */}
-        <button
-          onClick={() => dispatch({ type: 'TOGGLE_RIGHT_PANEL' })}
-          className="p-0.5 rounded hover:bg-surface-raised shrink-0"
-          title={showRightPanel ? 'Hide output panel' : 'Show output panel'}
-        >
-          <svg className="w-4 h-4" viewBox="0 0 16 16" fill="none">
-            <rect x="0.5" y="0.5" width="15" height="15" rx="1.5" stroke="var(--color-text-muted)" strokeWidth="1" />
-            <rect x="10.5" y="2" width="3.5" height="12" rx="0.75" fill={showRightPanel ? 'var(--color-text-secondary)' : 'var(--color-text-faint)'} />
-          </svg>
-        </button>
       </div>
 
       {/* ── Multi-select tag bar ─────────────────────────────────────── */}
