@@ -6,6 +6,7 @@ Use this when publishing Keptra downloads from the public website while keeping 
 
 - Put `keptra.z2hs.au` behind the orange-cloud Cloudflare proxy.
 - Put `admin.keptra.z2hs.au` behind the orange-cloud Cloudflare proxy.
+- Put `updates.keptra.z2hs.au` behind the orange-cloud Cloudflare proxy.
 - Avoid exposing the TrueNAS/origin IP in public DNS. A proxied record should resolve to Cloudflare IP ranges, not the server's direct IP.
 - If possible, firewall the origin so ports 80 and 443 only accept Cloudflare IP ranges.
 
@@ -24,6 +25,7 @@ Use this when publishing Keptra downloads from the public website while keeping 
 
 - Add a Cloudflare WAF rule or Zero Trust Access policy for `admin.keptra.z2hs.au/*`.
 - Keep `keptra.z2hs.au` public for downloads and API endpoints.
+- Keep `updates.keptra.z2hs.au` public for downloads and API endpoints.
 - Add bot/challenge rules for:
   - `/admin/*`
   - `/api/v1/checkout/create`

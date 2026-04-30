@@ -246,6 +246,7 @@ Public endpoints:
 
 - `https://keptra.z2hs.au`
 - `https://admin.keptra.z2hs.au`
+- `https://updates.keptra.z2hs.au`
 
 If you prefer the TrueNAS Apps UI instead of shell-driven `docker compose`, use:
 
@@ -258,6 +259,7 @@ The hosted admin image is published from the private GitHub repo to:
 Artifacts are served from the repo-root `artifacts/` directory through Caddy at:
 
 - `https://keptra.z2hs.au/artifacts/...`
+- `https://updates.keptra.z2hs.au/artifacts/...`
 
 Optional private-GitHub sync for the admin panel:
 

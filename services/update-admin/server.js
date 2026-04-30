@@ -74,8 +74,8 @@ const trialMaxDevices = Math.max(1, Number.parseInt(process.env.TRIAL_MAX_DEVICE
 const trialCooldownDays = Math.max(1, Number.parseInt(process.env.TRIAL_COOLDOWN_DAYS || '30', 10) || 30);
 
 // CORS origins allowed to call public API endpoints from the Electron renderer
-// and from the website (localhost:5173 for dev, keptra.z2hs.au for prod).
-const corsAllowedOrigins = (process.env.CORS_ALLOWED_ORIGINS || 'https://keptra.z2hs.au,http://keptra.z2hs.au')
+// and from the website (localhost:5173 for dev, Keptra hosts for prod).
+const corsAllowedOrigins = (process.env.CORS_ALLOWED_ORIGINS || 'https://keptra.z2hs.au,https://admin.keptra.z2hs.au,https://updates.keptra.z2hs.au,http://keptra.z2hs.au,http://admin.keptra.z2hs.au,http://updates.keptra.z2hs.au')
   .split(',').map((o) => o.trim()).filter(Boolean);
 
 const KEPTRA_LOGO_SVG = '<svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect width="256" height="256" rx="56" fill="#0D1416"/><rect x="13" y="13" width="230" height="230" rx="46" fill="#142629" stroke="#37B69F" stroke-width="12"/><path d="M128 49L178 136H78L128 49Z" fill="#37B69F"/><path d="M211 116L161 202L112 116H211Z" fill="#52D7B5"/><path d="M55 152L104 67L154 152H55Z" fill="#2585A1"/><path d="M88 139L121 173L190 92" stroke="#F6FBFA" stroke-width="21" stroke-linecap="round" stroke-linejoin="round"/><path d="M67 67H101M67 67V101M188 67H222M222 67V101M67 188V222H101M188 222H222V188" stroke="#F6FBFA" stroke-opacity=".78" stroke-width="11" stroke-linecap="round"/></svg>';
@@ -2874,7 +2874,14 @@ app.get('/api/v1/app/update', async (req, res) => {
 
 function setPublicCors(req, res) {
   const origin = req.headers.origin;
-  const allowed = ['https://keptra.z2hs.au', 'http://keptra.z2hs.au'];
+  const allowed = [
+    'https://keptra.z2hs.au',
+    'https://admin.keptra.z2hs.au',
+    'https://updates.keptra.z2hs.au',
+    'http://keptra.z2hs.au',
+    'http://admin.keptra.z2hs.au',
+    'http://updates.keptra.z2hs.au',
+  ];
   res.setHeader('Access-Control-Allow-Origin', allowed.includes(origin) ? origin : '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Accept, Content-Type');

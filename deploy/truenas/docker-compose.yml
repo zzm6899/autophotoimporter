@@ -31,6 +31,7 @@ services:
       UPDATE_TOKEN_SECRET: ${UPDATE_TOKEN_SECRET}
       ADMIN_API_TOKEN: ${ADMIN_API_TOKEN}
       PUBLIC_UPDATES_BASE_URL: https://keptra.z2hs.au
+      CORS_ALLOWED_ORIGINS: https://keptra.z2hs.au,https://admin.keptra.z2hs.au,https://updates.keptra.z2hs.au,http://keptra.z2hs.au,http://admin.keptra.z2hs.au,http://updates.keptra.z2hs.au
       COOKIE_SECURE: "true"
       GITHUB_RELEASE_OWNER: ${GITHUB_RELEASE_OWNER:-}
       GITHUB_RELEASE_REPO: ${GITHUB_RELEASE_REPO:-}

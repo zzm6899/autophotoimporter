@@ -4,6 +4,7 @@ This stack hosts:
 
 - `keptra.z2hs.au` for the public website, desktop app update API, license API, checkout, and download redirects
 - `admin.keptra.z2hs.au` for the admin panel
+- `updates.keptra.z2hs.au` for the desktop app update API, artifact downloads, and backwards-compatible update links
 
 The Node service listens on `0.0.0.0:5071` inside the app container, and the reverse proxy publishes it over HTTPS.
 
@@ -46,7 +47,7 @@ In TrueNAS:
 5. Point DNS for:
    - `keptra.z2hs.au`
    - `admin.keptra.z2hs.au`
-   - `updates.keptra.z2hs.au` only if you still need the legacy update subdomain
+   - `updates.keptra.z2hs.au`
 6. Start the stack:
 
 ```bash

@@ -51,7 +51,7 @@ services:
 
       # --- CORS (comma-separated origins allowed to call /api/v1/*) ---
       # Electron renderer uses localhost in dev; add your website domain for prod
-      CORS_ALLOWED_ORIGINS: "https://keptra.z2hs.au,http://keptra.z2hs.au"
+      CORS_ALLOWED_ORIGINS: "https://keptra.z2hs.au,https://admin.keptra.z2hs.au,https://updates.keptra.z2hs.au,http://keptra.z2hs.au,http://admin.keptra.z2hs.au,http://updates.keptra.z2hs.au"
 
       # --- Trial / pricing defaults (overridable in /admin/pricing UI) ---
       TRIAL_DAYS: "14"
