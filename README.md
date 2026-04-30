@@ -238,6 +238,18 @@ For the TrueNAS-hosted update/admin stack:
 2. Copy `.env.truenas.example` to `.env` and fill in real secrets.
 3. Start from repo root:
 
+Generate the random secret values with one of:
+
+```bash
+openssl rand -hex 32
+```
+
+```powershell
+[Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).ToLower()
+```
+
+Use different generated values for `ADMIN_SESSION_SECRET`, `UPDATE_TOKEN_SECRET`, and `ADMIN_API_TOKEN`. The server rejects empty values and unchanged `CHANGE_ME` / `REPLACE_WITH` placeholders.
+
 ```bash
 docker compose up -d --build
 ```
