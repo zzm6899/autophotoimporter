@@ -438,8 +438,9 @@ export function SingleView({ file, index, total }: SingleViewProps) {
   const clippingRisk = Math.abs(previewStops) >= exposureMaxStops - 0.01 || brightnessMultiplier >= 2.25 || brightnessMultiplier <= 0.4;
   const aiReasons = buildAiReasons(file);
   const editDisabled = saveFormat === 'original';
-  const currentPhotoTemp = photoWhiteBalance?.temperature ?? 0;
-  const currentPhotoTint = photoWhiteBalance?.tint ?? 0;
+  const effectiveWhiteBalance = photoWhiteBalance ?? globalWhiteBalance ?? { temperature: 0, tint: 0 };
+  const currentPhotoTemp = effectiveWhiteBalance.temperature;
+  const currentPhotoTint = effectiveWhiteBalance.tint;
   const currentPhotoKelvin = whiteBalanceTemperatureToKelvin(currentPhotoTemp);
   const hasPhotoWhiteBalance = !!photoWhiteBalance;
   const hasActiveEdits =
@@ -1084,7 +1085,11 @@ export function SingleView({ file, index, total }: SingleViewProps) {
             <div className="mb-1 flex items-center justify-between text-[10px]">
               <span className="text-white/70">Photo WB</span>
               <span className="font-mono text-cyan-100">
-                {hasPhotoWhiteBalance ? `${formatWhiteBalanceKelvin(currentPhotoTemp)} / ${currentPhotoTint > 0 ? '+' : ''}${currentPhotoTint}` : 'bulk'}
+                {hasPhotoWhiteBalance
+                  ? `${formatWhiteBalanceKelvin(currentPhotoTemp)} / ${currentPhotoTint > 0 ? '+' : ''}${currentPhotoTint}`
+                  : globalWhiteBalance
+                    ? `bulk ${formatWhiteBalanceKelvin(currentPhotoTemp)} / ${currentPhotoTint > 0 ? '+' : ''}${currentPhotoTint}`
+                    : 'bulk'}
               </span>
             </div>
             <div className="mb-1 grid grid-cols-[2.25rem_1fr_3rem] items-center gap-1 text-[9px] text-white/65">

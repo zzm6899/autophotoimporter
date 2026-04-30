@@ -110,7 +110,7 @@ const config: ForgeConfig = {
     new MakerSquirrel({
       name: 'keptra',
       setupExe: 'Keptra-Setup.exe',
-      iconUrl: 'https://raw.githubusercontent.com/zzm6899/importer/main/assets/brand/icon.ico',
+      iconUrl: 'https://raw.githubusercontent.com/zzm6899/autophotoimporter/main/assets/brand/icon.ico',
       ...(fs.existsSync(windowsIconPath) ? { setupIcon: windowsIconPath } : {}),
       noMsi: true,
     }),

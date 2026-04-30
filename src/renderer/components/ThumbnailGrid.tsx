@@ -677,7 +677,10 @@ export function ThumbnailGrid() {
       if (filter.startsWith('lens:')) return (f.lensModel || 'Unknown lens') === decodeURIComponent(filter.slice(5));
       if (filter.startsWith('date:')) return (f.dateTaken ? f.dateTaken.slice(0, 10) : 'Undated') === decodeURIComponent(filter.slice(5));
       if (filter.startsWith('ext:')) return f.extension.toLowerCase() === decodeURIComponent(filter.slice(4));
-      if (filter.startsWith('scene:')) return (f.sceneBucket || 'Scene') === decodeURIComponent(filter.slice(6));
+      if (filter.startsWith('scene:')) {
+        const scene = f.sceneBucket?.trim();
+        return !!scene && scene.toLowerCase() !== 'scene' && scene.toLowerCase() !== 'general' && scene === decodeURIComponent(filter.slice(6));
+      }
       if (filter.startsWith('burst:')) return f.burstId === decodeURIComponent(filter.slice(6));
       switch (filter) {
         case 'protected': return f.isProtected;
@@ -759,7 +762,7 @@ export function ThumbnailGrid() {
       if (f.type === 'photo') lenses.add(f.lensModel || 'Unknown lens');
       dates.add(f.dateTaken ? f.dateTaken.slice(0, 10) : 'Undated');
       exts.add(f.extension.toLowerCase());
-      if (f.sceneBucket) scenes.add(f.sceneBucket);
+      if (f.sceneBucket && !['scene', 'general'].includes(f.sceneBucket.trim().toLowerCase())) scenes.add(f.sceneBucket);
     }
     return {
       cameras: [...cameras].sort(),
@@ -3281,14 +3284,16 @@ export function ThumbnailGrid() {
         </div>
       )}
       {totalPhotoCount > 0 && !showAiReviewStrip && (
-        <button
-          type="button"
-          onClick={() => setShowAiReviewStrip(true)}
-          className="absolute bottom-7 left-2 z-30 rounded border border-border bg-surface-alt/90 px-2 py-0.5 text-[10px] text-text-muted hover:text-text"
-          title="Show AI status strip"
-        >
-          AI {aiAnalyzedCount}/{totalPhotoCount}
-        </button>
+        <div className="shrink-0 border-b border-border bg-surface-alt/35 px-3 py-1">
+          <button
+            type="button"
+            onClick={() => setShowAiReviewStrip(true)}
+            className="rounded border border-border bg-surface-raised px-2 py-0.5 text-[10px] text-text-secondary hover:border-accent/50 hover:text-text"
+            title="Show the AI Overview status bar"
+          >
+            Show AI Overview ({aiAnalyzedCount}/{totalPhotoCount})
+          </button>
+        </div>
       )}
 
       {/* Content */}

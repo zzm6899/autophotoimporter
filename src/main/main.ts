@@ -35,6 +35,13 @@ let mainWindow: BrowserWindow | null = null;
 const packageSmokeMode = process.env.KEPTRA_PACKAGE_SMOKE === '1';
 const packageSmokeShowWindow = process.env.KEPTRA_PACKAGE_SMOKE_SHOW === '1';
 
+function getWindowIconPath(): string | undefined {
+  if (process.platform === 'darwin') return undefined;
+  const fileName = process.platform === 'win32' ? 'icon.ico' : 'icon.png';
+  const iconPath = path.join(app.getAppPath(), 'assets', 'brand', fileName);
+  return existsSync(iconPath) ? iconPath : undefined;
+}
+
 function modelSmokeStatus() {
   const resourcesPath = process.resourcesPath;
   const models = ['version-RFB-640.onnx', 'w600k_mbf.onnx', 'ssd_mobilenet_v1_12.onnx'];
@@ -121,12 +128,14 @@ const createWindow = () => {
   // Remove the native menu bar entirely (File / Edit / View / Window / Help).
   // DevTools are still accessible via Ctrl+Shift+I (registered below).
   Menu.setApplicationMenu(null);
+  const windowIconPath = getWindowIconPath();
 
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
     minWidth: 960,
     minHeight: 600,
+    ...(windowIconPath ? { icon: windowIconPath } : {}),
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     show: false,
     // On Windows, hiddenInset alone doesn't remove the menu bar frame —

@@ -411,6 +411,26 @@ describe('ImportContext reducer', () => {
       const next = reducer(makeState({ files }), { type: 'QUEUE_BEST' });
       expect(next.queuedPaths).toEqual(['/starred.jpg']);
     });
+
+    it('does not sync edits across the generic scene bucket', () => {
+      const files = [
+        makeFile({ path: '/focused.jpg', sceneBucket: 'Scene', exposureAdjustmentStops: 0.5, whiteBalanceAdjustment: { temperature: 10, tint: 5 } }),
+        makeFile({ path: '/other.jpg', sceneBucket: 'Scene' }),
+      ];
+      const next = reducer(makeState({ files, focusedIndex: 0 }), { type: 'SYNC_EDITS_FROM_FOCUSED' });
+      expect(next.files.find((file) => file.path === '/other.jpg')?.exposureAdjustmentStops).toBeUndefined();
+      expect(next.files.find((file) => file.path === '/other.jpg')?.whiteBalanceAdjustment).toBeUndefined();
+    });
+
+    it('syncs edits across a named scene bucket', () => {
+      const files = [
+        makeFile({ path: '/focused.jpg', sceneBucket: 'ceremony', exposureAdjustmentStops: 0.5, whiteBalanceAdjustment: { temperature: 10, tint: 5 } }),
+        makeFile({ path: '/other.jpg', sceneBucket: 'ceremony' }),
+      ];
+      const next = reducer(makeState({ files, focusedIndex: 0 }), { type: 'SYNC_EDITS_FROM_FOCUSED' });
+      expect(next.files.find((file) => file.path === '/other.jpg')?.exposureAdjustmentStops).toBe(0.5);
+      expect(next.files.find((file) => file.path === '/other.jpg')?.whiteBalanceAdjustment).toEqual({ temperature: 10, tint: 5 });
+    });
   });
 
   // --- CLEAR_PICKS ---

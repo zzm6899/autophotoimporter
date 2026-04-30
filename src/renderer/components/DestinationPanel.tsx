@@ -20,6 +20,11 @@ const converterLabel =
       ? 'Windows imaging'
       : 'ImageMagick';
 
+const isMeaningfulSceneLabel = (label?: string | null) => {
+  const normalized = label?.trim().toLowerCase();
+  return !!normalized && normalized !== 'scene' && normalized !== 'general';
+};
+
 function applyFormat(destPath: string, format: SaveFormat): string {
   if (format === 'original') return destPath;
   const ext = FORMAT_EXT[format];
@@ -44,6 +49,7 @@ export function DestinationPanel() {
   const { startImport } = useImport();
   const [freeBytes, setFreeBytes] = useState<number | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showTransforms, setShowTransforms] = useState(false);
   const [jobPresets, setJobPresets] = useState<JobPreset[]>([]);
   const [preflight, setPreflight] = useState<ImportPreflight | null>(null);
   const [preflightOpen, setPreflightOpen] = useState(false);
@@ -254,6 +260,12 @@ export function DestinationPanel() {
           }
         : undefined,
       autoStraighten,
+      whiteBalance: hasWhiteBalance
+        ? {
+            temperature: wbTemperature,
+            tint: wbTint,
+          }
+        : undefined,
       dryRun,
     };
   };
@@ -269,7 +281,9 @@ export function DestinationPanel() {
     (f.pick === 'selected' || queuedPaths.includes(f.path)) &&
     (f.blurRisk === 'high' || (typeof f.reviewScore === 'number' && f.reviewScore < 58) || !f.reviewScore),
   ).length;
-  const sceneLabels = [...new Set(importFiles.map((f) => f.sceneBucket).filter(Boolean) as string[])].sort();
+  const sceneLabels = [...new Set(importFiles
+    .map((f) => f.sceneBucket)
+    .filter(isMeaningfulSceneLabel) as string[])].sort();
   const sceneCount = sceneLabels.length;
   const sceneSummary = sceneLabels.length <= 2
     ? sceneLabels.join(', ')
@@ -577,59 +591,80 @@ export function DestinationPanel() {
         )}
       </div>
 
-      {/* Lightroom-style batch transforms */}
+      {/* Output edits */}
       <div className="px-2.5 mb-2.5">
-        <h3 className="text-[10px] text-text-secondary mb-1 uppercase tracking-wider">Transforms</h3>
-        <div className={`space-y-2 rounded border border-border bg-surface-alt px-2 py-2 ${saveFormat === 'original' ? 'opacity-60' : ''}`}>
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[11px] text-text">Bulk white balance</span>
-            <button
-              type="button"
-              onClick={() => handleWhiteBalance(0, 0)}
-              disabled={!hasWhiteBalance}
-              className="px-1.5 py-0.5 text-[10px] rounded bg-surface-raised hover:bg-border text-text-secondary disabled:opacity-50"
-            >
-              Reset
-            </button>
-          </div>
-          <div>
-            <div className="flex items-center justify-between mb-0.5">
-              <span className="text-[10px] text-text-secondary">Temperature</span>
-              <span className="text-[10px] text-text-secondary font-mono">{formatWhiteBalanceKelvin(wbTemperature)}</span>
+        <button
+          type="button"
+          onClick={() => setShowTransforms((value) => !value)}
+          className="w-full flex items-center justify-between gap-2 text-[10px] text-text-secondary uppercase tracking-wider hover:text-text"
+        >
+          <span>Output edits</span>
+          <span className={hasWhiteBalance ? 'text-cyan-300 normal-case font-mono' : 'text-text-muted normal-case'}>
+            {hasWhiteBalance
+              ? `${formatWhiteBalanceKelvin(wbTemperature)} ${wbTint > 0 ? '+' : ''}${wbTint}`
+              : 'Off'} {showTransforms ? '-' : '+'}
+          </span>
+        </button>
+        {showTransforms && (
+          <div className={`mt-1.5 space-y-2 rounded border border-border bg-surface-alt px-2 py-2 ${saveFormat === 'original' ? 'opacity-60' : ''}`}>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] text-text">Bulk white balance</span>
+              <button
+                type="button"
+                onClick={() => handleWhiteBalance(0, 0)}
+                disabled={!hasWhiteBalance}
+                className="px-1.5 py-0.5 text-[10px] rounded bg-surface-raised hover:bg-border text-text-secondary disabled:opacity-50"
+              >
+                Reset
+              </button>
             </div>
-            <input
-              type="range"
-              min={WHITE_BALANCE_MIN_KELVIN}
-              max={WHITE_BALANCE_MAX_KELVIN}
-              step={50}
-              value={wbKelvin}
-              disabled={saveFormat === 'original'}
-              onChange={(e) => handleWhiteBalance(kelvinToWhiteBalanceTemperature(Number(e.target.value)), wbTint)}
-              className="w-full h-1 bg-surface-raised rounded appearance-none cursor-pointer accent-accent disabled:cursor-not-allowed"
-            />
-          </div>
-          <div>
-            <div className="flex items-center justify-between mb-0.5">
-              <span className="text-[10px] text-text-secondary">Tint</span>
-              <span className="text-[10px] text-text-secondary font-mono">{wbTint > 0 ? '+' : ''}{wbTint}</span>
+            <div>
+              <div className="flex items-center justify-between mb-0.5">
+                <span className="text-[10px] text-text-secondary">Temperature</span>
+                <span className="text-[10px] text-text-secondary font-mono">{formatWhiteBalanceKelvin(wbTemperature)}</span>
+              </div>
+              <div className="grid grid-cols-[2.4rem_1fr_2.6rem] items-center gap-1 text-[9px] text-text-muted">
+                <span>Cool</span>
+                <input
+                  type="range"
+                  min={WHITE_BALANCE_MIN_KELVIN}
+                  max={WHITE_BALANCE_MAX_KELVIN}
+                  step={50}
+                  value={wbKelvin}
+                  disabled={saveFormat === 'original'}
+                  onChange={(e) => handleWhiteBalance(kelvinToWhiteBalanceTemperature(Number(e.target.value)), wbTint)}
+                  className="min-w-0 h-1 bg-surface-raised rounded appearance-none cursor-pointer accent-accent disabled:cursor-not-allowed"
+                />
+                <span className="text-right">Warm</span>
+              </div>
             </div>
-            <input
-              type="range"
-              min={-100}
-              max={100}
-              step={5}
-              value={wbTint}
-              disabled={saveFormat === 'original'}
-              onChange={(e) => handleWhiteBalance(wbTemperature, Number(e.target.value))}
-              className="w-full h-1 bg-surface-raised rounded appearance-none cursor-pointer accent-accent disabled:cursor-not-allowed"
-            />
+            <div>
+              <div className="flex items-center justify-between mb-0.5">
+                <span className="text-[10px] text-text-secondary">Tint</span>
+                <span className="text-[10px] text-text-secondary font-mono">{wbTint > 0 ? '+' : ''}{wbTint}</span>
+              </div>
+              <div className="grid grid-cols-[2.4rem_1fr_3.4rem] items-center gap-1 text-[9px] text-text-muted">
+                <span>Green</span>
+                <input
+                  type="range"
+                  min={-100}
+                  max={100}
+                  step={5}
+                  value={wbTint}
+                  disabled={saveFormat === 'original'}
+                  onChange={(e) => handleWhiteBalance(wbTemperature, Number(e.target.value))}
+                  className="min-w-0 h-1 bg-surface-raised rounded appearance-none cursor-pointer accent-accent disabled:cursor-not-allowed"
+                />
+                <span className="text-right">Magenta</span>
+              </div>
+            </div>
+            <p className="text-[10px] text-text-muted">
+              {saveFormat === 'original'
+                ? 'Choose JPEG/TIFF/HEIC to apply output edits.'
+                : 'Applied during import export.'}
+            </p>
           </div>
-          <p className="text-[10px] text-text-muted">
-            {saveFormat === 'original'
-              ? 'White balance needs JPEG/TIFF/HEIC output.'
-              : 'Applied in the same output pass as exposure normalization.'}
-          </p>
-        </div>
+        )}
       </div>
 
       {/* Advanced workflow options — collapsed by default so the panel
@@ -825,7 +860,7 @@ export function DestinationPanel() {
               <span className="text-violet-300/80"> &middot; {activeEventMode.label}</span>
             )}
             {sceneCount > 0 && (
-              <span className="text-blue-300/80" title={sceneLabels.join(', ')}> &middot; Scenes: {sceneSummary}</span>
+              <span className="text-blue-300/80" title={sceneLabels.join(', ')}> &middot; Scene groups: {sceneSummary}</span>
             )}
             {locationCount > 0 && (
               <span className="text-cyan-300/80"> &middot; GPS tags</span>

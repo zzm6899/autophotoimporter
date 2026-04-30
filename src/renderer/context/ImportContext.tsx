@@ -928,7 +928,11 @@ export function reducer(state: State, action: Action): State {
             .filter((f) =>
               (focused.burstId && f.burstId === focused.burstId) ||
               (focused.visualGroupId && f.visualGroupId === focused.visualGroupId) ||
-              (focused.sceneBucket && f.sceneBucket === focused.sceneBucket),
+              (
+                focused.sceneBucket &&
+                !['scene', 'general'].includes(focused.sceneBucket.trim().toLowerCase()) &&
+                f.sceneBucket === focused.sceneBucket
+              ),
             )
             .map((f) => f.path));
       targetPaths.delete(focused.path);
