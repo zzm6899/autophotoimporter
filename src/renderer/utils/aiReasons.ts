@@ -1,5 +1,5 @@
 import type { MediaFile } from '../../shared/types';
-import { bestShotScore, faceQuality, humanMomentQuality } from '../../shared/review';
+import { bestShotScore, faceQuality, faceSignalConfidence, humanMomentQuality } from '../../shared/review';
 
 export function buildAiReasons(file: MediaFile, limit = 6): string[] {
   const reasons = new Set<string>();
@@ -12,7 +12,11 @@ export function buildAiReasons(file: MediaFile, limit = 6): string[] {
   const personCount = file.personCount ?? file.personBoxes?.length ?? 0;
   if (faceCount > 0) {
     const bestEye = (file.faceBoxes ?? []).reduce((best, box) => Math.max(best, box.eyeScore ?? 0), 0);
+    const confidence = Math.round(faceSignalConfidence(file) * 100);
     reasons.add(`${faceCount} face${faceCount === 1 ? '' : 's'} detected`);
+    if (confidence >= 78) reasons.add(`face confidence ${confidence}%`);
+    else if (confidence > 0 && confidence < 55) reasons.add(`verify face boxes ${confidence}%`);
+    if (file.faceEmbedding) reasons.add('face match ready');
     if (bestEye >= 2) reasons.add('best eyes open');
     else if (bestEye === 1) reasons.add('blink/side-face risk');
     if (humanMomentQuality(file) >= 75) reasons.add('strong expression moment');

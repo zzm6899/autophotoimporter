@@ -662,8 +662,18 @@ function rankFacesForEmbedding(boxes: FaceBox[]): FaceBox[] {
     const bArea = b.width * b.height;
     const aCenter = Math.hypot(a.x + a.width / 2 - 0.5, a.y + a.height / 2 - 0.45);
     const bCenter = Math.hypot(b.x + b.width / 2 - 0.5, b.y + b.height / 2 - 0.45);
-    return (b.score * 2 + bArea * 8 - bCenter * 0.35) - (a.score * 2 + aArea * 8 - aCenter * 0.35);
+    const aAspectPenalty = Math.abs(Math.log(Math.max(0.25, Math.min(4, a.width / Math.max(0.001, a.height)))));
+    const bAspectPenalty = Math.abs(Math.log(Math.max(0.25, Math.min(4, b.width / Math.max(0.001, b.height)))));
+    return (b.score * 2.4 + bArea * 12 - bCenter * 0.35 - bAspectPenalty * 0.1) -
+      (a.score * 2.4 + aArea * 12 - aCenter * 0.35 - aAspectPenalty * 0.1);
   });
+}
+
+function isReliableFaceForEmbedding(box: FaceBox): boolean {
+  const area = box.width * box.height;
+  if (area >= 0.004 && box.score >= 0.62) return true;
+  if (area >= 0.0015 && box.score >= 0.74) return true;
+  return area >= 0.0009 && box.score >= 0.86;
 }
 
 async function detectFaces(imagePath: string, cachedImg?: Electron.NativeImage): Promise<FaceBox[]> {
@@ -892,13 +902,16 @@ async function _analyzeFacesInner(imagePath: string): Promise<FaceAnalysisResult
 
   // Embed detected faces with a cap that scales up on fast GPU/concurrency
   // settings. All detected boxes are still returned for UI overlays.
-  const facesToEmbed = rankFacesForEmbedding(boxes).slice(0, faceEmbeddingLimit);
+  const rankedFaces = rankFacesForEmbedding(boxes);
+  const reliableFaces = rankedFaces.filter(isReliableFaceForEmbedding);
+  const facesToEmbed = (reliableFaces.length > 0 ? reliableFaces : rankedFaces.slice(0, 1))
+    .slice(0, faceEmbeddingLimit);
   const embedStart = Date.now();
-  const embeddings = await Promise.all(
+  const embeddings = (await Promise.all(
     facesToEmbed.map((box) =>
-      embedFace(imagePath, box, img).catch(() => new Float32Array(512)),
+      embedFace(imagePath, box, img).catch(() => null),
     ),
-  );
+  )).filter((embedding): embedding is Float32Array => !!embedding);
   const embedMs = Date.now() - embedStart;
 
   finishStats(embedMs);

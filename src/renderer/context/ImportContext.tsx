@@ -851,7 +851,7 @@ export function reducer(state: State, action: Action): State {
       };
     }
     case 'GROUP_FACE_SIMILAR': {
-      const groups = groupByFaceSimilarity(state.files, 0.67, action.threshold ?? 10);
+      const groups = groupByFaceSimilarity(state.files, 0.69, action.threshold ?? 10);
       const groupByPath = new Map<string, { id: string; size: number }>();
       for (const [id, paths] of Object.entries(groups)) {
         for (const p of paths) groupByPath.set(p, { id, size: paths.length });

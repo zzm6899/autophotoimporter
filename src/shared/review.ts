@@ -33,6 +33,34 @@ function boxCenterScore(box: { x: number; y: number; width: number; height: numb
   return clamp01(1 - (dx * 1.45 + dy * 1.05));
 }
 
+export function faceSignalConfidence(
+  file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'faceDetection' | 'subjectSharpnessScore'>,
+): number {
+  const boxes = file.faceBoxes ?? [];
+  const faceCount = file.faceCount ?? boxes.length;
+  if (faceCount <= 0) return 0;
+
+  const avgDetection = boxes.length > 0
+    ? boxes.reduce((sum, box) => sum + clamp01(box.score, file.faceDetection === 'estimated' ? 0.45 : 0.78), 0) / boxes.length
+    : (file.faceDetection === 'estimated' ? 0.38 : 0.58);
+  const largestFaceArea = boxes.reduce((best, box) => Math.max(best, box.width * box.height), 0);
+  const areaSignal = boxes.length > 0 ? clamp01(largestFaceArea / 0.035) : 0.35;
+  const sharpSignal = typeof file.subjectSharpnessScore === 'number'
+    ? clamp01(file.subjectSharpnessScore / 135)
+    : 0.5;
+  const nativeSignal = file.faceDetection === 'native' ? 0.12 : file.faceDetection === 'estimated' ? -0.16 : 0;
+  const groupSignal = faceCount >= 2 ? 0.06 : 0;
+
+  return clamp01(
+    avgDetection * 0.46 +
+    areaSignal * 0.22 +
+    sharpSignal * 0.18 +
+    0.08 +
+    nativeSignal +
+    groupSignal,
+  );
+}
+
 export function humanMomentQuality(
   file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'personCount' | 'personBoxes' | 'subjectSharpnessScore'>,
 ): number {
@@ -86,20 +114,14 @@ export function faceQuality(file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'f
   const faceArea = boxes.reduce((sum, box) => sum + box.width * box.height, 0);
   const largestFaceArea = boxes.reduce((best, box) => Math.max(best, box.width * box.height), 0);
   const sharp = Math.min(60, (file.subjectSharpnessScore ?? 0) / 3);
-  const faceConfidence = file.faceDetection === 'estimated' ? 0.4 : 1;
-  // ONNX detection confidence: average score across all face boxes (0..1).
-  // Boosts photos where faces were detected with high certainty — helps
-  // best-of-batch pick the shot where faces are clearest.
-  const onnxConfidence = boxes.length > 0
-    ? boxes.reduce((sum, box) => sum + (box.score ?? 0.85), 0) / boxes.length
-    : 1;
+  const faceConfidence = faceSignalConfidence(file);
   return Math.round(
     (Math.min(faceCount, 4) * 18 +
     bestEye * 18 +
     eyeSum * 7 +
     Math.min(14, expression * 5) +
     Math.min(20, largestFaceArea * 180) +
-    Math.min(14, faceArea * 80)) * faceConfidence * Math.max(0.5, onnxConfidence) +
+    Math.min(14, faceArea * 80)) * Math.max(0.35, faceConfidence) +
     sharp,
   );
 }
@@ -377,8 +399,11 @@ export function scoreReview(input: ReviewScoreInput): ReviewScore {
     reasons.push(`${rating} star`);
   }
   if ((input.faceCount ?? 0) > 0) {
+    const confidence = faceSignalConfidence(input);
     score += 16 + Math.min(18, faceQuality(input) / 5);
     reasons.push(`${input.faceCount} face${input.faceCount === 1 ? '' : 's'}`);
+    if (confidence >= 0.78) reasons.push('strong face signal');
+    else if (confidence < 0.52) reasons.push('check face confidence');
     const eyeScore = (input.faceBoxes ?? []).reduce((best, box) => Math.max(best, box.eyeScore ?? 0), 0);
     if (eyeScore >= 2) reasons.push('eyes sharp');
     else if (eyeScore === 1) reasons.push('face present');
@@ -482,6 +507,17 @@ export function deserializeEmbedding(hex: string): Float32Array | null {
   }
 }
 
+function normalizeEmbedding(embedding: Float32Array | null): Float32Array | null {
+  if (!embedding || embedding.length < 4) return null;
+  let norm = 0;
+  for (let i = 0; i < embedding.length; i++) norm += embedding[i] * embedding[i];
+  if (norm <= 1e-10 || !Number.isFinite(norm)) return null;
+  const scale = 1 / Math.sqrt(norm);
+  const normalized = new Float32Array(embedding.length);
+  for (let i = 0; i < embedding.length; i++) normalized[i] = embedding[i] * scale;
+  return normalized;
+}
+
 export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
   if (a.length !== b.length || a.length === 0) return 0;
   let dot = 0;
@@ -498,40 +534,96 @@ export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
 }
 
 export function groupByFaceEmbedding(files: MediaFile[], threshold = 0.67): Record<string, string[]> {
+  const order = new Map(files.map((file, index) => [file.path, index]));
   const faceFiles = files
-    .map((file) => ({ file, embedding: file.faceEmbedding ? deserializeEmbedding(file.faceEmbedding) : null }))
-    .filter((entry): entry is { file: MediaFile; embedding: Float32Array } =>
-      !!entry.embedding && (entry.file.faceCount ?? 0) > 0,
-    );
-  const visited = new Set<string>();
-  const groups: Record<string, string[]> = {};
-  let groupIndex = 1;
+    .map((file) => ({
+      file,
+      embedding: normalizeEmbedding(file.faceEmbedding ? deserializeEmbedding(file.faceEmbedding) : null),
+      confidence: faceSignalConfidence(file),
+    }))
+    .filter((entry): entry is { file: MediaFile; embedding: Float32Array; confidence: number } =>
+      !!entry.embedding && (entry.file.faceCount ?? 0) > 0 && entry.confidence >= 0.34,
+    )
+    .sort((a, b) => b.confidence - a.confidence || (order.get(a.file.path) ?? 0) - (order.get(b.file.path) ?? 0));
 
+  type Cluster = {
+    paths: string[];
+    centroid: Float32Array;
+    weight: number;
+    confidence: number;
+  };
+
+  const clusters: Cluster[] = [];
   for (const entry of faceFiles) {
-    if (visited.has(entry.file.path)) continue;
-    const group = [entry.file.path];
-    visited.add(entry.file.path);
-
-    for (const other of faceFiles) {
-      if (visited.has(other.file.path)) continue;
-      if (cosineSimilarity(entry.embedding, other.embedding) >= threshold) {
-        visited.add(other.file.path);
-        group.push(other.file.path);
+    let bestCluster: Cluster | null = null;
+    let bestSimilarity = 0;
+    for (const cluster of clusters) {
+      const similarity = cosineSimilarity(entry.embedding, cluster.centroid);
+      const adaptiveThreshold = threshold + Math.max(0, 0.74 - Math.min(entry.confidence, cluster.confidence)) * 0.08;
+      if (similarity >= adaptiveThreshold && similarity > bestSimilarity) {
+        bestCluster = cluster;
+        bestSimilarity = similarity;
       }
     }
 
-    if (group.length > 1) {
-      groups[`face-${groupIndex++}`] = group;
+    if (!bestCluster) {
+      clusters.push({
+        paths: [entry.file.path],
+        centroid: entry.embedding,
+        weight: Math.max(0.35, entry.confidence),
+        confidence: entry.confidence,
+      });
+      continue;
     }
+
+    bestCluster.paths.push(entry.file.path);
+    const nextWeight = Math.max(0.35, entry.confidence);
+    const totalWeight = bestCluster.weight + nextWeight;
+    const nextCentroid = new Float32Array(bestCluster.centroid.length);
+    for (let i = 0; i < nextCentroid.length; i++) {
+      nextCentroid[i] = (bestCluster.centroid[i] * bestCluster.weight + entry.embedding[i] * nextWeight) / totalWeight;
+    }
+    bestCluster.centroid = normalizeEmbedding(nextCentroid) ?? bestCluster.centroid;
+    bestCluster.weight = totalWeight;
+    bestCluster.confidence = Math.max(bestCluster.confidence, entry.confidence);
+  }
+
+  const groups: Record<string, string[]> = {};
+  let groupIndex = 1;
+  for (const cluster of clusters) {
+    if (cluster.paths.length <= 1) continue;
+    groups[`face-${groupIndex++}`] = cluster.paths
+      .slice()
+      .sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
   }
 
   return groups;
 }
 
 export function groupByFaceSimilarity(files: MediaFile[], embeddingThreshold = 0.67, signatureThreshold = 10): Record<string, string[]> {
+  const combined: Record<string, string[]> = {};
+  const groupedPaths = new Set<string>();
+  let groupIndex = 1;
+
   const embeddingGroups = groupByFaceEmbedding(files, embeddingThreshold);
-  if (Object.keys(embeddingGroups).length > 0) return embeddingGroups;
-  return groupByFaceSignature(files, signatureThreshold);
+  for (const paths of Object.values(embeddingGroups)) {
+    if (paths.length <= 1) continue;
+    combined[`face-${groupIndex++}`] = paths;
+    for (const path of paths) groupedPaths.add(path);
+  }
+
+  const signatureGroups = groupByFaceSignature(
+    files.filter((file) => !groupedPaths.has(file.path)),
+    signatureThreshold,
+  );
+  for (const paths of Object.values(signatureGroups)) {
+    const remaining = paths.filter((path) => !groupedPaths.has(path));
+    if (remaining.length <= 1) continue;
+    combined[`face-${groupIndex++}`] = remaining;
+    for (const path of remaining) groupedPaths.add(path);
+  }
+
+  return combined;
 }
 
 export function bestInGroup(files: MediaFile[]): MediaFile | null {

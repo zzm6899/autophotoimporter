@@ -15,6 +15,7 @@ import { ShortcutsOverlay } from './ShortcutsOverlay';
 import { BestOfSelectionPanel, rankBestOfSelection } from './BestOfSelectionPanel';
 import { getPreviewCacheStats, setBackgroundPreviewPaused, warmPreview } from '../utils/previewCache';
 import { clampStops, getEffectiveExposureStops, getNormalizedExposureStops, normalizeExposureStops } from '../../shared/exposure';
+import { faceSignalConfidence } from '../../shared/review';
 
 // ── Laplacian sharpness-based subject detector ────────────────────────────
 // Uses focus sharpness (Laplacian variance) instead of colour/skin tone so it
@@ -30,6 +31,18 @@ type ExposureClipboard = {
   anchorPath: string | null;
   whiteBalanceAdjustment?: WhiteBalanceAdjustment;
 };
+
+function formatFaceProviderSummary(models: Array<{ model: string; provider: string }> | undefined, ep?: string | null): string {
+  if (!models?.length) return ep ? `Provider ${ep.toUpperCase()}` : 'Face engine warming';
+  const labels: Record<string, string> = {
+    detector: 'faces',
+    embedder: 'matching',
+    person: 'people',
+  };
+  return models
+    .map((model) => `${labels[model.model] ?? model.model}: ${model.provider.toUpperCase()}`)
+    .join(' · ');
+}
 
 /**
  * Detect subject regions by finding the sharpest (in-focus) areas of the image.
@@ -597,7 +610,7 @@ export function ThumbnailGrid() {
   const [sessionTags, setSessionTags] = useState<string[]>([]);
   const [showTagSuggestions, setShowTagSuggestions] = useState(false);
   const [faceProviderSummary, setFaceProviderSummary] = useState<string>('Face engine warming');
-  const [showAiReviewStrip, setShowAiReviewStrip] = useState(false);
+  const [showAiReviewStrip, setShowAiReviewStrip] = useState(true);
   const [reviewSprintMode, setReviewSprintMode] = useState(false);
   const [flatGridWidth, setFlatGridWidth] = useState(0);
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -631,7 +644,6 @@ export function ThumbnailGrid() {
     () => files.filter((f) => f.type === 'photo' && (typeof f.sharpnessScore === 'number' || f.faceBoxes !== undefined || f.faceEmbedding)).length,
     [files],
   );
-  const aiPendingCount = Math.max(0, totalPhotoCount - aiAnalyzedCount);
   const setsEqual = useCallback((a: Set<number>, b: Set<number>) => {
     if (a.size !== b.size) return false;
     for (const value of a) {
@@ -851,11 +863,7 @@ export function ThumbnailGrid() {
       try {
         const info = await window.electronAPI.getExecutionProvider?.();
         if (cancelled || !info) return;
-        if (info.models?.length) {
-          setFaceProviderSummary(info.models.map((m) => `${m.model}:${m.provider}`).join(' · '));
-        } else if (info.ep) {
-          setFaceProviderSummary(info.ep);
-        }
+        setFaceProviderSummary(formatFaceProviderSummary(info.models, info.ep));
       } catch { /* ignore */ }
     };
     void update();
@@ -2081,15 +2089,81 @@ export function ThumbnailGrid() {
     const analyzed = photoFiles.filter((f) =>
       typeof f.sharpnessScore === 'number' ||
       typeof f.subjectSharpnessScore === 'number' ||
-      typeof f.reviewScore === 'number'
+      typeof f.reviewScore === 'number' ||
+      f.faceBoxes !== undefined ||
+      !!f.faceEmbedding
     ).length;
-    const faces = photoFiles.filter((f) => (f.faceCount ?? 0) > 0).length;
+    const faceFiles = photoFiles.filter((f) => (f.faceCount ?? f.faceBoxes?.length ?? 0) > 0);
+    const faces = faceFiles.length;
+    const faceBoxes = faceFiles.reduce((sum, file) => sum + (file.faceBoxes?.length ?? file.faceCount ?? 0), 0);
+    const faceGroups = new Set(faceFiles.map((f) => f.faceGroupId).filter(Boolean)).size;
+    const embeddings = photoFiles.filter((f) => !!f.faceEmbedding).length;
+    const lowConfidenceFaces = faceFiles.filter((f) => faceSignalConfidence(f) < 0.55).length;
+    const nativeFaces = faceFiles.filter((f) => f.faceDetection === 'native').length;
     const blur = photoFiles.filter((f) => f.blurRisk === 'high' || f.blurRisk === 'medium').length;
+    const highBlur = photoFiles.filter((f) => f.blurRisk === 'high').length;
     const picked = photoFiles.filter((f) => f.pick === 'selected').length;
     const rejected = photoFiles.filter((f) => f.pick === 'rejected').length;
     const pending = photoFiles.filter((f) => !f.pick).length;
-    return { total: photoFiles.length, analyzed, faces, blur, picked, rejected, pending };
-  }, [files]);
+    const strongCandidates = photoFiles.filter((f) =>
+      (f.reviewScore ?? 0) >= 70 &&
+      f.blurRisk !== 'high' &&
+      f.pick !== 'rejected' &&
+      !f.duplicate,
+    ).length;
+    const duplicates = photoFiles.filter((f) => f.duplicate).length;
+    return {
+      total: photoFiles.length,
+      analyzed,
+      faces,
+      faceBoxes,
+      faceGroups,
+      embeddings,
+      lowConfidenceFaces,
+      nativeFaces,
+      blur,
+      highBlur,
+      picked,
+      rejected,
+      pending,
+      queued: queuedPaths.length,
+      strongCandidates,
+      duplicates,
+    };
+  }, [files, queuedPaths.length]);
+  const aiOverview = useMemo(() => {
+    const ready = reviewStats.total > 0 && reviewStats.analyzed >= reviewStats.total;
+    const status = reviewWaitingForThumbnails
+      ? `Waiting for thumbnails ${readyThumbnailCount}/${reviewStats.total}`
+      : reviewPaused
+        ? `Paused at ${reviewStats.analyzed}/${reviewStats.total}`
+        : ready
+          ? `Ready ${reviewStats.analyzed}/${reviewStats.total}`
+          : `Analyzing ${reviewStats.analyzed}/${reviewStats.total}`;
+    const mode = fastKeeperMode ? 'Fast Keeper mode' : faceProviderSummary;
+    const items = [
+      `${reviewStats.faces} face photo${reviewStats.faces === 1 ? '' : 's'}`,
+      `${reviewStats.faceBoxes} box${reviewStats.faceBoxes === 1 ? '' : 'es'}`,
+      `${reviewStats.faceGroups} face group${reviewStats.faceGroups === 1 ? '' : 's'}`,
+      `${reviewStats.embeddings} match-ready`,
+      `${reviewStats.nativeFaces} model-scanned`,
+      `${reviewStats.strongCandidates} strong candidate${reviewStats.strongCandidates === 1 ? '' : 's'}`,
+      `${reviewStats.queued} queued`,
+    ];
+    const attention = [
+      reviewStats.lowConfidenceFaces > 0 ? `${reviewStats.lowConfidenceFaces} face check${reviewStats.lowConfidenceFaces === 1 ? '' : 's'}` : null,
+      reviewStats.blur > 0 ? `${reviewStats.blur} blur risk${reviewStats.highBlur > 0 ? ` (${reviewStats.highBlur} high)` : ''}` : null,
+      reviewStats.duplicates > 0 ? `${reviewStats.duplicates} duplicate${reviewStats.duplicates === 1 ? '' : 's'}` : null,
+    ].filter((item): item is string => !!item);
+    return { status, mode, items, attention, ready };
+  }, [
+    faceProviderSummary,
+    fastKeeperMode,
+    readyThumbnailCount,
+    reviewPaused,
+    reviewStats,
+    reviewWaitingForThumbnails,
+  ]);
   const sprintRemaining = useMemo(() => (
     sortedFiles.filter((file) =>
       file.type === 'photo' &&
@@ -3173,14 +3247,28 @@ export function ThumbnailGrid() {
       {nextActionToolbar}
 
       {totalPhotoCount > 0 && showAiReviewStrip && (
-        <div className="shrink-0 border-b border-border bg-surface-alt/45 px-3 py-1.5">
+        <div className="shrink-0 border-b border-border bg-surface-alt/55 px-3 py-1.5">
           <div className="flex flex-wrap items-center gap-2 text-[10px] text-text-muted">
-            <span className="font-medium text-text-secondary">AI</span>
-            <span>{aiAnalyzedCount}/{totalPhotoCount} analyzed</span>
-            {aiPendingCount > 0 && <span>{aiPendingCount} pending</span>}
-            {reviewSprintMode && <span className="text-blue-300">focus {reviewStats.picked} kept / {reviewStats.rejected} rejected / {reviewStats.pending} open</span>}
-            <span>{fastKeeperMode ? 'Fast Keeper' : faceProviderSummary}</span>
-            {reviewPaused && <span className="text-yellow-400">paused</span>}
+            <span className="font-semibold uppercase tracking-wide text-text-secondary">AI Overview</span>
+            <span className={aiOverview.ready ? 'text-emerald-300' : reviewPaused ? 'text-yellow-300' : 'text-blue-300'}>
+              {aiOverview.status}
+            </span>
+            {aiOverview.items.map((item) => (
+              <span key={item} className="rounded bg-surface-raised px-1.5 py-0.5 text-text-secondary">
+                {item}
+              </span>
+            ))}
+            {aiOverview.attention.map((item) => (
+              <span key={item} className="rounded bg-yellow-500/10 px-1.5 py-0.5 text-yellow-300">
+                {item}
+              </span>
+            ))}
+            {reviewSprintMode && (
+              <span className="rounded bg-blue-500/10 px-1.5 py-0.5 text-blue-300">
+                focus {reviewStats.picked} kept / {reviewStats.rejected} rejected / {reviewStats.pending} open
+              </span>
+            )}
+            <span className="text-text-faint">{aiOverview.mode}</span>
             <button
               type="button"
               onClick={() => setShowAiReviewStrip(false)}

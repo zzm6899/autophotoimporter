@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { autoCullGroup, bestInGroup, groupByFaceEmbedding, groupByFaceSimilarity, groupByVisualHash, hammingDistanceHex, humanMomentQuality, rankBestShots, scoreReview, subjectPresenceQuality } from '../review';
+import { autoCullGroup, bestInGroup, faceSignalConfidence, groupByFaceEmbedding, groupByFaceSimilarity, groupByVisualHash, hammingDistanceHex, humanMomentQuality, rankBestShots, scoreReview, subjectPresenceQuality } from '../review';
 import type { MediaFile } from '../types';
 
 function file(path: string, hash?: string, overrides: Partial<MediaFile> = {}): MediaFile {
@@ -50,6 +50,28 @@ describe('review utilities', () => {
     expect(Object.values(groups)).toEqual([['/a.jpg', '/b.jpg']]);
   });
 
+  it('keeps weak face embeddings from joining loose identity groups', () => {
+    const weakFace = file('/weak.jpg', undefined, {
+      faceCount: 1,
+      faceDetection: 'estimated',
+      faceBoxes: [{ x: 0.1, y: 0.08, width: 0.04, height: 0.04, score: 0.38 }],
+      subjectSharpnessScore: 18,
+      faceEmbedding: embeddingHex([0.72, 0.69, 0, 0]),
+    });
+    const groups = groupByFaceEmbedding([
+      file('/strong.jpg', undefined, {
+        faceCount: 1,
+        faceDetection: 'native',
+        faceBoxes: [{ x: 0.3, y: 0.2, width: 0.22, height: 0.24, score: 0.96 }],
+        subjectSharpnessScore: 140,
+        faceEmbedding: embeddingHex([1, 0, 0, 0]),
+      }),
+      weakFace,
+    ], 0.67);
+    expect(Object.values(groups)).toEqual([]);
+    expect(faceSignalConfidence(weakFace)).toBeLessThan(0.55);
+  });
+
   it('falls back to legacy face signatures when embeddings are unavailable', () => {
     const groups = groupByFaceSimilarity([
       file('/a.jpg', undefined, { faceCount: 1, faceSignature: '0000000000000000' }),
@@ -57,6 +79,19 @@ describe('review utilities', () => {
       file('/c.jpg', undefined, { faceCount: 1, faceSignature: 'ffffffffffffffff' }),
     ], 0.9, 2);
     expect(Object.values(groups)).toEqual([['/a.jpg', '/b.jpg']]);
+  });
+
+  it('still uses signature fallback for unembedded files when embeddings exist', () => {
+    const groups = groupByFaceSimilarity([
+      file('/embed-a.jpg', undefined, { faceCount: 1, faceEmbedding: embeddingHex([1, 0, 0, 0]) }),
+      file('/embed-b.jpg', undefined, { faceCount: 1, faceEmbedding: embeddingHex([0.99, 0.01, 0, 0]) }),
+      file('/sig-a.jpg', undefined, { faceCount: 1, faceSignature: '0000000000000000' }),
+      file('/sig-b.jpg', undefined, { faceCount: 1, faceSignature: '0000000000000001' }),
+    ], 0.9, 2);
+    expect(Object.values(groups)).toEqual([
+      ['/embed-a.jpg', '/embed-b.jpg'],
+      ['/sig-a.jpg', '/sig-b.jpg'],
+    ]);
   });
 
   it('rewards clear person detections even when no face is found', () => {
