@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC } from '../shared/types';
-import type { ImportConfig, AppSettings, MediaFile, Volume, ImportProgress, ImportResult, UpdateInfo, FtpConfig, ImportError } from '../shared/types';
+import type { ImportConfig, AppSettings, MediaFile, Volume, ImportProgress, ImportResult, UpdateInfo, UpdateReleaseSummary, UpdateState, FtpConfig, FtpSyncStatus, ImportError, LicenseValidation, ImportPreflight, ImportLedger, MacFirstRunDoctor } from '../shared/types';
+import type { FaceBox } from './services/face-engine';
+import type { ModelDownloadProgress } from './services/model-downloader';
 
 export interface FtpProbeResult {
   ok: boolean;
@@ -56,8 +58,8 @@ const api = {
     ipcRenderer.on(IPC.SCAN_DUPLICATE, handler);
     return () => ipcRenderer.removeListener(IPC.SCAN_DUPLICATE, handler);
   },
-  getPreview: (filePath: string): Promise<string | undefined> =>
-    ipcRenderer.invoke(IPC.SCAN_PREVIEW, filePath),
+  getPreview: (filePath: string, variant?: 'preview' | 'detail'): Promise<string | undefined> =>
+    ipcRenderer.invoke(IPC.SCAN_PREVIEW, filePath, variant),
   cancelScan: (): Promise<void> =>
     ipcRenderer.invoke(IPC.SCAN_CANCEL),
   pauseScan: (): Promise<void> =>
@@ -68,6 +70,12 @@ const api = {
   // Import
   startImport: (config: ImportConfig): Promise<ImportResult> =>
     ipcRenderer.invoke(IPC.IMPORT_START, config),
+  preflightImport: (config: ImportConfig): Promise<ImportPreflight> =>
+    ipcRenderer.invoke(IPC.IMPORT_PREFLIGHT, config),
+  retryFailedImport: (config: ImportConfig): Promise<ImportResult> =>
+    ipcRenderer.invoke(IPC.IMPORT_RETRY_FAILED, config),
+  getLatestImportLedger: (): Promise<ImportLedger | null> =>
+    ipcRenderer.invoke(IPC.IMPORT_LEDGER_LATEST),
   onImportProgress: (cb: (progress: ImportProgress) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, progress: ImportProgress) => cb(progress);
     ipcRenderer.on(IPC.IMPORT_PROGRESS, handler);
@@ -83,12 +91,24 @@ const api = {
     ipcRenderer.invoke(IPC.DIALOG_SELECT_FILE, title, filters),
   openPath: (path: string): Promise<void> =>
     ipcRenderer.invoke(IPC.DIALOG_OPEN_PATH, path),
+  exportDiagnostics: (): Promise<string> =>
+    ipcRenderer.invoke(IPC.DIAGNOSTICS_EXPORT),
+  runBenchmarkSmoke: (): Promise<{ ok: boolean; outPath: string; files: number; bytes: number; records: number; error?: string }> =>
+    ipcRenderer.invoke(IPC.BENCHMARK_SMOKE_RUN),
+  openBenchmarkOutput: (): Promise<string> =>
+    ipcRenderer.invoke(IPC.BENCHMARK_OPEN_OUTPUT),
+  runMacFirstRunDoctor: (): Promise<MacFirstRunDoctor> =>
+    ipcRenderer.invoke(IPC.MAC_FIRST_RUN_DOCTOR),
 
   // Settings
   getSettings: (): Promise<AppSettings> =>
     ipcRenderer.invoke(IPC.SETTINGS_GET),
   setSettings: (settings: Partial<AppSettings>): Promise<void> =>
     ipcRenderer.invoke(IPC.SETTINGS_SET, settings),
+  activateLicense: (key: string): Promise<LicenseValidation> =>
+    ipcRenderer.invoke(IPC.LICENSE_ACTIVATE, key),
+  clearLicense: (): Promise<LicenseValidation> =>
+    ipcRenderer.invoke(IPC.LICENSE_CLEAR),
 
   // Updates
   onUpdateAvailable: (cb: (info: UpdateInfo) => void) => {
@@ -96,6 +116,19 @@ const api = {
     ipcRenderer.on(IPC.UPDATE_AVAILABLE, handler);
     return () => ipcRenderer.removeListener(IPC.UPDATE_AVAILABLE, handler);
   },
+  onUpdateStatus: (cb: (state: UpdateState) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, state: UpdateState) => cb(state);
+    ipcRenderer.on(IPC.UPDATE_STATUS, handler);
+    return () => ipcRenderer.removeListener(IPC.UPDATE_STATUS, handler);
+  },
+  checkForUpdates: (): Promise<UpdateState> =>
+    ipcRenderer.invoke(IPC.UPDATE_CHECK_NOW),
+  fetchUpdateHistory: (): Promise<UpdateReleaseSummary[]> =>
+    ipcRenderer.invoke(IPC.UPDATE_FETCH_HISTORY),
+  downloadUpdate: (): Promise<{ ok: boolean; message?: string }> =>
+    ipcRenderer.invoke(IPC.UPDATE_DOWNLOAD),
+  installUpdate: (): Promise<{ ok: boolean; message?: string }> =>
+    ipcRenderer.invoke(IPC.UPDATE_INSTALL),
   openReleaseUrl: (url: string): Promise<void> =>
     ipcRenderer.invoke(IPC.UPDATE_OPEN_RELEASE, url),
 
@@ -110,6 +143,13 @@ const api = {
     const handler = (_event: Electron.IpcRendererEvent, p: FtpMirrorProgress) => cb(p);
     ipcRenderer.on(IPC.FTP_MIRROR_PROGRESS, handler);
     return () => ipcRenderer.removeListener(IPC.FTP_MIRROR_PROGRESS, handler);
+  },
+  runFtpSync: (): Promise<{ ok: boolean; status: FtpSyncStatus }> =>
+    ipcRenderer.invoke(IPC.FTP_SYNC_RUN),
+  onFtpSyncStatus: (cb: (status: FtpSyncStatus) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, status: FtpSyncStatus) => cb(status);
+    ipcRenderer.on(IPC.FTP_SYNC_STATUS, handler);
+    return () => ipcRenderer.removeListener(IPC.FTP_SYNC_STATUS, handler);
   },
 
   // Export manifest
@@ -144,12 +184,148 @@ const api = {
     return () => ipcRenderer.removeListener(IPC.AUTO_IMPORT_COMPLETE, handler);
   },
 
+  // Face analysis (onnxruntime-node ONNX face models)
+  /** Returns true when the ONNX face models are downloaded and usable. */
+  faceModelsAvailable: (): Promise<boolean> =>
+    ipcRenderer.invoke(IPC.FACE_MODELS_AVAILABLE),
+  /**
+   * Returns GPU acceleration status:
+   *   null = not yet determined (no face analysis run yet)
+   *   true = GPU available and active
+   *   false = GPU not available, using CPU only
+   */
+  isGpuAvailable: (): Promise<boolean | null> =>
+    ipcRenderer.invoke(IPC.FACE_GPU_AVAILABLE),
+  /**
+   * Analyse faces in one or more images.
+   * Returns one result object per input path:
+   *   { path, boxes, embeddings (hex strings), faceCount, error? }
+   */
+  analyzeFaces: (paths: string | string[]): Promise<Array<{
+    path: string;
+    boxes: FaceBox[];
+    personBoxes: FaceBox[];
+    embeddings: string[];
+    faceCount: number;
+    personCount: number;
+    error?: string;
+  }>> =>
+    ipcRenderer.invoke(IPC.FACE_ANALYZE, paths),
+
+  /** Cancel queued background face-analysis work. In-flight ONNX calls finish, but stale renderer batches are ignored. */
+  cancelFaceAnalysis: (): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke(IPC.FACE_CANCEL_QUEUE),
+
+  /** Clear the on-disk thumbnail/preview cache. */
+  clearCache: (): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke(IPC.CACHE_CLEAR),
+
+  /** Update how many face analyses run in parallel (1-32). */
+  setFaceAnalysisConcurrency: (n: number): Promise<void> =>
+    ipcRenderer.invoke('face:set-concurrency', n),
+
+  /** Enumerate Windows display adapters so DirectML can target a specific GPU. */
+  listGpus: (): Promise<Array<{ id: number; name: string; adapterCompatibility?: string; videoMemoryMB?: number }>> =>
+    ipcRenderer.invoke(IPC.GPU_LIST),
+
+  /** Clear the persistent face-analysis result cache. */
+  clearFaceCache: (): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke(IPC.FACE_CACHE_CLEAR),
+
+  /** Returns execution provider diagnostics for the face engine. */
+  getExecutionProvider: (): Promise<{
+    ep: string | null;
+    models: Array<{
+      model: 'detector' | 'embedder' | 'person';
+      provider: string;
+      inputName?: string;
+      loadMs?: number;
+      avgInferenceMs?: number;
+      cpuAvgInferenceMs?: number;
+      dmlAvgInferenceMs?: number;
+      deviceId?: number;
+      fallbackReason?: string;
+    }>;
+  }> =>
+    ipcRenderer.invoke(IPC.FACE_EXECUTION_PROVIDER),
+
+  /** Run a quick DML benchmark — returns EP, avg inference time, session load time. */
+  diagnoseFaceEngine: (): Promise<{
+    ep: string | null;
+    gpuAvailable: boolean | null;
+    avgInferenceMs: number;
+    sessionLoadMs: number;
+    platform: string;
+    providers: string[];
+    models: Array<{
+      model: 'detector' | 'embedder' | 'person';
+      provider: string;
+      inputName?: string;
+      loadMs?: number;
+      avgInferenceMs?: number;
+      cpuAvgInferenceMs?: number;
+      dmlAvgInferenceMs?: number;
+      deviceId?: number;
+      fallbackReason?: string;
+    }>;
+  }> =>
+    ipcRenderer.invoke('face:diagnose'),
+
+  /** Run a multi-second detector/embedder loop so Task Manager can show DirectML GPU Compute usage. */
+  stressTestFaceGpu: (durationMs?: number, streams?: number): Promise<{
+    ep: string | null;
+    gpuAvailable: boolean | null;
+    durationMs: number;
+    streams: number;
+    detectorRuns: number;
+    embedderRuns: number;
+    totalRuns: number;
+    runsPerSecond: number;
+    detectorAvgMs: number;
+    embedderAvgMs: number;
+    models: Array<{
+      model: 'detector' | 'embedder' | 'person';
+      provider: string;
+      inputName?: string;
+      loadMs?: number;
+      avgInferenceMs?: number;
+      cpuAvgInferenceMs?: number;
+      dmlAvgInferenceMs?: number;
+      deviceId?: number;
+      fallbackReason?: string;
+    }>;
+  }> =>
+    ipcRenderer.invoke(IPC.FACE_GPU_STRESS_TEST, durationMs, streams),
+
+  /** Get the device performance tier profile. */
+  getDeviceTier: (): Promise<{
+    tier: 'low' | 'balanced' | 'high';
+    cpuCores: number;
+    totalMemGB: number;
+    previewConcurrency: number;
+    faceConcurrency: number;
+    cpuOptimization: boolean;
+    rawPreviewQuality: number;
+  }> =>
+    ipcRenderer.invoke(IPC.DEVICE_TIER_GET),
+
+  /** Subscribe to background face-model download progress events. */
+  onFaceModelDownloadProgress: (cb: (progress: ModelDownloadProgress) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, progress: ModelDownloadProgress) => cb(progress);
+    ipcRenderer.on(IPC.FACE_MODEL_DOWNLOAD_PROGRESS, handler);
+    return () => ipcRenderer.removeListener(IPC.FACE_MODEL_DOWNLOAD_PROGRESS, handler);
+  },
+
+  /** Open a URL in the system's default browser. Only https:// URLs are permitted. */
+  openExternal: (url: string): Promise<void> =>
+    ipcRenderer.invoke(IPC.OPEN_EXTERNAL, url),
+
   // Platform info (renderer uses this to show Ctrl vs ⌘ in shortcuts)
   platform: process.platform,
 };
 
-// Re-export so non-preload modules can reference the ImportError type on results.
-export type { ImportError };
+// Re-export so non-preload modules can reference these types on results.
+export type { ImportError, FaceBox, ModelDownloadProgress };
 
 export type ElectronAPI = typeof api;
 
