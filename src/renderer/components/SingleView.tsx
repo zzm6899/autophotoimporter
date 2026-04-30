@@ -104,6 +104,13 @@ export function SingleView({ file, index, total }: SingleViewProps) {
   const [previewNormalized, setPreviewNormalized] = useState(false);
   const [holdOriginal, setHoldOriginal] = useState(false);
   const [manualQuarterTurns, setManualQuarterTurns] = useState(0);
+  const [showViewOptions, setShowViewOptions] = useState(false);
+  const [showHistogram, setShowHistogram] = useState(true);
+  const [showStats, setShowStats] = useState(true);
+  const [showFaceBoxes, setShowFaceBoxes] = useState(false);
+  const [showPersonBoxes, setShowPersonBoxes] = useState(false);
+  const [showAiReasons, setShowAiReasons] = useState(false);
+  const [showEdits, setShowEdits] = useState(false);
   const [clipping, setClipping] = useState<{ highlights: number; shadows: number } | null>(null);
   const [imageNatural, setImageNatural] = useState<{ width: number; height: number } | null>(null);
   const [viewportSize, setViewportSize] = useState<{ width: number; height: number } | null>(null);
@@ -119,6 +126,9 @@ export function SingleView({ file, index, total }: SingleViewProps) {
     setPreviewNormalized(false);
     setHoldOriginal(false);
     setManualQuarterTurns(0);
+    setShowAiReasons(false);
+    setShowEdits(false);
+    setShowViewOptions(false);
     setImageNatural(null);
     setDetailPreview(undefined);
   }, [file.path]);
@@ -577,7 +587,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
             </svg>
           </div>
         )}
-        {!isZoomed && imageSrc && (file.personBoxes?.length ?? 0) > 0 && (
+        {!isZoomed && showPersonBoxes && imageSrc && (file.personBoxes?.length ?? 0) > 0 && (
           <div
             className="absolute inset-0 pointer-events-none z-[14]"
             style={{
@@ -600,7 +610,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
             ))}
           </div>
         )}
-        {!isZoomed && imageSrc && (file.faceBoxes?.length ?? 0) > 0 && (
+        {!isZoomed && showFaceBoxes && imageSrc && (file.faceBoxes?.length ?? 0) > 0 && (
           <div
             className="absolute inset-0 pointer-events-none z-[15]"
             style={{
@@ -631,7 +641,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
             ))}
           </div>
         )}
-        {clippingRisk && imageSrc && (
+        {showStats && clippingRisk && imageSrc && (
           <div className="absolute inset-0 pointer-events-none z-20">
             <div className={`absolute inset-x-0 top-0 h-8 ${previewStops > 0 ? 'bg-red-500/25' : 'bg-blue-500/25'}`} />
             <div className={`absolute inset-x-0 bottom-0 h-8 ${previewStops > 0 ? 'bg-red-500/25' : 'bg-blue-500/25'}`} />
@@ -646,7 +656,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
         </div>
       )}
 
-      {!isZoomed && imageSrc && aiReasons.length > 0 && (
+      {!isZoomed && showAiReasons && imageSrc && aiReasons.length > 0 && (
         <div className="absolute left-3 top-12 z-20 max-w-[min(320px,42vw)] rounded border border-white/10 bg-black/55 px-2 py-1.5 text-white/90 shadow backdrop-blur-sm">
           <div className="mb-1 flex items-center justify-between gap-2">
             <span className="text-[9px] font-semibold uppercase tracking-wider text-white/65">AI reasons</span>
@@ -667,20 +677,19 @@ export function SingleView({ file, index, total }: SingleViewProps) {
           <span className="rounded bg-black/65 px-2 py-1 text-[10px] font-mono text-white/90">
             {index + 1}/{total}
           </span>
-          <span className="rounded bg-black/65 px-2 py-1 text-[10px] font-mono uppercase text-white/90">
-            {file.extension.replace('.', '')}
-          </span>
-          <span className="rounded bg-black/65 px-2 py-1 text-[10px] font-mono text-white/90">
-            {formatFileSize(file.size)}
-          </span>
-          {file.faceGroupId && (
-            <span className="rounded bg-violet-500/35 px-2 py-1 text-[10px] font-mono text-violet-100" title={file.faceGroupId}>
-              face group {file.faceGroupSize ?? 0}
-            </span>
+          {showStats && (
+            <>
+              <span className="rounded bg-black/65 px-2 py-1 text-[10px] font-mono uppercase text-white/90">
+                {file.extension.replace('.', '')}
+              </span>
+              <span className="rounded bg-black/65 px-2 py-1 text-[10px] font-mono text-white/90">
+                {formatFileSize(file.size)}
+              </span>
+            </>
           )}
-          {!!file.faceCount && (
-            <span className="rounded bg-emerald-500/35 px-2 py-1 text-[10px] font-mono text-emerald-100">
-              {file.faceDetection === 'estimated' ? 'estimated faces' : 'faces'} {file.faceCount}
+          {hasActiveEdits && (
+            <span className="rounded bg-sky-500/35 px-2 py-1 text-[10px] font-mono text-sky-100">
+              edits
             </span>
           )}
           {file.orientation && file.orientation > 1 && (
@@ -699,7 +708,74 @@ export function SingleView({ file, index, total }: SingleViewProps) {
         </div>
       )}
 
-      {!isZoomed && imageSrc && <Histogram src={imageSrc} filter={imageFilter} />}
+      {!isZoomed && imageSrc && (
+        <div className="absolute bottom-3 right-3 z-30 flex items-center gap-1 rounded bg-black/55 p-1 text-[10px] text-white/80 shadow backdrop-blur-sm">
+          <button
+            type="button"
+            onClick={() => {
+              setShowViewOptions((value) => !value);
+              setShowEdits(false);
+            }}
+            className={`rounded px-2 py-1 hover:bg-white/15 ${showViewOptions ? 'bg-white/20 text-white' : ''}`}
+            title="Show or hide histogram, photo stats, face boxes, people boxes, and AI reasons"
+          >
+            View
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setShowEdits((value) => !value);
+              setShowViewOptions(false);
+            }}
+            className={`rounded px-2 py-1 hover:bg-white/15 ${showEdits ? 'bg-white/20 text-white' : ''}`}
+            title="Show or hide per-photo editing controls"
+          >
+            Edit{hasActiveEdits ? ' *' : ''}
+          </button>
+        </div>
+      )}
+
+      {!isZoomed && imageSrc && showViewOptions && (
+        <div className="absolute bottom-14 right-3 z-30 w-[min(240px,calc(100vw-1.5rem))] rounded border border-white/10 bg-black/70 p-2 text-white/90 shadow backdrop-blur-sm">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <span className="text-[9px] font-semibold uppercase tracking-wider text-white/65">View overlays</span>
+            <button
+              type="button"
+              onClick={() => setShowViewOptions(false)}
+              className="rounded px-1.5 py-0.5 text-[10px] text-white/60 hover:bg-white/10 hover:text-white"
+              title="Close view options"
+            >
+              Close
+            </button>
+          </div>
+          <div className="grid gap-1">
+            <button type="button" onClick={() => setShowStats((value) => !value)} className="flex items-center justify-between rounded px-2 py-1 text-left hover:bg-white/10">
+              <span>Photo stats</span>
+              <span className={showStats ? 'text-emerald-300' : 'text-white/35'}>{showStats ? 'On' : 'Off'}</span>
+            </button>
+            <button type="button" onClick={() => setShowHistogram((value) => !value)} className="flex items-center justify-between rounded px-2 py-1 text-left hover:bg-white/10">
+              <span>Histogram</span>
+              <span className={showHistogram ? 'text-emerald-300' : 'text-white/35'}>{showHistogram ? 'On' : 'Off'}</span>
+            </button>
+            <button type="button" onClick={() => setShowFaceBoxes((value) => !value)} className="flex items-center justify-between rounded px-2 py-1 text-left hover:bg-white/10">
+              <span>Face boxes</span>
+              <span className={showFaceBoxes ? 'text-emerald-300' : 'text-white/35'}>{showFaceBoxes ? 'On' : 'Off'}</span>
+            </button>
+            <button type="button" onClick={() => setShowPersonBoxes((value) => !value)} className="flex items-center justify-between rounded px-2 py-1 text-left hover:bg-white/10">
+              <span>People boxes</span>
+              <span className={showPersonBoxes ? 'text-emerald-300' : 'text-white/35'}>{showPersonBoxes ? 'On' : 'Off'}</span>
+            </button>
+            {aiReasons.length > 0 && (
+              <button type="button" onClick={() => setShowAiReasons((value) => !value)} className="flex items-center justify-between rounded px-2 py-1 text-left hover:bg-white/10">
+                <span>AI reasons</span>
+                <span className={showAiReasons ? 'text-emerald-300' : 'text-white/35'}>{showAiReasons ? 'On' : 'Off'}</span>
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {!isZoomed && showHistogram && imageSrc && <Histogram src={imageSrc} filter={imageFilter} />}
 
       {!isZoomed && (file.isProtected || (file.rating && file.rating > 0)) && (
         <div className="absolute top-3 left-3 flex items-center gap-1.5 z-20">
@@ -726,8 +802,8 @@ export function SingleView({ file, index, total }: SingleViewProps) {
       )}
 
       {/* Metadata HUD — hidden when zoomed */}
-      {!isZoomed && (exposure || cameraName || typeof file.exposureValue === 'number') && (
-        <div className="absolute bottom-3 left-3 right-3 flex items-end justify-between gap-2 z-[5]">
+      {!isZoomed && showStats && (exposure || cameraName || typeof file.exposureValue === 'number') && (
+        <div className="absolute bottom-3 left-3 right-28 flex items-end justify-between gap-2 z-[5]">
           <div className="flex items-center gap-1.5 flex-wrap">
             {exposure && (
               <span className="text-[9px] font-mono text-white bg-black/70 backdrop-blur-sm px-1.5 py-0.5 rounded">
@@ -910,7 +986,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
         </div>
       )}
 
-      {!isZoomed && imageSrc && (
+      {!isZoomed && imageSrc && showEdits && (
         <div className="absolute bottom-14 right-3 z-20 w-[min(300px,calc(100vw-1.5rem))] max-w-[42rem] rounded border border-white/10 bg-black/60 p-2 text-white/90 shadow backdrop-blur-sm">
           <div className="mb-1.5 flex items-center justify-between gap-2">
             <span className="text-[9px] font-semibold uppercase tracking-wider text-white/65">

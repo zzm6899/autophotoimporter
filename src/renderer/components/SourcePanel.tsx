@@ -14,6 +14,7 @@ export function SourcePanel() {
   const { startScan, pauseScan, resumeScan } = useFileScanner();
 
   const [dragOver, setDragOver] = useState(false);
+  const [showQuickHelp, setShowQuickHelp] = useState(false);
 
   useEffect(() => {
     const openFtpSource = () => dispatch({ type: 'SET_SOURCE_KIND', kind: 'ftp' });
@@ -311,37 +312,46 @@ export function SourcePanel() {
           </>
         ) : (
           <>
-            <h3 className="text-[10px] text-text-muted uppercase tracking-wider mb-1">Quick Help</h3>
-            <div className="space-y-0.5 text-[10px] text-text-muted">
-              <div className="flex justify-between">
-                <span>Open photo</span>
-                <span className="text-text-secondary">Double-click</span>
+            <button
+              type="button"
+              onClick={() => setShowQuickHelp((value) => !value)}
+              className="flex w-full items-center justify-between text-[10px] uppercase tracking-wider text-text-muted hover:text-text-secondary"
+            >
+              <span>Quick Help</span>
+              <span>{showQuickHelp ? 'Hide' : 'Show'}</span>
+            </button>
+            {showQuickHelp && (
+              <div className="mt-1 space-y-0.5 text-[10px] text-text-muted">
+                <div className="flex justify-between">
+                  <span>Open photo</span>
+                  <span className="text-text-secondary">Double-click</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Pick / Reject / Clear</span>
+                  <span className="text-text-secondary">P / X / U</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Star rating</span>
+                  <span className="text-text-secondary">1-5</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Range select</span>
+                  <span className="text-text-secondary">Shift+Click</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Select all</span>
+                  <span className="text-text-secondary">{MOD}+A</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Navigate</span>
+                  <span className="text-text-secondary">Arrows</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Deselect / Back</span>
+                  <span className="text-text-secondary">Esc</span>
+                </div>
               </div>
-              <div className="flex justify-between">
-                <span>Pick / Reject / Clear</span>
-                <span className="text-text-secondary">P / X / U</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Star rating</span>
-                <span className="text-text-secondary">1 – 5</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Range select</span>
-                <span className="text-text-secondary">Shift+Click</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Select all</span>
-                <span className="text-text-secondary">{MOD}+A</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Navigate</span>
-                <span className="text-text-secondary">Arrows</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Deselect / Back</span>
-                <span className="text-text-secondary">Esc</span>
-              </div>
-            </div>
+            )}
           </>
         )}
       </div>

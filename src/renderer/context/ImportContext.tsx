@@ -3,7 +3,7 @@ import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, Sourc
 import { FOLDER_PRESETS, DEFAULT_KEYBINDS, DEFAULT_METADATA_EXPORT } from '../../shared/types';
 import { groupBursts } from '../../shared/burst';
 import { clampStops, normalizeExposureStops } from '../../shared/exposure';
-import { assignSceneBuckets, autoCullGroup, bestInGroup, bestShotScore, groupByFaceSimilarity, groupByVisualHash, rankBestShots, scoreReview } from '../../shared/review';
+import { assignSceneBuckets, autoCullGroup, bestInGroup, groupByFaceSimilarity, groupByVisualHash, scoreReview } from '../../shared/review';
 
 export type AppPhase = 'idle' | 'scanning' | 'ready' | 'importing' | 'complete';
 export type ViewMode = 'grid' | 'single' | 'split' | 'compare' | 'settings';
@@ -383,52 +383,11 @@ function collectReviewGroups(files: MediaFile[], includeFace = true): Map<string
 
 function queueBestPaths(
   files: MediaFile[],
-  options: { cullConfidence?: CullConfidence; groupPhotoEveryoneGood?: boolean; keeperQuota?: KeeperQuota } = {},
+  _options: { cullConfidence?: CullConfidence; groupPhotoEveryoneGood?: boolean; keeperQuota?: KeeperQuota } = {},
 ): string[] {
-  const candidates = rankBestShots(files.filter((f) => f.type === 'photo' && f.pick !== 'rejected' && !f.duplicate));
-  const groupByPath = new Set<string>();
-  const groups = collectReviewGroups(candidates, true);
-  for (const group of groups.values()) {
-    for (const f of group) groupByPath.add(f.path);
-  }
-
-  const next = new Set<string>();
-  for (const f of candidates) {
-    if ((f.rating ?? 0) > 0 || f.pick === 'selected') next.add(f.path);
-  }
-  for (const group of groups.values()) {
-    const decision = autoCullGroup(group, {
-      confidence: options.cullConfidence,
-      groupPhotoEveryoneGood: options.groupPhotoEveryoneGood,
-      keeperQuota: options.keeperQuota,
-    });
-    const best = decision.best;
-    if (!best) continue;
-    if (
-      best.pick === 'selected' ||
-      best.isProtected ||
-      (best.rating ?? 0) > 0 ||
-      bestShotScore(best) >= 145 ||
-      (best.reviewScore ?? 0) >= 62 ||
-      decision.confidence !== 'low'
-    ) {
-      next.add(best.path);
-    }
-    const algorithmBest = rankBestShots(group.filter((f) => !f.isProtected && (f.rating ?? 0) === 0 && f.pick !== 'selected'))[0];
-    if (algorithmBest && (bestShotScore(algorithmBest) >= 145 || (algorithmBest.reviewScore ?? 0) >= 62 || decision.confidence !== 'low')) {
-      next.add(algorithmBest.path);
-    }
-  }
-
-  const targetCount = Math.min(140, Math.max(8, Math.ceil(candidates.length * 0.08)));
-  for (const f of candidates) {
-    if (next.has(f.path)) continue;
-    if (groupByPath.has(f.path)) continue;
-    if ((bestShotScore(f) >= 185 || (f.reviewScore ?? 0) >= 70 || f.isProtected) && next.size < targetCount) {
-      next.add(f.path);
-    }
-  }
-  return [...next];
+  return files
+    .filter((f) => f.type === 'photo' && f.pick !== 'rejected' && !f.duplicate)
+    .map((f) => f.path);
 }
 
 export function reducer(state: State, action: Action): State {

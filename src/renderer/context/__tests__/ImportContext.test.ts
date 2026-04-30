@@ -380,23 +380,24 @@ describe('ImportContext reducer', () => {
       expect(next.fileHistory).toHaveLength(1);
     });
 
-    it('queues high-scoring files only', () => {
+    it('queues every keepable batch photo', () => {
       const files = [
         makeFile({ path: '/best.jpg', reviewScore: 80 }),
         makeFile({ path: '/weak.jpg', reviewScore: 40 }),
         makeFile({ path: '/reject.jpg', reviewScore: 95, pick: 'rejected' }),
+        makeFile({ path: '/duplicate.jpg', reviewScore: 95, duplicate: true }),
       ];
       const next = reducer(makeState({ files }), { type: 'QUEUE_BEST' });
-      expect(next.queuedPaths).toEqual(['/best.jpg']);
+      expect(next.queuedPaths).toEqual(['/best.jpg', '/weak.jpg']);
     });
 
-    it('queues one best keeper per burst group', () => {
+    it('keeps every unrejected burst photo in the batch queue', () => {
       const files = [
         makeFile({ path: '/burst-soft.jpg', burstId: 'b1', burstSize: 2, burstIndex: 1, reviewScore: 92, sharpnessScore: 20 }),
         makeFile({ path: '/burst-sharp.jpg', burstId: 'b1', burstSize: 2, burstIndex: 2, reviewScore: 82, sharpnessScore: 220 }),
       ];
       const next = reducer(makeState({ files }), { type: 'QUEUE_BEST' });
-      expect(next.queuedPaths).toEqual(['/burst-sharp.jpg']);
+      expect(next.queuedPaths).toEqual(['/burst-soft.jpg', '/burst-sharp.jpg']);
       expect(next.filter).toBe('queue');
     });
 

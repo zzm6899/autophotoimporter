@@ -135,10 +135,10 @@ const screens = [
   },
   {
     id: 'review-sprint',
-    label: 'Review sprint',
+    label: 'Focus Review',
     source: path.join(root, 'src', 'renderer', 'components', 'ThumbnailGrid.tsx'),
-    sourceTokens: ['Sprint', 'Queue Keepers', 'Best of Burst', 'Pause AI', 'reviewSprintMode'],
-    bundleTokens: ['Sprint', 'Queue Keepers', 'Best of Burst'],
+    sourceTokens: ['Focus Review', 'Queue Keepers', 'Best of Burst', 'Pause AI', 'reviewSprintMode'],
+    bundleTokens: ['Focus Review', 'Queue Keepers', 'Best of Burst'],
   },
 ];
 

@@ -596,7 +596,7 @@ export function ThumbnailGrid() {
   const [sessionTags, setSessionTags] = useState<string[]>([]);
   const [showTagSuggestions, setShowTagSuggestions] = useState(false);
   const [faceProviderSummary, setFaceProviderSummary] = useState<string>('Face engine warming');
-  const [showAiReviewStrip, setShowAiReviewStrip] = useState(true);
+  const [showAiReviewStrip, setShowAiReviewStrip] = useState(false);
   const [reviewSprintMode, setReviewSprintMode] = useState(false);
   const [flatGridWidth, setFlatGridWidth] = useState(0);
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -2597,29 +2597,11 @@ export function ThumbnailGrid() {
         1. Review
       </button>
 
-      <button
-        onClick={() => {
-          const next = !reviewSprintMode;
-          setReviewSprintMode(next);
-          dispatch({ type: 'SET_FILTER', filter: next ? 'review-needed' : 'all' });
-          dispatch({ type: 'SET_VIEW_MODE', mode: next ? 'split' : 'grid' });
-          if (next && focusedIndex < 0 && sortedFiles.length > 0) setFocused(0);
-        }}
-        className={`px-2.5 py-1 text-[10px] font-medium rounded-md transition-colors shrink-0 ${
-          reviewSprintMode
-            ? 'bg-blue-500/20 text-blue-300 hover:bg-blue-500/30'
-            : 'bg-surface-raised text-text-secondary hover:text-blue-300 hover:bg-blue-500/10'
-        }`}
-        title="Toggle a fast review lane: split view, review-needed filter, visible keep/reject/queue controls, and AI progress."
-      >
-        Sprint {reviewSprintMode ? 'On' : 'Off'}{sprintRemaining > 0 ? ` · ${sprintRemaining}` : ''}
-      </button>
-
-      {/* ── Step 2: Queue keepers (best shot per burst/group) ── */}
+      {/* ── Step 2: Queue keepers for this batch ── */}
       <button
         onClick={() => dispatch({ type: 'QUEUE_BEST' })}
         className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-surface-raised text-text-secondary hover:text-yellow-300 hover:bg-yellow-500/10 transition-colors shrink-0"
-        title={`Queue the best shot from each burst/group, plus strong standalone keepers. AI done: ${reviewStats.analyzed}/${reviewStats.total}.`}
+        title={`Queue every keepable photo in this batch. Skips rejected photos and duplicates. AI done: ${reviewStats.analyzed}/${reviewStats.total}.`}
       >
         2. Queue Keepers
       </button>
@@ -2645,76 +2627,13 @@ export function ThumbnailGrid() {
 
       <div className="w-px h-4 bg-border shrink-0 mx-0.5" />
 
-      {/* ── Best of Burst / Batch ── always visible ── */}
+      {/* ── Best of Burst ── visible, deeper batch tools are tucked under More ── */}
       <button
         onClick={openBestOfSelection}
         className="px-2 py-1 text-[10px] rounded-md bg-yellow-500/10 text-yellow-300 hover:bg-yellow-500/20 transition-colors shrink-0"
         title="Compare shots in the focused burst side-by-side and pick the best one. Shortcut: Shift+B."
       >
         Best of Burst
-      </button>
-      <button
-        onClick={() => openBestOfBatch(0)}
-        className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-yellow-300 transition-colors shrink-0"
-        title={`Rank all visible photos together and show the top candidates. AI: ${reviewStats.analyzed}/${reviewStats.total}, faces: ${reviewStats.faces}.`}
-      >
-        Best of Batch
-      </button>
-
-      <button
-        onClick={() => {
-          dispatch({ type: 'GROUP_SCENE_BUCKETS' });
-          dispatch({ type: 'SET_FILTER', filter: 'review-needed' });
-        }}
-        className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-blue-300 transition-colors shrink-0"
-        title="Rebuild scene buckets, then show the second-pass lane for low-confidence and unreviewed decisions."
-      >
-        2nd Pass
-      </button>
-
-      <div className="w-px h-4 bg-border shrink-0 mx-0.5" />
-
-      {/* ── AI scan controls ── */}
-      {/* Pause/Resume AI review + preview loading — combined into one toggle */}
-      <button
-        onClick={() => {
-          if (reviewWaitingForThumbnails) return;
-          if (reviewPaused) resumeAiReview();
-          else pauseAiReview();
-        }}
-        className={`px-2 py-1 text-[10px] rounded-md transition-colors shrink-0 ${
-          reviewWaitingForThumbnails
-            ? 'bg-blue-500/10 text-blue-300'
-            : reviewPaused
-              ? 'bg-yellow-500/15 text-yellow-300 hover:bg-yellow-500/25'
-              : 'bg-surface-raised text-text-muted hover:text-text'
-        }`}
-        title={reviewWaitingForThumbnails
-          ? `AI review starts once the first thumbnails are ready. Ready: ${readyThumbnailCount}/${totalPhotoCount}.`
-          : reviewPaused
-            ? `Resume AI analysis and preview loading. Done ${reviewStats.analyzed}/${reviewStats.total}.`
-            : `Pause AI analysis and preview loading. Done ${reviewStats.analyzed}/${reviewStats.total}.`}
-      >
-        {reviewWaitingForThumbnails
-          ? `Waiting for thumbs ${readyThumbnailCount}/${totalPhotoCount}`
-          : reviewPaused
-            ? `▶ Resume AI ${reviewStats.analyzed}/${reviewStats.total}`
-            : `⏸ Pause AI ${reviewStats.analyzed}/${reviewStats.total}`}
-      </button>
-
-      {/* Re-scan AI: clears face data + resumes analysis. Shows blur count when done. */}
-      <button
-        onClick={() => {
-          resumeAiReview();
-        }}
-        className={`px-2 py-1 text-[10px] rounded-md transition-colors shrink-0 ${
-          reviewStats.faces > 0
-            ? 'bg-violet-500/10 text-violet-300 hover:bg-violet-500/20'
-            : 'bg-surface-raised text-text-muted hover:text-violet-300'
-        }`}
-        title={`Continue AI review from where it left off, skipping photos that already have face data. Faces found: ${reviewStats.faces}, blur risk: ${reviewStats.blur}.`}
-      >
-        Re-scan AI {reviewStats.faces > 0 ? `· ${reviewStats.faces} faces` : ''}{reviewStats.blur > 0 ? ` · ${reviewStats.blur} blur` : ''}
       </button>
 
       <div className="w-px h-4 bg-border shrink-0 mx-0.5" />
@@ -2742,6 +2661,78 @@ export function ThumbnailGrid() {
       {showAdvancedTools && (
         <>
           <div className="w-px h-4 bg-border shrink-0 mx-0.5" />
+          <button
+            onClick={() => {
+              const next = !reviewSprintMode;
+              setReviewSprintMode(next);
+              dispatch({ type: 'SET_FILTER', filter: next ? 'review-needed' : 'all' });
+              dispatch({ type: 'SET_VIEW_MODE', mode: next ? 'split' : 'grid' });
+              if (next && focusedIndex < 0 && sortedFiles.length > 0) setFocused(0);
+            }}
+            className={`px-2 py-1 text-[10px] rounded-md transition-colors shrink-0 ${
+              reviewSprintMode
+                ? 'bg-blue-500/20 text-blue-300 hover:bg-blue-500/30'
+                : 'bg-surface-raised text-text-muted hover:text-blue-300'
+            }`}
+            title="Focus Review opens a faster review lane for photos that still need a decision."
+          >
+            {reviewSprintMode ? `Focus Review · ${sprintRemaining} left` : 'Focus Review'}
+          </button>
+          <button
+            onClick={() => openBestOfBatch(0)}
+            className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-yellow-300 transition-colors shrink-0"
+            title={`Rank all visible photos together and show the top candidates. AI: ${reviewStats.analyzed}/${reviewStats.total}, faces: ${reviewStats.faces}.`}
+          >
+            Best of Batch
+          </button>
+          <button
+            onClick={() => {
+              dispatch({ type: 'GROUP_SCENE_BUCKETS' });
+              dispatch({ type: 'SET_FILTER', filter: 'review-needed' });
+            }}
+            className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-blue-300 transition-colors shrink-0"
+            title="Rebuild scene buckets, then show low-confidence and unreviewed decisions."
+          >
+            Review Needed
+          </button>
+          <button
+            onClick={() => {
+              if (reviewWaitingForThumbnails) return;
+              if (reviewPaused) resumeAiReview();
+              else pauseAiReview();
+            }}
+            className={`px-2 py-1 text-[10px] rounded-md transition-colors shrink-0 ${
+              reviewWaitingForThumbnails
+                ? 'bg-blue-500/10 text-blue-300'
+                : reviewPaused
+                  ? 'bg-yellow-500/15 text-yellow-300 hover:bg-yellow-500/25'
+                  : 'bg-surface-raised text-text-muted hover:text-text'
+            }`}
+            title={reviewWaitingForThumbnails
+              ? `AI review starts once the first thumbnails are ready. Ready: ${readyThumbnailCount}/${totalPhotoCount}.`
+              : reviewPaused
+                ? `Resume AI analysis and preview loading. Done ${reviewStats.analyzed}/${reviewStats.total}.`
+                : `Pause AI analysis and preview loading. Done ${reviewStats.analyzed}/${reviewStats.total}.`}
+          >
+            {reviewWaitingForThumbnails
+              ? `AI waiting ${readyThumbnailCount}/${totalPhotoCount}`
+              : reviewPaused
+                ? `Resume AI ${reviewStats.analyzed}/${reviewStats.total}`
+                : `Pause AI ${reviewStats.analyzed}/${reviewStats.total}`}
+          </button>
+          <button
+            onClick={() => {
+              resumeAiReview();
+            }}
+            className={`px-2 py-1 text-[10px] rounded-md transition-colors shrink-0 ${
+              reviewStats.faces > 0
+                ? 'bg-violet-500/10 text-violet-300 hover:bg-violet-500/20'
+                : 'bg-surface-raised text-text-muted hover:text-violet-300'
+            }`}
+            title={`Continue AI review from where it left off. Faces found: ${reviewStats.faces}, blur risk: ${reviewStats.blur}.`}
+          >
+            Resume Scan
+          </button>
           {/* Blur filter */}
           <button
             onClick={() => dispatch({ type: 'SET_FILTER', filter: 'blur-risk' })}
@@ -3221,7 +3212,7 @@ export function ThumbnailGrid() {
             <span className="font-medium text-text-secondary">AI</span>
             <span>{aiAnalyzedCount}/{totalPhotoCount} analyzed</span>
             {aiPendingCount > 0 && <span>{aiPendingCount} pending</span>}
-            {reviewSprintMode && <span className="text-blue-300">sprint {reviewStats.picked} kept / {reviewStats.rejected} rejected / {reviewStats.pending} open</span>}
+            {reviewSprintMode && <span className="text-blue-300">focus {reviewStats.picked} kept / {reviewStats.rejected} rejected / {reviewStats.pending} open</span>}
             <span>{fastKeeperMode ? 'Fast Keeper' : faceProviderSummary}</span>
             {reviewPaused && <span className="text-yellow-400">paused</span>}
             <button
