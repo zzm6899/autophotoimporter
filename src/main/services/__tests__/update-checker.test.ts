@@ -122,6 +122,18 @@ describe('update-checker', () => {
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain('https://updates.keptra.z2hs.au/api/v1/app/update');
   });
 
+  it('tries legacy culler update hosts before giving up', async () => {
+    fetchMock
+      .mockRejectedValueOnce(new Error('net::ERR_SSL_PROTOCOL_ERROR'))
+      .mockRejectedValueOnce(new Error('net::ERR_SSL_PROTOCOL_ERROR'))
+      .mockRejectedValueOnce(new Error('net::ERR_SSL_PROTOCOL_ERROR'))
+      .mockResolvedValueOnce(jsonResponse({ allowed: true, latestVersion: '1.2.0' }));
+    const result = await checkForUpdate();
+    expect(result.status).toBe('up-to-date');
+    expect(String(fetchMock.mock.calls[2]?.[0])).toContain('https://culler.z2hs.au/api/v1/app/update');
+    expect(String(fetchMock.mock.calls[3]?.[0])).toContain('https://updates.culler.z2hs.au/api/v1/app/update');
+  });
+
   it('shows a friendly message when secure update checks fail', async () => {
     fetchMock.mockRejectedValue(new Error('net::ERR_SSL_PROTOCOL_ERROR'));
     const result = await checkForUpdate();

@@ -1,3 +1,9 @@
+{
+	servers {
+		protocols h1 h2
+	}
+}
+
 keptra.z2hs.au {
 	@app_paths path /api/* /stripe/* /artifacts/* /releases/* /healthz
 	handle @app_paths {

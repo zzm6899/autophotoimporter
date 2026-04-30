@@ -6,8 +6,20 @@ import path from 'node:path';
 import { log } from '../logger';
 
 const UPDATE_BASE_URL = 'https://keptra.z2hs.au';
-const UPDATE_FALLBACK_BASE_URL = 'https://updates.keptra.z2hs.au';
-const UPDATE_ALLOWED_HOSTS = new Set(['keptra.z2hs.au', 'updates.keptra.z2hs.au', 'admin.keptra.z2hs.au']);
+const UPDATE_BASE_URLS = [
+  UPDATE_BASE_URL,
+  'https://updates.keptra.z2hs.au',
+  'https://culler.z2hs.au',
+  'https://updates.culler.z2hs.au',
+];
+const UPDATE_ALLOWED_HOSTS = new Set([
+  'keptra.z2hs.au',
+  'updates.keptra.z2hs.au',
+  'admin.keptra.z2hs.au',
+  'culler.z2hs.au',
+  'updates.culler.z2hs.au',
+  'admin.culler.z2hs.au',
+]);
 const UPDATE_ALLOWED_SCHEMES = new Set(['https:']);
 const TIMEOUT_MS = 10_000;
 
@@ -230,7 +242,7 @@ export async function checkForUpdate(licenseKey?: string): Promise<UpdateState> 
   const checkedAt = new Date().toISOString();
   let lastError: unknown;
 
-  for (const baseUrl of [UPDATE_BASE_URL, UPDATE_FALLBACK_BASE_URL]) {
+  for (const baseUrl of UPDATE_BASE_URLS) {
     try {
       const url = `${baseUrl}/api/v1/app/update?platform=${encodeURIComponent(platform)}&version=${encodeURIComponent(version)}&channel=stable`;
       const data = await fetchJson<CheckResponse>(url, licenseKey);
@@ -331,8 +343,24 @@ export async function checkForUpdate(licenseKey?: string): Promise<UpdateState> 
 
 export async function fetchUpdateHistory(licenseKey?: string): Promise<UpdateReleaseSummary[]> {
   const platform = currentPlatform();
-  const url = `${UPDATE_BASE_URL}/api/v1/app/history?platform=${encodeURIComponent(platform)}&channel=stable&limit=8`;
-  const data = await fetchJson<HistoryResponse>(url, licenseKey);
+  let data: HistoryResponse | undefined;
+  let lastError: unknown;
+  for (const baseUrl of UPDATE_BASE_URLS) {
+    try {
+      const url = `${baseUrl}/api/v1/app/history?platform=${encodeURIComponent(platform)}&channel=stable&limit=8`;
+      data = await fetchJson<HistoryResponse>(url, licenseKey);
+      break;
+    } catch (err) {
+      lastError = err;
+      logUpdateDiagnostic('history-failed', {
+        baseUrl,
+        message: err instanceof Error ? err.message : 'unknown-error',
+      });
+    }
+  }
+  if (!data) {
+    throw new Error(describeUpdateNetworkError(lastError));
+  }
   const unique = new Map<string, UpdateReleaseSummary>();
   for (const release of data.releases ?? []) {
     if (!release.version) {
