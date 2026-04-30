@@ -54,6 +54,13 @@ export interface MediaFile {
    * consistent?" signal in the detail view.
    */
   exposureValue?: number;
+  /** GPS metadata from EXIF, when the camera/phone provided it. */
+  gps?: { latitude: number; longitude: number; altitude?: number };
+  /** Local, privacy-aware location label derived from GPS. */
+  locationName?: string;
+  /** Smart review bucket used for scene/event filters and Lightroom keywords. */
+  sceneBucket?: string;
+  sceneBucketId?: string;
   /**
    * When true, this file's exposure will be normalized to the anchor's EV on
    * import regardless of the global `normalizeExposure` toggle. Set via the
@@ -62,6 +69,8 @@ export interface MediaFile {
   normalizeToAnchor?: boolean;
   /** Manual exposure offset in stops, applied on import when transcoding. */
   exposureAdjustmentStops?: number;
+  /** Manual white-balance correction, applied on import when transcoding. */
+  whiteBalanceAdjustment?: WhiteBalanceAdjustment;
   /** Renderer-computed focus metric used to pick burst keepers. Higher = sharper. */
   sharpnessScore?: number;
   /** Face/subject-aware focus metric. Higher = sharper subject area. */
@@ -69,7 +78,25 @@ export interface MediaFile {
   /** Number of faces found by local browser face detection, when available. */
   faceCount?: number;
   /** Normalized face boxes from local browser face detection. eyeScore=2 means both eyes detected (open). */
-  faceBoxes?: Array<{ x: number; y: number; width: number; height: number; eyeScore?: number }>;
+  faceBoxes?: Array<{ x: number; y: number; width: number; height: number; eyeScore?: number; smileScore?: number; expressionScore?: number; score?: number }>;
+  /** Whether faces came from Chromium's detector or the conservative thumbnail fallback. */
+  faceDetection?: 'native' | 'estimated';
+  /** Number of person/body detections from the ONNX review pipeline. */
+  personCount?: number;
+  /** Normalized person/body boxes from the ONNX review pipeline. */
+  personBoxes?: Array<{ x: number; y: number; width: number; height: number; score?: number }>;
+  /** Compact perceptual hash of the primary detected face crop. Used only for local same-face clustering. */
+  faceSignature?: string;
+  /**
+   * Hex-serialised L2-normalised face embedding from MobileFaceNet
+   * (via onnxruntime-node). Use deserializeEmbedding() to
+   * recover the Float32Array, then cosineSimilarity() to compare.
+   * Only populated when the ONNX face models are present on disk.
+   */
+  faceEmbedding?: string;
+  /** Local cluster id for similar detected faces. This is not biometric identity; it is a culling aid. */
+  faceGroupId?: string;
+  faceGroupSize?: number;
   /** Local review notes for subject/face focus. */
   subjectReasons?: string[];
   /** Heuristic blur risk derived from thumbnail/previews. */
@@ -95,13 +122,175 @@ export interface FtpConfig {
   remotePath: string; // e.g. /DCIM
 }
 
+export interface FtpSyncSettings {
+  enabled: boolean;
+  runOnLaunch: boolean;
+  intervalMinutes: number;
+  localDestRoot: string;
+  reuploadToFtpDest: boolean;
+}
+
+export interface FtpSyncStatus {
+  state: 'idle' | 'running' | 'success' | 'error';
+  trigger?: 'manual' | 'launch' | 'interval';
+  stage?: 'idle' | 'probing' | 'mirroring' | 'scanning' | 'importing' | 'complete';
+  message: string;
+  startedAt?: string;
+  lastRunAt?: string;
+  lastSuccessAt?: string;
+  currentFile?: string;
+  done?: number;
+  total?: number;
+  imported?: number;
+  skipped?: number;
+  errors?: number;
+}
+
 export type SaveFormat = 'original' | 'jpeg' | 'tiff' | 'heic';
 export type RatingFilter = 'rating-1' | 'rating-2' | 'rating-3' | 'rating-4' | 'rating-5';
+export type CullConfidence = 'conservative' | 'balanced' | 'aggressive';
+export type KeeperQuota = 'best-1' | 'top-2' | 'all-rated' | 'smile-and-sharp';
+export type EventMode =
+  | 'general'
+  | 'stage'
+  | 'candids'
+  | 'cosplay'
+  | 'cars-itasha'
+  | 'vendor-booth'
+  | 'crowd'
+  | 'panels'
+  | 'meetups';
+
+export interface EventModePreset {
+  label: string;
+  description: string;
+  keywords: string[];
+  help: string;
+}
+
+export const EVENT_MODE_PRESETS: Record<EventMode, EventModePreset> = {
+  general: {
+    label: 'General event',
+    description: 'Balanced event ingest with broad selects and clean metadata.',
+    keywords: ['event', 'selects'],
+    help: 'Use this when the shoot mixes people, details, and general coverage.',
+  },
+  stage: {
+    label: 'Stage / performance',
+    description: 'Performance, spotlight, motion, and peak action coverage.',
+    keywords: ['stage', 'performance', 'spotlight', 'action', 'performer'],
+    help: 'Keeps performance context in sidecars so Lightroom collections can separate stage work from candids.',
+  },
+  candids: {
+    label: 'Candids',
+    description: 'Natural expressions, interactions, laughter, and story moments.',
+    keywords: ['candids', 'people', 'story', 'interaction', 'natural expression'],
+    help: 'Best for roaming event coverage where expressions and interactions matter more than posed perfection.',
+  },
+  cosplay: {
+    label: 'Cosplay / costumes',
+    description: 'Full costume, props, makeup, character details, and group cosplay.',
+    keywords: ['cosplay', 'costume', 'full costume', 'prop', 'makeup', 'character', 'detail'],
+    help: 'Use for convention shoots; full-body/person boxes and detail shots stay meaningful even when faces are small.',
+  },
+  'cars-itasha': {
+    label: 'Cars / itasha',
+    description: 'Full car, livery, artwork, interior, and detail coverage.',
+    keywords: ['cars', 'itasha', 'livery', 'vehicle', 'car detail', 'interior', 'artwork'],
+    help: 'Treats car coverage as its own story lane instead of duplicate-looking detail frames.',
+  },
+  'vendor-booth': {
+    label: 'Vendor / booth',
+    description: 'Booth overview, signage, products, and seller/customer moments.',
+    keywords: ['vendor', 'booth', 'signage', 'merch', 'product table'],
+    help: 'Good for convention and expo coverage where signs, tables, and products are deliverables.',
+  },
+  crowd: {
+    label: 'Crowd / atmosphere',
+    description: 'Venue scale, crowd energy, decorations, queues, and atmosphere.',
+    keywords: ['crowd', 'atmosphere', 'venue', 'wide shot', 'ambience'],
+    help: 'Use when you need variety and story-setting images, not only tight subject keepers.',
+  },
+  panels: {
+    label: 'Panels / talks',
+    description: 'Speakers, audience reaction, slides, and room coverage.',
+    keywords: ['panel', 'talk', 'speaker', 'audience', 'presentation'],
+    help: 'Useful for talks where both speaker and slide/audience context should survive into Lightroom.',
+  },
+  meetups: {
+    label: 'Meetups / groups',
+    description: 'Group coverage with everyone visible and duplicate stacks collapsed.',
+    keywords: ['meetup', 'group photo', 'group coverage', 'people'],
+    help: 'Pairs well with the group-photo culling logic that prefers more usable faces and people present.',
+  },
+};
+
+export function eventModeKeywords(mode: EventMode | undefined): string[] {
+  return EVENT_MODE_PRESETS[mode ?? 'general']?.keywords ?? EVENT_MODE_PRESETS.general.keywords;
+}
 
 export interface SelectionSet {
   name: string;
   paths: string[];
   createdAt: string;
+}
+
+export type WatermarkPosition = 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left' | 'center';
+export type WatermarkMode = 'text' | 'image';
+
+export interface BatchMetadata {
+  keywords?: string[];
+  title?: string;
+  caption?: string;
+  creator?: string;
+  copyright?: string;
+}
+
+export interface WatermarkConfig {
+  enabled: boolean;
+  mode: WatermarkMode;
+  text?: string;
+  imagePath?: string;
+  opacity: number;
+  positionLandscape: WatermarkPosition;
+  positionPortrait: WatermarkPosition;
+  scale: number;
+}
+
+export interface WhiteBalanceAdjustment {
+  /** Warm/cool correction, -100 = cooler, +100 = warmer. */
+  temperature: number;
+  /** Green/magenta correction, -100 = greener, +100 = more magenta. */
+  tint: number;
+}
+
+export interface LicenseEntitlement {
+  product: string;
+  name: string;
+  email?: string;
+  issuedAt: string;
+  activatedAt?: string;
+  activationExpiresAt?: string;
+  expiresAt?: string;
+  tier?: string;
+  notes?: string;
+  maxDevices?: number;
+}
+
+export interface LicenseValidation {
+  valid: boolean;
+  key?: string;
+  message: string;
+  entitlement?: LicenseEntitlement;
+  activationCode?: string;
+  activatedAt?: string;
+  expiresAt?: string;
+  status?: 'active' | 'revoked' | 'expired' | 'disabled' | 'unknown';
+  deviceId?: string;
+  deviceName?: string;
+  deviceSlotsUsed?: number;
+  deviceSlotsTotal?: number;
+  currentDeviceRegistered?: boolean;
 }
 
 // Folder naming presets for organizing imported files
@@ -121,6 +310,13 @@ export interface ImportConfig {
   sourcePath: string;
   destRoot: string;
   skipDuplicates: boolean;
+  /**
+   * How to handle a destination path that already exists but is not a duplicate.
+   * Defaults to 'skip' for backwards-compatible COPYFILE_EXCL behavior.
+   */
+  conflictPolicy?: ImportConflictPolicy;
+  /** Subfolder name used when conflictPolicy is 'conflicts-folder'. Default: "_Conflicts". */
+  conflictFolderName?: string;
   saveFormat: SaveFormat;
   jpegQuality: number; // 1-100, only used when saveFormat is 'jpeg'
   /**
@@ -177,6 +373,24 @@ export interface ImportConfig {
   normalizeAnchorPaths?: string[];
   /** Manual exposure offsets in stops, keyed by source path. */
   exposureAdjustments?: Record<string, number>;
+  /** Batch white-balance correction for converted outputs only. */
+  whiteBalance?: WhiteBalanceAdjustment;
+  /** Per-file white-balance corrections, keyed by source path. */
+  whiteBalanceAdjustments?: Record<string, WhiteBalanceAdjustment>;
+  /** Optional batch metadata written as XMP sidecars next to imported files. */
+  metadata?: BatchMetadata;
+  /**
+   * Controls which metadata fields are written into the XMP sidecar on import.
+   * When omitted, defaults apply (all enabled except stripGps).
+   */
+  metadataExportFlags?: Partial<MetadataExportFlags>;
+  /** Optional text watermark overlay for transcoded outputs. */
+  watermark?: WatermarkConfig;
+  /**
+   * When true, converted outputs are auto-oriented upright from EXIF
+   * orientation metadata. Originals are copied untouched.
+   */
+  autoStraighten?: boolean;
   /** When true and copying originals, compare SHA-256 source/destination bytes after copy. */
   verifyChecksums?: boolean;
 }
@@ -189,6 +403,10 @@ export interface ImportProgress {
   totalBytes: number;
   skipped: number;
   errors: number;
+  /** Bytes per second (rolling 3 s window). Undefined until enough data. */
+  bytesPerSec?: number;
+  /** Estimated seconds remaining. Undefined until bytesPerSec is available. */
+  etaSec?: number;
 }
 
 export interface ImportResult {
@@ -199,12 +417,185 @@ export interface ImportResult {
   errors: ImportError[];
   totalBytes: number;
   durationMs: number;
+  ledgerId?: string;
+  recoveryCount?: number;
+  ledgerItems?: ImportLedgerItem[];
 }
 
 export interface ImportError {
   file: string;
   error: string;
 }
+
+export type UpdateInstallMode = 'native' | 'installer' | 'manual-dmg';
+
+export type ImportConflictPolicy = 'skip' | 'rename' | 'overwrite' | 'conflicts-folder';
+
+export type ImportPlanStatus = 'will-import' | 'duplicate' | 'conflict' | 'invalid';
+
+export interface ImportPlanItem {
+  sourcePath: string;
+  name: string;
+  size: number;
+  destRelPath?: string;
+  destFullPath?: string;
+  backupFullPath?: string;
+  status: ImportPlanStatus;
+  reason?: string;
+  warnings?: string[];
+}
+
+export interface ImportPreflight {
+  totalFiles: number;
+  totalBytes: number;
+  willImport: number;
+  duplicates: number;
+  conflicts: number;
+  invalid: number;
+  lowConfidence: number;
+  backupEnabled: boolean;
+  ftpEnabled: boolean;
+  checksumEnabled: boolean;
+  metadataEnabled: boolean;
+  watermarkEnabled: boolean;
+  dryRun: boolean;
+  items: ImportPlanItem[];
+}
+
+export type ImportLedgerStatus = 'planned' | 'imported' | 'skipped' | 'failed' | 'verified' | 'pending';
+
+export interface ImportLedgerItem {
+  sourcePath: string;
+  name: string;
+  size: number;
+  destRelPath?: string;
+  destFullPath?: string;
+  backupFullPath?: string;
+  status: ImportLedgerStatus;
+  error?: string;
+}
+
+export interface ImportLedger {
+  id: string;
+  createdAt: string;
+  sourcePath: string;
+  destRoot: string;
+  saveFormat: SaveFormat;
+  totalFiles: number;
+  imported: number;
+  skipped: number;
+  failed: number;
+  pending: number;
+  verified?: number;
+  checksumVerified?: number;
+  totalBytes: number;
+  durationMs: number;
+  items: ImportLedgerItem[];
+}
+
+export interface MacFirstRunDoctor {
+  platform: NodeJS.Platform;
+  arch: string;
+  supported: boolean;
+  appVersion: string;
+  updateMode: UpdateInstallMode;
+  resources: {
+    resourcesPath: string;
+    onnxRuntimeNode: boolean;
+    models: Array<{ name: string; exists: boolean; bytes?: number }>;
+  };
+  checks: Array<{
+    id: string;
+    label: string;
+    ok: boolean;
+    detail: string;
+  }>;
+}
+
+/**
+ * Which culling actions the user can remap. Each value is a KeyboardEvent.key string.
+ * Defaults are the original hardcoded keys.
+ */
+export interface KeybindMap {
+  pick: string;           // default: 'p'
+  reject: string;         // default: 'x'
+  unflag: string;         // default: 'u'
+  nextPhoto: string;      // default: 'ArrowRight'
+  prevPhoto: string;      // default: 'ArrowLeft'
+  rateOne: string;        // default: '1'
+  rateTwo: string;        // default: '2'
+  rateThree: string;      // default: '3'
+  rateFour: string;       // default: '4'
+  rateFive: string;       // default: '5'
+  clearRating: string;    // default: '0'
+  compareMode: string;    // default: 'c'
+  burstSelect: string;    // default: 'b'
+  burstCollapse: string;  // default: 'g'
+  queuePhoto: string;     // default: 'q'
+  jumpUnreviewed: string; // default: 'Tab'
+  batchRejectBurst: string; // default: 'r' (when in single/split view)
+}
+
+export const DEFAULT_KEYBINDS: KeybindMap = {
+  pick: 'p',
+  reject: 'x',
+  unflag: 'u',
+  nextPhoto: 'ArrowRight',
+  prevPhoto: 'ArrowLeft',
+  rateOne: '1',
+  rateTwo: '2',
+  rateThree: '3',
+  rateFour: '4',
+  rateFive: '5',
+  clearRating: '0',
+  compareMode: 'c',
+  burstSelect: 'b',
+  burstCollapse: 'g',
+  queuePhoto: 'q',
+  jumpUnreviewed: 'Tab',
+  batchRejectBurst: 'r',
+};
+
+/**
+ * Controls which metadata fields get written into files on import.
+ */
+export interface MetadataExportFlags {
+  keywords: boolean;
+  title: boolean;
+  caption: boolean;
+  creator: boolean;
+  copyright: boolean;
+  rating: boolean;       // embed star rating as XMP Rating
+  pickLabel: boolean;    // embed pick/reject as XMP Label / ColorClass
+  stripGps: boolean;     // remove GPS data on export
+}
+
+export const DEFAULT_METADATA_EXPORT: MetadataExportFlags = {
+  keywords: true,
+  title: true,
+  caption: true,
+  creator: true,
+  copyright: true,
+  rating: true,
+  pickLabel: true,
+  stripGps: false,
+};
+
+export interface ViewOverlayPreferences {
+  photoStats: boolean;
+  histogram: boolean;
+  faceBoxes: boolean;
+  peopleBoxes: boolean;
+  aiReasons: boolean;
+}
+
+export const DEFAULT_VIEW_OVERLAY_PREFERENCES: ViewOverlayPreferences = {
+  photoStats: true,
+  histogram: true,
+  faceBoxes: false,
+  peopleBoxes: false,
+  aiReasons: false,
+};
 
 export interface AppSettings {
   lastDestination: string;
@@ -218,8 +609,10 @@ export interface AppSettings {
   separateProtected: boolean;
   protectedFolderName: string;
   backupDestRoot: string;        // empty string = disabled
+  ftpConfig: FtpConfig;
   ftpDestEnabled: boolean;
   ftpDestConfig: FtpConfig;
+  ftpSync: FtpSyncSettings;
   autoEject: boolean;
   playSoundOnComplete: boolean;
   completeSoundPath: string;
@@ -237,8 +630,60 @@ export interface AppSettings {
   // Exposure normalization
   normalizeExposure: boolean;
   exposureMaxStops: number;
+  exposureAdjustmentStep?: number;
+  whiteBalanceTemperature?: number;
+  whiteBalanceTint?: number;
+  eventMode?: EventMode;
+  /** How strongly auto-cull rejects weaker burst/group alternates. */
+  cullConfidence?: CullConfidence;
+  /** Group-photo mode prefers frames where every detected face/person is usable. */
+  groupPhotoEveryoneGood?: boolean;
+  /** How many alternates to keep in burst and near-duplicate stacks. */
+  keeperQuota?: KeeperQuota;
+  // Batch metadata + output transforms
+  metadataKeywords?: string;
+  metadataTitle?: string;
+  metadataCaption?: string;
+  metadataCreator?: string;
+  metadataCopyright?: string;
+  watermarkEnabled?: boolean;
+  watermarkMode?: WatermarkMode;
+  watermarkText?: string;
+  watermarkImagePath?: string;
+  watermarkOpacity?: number;
+  watermarkPositionLandscape?: WatermarkPosition;
+  watermarkPositionPortrait?: WatermarkPosition;
+  watermarkScale?: number;
+  autoStraighten?: boolean;
+  // Performance optimizations
+  gpuFaceAcceleration?: boolean;  // Enable GPU for face detection (default: true if available)
+  rawPreviewCache?: boolean;       // Cache RAW preview extractions (default: true)
+  cpuOptimization?: boolean;       // Use lighter models/settings for older CPUs (default: false)
+  rawPreviewQuality?: number;      // 0-100 for RAW preview JPEG quality (default: 70)
+  /** DirectML adapter index. Undefined/-1 = system default GPU. */
+  gpuDeviceId?: number;
+  /** Number of parallel detector/embedder streams used by the diagnostic GPU load test. */
+  gpuStressStreams?: number;
+  /** Device performance tier — 'auto' detects from CPU/RAM, or user override */
+  perfTier?: 'auto' | 'low' | 'balanced' | 'high';
+  /** Last app version where the performance/setup prompt was shown or dismissed. */
+  performancePromptSeenVersion?: string;
+  /** Fast Keeper Mode: score using sharpness/exposure/ratings only, skip ONNX */
+  fastKeeperMode?: boolean;
+  /** Renderer concurrency hint from device-tier (runtime only, not persisted) */
+  previewConcurrency?: number;
+  faceConcurrency?: number;
   jobPresets: JobPreset[];
   selectionSets: SelectionSet[];
+  // Keybind customization
+  keybinds?: Partial<KeybindMap>;
+  // Metadata export control
+  metadataExport?: Partial<MetadataExportFlags>;
+  // Single-photo review overlay visibility
+  viewOverlayPreferences?: Partial<ViewOverlayPreferences>;
+  licenseKey?: string;
+  licenseActivationCode?: string;
+  licenseStatus?: LicenseValidation;
 }
 
 export interface JobPreset {
@@ -252,6 +697,10 @@ export interface JobPreset {
   skipDuplicates: boolean;
   separateProtected: boolean;
   protectedFolderName: string;
+  eventMode?: EventMode;
+  cullConfidence?: CullConfidence;
+  groupPhotoEveryoneGood?: boolean;
+  keeperQuota?: KeeperQuota;
 }
 
 export interface UpdateInfo {
@@ -259,6 +708,40 @@ export interface UpdateInfo {
   latestVersion: string;
   releaseUrl: string;
   releaseName: string;
+}
+
+export type UpdateStatus =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'downloading'
+  | 'ready'
+  | 'error'
+  | 'up-to-date'
+  | 'denied';
+
+export interface UpdateReleaseSummary {
+  version: string;
+  releaseName: string;
+  notes?: string;
+  publishedAt?: string;
+  channel?: string;
+}
+
+export interface UpdateState {
+  status: UpdateStatus;
+  currentVersion: string;
+  latestVersion?: string;
+  releaseName?: string;
+  releaseNotes?: string;
+  releaseDate?: string;
+  releaseUrl?: string;
+  downloadUrl?: string;
+  feedUrl?: string;
+  installMode?: UpdateInstallMode;
+  lastCheckedAt?: string;
+  message?: string;
+  history?: UpdateReleaseSummary[];
 }
 
 export const PHOTO_EXTENSIONS = new Set([
@@ -345,6 +828,9 @@ export const IPC = {
 
   // Import
   IMPORT_START: 'import:start',
+  IMPORT_PREFLIGHT: 'import:preflight',
+  IMPORT_RETRY_FAILED: 'import:retry-failed',
+  IMPORT_LEDGER_LATEST: 'import:ledger-latest',
   IMPORT_PROGRESS: 'import:progress',
   IMPORT_COMPLETE: 'import:complete',
   IMPORT_CANCEL: 'import:cancel',
@@ -353,28 +839,62 @@ export const IPC = {
   DIALOG_SELECT_FOLDER: 'dialog:select-folder',
   DIALOG_SELECT_FILE: 'dialog:select-file',
   DIALOG_OPEN_PATH: 'dialog:open-path',
+  DIAGNOSTICS_EXPORT: 'diagnostics:export',
+  BENCHMARK_SMOKE_RUN: 'benchmark:smoke-run',
+  BENCHMARK_OPEN_OUTPUT: 'benchmark:open-output',
+  MAC_FIRST_RUN_DOCTOR: 'diagnostics:mac-first-run-doctor',
 
   // Settings
   SETTINGS_GET: 'settings:get',
   SETTINGS_SET: 'settings:set',
+  LICENSE_ACTIVATE: 'license:activate',
+  LICENSE_CLEAR: 'license:clear',
 
   // Updates
   UPDATE_AVAILABLE: 'update:available',
   UPDATE_OPEN_RELEASE: 'update:open-release',
+  UPDATE_STATUS: 'update:status',
+  UPDATE_CHECK_NOW: 'update:check-now',
+  UPDATE_DOWNLOAD: 'update:download',
+  UPDATE_INSTALL: 'update:install',
+  UPDATE_FETCH_HISTORY: 'update:fetch-history',
 
   // FTP source
   FTP_PROBE: 'ftp:probe',
   FTP_MIRROR_START: 'ftp:mirror-start',
   FTP_MIRROR_PROGRESS: 'ftp:mirror-progress',
   FTP_MIRROR_CANCEL: 'ftp:mirror-cancel',
+  FTP_SYNC_RUN: 'ftp:sync-run',
+  FTP_SYNC_STATUS: 'ftp:sync-status',
 
   // Workflow — manifest export
   EXPORT_MANIFEST: 'export:manifest',
   EXPORT_CONTACT_SHEET: 'export:contact-sheet',
 
+  // Face analysis (onnxruntime-node)
+  FACE_ANALYZE: 'face:analyze',
+  FACE_MODELS_AVAILABLE: 'face:models-available',
+  FACE_GPU_AVAILABLE: 'face:gpu-available',
+  FACE_EXECUTION_PROVIDER: 'face:execution-provider',
+  FACE_CANCEL_QUEUE: 'face:cancel-queue',
+  FACE_GPU_STRESS_TEST: 'face:gpu-stress-test',
+  GPU_LIST: 'gpu:list',
+  FACE_MODEL_DOWNLOAD_PROGRESS: 'face:model-download-progress',
+
+  // Cache management
+  CACHE_CLEAR: 'cache:clear',
+  FACE_CACHE_CLEAR: 'face-cache:clear',
+
+  // Device performance tier
+  DEVICE_TIER_GET: 'device-tier:get',
+
   // Auto-import + device events
   DEVICE_INSERTED: 'device:inserted',
   AUTO_IMPORT_STARTED: 'auto-import:started',
+  AUTO_IMPORT_COMPLETE: 'auto-import:complete',
   EJECT_VOLUME: 'volume:eject',
   DISK_FREE_SPACE: 'disk:free-space',
+
+  // Shell
+  OPEN_EXTERNAL: 'shell:open-external',
 } as const;

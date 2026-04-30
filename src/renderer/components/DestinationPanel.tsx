@@ -1,9 +1,11 @@
 import { useMemo, useEffect, useState } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import { useImport } from '../hooks/useImport';
-import type { SaveFormat, JobPreset } from '../../shared/types';
-import { FOLDER_PRESETS, resolvePattern } from '../../shared/types';
+import { ImportResumeView } from './ImportResumeView';
+import type { EventMode, SaveFormat, JobPreset, ImportConfig, ImportPreflight } from '../../shared/types';
+import { EVENT_MODE_PRESETS, FOLDER_PRESETS, eventModeKeywords, resolvePattern } from '../../shared/types';
 import { formatSize } from '../utils/formatters';
+import { formatWhiteBalanceKelvin, kelvinToWhiteBalanceTemperature, WHITE_BALANCE_MAX_KELVIN, WHITE_BALANCE_MIN_KELVIN, whiteBalanceTemperatureToKelvin } from '../../shared/exposure';
 
 const FORMAT_EXT: Record<string, string> = {
   jpeg: '.jpg',
@@ -18,6 +20,11 @@ const converterLabel =
       ? 'Windows imaging'
       : 'ImageMagick';
 
+const isMeaningfulSceneLabel = (label?: string | null) => {
+  const normalized = label?.trim().toLowerCase();
+  return !!normalized && normalized !== 'scene' && normalized !== 'general';
+};
+
 function applyFormat(destPath: string, format: SaveFormat): string {
   if (format === 'original') return destPath;
   const ext = FORMAT_EXT[format];
@@ -29,19 +36,23 @@ function applyFormat(destPath: string, format: SaveFormat): string {
 export function DestinationPanel() {
   const {
     destination, skipDuplicates, saveFormat, jpegQuality, folderPreset, customPattern,
-    files, phase, selectedSource, selectedPaths, queuedPaths,
+    files, phase, importProgress, importResult, selectedSource, selectedPaths, queuedPaths,
     separateProtected, protectedFolderName, backupDestRoot, ftpDestEnabled, ftpDestConfig,
-    autoEject, playSoundOnComplete, completeSoundPath, openFolderOnComplete,
+    metadataKeywords, metadataTitle, metadataCaption, metadataCreator, metadataCopyright,
+    watermarkEnabled, watermarkMode, watermarkText, watermarkImagePath, watermarkOpacity, watermarkPositionLandscape, watermarkPositionPortrait, watermarkScale,
+    autoStraighten,
+    whiteBalanceTemperature, whiteBalanceTint, eventMode, metadataExport,
     verifyChecksums,
-    autoImport, autoImportDestRoot,
-    burstGrouping, burstWindowSec,
-    normalizeExposure, exposureAnchorPath, exposureMaxStops,
+    licenseStatus,
   } = useAppState();
   const dispatch = useAppDispatch();
   const { startImport } = useImport();
   const [freeBytes, setFreeBytes] = useState<number | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showTransforms, setShowTransforms] = useState(false);
   const [jobPresets, setJobPresets] = useState<JobPreset[]>([]);
+  const [preflight, setPreflight] = useState<ImportPreflight | null>(null);
+  const [preflightOpen, setPreflightOpen] = useState(false);
 
   useEffect(() => {
     void window.electronAPI.getSettings().then((s) => setJobPresets(s.jobPresets ?? []));
@@ -66,30 +77,6 @@ export function DestinationPanel() {
   const handleClearBackup = () => {
     dispatch({ type: 'SET_WORKFLOW_STRING', key: 'backupDestRoot', value: '' });
     window.electronAPI.setSettings({ backupDestRoot: '' });
-  };
-
-  const handleChooseAutoImportDest = async () => {
-    const folder = await window.electronAPI.selectFolder('Select Auto-Import Destination');
-    if (folder) {
-      dispatch({ type: 'SET_WORKFLOW_STRING', key: 'autoImportDestRoot', value: folder });
-      window.electronAPI.setSettings({ autoImportDestRoot: folder });
-    }
-  };
-
-  const handleChooseCompleteSound = async () => {
-    const file = await window.electronAPI.selectFile('Select Completion Sound', [
-      { name: 'Audio', extensions: ['wav', 'mp3', 'm4a', 'aac', 'ogg', 'flac'] },
-      { name: 'All Files', extensions: ['*'] },
-    ]);
-    if (!file) return;
-    dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'playSoundOnComplete', value: true });
-    dispatch({ type: 'SET_WORKFLOW_STRING', key: 'completeSoundPath', value: file });
-    window.electronAPI.setSettings({ playSoundOnComplete: true, completeSoundPath: file });
-  };
-
-  const handleClearCompleteSound = () => {
-    dispatch({ type: 'SET_WORKFLOW_STRING', key: 'completeSoundPath', value: '' });
-    window.electronAPI.setSettings({ completeSoundPath: '' });
   };
 
   const handleToggleDuplicates = () => {
@@ -119,22 +106,25 @@ export function DestinationPanel() {
   };
 
   const handleWorkflowBool = (
-    key: 'separateProtected' | 'autoEject' | 'playSoundOnComplete' | 'openFolderOnComplete'
-      | 'autoImport' | 'burstGrouping' | 'normalizeExposure' | 'verifyChecksums' | 'ftpDestEnabled',
+    key: 'separateProtected' | 'ftpDestEnabled',
     value: boolean,
   ) => {
     dispatch({ type: 'SET_WORKFLOW_OPTION', key, value });
     window.electronAPI.setSettings({ [key]: value } as Record<string, unknown>);
   };
 
-  const handleBurstWindow = (seconds: number) => {
-    dispatch({ type: 'SET_BURST_WINDOW', seconds });
-    window.electronAPI.setSettings({ burstWindowSec: seconds });
+  const handleWhiteBalance = (temperature: number, tint: number) => {
+    dispatch({ type: 'SET_WHITE_BALANCE', temperature, tint });
+    window.electronAPI.setSettings({ whiteBalanceTemperature: temperature, whiteBalanceTint: tint });
   };
 
-  const handleMaxStops = (stops: number) => {
-    dispatch({ type: 'SET_EXPOSURE_MAX_STOPS', stops });
-    window.electronAPI.setSettings({ exposureMaxStops: stops });
+  const handleOpenDestination = () => {
+    if (destination) void window.electronAPI.openPath(destination);
+  };
+
+  const handleEventMode = (mode: EventMode) => {
+    dispatch({ type: 'SET_EVENT_MODE', mode });
+    window.electronAPI.setSettings({ eventMode: mode });
   };
 
   const handleFtpDestConfig = (config: Partial<typeof ftpDestConfig>) => {
@@ -154,6 +144,7 @@ export function DestinationPanel() {
     skipDuplicates,
     separateProtected,
     protectedFolderName,
+    eventMode,
   });
 
   const savePreset = () => {
@@ -176,6 +167,7 @@ export function DestinationPanel() {
     dispatch({ type: 'SET_SKIP_DUPLICATES', value: preset.skipDuplicates });
     dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'separateProtected', value: preset.separateProtected });
     dispatch({ type: 'SET_WORKFLOW_STRING', key: 'protectedFolderName', value: preset.protectedFolderName });
+    if (preset.eventMode) dispatch({ type: 'SET_EVENT_MODE', mode: preset.eventMode });
     window.electronAPI.setSettings({ ...preset, lastDestination: preset.destRoot });
   };
 
@@ -187,13 +179,6 @@ export function DestinationPanel() {
     window.electronAPI.setSettings({ jobPresets: next });
   };
 
-  const anchorFile = exposureAnchorPath ? files.find((f) => f.path === exposureAnchorPath) : null;
-  const burstCount = useMemo(() => {
-    const ids = new Set<string>();
-    for (const f of files) if (f.burstId) ids.add(f.burstId);
-    return ids.size;
-  }, [files]);
-
   const handleProtectedFolderName = (value: string) => {
     dispatch({ type: 'SET_WORKFLOW_STRING', key: 'protectedFolderName', value });
     window.electronAPI.setSettings({ protectedFolderName: value });
@@ -204,9 +189,17 @@ export function DestinationPanel() {
   const rejectedCount = files.filter((f) => f.pick === 'rejected').length;
   const protectedCount = files.filter((f) => f.isProtected).length;
   const adjustedCount = files.filter((f) => f.normalizeToAnchor || f.exposureAdjustmentStops).length;
+  const wbTemperature = whiteBalanceTemperature ?? 0;
+  const wbTint = whiteBalanceTint ?? 0;
+  const wbKelvin = whiteBalanceTemperatureToKelvin(wbTemperature);
+  const hasWhiteBalance = Math.abs(wbTemperature) >= 0.5 || Math.abs(wbTint) >= 0.5;
   const hasPicks = pickedCount > 0;
   const hasClickSelection = selectedPaths.length > 0;
   const hasQueue = queuedPaths.length > 0;
+  const hasRenderableWatermark = watermarkEnabled && (
+    (watermarkMode === 'image' && watermarkImagePath.trim()) ||
+    (watermarkMode !== 'image' && watermarkText.trim())
+  );
 
   // Selection priority mirrors `useImport.ts`:
   //   1. Click-selection in the grid (selectedPaths)
@@ -229,11 +222,88 @@ export function DestinationPanel() {
       : files.filter((f) => f.pick !== 'rejected');
   }, [files, hasClickSelection, hasPicks, hasQueue, queuedPaths, skipDuplicates, selectedPaths]);
 
+  const buildImportConfig = (dryRun = false): ImportConfig | null => {
+    if (!selectedSource || !destination) return null;
+    return {
+      sourcePath: selectedSource,
+      destRoot: destination,
+      skipDuplicates,
+      saveFormat,
+      jpegQuality,
+      selectedPaths: importFiles.map((file) => file.path),
+      separateProtected,
+      protectedFolderName,
+      backupDestRoot: backupDestRoot || undefined,
+      ftpDestEnabled,
+      ftpDestConfig: ftpDestEnabled ? ftpDestConfig : undefined,
+      verifyChecksums,
+      metadataExportFlags: metadataExport,
+      metadata: metadataKeywords.trim() || metadataTitle.trim() || metadataCaption.trim() || metadataCreator.trim() || metadataCopyright.trim()
+        ? {
+            keywords: metadataKeywords.split(/[\n,;]+/).map((value) => value.trim()).filter(Boolean),
+            title: metadataTitle.trim() || undefined,
+            caption: metadataCaption.trim() || undefined,
+            creator: metadataCreator.trim() || undefined,
+            copyright: metadataCopyright.trim() || undefined,
+          }
+        : undefined,
+      watermark: hasRenderableWatermark
+        ? {
+            enabled: true,
+            mode: watermarkMode,
+            text: watermarkMode === 'text' ? watermarkText.trim() : undefined,
+            imagePath: watermarkMode === 'image' ? watermarkImagePath.trim() : undefined,
+            opacity: watermarkOpacity,
+            positionLandscape: watermarkPositionLandscape,
+            positionPortrait: watermarkPositionPortrait,
+            scale: watermarkScale,
+          }
+        : undefined,
+      autoStraighten,
+      whiteBalance: hasWhiteBalance
+        ? {
+            temperature: wbTemperature,
+            tint: wbTint,
+          }
+        : undefined,
+      dryRun,
+    };
+  };
+
   const ftpReady = !ftpDestEnabled || (!!ftpDestConfig.host && !!ftpDestConfig.remotePath);
-  const canImport = selectedSource && destination && ftpReady && importFiles.length > 0 && (phase === 'ready' || phase === 'scanning');
+  const licenseValid = !!licenseStatus?.valid;
+  const canImport = licenseValid && selectedSource && destination && ftpReady && importFiles.length > 0 && phase === 'ready';
   const totalSize = importFiles.reduce((sum, f) => sum + f.size, 0);
   const exposureEditCount = importFiles.filter((f) => f.normalizeToAnchor || f.exposureAdjustmentStops).length;
+  const queuedRejectedCount = importFiles.filter((f) => f.pick === 'rejected').length;
+  const lowConfidenceCount = importFiles.filter((f) =>
+    f.type === 'photo' &&
+    (f.pick === 'selected' || queuedPaths.includes(f.path)) &&
+    (f.blurRisk === 'high' || (typeof f.reviewScore === 'number' && f.reviewScore < 58) || !f.reviewScore),
+  ).length;
+  const sceneLabels = [...new Set(importFiles
+    .map((f) => f.sceneBucket)
+    .filter(isMeaningfulSceneLabel) as string[])].sort();
+  const sceneCount = sceneLabels.length;
+  const sceneSummary = sceneLabels.length <= 2
+    ? sceneLabels.join(', ')
+    : `${sceneLabels.slice(0, 2).join(', ')} +${sceneLabels.length - 2}`;
+  const locationCount = new Set(importFiles.map((f) => f.locationName).filter(Boolean)).size;
+  const metadataCount = metadataKeywords.split(/[\n,;]+/).map((value) => value.trim()).filter(Boolean).length;
+  const activeEventMode = EVENT_MODE_PRESETS[eventMode] ?? EVENT_MODE_PRESETS.general;
+  const activeEventKeywords = eventModeKeywords(eventMode);
   const backupSameAsPrimary = !!backupDestRoot && !!destination && backupDestRoot === destination;
+  const refreshPreflight = async (dryRun = false) => {
+    const config = buildImportConfig(dryRun);
+    if (!config) return;
+    const result = await window.electronAPI.preflightImport(config);
+    setPreflight(result);
+    setPreflightOpen(true);
+  };
+
+  const handlePreviewImport = async () => {
+    await refreshPreflight(true);
+  };
 
   // Free-space check on the destination. Re-runs when the destination or
   // the set of files-to-import changes so the warning reflects reality.
@@ -293,6 +363,7 @@ export function DestinationPanel() {
         <button
           onClick={handleChooseDestination}
           className="w-full px-2 py-1 text-xs bg-surface-raised hover:bg-border rounded text-text transition-colors text-left cursor-pointer"
+          aria-label={destination ? `Change destination folder, currently ${destination}` : 'Choose destination folder'}
         >
           {destination ? (
             <span className="truncate block" title={destination}>{destination.split(/[/\\]/).pop()}</span>
@@ -302,6 +373,7 @@ export function DestinationPanel() {
         </button>
       </div>
 
+      {showAdvanced && (
       <div className="px-2.5 mb-2.5">
         <div className="flex items-center gap-1">
           <select
@@ -331,6 +403,7 @@ export function DestinationPanel() {
           )}
         </div>
       </div>
+      )}
 
       {files.length > 0 && (
         <div className="px-2.5 mb-2.5 grid grid-cols-2 gap-1 text-[10px] text-text-muted">
@@ -338,6 +411,63 @@ export function DestinationPanel() {
           <div className="bg-surface-raised rounded px-1.5 py-1">Rejected <span className="text-red-400">{rejectedCount}</span></div>
           <div className="bg-surface-raised rounded px-1.5 py-1">Protected <span className="text-emerald-400">{protectedCount}</span></div>
           <div className="bg-surface-raised rounded px-1.5 py-1">Queued <span className="text-emerald-400">{queuedPaths.length}</span></div>
+        </div>
+      )}
+
+      <div className="px-2.5 mb-2.5">
+        <div className="rounded border border-border bg-surface-alt px-2 py-2">
+          <div className="flex items-center justify-between gap-2 mb-1">
+            <h3 className="text-[10px] text-text-secondary uppercase tracking-wider">Session type</h3>
+            <span className="text-[9px] text-text-muted">Lightroom XMP</span>
+          </div>
+          <select
+            value={eventMode}
+            onChange={(e) => handleEventMode(e.target.value as EventMode)}
+            className="w-full px-1.5 py-1 text-[11px] bg-surface-raised border border-border rounded text-text focus:border-text focus:outline-none appearance-none cursor-pointer"
+            title={activeEventMode.help}
+          >
+            {Object.entries(EVENT_MODE_PRESETS).map(([key, preset]) => (
+              <option key={key} value={key}>{preset.label}</option>
+            ))}
+          </select>
+          <p className="text-[10px] text-text-muted mt-1">{activeEventMode.description}</p>
+          <div className="mt-1 flex flex-wrap gap-1">
+            {activeEventKeywords.slice(0, 5).map((keyword) => (
+              <span key={keyword} className="rounded bg-surface-raised px-1.5 py-0.5 text-[9px] text-text-secondary">
+                {keyword}
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {phase === 'importing' && (
+        <div className="mx-2.5 mb-2.5 rounded border border-accent/30 bg-accent/10 px-2 py-1.5">
+          <div className="flex items-center justify-between gap-2 text-[10px] text-text-secondary">
+            <span>Importing</span>
+            <span className="font-mono text-text">
+              {importProgress ? `${importProgress.currentIndex}/${importProgress.totalFiles}` : 'Preparing'}
+            </span>
+          </div>
+          <div className="mt-1 h-1 rounded bg-surface-raised overflow-hidden">
+            <div
+              className="h-full bg-accent transition-[width] duration-300"
+              style={{
+                width: importProgress && importProgress.totalFiles > 0
+                  ? `${Math.round((importProgress.currentIndex / importProgress.totalFiles) * 100)}%`
+                  : '0%',
+              }}
+            />
+          </div>
+          <div className="mt-1 text-[10px] text-text-muted truncate" title={importProgress?.currentFile}>
+            {importProgress?.currentFile ?? 'Scanning card...'}
+          </div>
+        </div>
+      )}
+
+      {showAdvanced && (
+        <div className="px-2.5 mb-2.5">
+          <ImportResumeView />
         </div>
       )}
 
@@ -357,6 +487,7 @@ export function DestinationPanel() {
       </div>
 
       {/* Protected folder split */}
+      {showAdvanced && (
       <div className="px-2.5 mb-2.5">
         <label className="flex items-center gap-1.5 cursor-pointer">
           <input
@@ -381,8 +512,10 @@ export function DestinationPanel() {
           </div>
         )}
       </div>
+      )}
 
       {/* Folder structure */}
+      {showAdvanced && (
       <div className="px-2.5 mb-2.5">
         <h3 className="text-[10px] text-text-secondary mb-1 uppercase tracking-wider">Folder Structure</h3>
         <select
@@ -410,6 +543,7 @@ export function DestinationPanel() {
           </div>
         )}
       </div>
+      )}
 
       {/* Save format */}
       <div className="px-2.5 mb-2.5">
@@ -457,6 +591,82 @@ export function DestinationPanel() {
         )}
       </div>
 
+      {/* Output edits */}
+      <div className="px-2.5 mb-2.5">
+        <button
+          type="button"
+          onClick={() => setShowTransforms((value) => !value)}
+          className="w-full flex items-center justify-between gap-2 text-[10px] text-text-secondary uppercase tracking-wider hover:text-text"
+        >
+          <span>Output edits</span>
+          <span className={hasWhiteBalance ? 'text-cyan-300 normal-case font-mono' : 'text-text-muted normal-case'}>
+            {hasWhiteBalance
+              ? `${formatWhiteBalanceKelvin(wbTemperature)} ${wbTint > 0 ? '+' : ''}${wbTint}`
+              : 'Off'} {showTransforms ? '-' : '+'}
+          </span>
+        </button>
+        {showTransforms && (
+          <div className={`mt-1.5 space-y-2 rounded border border-border bg-surface-alt px-2 py-2 ${saveFormat === 'original' ? 'opacity-60' : ''}`}>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] text-text">Bulk white balance</span>
+              <button
+                type="button"
+                onClick={() => handleWhiteBalance(0, 0)}
+                disabled={!hasWhiteBalance}
+                className="px-1.5 py-0.5 text-[10px] rounded bg-surface-raised hover:bg-border text-text-secondary disabled:opacity-50"
+              >
+                Reset
+              </button>
+            </div>
+            <div>
+              <div className="flex items-center justify-between mb-0.5">
+                <span className="text-[10px] text-text-secondary">Temperature</span>
+                <span className="text-[10px] text-text-secondary font-mono">{formatWhiteBalanceKelvin(wbTemperature)}</span>
+              </div>
+              <div className="grid grid-cols-[2.4rem_1fr_2.6rem] items-center gap-1 text-[9px] text-text-muted">
+                <span>Cool</span>
+                <input
+                  type="range"
+                  min={WHITE_BALANCE_MIN_KELVIN}
+                  max={WHITE_BALANCE_MAX_KELVIN}
+                  step={50}
+                  value={wbKelvin}
+                  disabled={saveFormat === 'original'}
+                  onChange={(e) => handleWhiteBalance(kelvinToWhiteBalanceTemperature(Number(e.target.value)), wbTint)}
+                  className="min-w-0 h-1 bg-surface-raised rounded appearance-none cursor-pointer accent-accent disabled:cursor-not-allowed"
+                />
+                <span className="text-right">Warm</span>
+              </div>
+            </div>
+            <div>
+              <div className="flex items-center justify-between mb-0.5">
+                <span className="text-[10px] text-text-secondary">Tint</span>
+                <span className="text-[10px] text-text-secondary font-mono">{wbTint > 0 ? '+' : ''}{wbTint}</span>
+              </div>
+              <div className="grid grid-cols-[2.4rem_1fr_3.4rem] items-center gap-1 text-[9px] text-text-muted">
+                <span>Green</span>
+                <input
+                  type="range"
+                  min={-100}
+                  max={100}
+                  step={5}
+                  value={wbTint}
+                  disabled={saveFormat === 'original'}
+                  onChange={(e) => handleWhiteBalance(wbTemperature, Number(e.target.value))}
+                  className="min-w-0 h-1 bg-surface-raised rounded appearance-none cursor-pointer accent-accent disabled:cursor-not-allowed"
+                />
+                <span className="text-right">Magenta</span>
+              </div>
+            </div>
+            <p className="text-[10px] text-text-muted">
+              {saveFormat === 'original'
+                ? 'Choose JPEG/TIFF/HEIC to apply output edits.'
+                : 'Applied during import export.'}
+            </p>
+          </div>
+        )}
+      </div>
+
       {/* Advanced workflow options — collapsed by default so the panel
           stays calm for casual users */}
       <div className="px-2.5 mb-2.5">
@@ -468,42 +678,33 @@ export function DestinationPanel() {
           <span className="text-text-muted">{showAdvanced ? '-' : '+'}</span>
         </button>
         {showAdvanced && (
-          <div className="mt-1.5 space-y-1.5">
-            {/* Backup destination */}
-            <div>
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] text-text">Backup copy</span>
-                {backupDestRoot && (
-                  <button
-                    onClick={handleClearBackup}
-                    className="text-[10px] text-text-muted hover:text-text"
-                  >
-                    clear
-                  </button>
-                )}
+          <>
+            <div className="mt-1.5 space-y-1.5">
+              {/* Backup destination */}
+              <div>
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] text-text">Backup copy</span>
+                  {backupDestRoot && (
+                    <button
+                      onClick={handleClearBackup}
+                      className="text-[10px] text-text-muted hover:text-text"
+                    >
+                      clear
+                    </button>
+                  )}
+                </div>
+                <button
+                  onClick={handleChooseBackup}
+                  className="w-full mt-0.5 px-1.5 py-1 text-[11px] bg-surface-raised hover:bg-border rounded text-text-secondary transition-colors text-left"
+                  title={backupDestRoot || 'Pick a second folder — each imported file will be copied there too'}
+                >
+                  {backupDestRoot
+                    ? <span className="truncate block">{backupDestRoot.split(/[/\\]/).pop()}</span>
+                    : 'Choose backup folder...'}
+                </button>
               </div>
-              <button
-                onClick={handleChooseBackup}
-                className="w-full mt-0.5 px-1.5 py-1 text-[11px] bg-surface-raised hover:bg-border rounded text-text-secondary transition-colors text-left"
-                title={backupDestRoot || 'Pick a second folder — each imported file will be copied there too'}
-              >
-                {backupDestRoot
-                  ? <span className="truncate block">{backupDestRoot.split(/[/\\]/).pop()}</span>
-                  : 'Choose backup folder...'}
-              </button>
-            </div>
 
-            {/* Toggles */}
-            <label className="flex items-center gap-1.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={autoEject}
-                onChange={(e) => handleWorkflowBool('autoEject', e.target.checked)}
-              />
-              <span className="text-xs text-text">Eject source when done</span>
-            </label>
-
-            <div className="pt-1 border-t border-border">
+              {/* Current-import FTP output */}
               <label className="flex items-center gap-1.5 cursor-pointer">
                 <input
                   type="checkbox"
@@ -548,7 +749,7 @@ export function DestinationPanel() {
                   <input
                     value={ftpDestConfig.remotePath}
                     onChange={(e) => handleFtpDestConfig({ remotePath: e.target.value })}
-                    placeholder="/PhotoImporter"
+                    placeholder="/Keptra"
                     className="w-full px-1.5 py-1 text-[11px] font-mono bg-surface-raised border border-border rounded text-text placeholder-text-muted focus:border-text focus:outline-none"
                   />
                   <label className="flex items-center gap-1.5 cursor-pointer">
@@ -563,176 +764,26 @@ export function DestinationPanel() {
               )}
             </div>
 
-            <label className="flex items-center gap-1.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={playSoundOnComplete}
-                onChange={(e) => handleWorkflowBool('playSoundOnComplete', e.target.checked)}
-              />
-              <span className="text-xs text-text">Play sound on complete</span>
-            </label>
-            {playSoundOnComplete && (
-              <div className="ml-5 flex items-center gap-1">
+            <div className="pt-1 border-t border-border rounded bg-surface-alt px-2 py-2">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-[11px] text-text">Automation and post-import</div>
+                  <div className="text-[10px] text-text-muted">FTP workflow, auto-import, sounds, burst grouping, and exposure defaults live in Settings.</div>
+                </div>
                 <button
-                  onClick={handleChooseCompleteSound}
-                  className="min-w-0 flex-1 px-1.5 py-1 text-[10px] bg-surface-raised hover:bg-border rounded text-text-secondary transition-colors text-left"
-                  title={completeSoundPath || 'Choose a custom completion sound'}
+                  onClick={() => dispatch({ type: 'SET_VIEW_MODE', mode: 'settings' })}
+                  className="shrink-0 px-2 py-1 text-[10px] bg-surface-raised hover:bg-border rounded text-text-secondary"
                 >
-                  <span className="truncate block">
-                    {completeSoundPath ? completeSoundPath.split(/[/\\]/).pop() : 'Choose custom sound...'}
-                  </span>
+                  Open settings
                 </button>
-                {completeSoundPath && (
-                  <button
-                    onClick={handleClearCompleteSound}
-                    className="text-[10px] text-text-muted hover:text-text"
-                  >
-                    clear
-                  </button>
-                )}
               </div>
-            )}
-            <label className="flex items-center gap-1.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={openFolderOnComplete}
-                onChange={(e) => handleWorkflowBool('openFolderOnComplete', e.target.checked)}
-              />
-              <span className="text-xs text-text">Open folder on complete</span>
-            </label>
-            <label className="flex items-center gap-1.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={verifyChecksums}
-                onChange={(e) => handleWorkflowBool('verifyChecksums', e.target.checked)}
-              />
-              <span className="text-xs text-text">Full checksum verify</span>
-            </label>
-
-            {/* Auto-import */}
-            <div className="pt-1 border-t border-border">
-              <label className="flex items-center gap-1.5 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={autoImport}
-                  onChange={(e) => handleWorkflowBool('autoImport', e.target.checked)}
-                />
-                <span className="text-xs text-text">Auto-import on card insert</span>
-              </label>
-              {autoImport && (
-                <div className="mt-1 ml-5">
-                  <button
-                    onClick={handleChooseAutoImportDest}
-                    className="w-full px-1.5 py-1 text-[11px] bg-surface-raised hover:bg-border rounded text-text-secondary transition-colors text-left"
-                  >
-                    {autoImportDestRoot
-                      ? <span className="truncate block">{autoImportDestRoot.split(/[/\\]/).pop()}</span>
-                      : 'Choose auto-import folder...'}
-                  </button>
-                  <p className="text-[10px] text-text-muted mt-0.5">
-                    When a card with a DCIM folder is inserted, it will import automatically using your saved settings.
-                  </p>
-                </div>
-              )}
             </div>
-
-            {/* Burst grouping */}
-            <div className="pt-1 border-t border-border">
-              <label className="flex items-center gap-1.5 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={burstGrouping}
-                  onChange={(e) => handleWorkflowBool('burstGrouping', e.target.checked)}
-                />
-                <span className="text-xs text-text">Group burst shots</span>
-              </label>
-              {burstGrouping && (
-                <div className="mt-1 ml-5">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] text-text-secondary">Window</span>
-                    <span className="text-[10px] text-text-secondary font-mono">{burstWindowSec.toFixed(2)}s</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={0.5}
-                    max={5}
-                    step={0.25}
-                    value={burstWindowSec}
-                    onChange={(e) => handleBurstWindow(Number(e.target.value))}
-                    className="w-full h-1 bg-surface-raised rounded appearance-none cursor-pointer accent-accent"
-                    title="Max gap between consecutive shots to count as one burst"
-                  />
-                  <p className="text-[10px] text-text-muted mt-0.5">
-                    {burstCount > 0
-                      ? <>Found <span className="text-text">{burstCount}</span> burst{burstCount !== 1 ? 's' : ''} &middot; B = select burst &middot; G = collapse</>
-                      : <>B = select burst &middot; G = collapse/expand in the grid</>}
-                  </p>
-                </div>
-              )}
-            </div>
-
-            {/* Exposure normalization */}
-            <div className="pt-1 border-t border-border">
-              <label className="flex items-center gap-1.5 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={normalizeExposure}
-                  onChange={(e) => handleWorkflowBool('normalizeExposure', e.target.checked)}
-                  disabled={saveFormat === 'original'}
-                />
-                <span className={`text-xs ${saveFormat === 'original' ? 'text-text-muted' : 'text-text'}`}>
-                  Normalize exposure to anchor
-                </span>
-              </label>
-              {saveFormat === 'original' && (
-                <p className="text-[10px] text-text-muted mt-0.5 ml-5">
-                  Requires a non-original save format (JPEG / TIFF / HEIC) so pixels can be rewritten.
-                </p>
-              )}
-              {normalizeExposure && saveFormat !== 'original' && (
-                <div className="mt-1 ml-5 space-y-1">
-                  {anchorFile ? (
-                    <div className="flex items-center justify-between gap-1">
-                      <span className="text-[10px] font-mono text-text truncate" title={anchorFile.path}>
-                        {anchorFile.name}
-                      </span>
-                      <button
-                        onClick={() => dispatch({ type: 'SET_EXPOSURE_ANCHOR', path: null })}
-                        className="text-[10px] text-text-muted hover:text-text shrink-0"
-                      >
-                        clear
-                      </button>
-                    </div>
-                  ) : (
-                    <p className="text-[10px] text-text-muted">
-                      Open a photo in detail view and click "Set as anchor".
-                    </p>
-                  )}
-                  <div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-[10px] text-text-secondary">Max adjust</span>
-                      <span className="text-[10px] text-text-secondary font-mono">±{exposureMaxStops.toFixed(2)} stops</span>
-                    </div>
-                    <input
-                      type="range"
-                      min={0.33}
-                      max={4}
-                      step={0.33}
-                      value={exposureMaxStops}
-                      onChange={(e) => handleMaxStops(Number(e.target.value))}
-                      className="w-full h-1 bg-surface-raised rounded appearance-none cursor-pointer accent-accent"
-                      title="Hard clamp on how far we'll push brightness"
-                    />
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
+          </>
         )}
       </div>
 
       {/* Folder structure preview */}
-      {folders.length > 0 && destination && (
+      {showAdvanced && folders.length > 0 && destination && (
         <div className="px-2.5 mb-2.5 flex-1 min-h-0 overflow-y-auto">
           <h3 className="text-[10px] text-text-secondary mb-1 uppercase tracking-wider">Folder Preview</h3>
           <div className="space-y-1.5">
@@ -764,17 +815,32 @@ export function DestinationPanel() {
             {exposureEditCount > 0 && saveFormat === 'original' && (
               <div className="text-[10px] text-yellow-500">Exposure edits need JPEG/TIFF/HEIC output.</div>
             )}
+            {(hasRenderableWatermark || autoStraighten) && saveFormat === 'original' && (
+              <div className="text-[10px] text-yellow-500">Watermark and auto-straighten need JPEG/TIFF/HEIC output.</div>
+            )}
+            {hasWhiteBalance && saveFormat === 'original' && (
+              <div className="text-[10px] text-yellow-500">White balance needs JPEG/TIFF/HEIC output.</div>
+            )}
             {backupSameAsPrimary && (
               <div className="text-[10px] text-red-400">Backup destination matches primary.</div>
             )}
             {backupDestRoot && !backupSameAsPrimary && (
-              <div className="text-[10px] text-emerald-500">Backup copy enabled.</div>
+              <div className="text-[10px] text-emerald-500">Backup copy enabled for this import.</div>
             )}
             {ftpDestEnabled && !ftpReady && (
               <div className="text-[10px] text-red-400">FTP output needs host and remote folder.</div>
             )}
             {ftpDestEnabled && ftpReady && (
               <div className="text-[10px] text-emerald-500">FTP upload enabled.</div>
+            )}
+            {queuedRejectedCount > 0 && (
+              <div className="text-[10px] text-yellow-500">QA: {queuedRejectedCount} rejected photo{queuedRejectedCount === 1 ? '' : 's'} still in this import set.</div>
+            )}
+            {lowConfidenceCount > 0 && (
+              <div className="text-[10px] text-yellow-500">QA: {lowConfidenceCount} queued keeper{lowConfidenceCount === 1 ? '' : 's'} may need a quick check before import.</div>
+            )}
+            {!licenseValid && (
+              <div className="text-[10px] text-red-400">Importing is locked until a valid Full access license is activated.</div>
             )}
           </div>
         )}
@@ -787,6 +853,30 @@ export function DestinationPanel() {
             {skipDuplicates && duplicateCount > 0 && (
               <span className="text-yellow-500/70"> &middot; {duplicateCount} already imported</span>
             )}
+            {(metadataCount > 0 || metadataTitle.trim() || metadataCaption.trim()) && (
+              <span className="text-sky-300/80"> &middot; metadata</span>
+            )}
+            {eventMode !== 'general' && (
+              <span className="text-violet-300/80"> &middot; {activeEventMode.label}</span>
+            )}
+            {sceneCount > 0 && (
+              <span className="text-blue-300/80" title={sceneLabels.join(', ')}> &middot; Scene groups: {sceneSummary}</span>
+            )}
+            {locationCount > 0 && (
+              <span className="text-cyan-300/80"> &middot; GPS tags</span>
+            )}
+            {hasRenderableWatermark && saveFormat !== 'original' && (
+              <span className="text-orange-300/80"> &middot; watermark</span>
+            )}
+            {autoStraighten && saveFormat !== 'original' && (
+              <span className="text-emerald-300/80"> &middot; upright</span>
+            )}
+            {hasWhiteBalance && saveFormat !== 'original' && (
+              <span className="text-cyan-300/80"> &middot; WB</span>
+            )}
+            {verifyChecksums && (
+              <span className="text-emerald-300/80"> &middot; verify after copy</span>
+            )}
           </div>
         )}
         {freeBytes !== null && totalSize > 0 && (spaceWarning || insufficientSpace) && (
@@ -796,8 +886,70 @@ export function DestinationPanel() {
               : `Tight on space — ${formatSize(freeBytes)} free for ${formatSize(totalSize)} import`}
           </div>
         )}
+        {preflightOpen && preflight && (
+          <div className="mb-2 rounded border border-border bg-surface-alt px-2 py-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-[10px] font-medium text-text">Preflight</div>
+              <button
+                onClick={() => setPreflightOpen(false)}
+                className="text-[10px] text-text-muted hover:text-text"
+              >
+                Hide
+              </button>
+            </div>
+            <div className="mt-1 grid grid-cols-2 gap-1 text-[10px] text-text-secondary">
+              <div>Will import <span className="text-emerald-400">{preflight.willImport}</span></div>
+              <div>Duplicates <span className="text-yellow-400">{preflight.duplicates}</span></div>
+              <div>Conflicts <span className={preflight.conflicts ? 'text-red-400' : 'text-text-muted'}>{preflight.conflicts}</span></div>
+              <div>Review flags <span className={preflight.lowConfidence ? 'text-yellow-400' : 'text-text-muted'}>{preflight.lowConfidence}</span></div>
+            </div>
+            <div className="mt-1 text-[10px] text-text-muted">
+              {preflight.backupEnabled && 'Backup enabled. '}
+              {preflight.ftpEnabled && 'FTP upload enabled. '}
+              {preflight.checksumEnabled && 'Post-copy verification enabled. '}
+              {preflight.metadataEnabled && 'XMP metadata enabled. '}
+              {preflight.watermarkEnabled && 'Watermark enabled. '}
+              {preflight.dryRun && 'Dry-run preview only.'}
+            </div>
+            {preflight.items.some((item) => item.status !== 'will-import' || (item.warnings?.length ?? 0) > 0) && (
+              <div className="mt-1 max-h-20 overflow-y-auto space-y-0.5">
+                {preflight.items
+                  .filter((item) => item.status !== 'will-import' || (item.warnings?.length ?? 0) > 0)
+                  .slice(0, 8)
+                  .map((item) => (
+                    <div key={item.sourcePath} className="truncate text-[10px] text-text-muted" title={`${item.name}: ${item.reason || item.warnings?.join(', ') || item.status}`}>
+                      <span className={item.status === 'will-import' ? 'text-yellow-400' : item.status === 'duplicate' ? 'text-text-muted' : 'text-red-400'}>
+                        {item.status}
+                      </span>
+                      {' '}{item.name}
+                    </div>
+                  ))}
+              </div>
+            )}
+          </div>
+        )}
+        <div className="mb-1 grid grid-cols-2 gap-1">
+          <button
+            onClick={() => { void handlePreviewImport(); }}
+            disabled={!destination || importFiles.length === 0}
+            className="py-1 rounded text-[10px] bg-surface-raised hover:bg-border text-text-secondary disabled:text-text-muted disabled:cursor-not-allowed"
+            title="Preview the exact import plan without copying files."
+            aria-label="Preview the import plan without copying files"
+          >
+            Preview Import
+          </button>
+          <button
+            onClick={() => { void refreshPreflight(false); }}
+            disabled={!destination || importFiles.length === 0}
+            className="py-1 rounded text-[10px] bg-surface-raised hover:bg-border text-text-secondary disabled:text-text-muted disabled:cursor-not-allowed"
+            title="Check destination conflicts, duplicates, and review flags before copying."
+            aria-label="Check destination conflicts, duplicates, and review flags"
+          >
+            Check Plan
+          </button>
+        </div>
         <button
-          onClick={startImport}
+          onClick={() => { void startImport(); }}
           disabled={!canImport || insufficientSpace}
           className={`w-full py-1.5 rounded text-xs font-medium transition-colors ${
             canImport && !insufficientSpace
@@ -807,6 +959,7 @@ export function DestinationPanel() {
           title={
             !selectedSource ? 'Select a source volume first'
               : !destination ? 'Choose a destination folder first'
+              : !licenseValid ? 'Activate a valid license first'
               : !ftpReady ? 'Finish FTP output settings first'
               : importFiles.length === 0 ? 'No files to import'
               : insufficientSpace ? 'Not enough free space on the destination'
@@ -827,6 +980,24 @@ export function DestinationPanel() {
           >
             Clear Queue
           </button>
+        )}
+        {phase === 'complete' && importResult && destination && (
+          <div className="mt-2 grid grid-cols-2 gap-1">
+            <button
+              onClick={handleOpenDestination}
+              className="py-1 rounded text-[10px] bg-surface-raised hover:bg-border text-text-secondary transition-colors"
+              title="Open the output folder for this completed import."
+            >
+              Open Folder
+            </button>
+            <button
+              onClick={handleOpenDestination}
+              className="py-1 rounded text-[10px] bg-surface-raised hover:bg-border text-text-secondary transition-colors"
+              title="Open the output folder with XMP sidecars ready for Lightroom Classic import."
+            >
+              Lightroom Handoff
+            </button>
+          </div>
         )}
       </div>
     </div>

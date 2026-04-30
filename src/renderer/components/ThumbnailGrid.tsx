@@ -1,8 +1,11 @@
 import { useMemo, useEffect, useCallback, useRef, useState } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 // Main grid / single / split view orchestrator.
-import { useAppState, useAppDispatch } from '../context/ImportContext';
+import { useAppState, useAppDispatch, useMergedFiles } from '../context/ImportContext';
+import type { FilterMode } from '../context/ImportContext';
 import { useFileScanner } from '../hooks/useFileScanner';
 import { useImport } from '../hooks/useImport';
+import type { MediaFile, WhiteBalanceAdjustment } from '../../shared/types';
 import { ThumbnailCard } from './ThumbnailCard';
 import { SingleView } from './SingleView';
 import { CompareView } from './CompareView';
@@ -11,7 +14,8 @@ import { SettingsPage } from './SettingsPage';
 import { ShortcutsOverlay } from './ShortcutsOverlay';
 import { BestOfSelectionPanel, rankBestOfSelection } from './BestOfSelectionPanel';
 import { getPreviewCacheStats, setBackgroundPreviewPaused, warmPreview } from '../utils/previewCache';
-import { clampStops } from '../../shared/exposure';
+import { clampStops, getEffectiveExposureStops, getNormalizedExposureStops, normalizeExposureStops } from '../../shared/exposure';
+import { faceSignalConfidence } from '../../shared/review';
 
 // ── Laplacian sharpness-based subject detector ────────────────────────────
 // Uses focus sharpness (Laplacian variance) instead of colour/skin tone so it
@@ -20,6 +24,25 @@ import { clampStops } from '../../shared/exposure';
 // text banners) that are near the frame edges.
 
 interface SubjectBox { x: number; y: number; w: number; h: number; score: number }
+
+type ExposureClipboard = {
+  manualStops: number;
+  normalizeToAnchor: boolean;
+  anchorPath: string | null;
+  whiteBalanceAdjustment?: WhiteBalanceAdjustment;
+};
+
+function formatFaceProviderSummary(models: Array<{ model: string; provider: string }> | undefined, ep?: string | null): string {
+  if (!models?.length) return ep ? `Provider ${ep.toUpperCase()}` : 'Face engine warming';
+  const labels: Record<string, string> = {
+    detector: 'faces',
+    embedder: 'matching',
+    person: 'people',
+  };
+  return models
+    .map((model) => `${labels[model.model] ?? model.model}: ${model.provider.toUpperCase()}`)
+    .join(' · ');
+}
 
 /**
  * Detect subject regions by finding the sharpest (in-focus) areas of the image.
@@ -194,6 +217,25 @@ async function scoreSharpness(src: string): Promise<number> {
   return Math.round(Math.max(0, sumSq / Math.max(1, count) - mean * mean));
 }
 
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(concurrency, items.length));
+
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex++;
+      results[index] = await fn(items[index], index);
+    }
+  }));
+
+  return results;
+}
+
 function regionSharpness(data: Uint8ClampedArray, width: number, height: number, region?: { x: number; y: number; w: number; h: number }): number {
   const left = Math.max(1, Math.floor(region?.x ?? 1));
   const top = Math.max(1, Math.floor(region?.y ?? 1));
@@ -216,10 +258,241 @@ function regionSharpness(data: Uint8ClampedArray, width: number, height: number,
   return Math.round(Math.max(0, sumSq / Math.max(1, count) - mean * mean));
 }
 
+function faceCropSignature(
+  ctx: CanvasRenderingContext2D,
+  sourceWidth: number,
+  sourceHeight: number,
+  face: { x: number; y: number; w: number; h: number },
+): string {
+  const size = 8;
+  const cropCanvas = document.createElement('canvas');
+  cropCanvas.width = size;
+  cropCanvas.height = size;
+  const cropCtx = cropCanvas.getContext('2d', { willReadFrequently: true });
+  if (!cropCtx) return '0000000000000000';
+  const padX = face.w * 0.18;
+  const padY = face.h * 0.12;
+  const sx = Math.max(0, face.x - padX);
+  const sy = Math.max(0, face.y - padY);
+  const sw = Math.min(sourceWidth - sx, face.w + padX * 2);
+  const sh = Math.min(sourceHeight - sy, face.h + padY * 2);
+  cropCtx.drawImage(ctx.canvas, sx, sy, sw, sh, 0, 0, size, size);
+  const data = cropCtx.getImageData(0, 0, size, size).data;
+  const luma: number[] = [];
+  for (let i = 0; i < data.length; i += 4) {
+    luma.push(data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114);
+  }
+  const avg = luma.reduce((sum, v) => sum + v, 0) / Math.max(1, luma.length);
+  let bits = '';
+  for (const v of luma) bits += v >= avg ? '1' : '0';
+  let hex = '';
+  for (let i = 0; i < bits.length; i += 4) {
+    hex += parseInt(bits.slice(i, i + 4), 2).toString(16);
+  }
+  return hex.padStart(16, '0');
+}
+
+function looksLikeSkin(r: number, g: number, b: number): boolean {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const y = 0.299 * r + 0.587 * g + 0.114 * b;
+  const cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b;
+  const cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
+  const rgbRule = r > 45 && g > 30 && b > 20 && max - min > 12 && r > b && r >= g * 0.78;
+  const ycbcrRule = y > 38 && cb >= 72 && cb <= 150 && cr >= 125 && cr <= 190;
+  return rgbRule && ycbcrRule;
+}
+
+function detectFaceLikeRegions(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+): Array<{ x: number; y: number; w: number; h: number; confidence: number }> {
+  const CELL = 4;
+  const cols = Math.ceil(width / CELL);
+  const rows = Math.ceil(height / CELL);
+  const mask = new Uint8Array(cols * rows);
+
+  for (let cy = 0; cy < rows; cy++) {
+    for (let cx = 0; cx < cols; cx++) {
+      let skin = 0;
+      let total = 0;
+      const x0 = cx * CELL;
+      const y0 = cy * CELL;
+      const x1 = Math.min(width, x0 + CELL);
+      const y1 = Math.min(height, y0 + CELL);
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0; x < x1; x++) {
+          const i = (y * width + x) * 4;
+          if (looksLikeSkin(data[i], data[i + 1], data[i + 2])) skin++;
+          total++;
+        }
+      }
+      if (skin / Math.max(1, total) >= 0.30) mask[cy * cols + cx] = 1;
+    }
+  }
+
+  const visited = new Uint8Array(mask.length);
+  const regions: Array<{ x: number; y: number; w: number; h: number; confidence: number }> = [];
+  const imageArea = width * height;
+  const isWideFrame = width > height * 1.12;
+
+  for (let start = 0; start < mask.length; start++) {
+    if (!mask[start] || visited[start]) continue;
+    const queue = [start];
+    visited[start] = 1;
+    let minX = start % cols;
+    let maxX = minX;
+    let minY = Math.floor(start / cols);
+    let maxY = minY;
+    let cells = 0;
+
+    while (queue.length) {
+      const cur = queue.pop()!;
+      const x = cur % cols;
+      const y = Math.floor(cur / cols);
+      cells++;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+      const neighbors = [cur - 1, cur + 1, cur - cols, cur + cols];
+      for (const n of neighbors) {
+        if (n < 0 || n >= mask.length || visited[n] || !mask[n]) continue;
+        const nx = n % cols;
+        if (Math.abs(nx - x) > 1) continue;
+        visited[n] = 1;
+        queue.push(n);
+      }
+    }
+
+    const x = minX * CELL;
+    const y = minY * CELL;
+    const w = Math.min(width - x, (maxX - minX + 1) * CELL);
+    const h = Math.min(height - y, (maxY - minY + 1) * CELL);
+    const area = w * h;
+    const areaRatio = area / imageArea;
+    const aspect = w / Math.max(1, h);
+    if (w < 14 || h < 14) continue;
+    if (areaRatio < 0.0012 || areaRatio > (isWideFrame ? 0.055 : 0.085)) continue;
+    if (aspect < 0.45 || aspect > 1.45) continue;
+
+    const fill = cells / Math.max(1, (w * h) / (CELL * CELL));
+    const sharp = regionSharpness(data, width, height, { x, y, w, h });
+    const confidence = fill * 60 + Math.min(45, sharp / 4) + Math.min(20, areaRatio * 600);
+    if (confidence < 40) continue;
+
+    const padX = w * 0.18;
+    const padTop = h * 0.28;
+    const padBottom = h * 0.18;
+    regions.push({
+      x: Math.max(0, x - padX),
+      y: Math.max(0, y - padTop),
+      w: Math.min(width - Math.max(0, x - padX), w + padX * 2),
+      h: Math.min(height - Math.max(0, y - padTop), h + padTop + padBottom),
+      confidence,
+    });
+  }
+
+  regions.sort((a, b) => b.confidence - a.confidence);
+  const kept: typeof regions = [];
+  for (const box of regions) {
+    let overlaps = false;
+    for (const existing of kept) {
+      const ix = Math.max(box.x, existing.x);
+      const iy = Math.max(box.y, existing.y);
+      const iw = Math.min(box.x + box.w, existing.x + existing.w) - ix;
+      const ih = Math.min(box.y + box.h, existing.y + existing.h) - iy;
+      if (iw <= 0 || ih <= 0) continue;
+      const inter = iw * ih;
+      const uni = box.w * box.h + existing.w * existing.h - inter;
+      if (inter / uni > 0.35) { overlaps = true; break; }
+    }
+    if (!overlaps) kept.push(box);
+    if (kept.length >= 4) break;
+  }
+  return kept;
+}
+
+function regionSkinRatio(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  region: { x: number; y: number; w: number; h: number },
+): number {
+  const left = Math.max(0, Math.floor(region.x));
+  const top = Math.max(0, Math.floor(region.y));
+  const right = Math.min(width, Math.ceil(region.x + region.w));
+  const bottom = Math.min(height, Math.ceil(region.y + region.h));
+  let skin = 0;
+  let total = 0;
+  for (let y = top; y < bottom; y += 2) {
+    for (let x = left; x < right; x += 2) {
+      const i = (y * width + x) * 4;
+      if (looksLikeSkin(data[i], data[i + 1], data[i + 2])) skin++;
+      total++;
+    }
+  }
+  return skin / Math.max(1, total);
+}
+
+function estimateHeadRegionsFromSubjects(
+  subjects: Array<SubjectBox & { sharpness: number }>,
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+): Array<{ x: number; y: number; w: number; h: number; confidence: number }> {
+  const regions: Array<{ x: number; y: number; w: number; h: number; confidence: number }> = [];
+  for (const subject of subjects.slice(0, 5)) {
+    const headW = Math.max(16, Math.min(70, subject.w * 0.32));
+    const headH = Math.max(16, Math.min(78, subject.h * 0.22));
+    const candidates = [
+      { x: subject.x + subject.w * 0.5 - headW * 0.5, y: subject.y + subject.h * 0.04, w: headW, h: headH },
+      { x: subject.x + subject.w * 0.35 - headW * 0.5, y: subject.y + subject.h * 0.08, w: headW, h: headH },
+      { x: subject.x + subject.w * 0.65 - headW * 0.5, y: subject.y + subject.h * 0.08, w: headW, h: headH },
+    ];
+    for (const candidate of candidates) {
+      const box = {
+        x: Math.max(0, Math.min(width - headW, candidate.x)),
+        y: Math.max(0, Math.min(height - headH, candidate.y)),
+        w: Math.min(headW, width - Math.max(0, candidate.x)),
+        h: Math.min(headH, height - Math.max(0, candidate.y)),
+      };
+      if (box.w < 14 || box.h < 14) continue;
+      const skinRatio = regionSkinRatio(data, width, height, box);
+      if (skinRatio < 0.08) continue;
+      const sharpness = regionSharpness(data, width, height, box);
+      const confidence = skinRatio * 90 + Math.min(55, sharpness / 3) + Math.min(24, subject.sharpness / 8);
+      if (confidence < 45) continue;
+      regions.push({ ...box, confidence });
+    }
+  }
+  regions.sort((a, b) => b.confidence - a.confidence);
+  const kept: typeof regions = [];
+  for (const box of regions) {
+    let overlaps = false;
+    for (const existing of kept) {
+      const ix = Math.max(box.x, existing.x);
+      const iy = Math.max(box.y, existing.y);
+      const iw = Math.min(box.x + box.w, existing.x + existing.w) - ix;
+      const ih = Math.min(box.y + box.h, existing.y + existing.h) - iy;
+      if (iw <= 0 || ih <= 0) continue;
+      const inter = iw * ih;
+      const uni = box.w * box.h + existing.w * existing.h - inter;
+      if (inter / uni > 0.25) { overlaps = true; break; }
+    }
+    if (!overlaps) kept.push(box);
+    if (kept.length >= 4) break;
+  }
+  return kept;
+}
+
 async function analyzeSubject(src: string): Promise<{
   subjectSharpnessScore: number;
   faceCount: number;
-  faceBoxes: Array<{ x: number; y: number; width: number; height: number }>;
+  faceBoxes: Array<{ x: number; y: number; width: number; height: number; eyeScore?: number }>;
+  faceDetection?: 'native' | 'estimated';
+  faceSignature?: string;
   subjectReasons: string[];
 }> {
   const img = new Image();
@@ -251,33 +524,24 @@ async function analyzeSubject(src: string): Promise<{
   // (who occupy <0.8% of the frame) are filtered.
   const subjects = detectSubjectBoxes(data, width, height, 0.008);
 
-  if (subjects.length === 0) {
-    return { subjectSharpnessScore: center, faceCount: 0, faceBoxes: [], subjectReasons: ['center subject'] };
-  }
-
   // Score each detected subject by sharpness inside its bounding box.
   const scored = subjects.map((box) => {
     const sharp = regionSharpness(data, width, height, { x: box.x, y: box.y, w: box.w, h: box.h });
     return { ...box, sharpness: sharp };
   });
 
-  // Best subject sharpness wins (vs overall center score)
   const bestSharp = Math.max(center, ...scored.map((s) => s.sharpness));
 
   return {
     subjectSharpnessScore: bestSharp,
-    faceCount: scored.length,
-    faceBoxes: scored.map((s) => ({
-      x: s.x / width,
-      y: s.y / height,
-      width: s.w / width,
-      height: s.h / height,
-      // eyeScore: 2 = green (sharp / in-focus subject), 1 = yellow (softer),
-      // 0 = dim. Use relative sharpness rank: highest-scoring blob gets green.
-      eyeScore: s.sharpness >= scored[0].sharpness * 0.7 ? 2 : 1,
-    })),
+    faceCount: 0,
+    faceBoxes: [],
+    faceDetection: undefined,
+    faceSignature: undefined,
     subjectReasons: [
-      scored.length > 1 ? `${scored.length} subjects` : 'subject focus',
+      scored.length > 0
+        ? (scored.length > 1 ? `${scored.length} subject zones` : 'subject focus')
+        : 'center subject',
     ],
   };
 }
@@ -315,26 +579,83 @@ async function visualHash(src: string): Promise<string> {
 }
 
 export function ThumbnailGrid() {
-  const { files, phase, selectedSource, scanError, focusedIndex, viewMode, showLeftPanel, showRightPanel, filter, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, saveFormat, burstGrouping, normalizeExposure, queuedPaths, selectionSets, scanPaused } = useAppState();
+  const { phase, selectedSource, scanError, focusedIndex, viewMode, filter, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, exposureAdjustmentStep, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused, fastKeeperMode, faceConcurrency, gpuFaceAcceleration, keybinds, metadataKeywords, whiteBalanceTemperature, whiteBalanceTint, destination, licenseStatus, ftpDestEnabled, ftpDestConfig } = useAppState();
+  // useMergedFiles() overlays face/review scores without re-running the full
+  // reducer map — O(n) only when scores.size > 0, otherwise returns the same array.
+  const files = useMergedFiles();
   const { startScan, pauseScan, resumeScan } = useFileScanner();
   const { startImport } = useImport();
   const dispatch = useAppDispatch();
+  const queueActionsDisabled = phase === 'scanning' || phase === 'importing';
   const gridRef = useRef<HTMLDivElement>(null);
+  const flatScrollRef = useRef<HTMLDivElement>(null);
   const splitGridRef = useRef<HTMLDivElement>(null);
-  const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
   const [searchText, setSearchText] = useState('');
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showBestOfSelection, setShowBestOfSelection] = useState(false);
   const [bestScope, setBestScope] = useState<{ paths: string[]; title: string; subtitle?: string } | null>(null);
+  const [batchOffset, setBatchOffset] = useState(0); // for Best of Batch page navigation
   const [reviewPaused, setReviewPaused] = useState(false);
   const [backgroundLoadingPaused, setBackgroundLoadingPaused] = useState(false);
-  const [exposureClipboard, setExposureClipboard] = useState<number | null>(null);
+  const [exposureClipboard, setExposureClipboard] = useState<ExposureClipboard | null>(null);
   const [groupByFolder, setGroupByFolder] = useState(false);
+  const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
+  const [showAdvancedTools, setShowAdvancedTools] = useState(false);
   const [cacheStats, setCacheStats] = useState(getPreviewCacheStats());
-  const lastClickedRef = useRef<number>(-1);
+  const [toolbarPos, setToolbarPos] = useState<{ x: number; y: number } | null>(null);
+  const [reviewLoopTick, setReviewLoopTick] = useState(0);
+  const [multiClickSelect, setMultiClickSelect] = useState(false);
+  // Multi-select tag bar
+  const [tagInput, setTagInput] = useState('');
+  const [sessionTags, setSessionTags] = useState<string[]>([]);
+  const [showTagSuggestions, setShowTagSuggestions] = useState(false);
+  const [faceProviderSummary, setFaceProviderSummary] = useState<string>('Face engine warming');
+  const [showAiReviewStrip, setShowAiReviewStrip] = useState(true);
+  const [reviewSprintMode, setReviewSprintMode] = useState(false);
+  const [flatGridWidth, setFlatGridWidth] = useState(0);
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const toolbarDragState = useRef<{ startMouseX: number; startMouseY: number; startLeft: number; startTop: number } | null>(null);
+  const lastClickedPathRef = useRef<string | null>(null);
+  const lastExposureTapRef = useRef(0);
   const sharpnessInFlightRef = useRef(false);
+  const reviewBatchCounterRef = useRef(0);
+  const reviewGenerationRef = useRef(0);
+  // Stable refs so the review loop effect doesn't need files/sortedFiles as deps.
+  // Without these, every SET_REVIEW_SCORES dispatch (one per analyzed image) triggers
+  // a new files reference → effect cleanup + re-run mid-flight → concurrent ONNX batches
+  // race each other, ref resets cancel in-flight work, and the loop stalls after 1 image.
+  const filesRef = useRef(files);
+  const sortedFilesRef = useRef<typeof files>([]);
+  const multiClickSelectRef = useRef(false);
+  const reviewPausedRef = useRef(false);
+  const reviewWaitingRef = useRef(false);
+  const fastKeeperModeRef = useRef(fastKeeperMode);
+  const faceConcurrencyRef = useRef(faceConcurrency);
+  const gpuFaceAccelerationRef = useRef(gpuFaceAcceleration);
   const collapsedSet = useMemo(() => new Set(collapsedBursts), [collapsedBursts]);
   const queuedSet = useMemo(() => new Set(queuedPaths), [queuedPaths]);
+  const totalPhotoCount = useMemo(() => files.filter((f) => f.type === 'photo').length, [files]);
+  const readyThumbnailCount = useMemo(
+    () => files.filter((f) => f.type === 'photo' && !!f.thumbnail).length,
+    [files],
+  );
+  const reviewWaitingForThumbnails = totalPhotoCount > 0 && readyThumbnailCount === 0;
+  const aiAnalyzedCount = useMemo(
+    () => files.filter((f) => f.type === 'photo' && (typeof f.sharpnessScore === 'number' || f.faceBoxes !== undefined || f.faceEmbedding)).length,
+    [files],
+  );
+  const setsEqual = useCallback((a: Set<number>, b: Set<number>) => {
+    if (a.size !== b.size) return false;
+    for (const value of a) {
+      if (!b.has(value)) return false;
+    }
+    return true;
+  }, []);
+
+  const pathArraysEqual = useCallback((a: string[], b: string[]) => {
+    if (a.length !== b.length) return false;
+    return a.every((value, index) => value === b[index]);
+  }, []);
 
   // Sort order (top → bottom):
   //   1. Protected / in-camera-locked / read-only files (fast-import priority)
@@ -348,7 +669,7 @@ export function ThumbnailGrid() {
       if (query) {
         const haystack = [
           f.name, f.path, f.extension, f.cameraMake, f.cameraModel, f.lensModel,
-          f.dateTaken?.slice(0, 10),
+          f.dateTaken?.slice(0, 10), f.sceneBucket, f.locationName,
         ].filter(Boolean).join(' ').toLowerCase();
         if (!haystack.includes(query)) return false;
       }
@@ -356,6 +677,11 @@ export function ThumbnailGrid() {
       if (filter.startsWith('lens:')) return (f.lensModel || 'Unknown lens') === decodeURIComponent(filter.slice(5));
       if (filter.startsWith('date:')) return (f.dateTaken ? f.dateTaken.slice(0, 10) : 'Undated') === decodeURIComponent(filter.slice(5));
       if (filter.startsWith('ext:')) return f.extension.toLowerCase() === decodeURIComponent(filter.slice(4));
+      if (filter.startsWith('scene:')) {
+        const scene = f.sceneBucket?.trim();
+        return !!scene && scene.toLowerCase() !== 'scene' && scene.toLowerCase() !== 'general' && scene === decodeURIComponent(filter.slice(6));
+      }
+      if (filter.startsWith('burst:')) return f.burstId === decodeURIComponent(filter.slice(6));
       switch (filter) {
         case 'protected': return f.isProtected;
         case 'picked': return f.pick === 'selected';
@@ -365,9 +691,11 @@ export function ThumbnailGrid() {
         case 'queue': return queuedSet.has(f.path);
         case 'unmarked': return !f.pick;
         case 'best': return (f.reviewScore ?? 0) >= 70;
+        case 'faces': return (f.faceCount ?? 0) > 0;
+        case 'face-groups': return !!f.faceGroupId;
         case 'blur-risk': return f.blurRisk === 'high' || f.blurRisk === 'medium';
         case 'near-duplicates': return !!f.visualGroupId;
-        case 'review-needed': return !f.reviewScore || f.blurRisk === 'high' || !!f.visualGroupId || !f.pick;
+        case 'review-needed': return !f.reviewScore || f.blurRisk === 'high' || (f.pick === 'selected' && (f.reviewScore ?? 0) < 58) || (!!f.visualGroupId && !f.pick) || !f.pick;
         case 'needs-exposure': return typeof f.exposureValue === 'number' && !!exposureAnchorPath && !f.normalizeToAnchor;
         case 'normalized': return !!f.normalizeToAnchor;
         case 'adjusted': return typeof f.exposureAdjustmentStops === 'number' && Math.abs(f.exposureAdjustmentStops) >= 0.01;
@@ -412,98 +740,391 @@ export function ThumbnailGrid() {
       return true;
     });
   }, [files, filter, collapsedSet, exposureAnchorPath, searchText, queuedSet]);
+  const flatGridContentWidth = Math.max(0, flatGridWidth - 32);
+  const virtualGridColumns = Math.max(1, Math.floor((flatGridContentWidth + 12) / (160 + 12)));
+  const virtualGridEnabled = viewMode === 'grid' && !groupByFolder && sortedFiles.length > 300;
+  const virtualRowCount = Math.ceil(sortedFiles.length / virtualGridColumns);
+  const rowVirtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
+    count: virtualGridEnabled ? virtualRowCount : 0,
+    getScrollElement: () => flatScrollRef.current,
+    estimateSize: () => 248,
+    overscan: 6,
+  });
 
   const metadataFilters = useMemo(() => {
     const cameras = new Set<string>();
     const lenses = new Set<string>();
     const dates = new Set<string>();
     const exts = new Set<string>();
+    const scenes = new Set<string>();
     for (const f of files) {
       cameras.add(f.cameraModel || 'Unknown camera');
       if (f.type === 'photo') lenses.add(f.lensModel || 'Unknown lens');
       dates.add(f.dateTaken ? f.dateTaken.slice(0, 10) : 'Undated');
       exts.add(f.extension.toLowerCase());
+      if (f.sceneBucket && !['scene', 'general'].includes(f.sceneBucket.trim().toLowerCase())) scenes.add(f.sceneBucket);
     }
     return {
       cameras: [...cameras].sort(),
       lenses: [...lenses].sort(),
       dates: [...dates].sort().reverse(),
       exts: [...exts].sort(),
+      scenes: [...scenes].sort(),
     };
   }, [files]);
 
-  // Clear selection when source changes or view mode changes to single
-  useEffect(() => {
-    setSelectedIndices(new Set());
-  }, [selectedSource, viewMode === 'single']);
+  const filePathSet = useMemo(() => new Set(files.map((file) => file.path)), [files]);
 
-  // Mirror the grid's click-selection into the store so other components
-  // (DestinationPanel's "Import X Files" button, useImport) can respect
-  // it. Without this, clicking 40 of 10k photos has no effect on import.
+  const selectedIndices = useMemo(() => {
+    if (selectedPaths.length === 0) return new Set<number>();
+    const pathSet = new Set(selectedPaths);
+    const next = new Set<number>();
+    sortedFiles.forEach((file, index) => {
+      if (pathSet.has(file.path)) next.add(index);
+    });
+    return next;
+  }, [selectedPaths, sortedFiles]);
+
+  // Keep a ref so click handlers always read the latest selection, even when
+  // the user clicks again before React has flushed effects from the last click.
+  const selectedPathsRef = useRef(selectedPaths);
+  const selectedPathSetRef = useRef(new Set(selectedPaths));
+  const queuedPathSetRef = useRef(new Set(queuedPaths));
   useEffect(() => {
-    const paths = Array.from(selectedIndices)
+    selectedPathsRef.current = selectedPaths;
+    selectedPathSetRef.current = new Set(selectedPaths);
+  }, [selectedPaths]);
+  useEffect(() => {
+    queuedPathSetRef.current = new Set(queuedPaths);
+  }, [queuedPaths]);
+
+  const normalizeSelectedPaths = useCallback((paths: string[]) => {
+    const seen = new Set<string>();
+    const normalized: string[] = [];
+    for (const path of paths) {
+      if (!filePathSet.has(path) || seen.has(path)) continue;
+      seen.add(path);
+      normalized.push(path);
+    }
+    return normalized;
+  }, [filePathSet]);
+
+  const applySelectedPaths = useCallback((paths: string[]) => {
+    const normalized = normalizeSelectedPaths(paths);
+    selectedPathsRef.current = normalized;
+    selectedPathSetRef.current = new Set(normalized);
+    if (!pathArraysEqual(normalized, selectedPaths)) {
+      dispatch({ type: 'SET_SELECTED_PATHS', paths: normalized });
+    }
+  }, [dispatch, normalizeSelectedPaths, pathArraysEqual, selectedPaths]);
+
+  const setSelectedIndices = useCallback((next: Set<number>) => {
+    const paths = Array.from(next)
       .filter((i) => i >= 0 && i < sortedFiles.length)
       .map((i) => sortedFiles[i].path);
-    dispatch({ type: 'SET_SELECTED_PATHS', paths });
-  }, [selectedIndices, sortedFiles, dispatch]);
+    applySelectedPaths(paths);
+  }, [applySelectedPaths, sortedFiles]);
+
+  const selectAllVisible = useCallback(() => {
+    if (sortedFiles.length === 0) return;
+    const next = new Set<number>();
+    for (let i = 0; i < sortedFiles.length; i++) next.add(i);
+    setSelectedIndices(next);
+    if (focusedIndex < 0) dispatch({ type: 'SET_FOCUSED', index: 0 });
+  }, [dispatch, focusedIndex, setSelectedIndices, sortedFiles.length]);
+
+  const clearSelection = useCallback(() => {
+    applySelectedPaths([]);
+  }, [applySelectedPaths]);
+
+  // Keep stable refs in sync so the review loop can read current values without
+  // having them as deps (which would restart the loop on every score update).
+  useEffect(() => { filesRef.current = files; });
+  useEffect(() => { sortedFilesRef.current = sortedFiles; });
+  useEffect(() => { multiClickSelectRef.current = multiClickSelect; }, [multiClickSelect]);
+  useEffect(() => { reviewPausedRef.current = reviewPaused; }, [reviewPaused]);
+  useEffect(() => { reviewWaitingRef.current = reviewWaitingForThumbnails; }, [reviewWaitingForThumbnails]);
+  useEffect(() => { fastKeeperModeRef.current = fastKeeperMode; }, [fastKeeperMode]);
+  useEffect(() => { faceConcurrencyRef.current = faceConcurrency; }, [faceConcurrency]);
+  useEffect(() => { gpuFaceAccelerationRef.current = gpuFaceAcceleration; }, [gpuFaceAcceleration]);
+  useEffect(() => {
+    const element = flatScrollRef.current;
+    if (!element) return;
+    const updateWidth = () => setFlatGridWidth(element.clientWidth);
+    updateWidth();
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [viewMode]);
+  useEffect(() => {
+    reviewGenerationRef.current++;
+    sharpnessInFlightRef.current = false;
+  }, [selectedSource]);
+  useEffect(() => {
+    let cancelled = false;
+    const update = async () => {
+      try {
+        const info = await window.electronAPI.getExecutionProvider?.();
+        if (cancelled || !info) return;
+        setFaceProviderSummary(formatFaceProviderSummary(info.models, info.ep));
+      } catch { /* ignore */ }
+    };
+    void update();
+    const timer = window.setInterval(update, 6000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  // Also kick the review loop when new thumbnails arrive (so it picks up files
+  // that were waiting on thumbnails) — but throttled to avoid per-thumbnail spam.
+  const thumbnailKickRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (readyThumbnailCount === 0) return;
+    if (thumbnailKickRef.current) return; // already scheduled
+    thumbnailKickRef.current = setTimeout(() => {
+      thumbnailKickRef.current = null;
+      if (!sharpnessInFlightRef.current) {
+        setReviewLoopTick((v) => v + 1);
+      }
+    }, 500);
+    return () => {
+      if (thumbnailKickRef.current) { clearTimeout(thumbnailKickRef.current); thumbnailKickRef.current = null; }
+    };
+  }, [readyThumbnailCount]);
 
   useEffect(() => {
     if (sharpnessInFlightRef.current) return;
-    if (reviewPaused) return;
-    // Allow analysis in all view modes — use a smaller batch in single/split
-    // so face detection doesn't compete with the detail preview load.
-    const batchSize = (viewMode === 'single' || viewMode === 'split') ? 1 : 4;
-    // Keep batch small so scoring doesn't freeze the UI on slow machines.
-    const candidates = files
+    if (reviewPausedRef.current) return;
+    // Don't start analysis until at least one thumbnail is ready — the candidate
+    // filter requires f.thumbnail to be truthy. If we bail with 0 candidates here
+    // the sharpnessInFlightRef is NOT set, so the loop will re-fire correctly once
+    // thumbnails land (via the thumbnail kick above).
+    if (reviewWaitingRef.current) return;
+    // Read all volatile values from refs — avoids having files/sortedFiles/etc
+    // as effect deps, which would cancel + restart the loop on every score update
+    // (one per analyzed image) causing concurrent ONNX batches and stalling after 1.
+    const currentFiles = filesRef.current;
+    const currentSortedFiles = sortedFilesRef.current;
+    const currentFastKeeperMode = fastKeeperModeRef.current;
+    const currentFaceConcurrency = faceConcurrencyRef.current;
+    const currentGpuAccel = gpuFaceAccelerationRef.current;
+    const selectedPathSet = selectedPathSetRef.current;
+    const queuedPathSet = queuedPathSetRef.current;
+    const reviewGeneration = reviewGenerationRef.current;
+    // With the streaming per-file IPC approach, batchSize controls how many
+    // files are queued into the main-process semaphore at once. Larger = more
+    // pipelining (canvas work overlaps with ONNX), but also more memory for
+    // in-flight canvas ImageData. 16 is a good balance: keeps ONNX busy across
+    // the ~50–200ms round-trip without overwhelming the renderer.
+    const batchSize = currentFastKeeperMode ? 8 : Math.min(96, Math.max(16, currentFaceConcurrency * 4));
+    const focusedPath = focusedIndex >= 0 && focusedIndex < currentSortedFiles.length ? currentSortedFiles[focusedIndex].path : null;
+    const visibleRank = new Map<string, number>();
+    currentSortedFiles.slice(0, 240).forEach((f, index) => visibleRank.set(f.path, index));
+    const candidates = currentFiles
       .filter((f) => f.type === 'photo' && f.thumbnail && (
         typeof f.sharpnessScore !== 'number' ||
         !f.visualHash ||
-        typeof f.subjectSharpnessScore !== 'number' ||
-        f.faceBoxes === undefined  // re-run face detection if it hasn't been stored yet
+        (!currentFastKeeperMode && typeof f.subjectSharpnessScore !== 'number') ||
+        (!currentFastKeeperMode && f.faceDetection === 'native' && (f.faceCount ?? 0) > 0 && !f.faceEmbedding) ||
+        (!currentFastKeeperMode && f.faceBoxes === undefined)  // re-run face detection if it hasn't been stored yet
       ))
+      .sort((a, b) => {
+        const af = focusedPath && a.path === focusedPath ? -1000 : 0;
+        const bf = focusedPath && b.path === focusedPath ? -1000 : 0;
+        const aq = queuedPathSet.has(a.path) ? -800 : 0;
+        const bq = queuedPathSet.has(b.path) ? -800 : 0;
+        const as = selectedPathSet.has(a.path) ? -700 : 0;
+        const bs = selectedPathSet.has(b.path) ? -700 : 0;
+        const ap = a.pick === 'selected' ? -500 : a.pick === 'rejected' ? 500 : 0;
+        const bp = b.pick === 'selected' ? -500 : b.pick === 'rejected' ? 500 : 0;
+        const aMissingFace = a.faceBoxes === undefined ? -200 : 0;
+        const bMissingFace = b.faceBoxes === undefined ? -200 : 0;
+        const aVisible = visibleRank.get(a.path) ?? 9999;
+        const bVisible = visibleRank.get(b.path) ?? 9999;
+        return (af + aq + as + ap + aMissingFace + aVisible) - (bf + bq + bs + bp + bMissingFace + bVisible);
+      })
       .slice(0, batchSize);
     if (candidates.length === 0) return;
-    sharpnessInFlightRef.current = true;
-    const run = () => void Promise.all(candidates.map(async (f) => {
-      const thumbnail = f.thumbnail as string;
-      const [sharpnessScore, hash, subject] = await Promise.all([
-        typeof f.sharpnessScore === 'number' ? Promise.resolve(f.sharpnessScore) : scoreSharpness(thumbnail),
-        f.visualHash ? Promise.resolve(f.visualHash) : visualHash(thumbnail),
-        // Re-run analyzeSubject if faceBoxes is undefined (never analyzed, or
-        // analyzed before FaceDetector was enabled and data was cleared).
-        // Even if subjectSharpnessScore is already set we still re-analyze so
-        // that face boxes get populated now that FaceDetector is available.
-        (typeof f.subjectSharpnessScore === 'number' && f.faceBoxes !== undefined)
-          ? Promise.resolve({ subjectSharpnessScore: f.subjectSharpnessScore, faceCount: f.faceCount ?? 0, faceBoxes: f.faceBoxes, subjectReasons: f.subjectReasons ?? [] })
-          : analyzeSubject(thumbnail),
-      ]);
-      return [f.path, { sharpnessScore, visualHash: hash, ...subject }] as const;
-    }))
-      .then((entries) => {
-        dispatch({ type: 'SET_REVIEW_SCORES', scores: Object.fromEntries(entries) });
-        dispatch({ type: 'GROUP_VISUAL_DUPLICATES', threshold: 8 });
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        sharpnessInFlightRef.current = false;
+    const run = () => {
+      // Mark in-flight NOW, inside the scheduler callback, so that if the
+      // effect cleanup fires before this runs (e.g. a tick bump while the
+      // idle is pending) the cleanup can safely reset the ref to false and
+      // the stuck-forever deadlock is avoided.
+      sharpnessInFlightRef.current = true;
+      // ── Per-file pipeline ──────────────────────────────────────────────────
+      // Send ONE IPC call per file instead of batching all N into one call.
+      // Previously: renderer awaited ONE IPC call with N paths → main process ran
+      // them sequentially (semaphore=1) → renderer blocked until all N were done.
+      // Now: N IPC calls fire concurrently → main process still serialises through
+      // the semaphore (only 1 ONNX inference at a time) but results stream back
+      // one at a time → renderer dispatches each result immediately → UI updates
+      // incrementally and the loop sees progress in real time.
+      //
+      // Canvas work (sharpness, hash, analyzeSubject) runs in the renderer
+      // concurrently with the IPC round-trip, overlapping CPU work efficiently.
+      void (async () => {
+      const canvasConcurrency = currentFastKeeperMode ? 2 : Math.min(4, Math.max(2, currentFaceConcurrency));
+      const entries = await mapWithConcurrency(candidates, canvasConcurrency, async (f): Promise<[string, Partial<MediaFile>]> => {
+        if (reviewGeneration !== reviewGenerationRef.current) return [f.path, {}];
+        const thumbnail = f.thumbnail as string;
+        const failureTag = `analysis-failed:${f.path}`;
+        try {
+          // Kick off ONNX IPC and canvas analysis in parallel.
+          // ONNX is serialised in the main process via the semaphore — concurrent
+          // IPC calls queue there and return one at a time, but we overlap the
+          // renderer-side canvas work with whatever is ahead in the queue.
+          const [onnxArr, sharpnessScore, hash, subject] = await Promise.all([
+            currentFastKeeperMode
+              ? Promise.resolve([] as Awaited<ReturnType<typeof window.electronAPI.analyzeFaces>>)
+              : window.electronAPI.analyzeFaces(f.path).catch(
+                  () => [] as Awaited<ReturnType<typeof window.electronAPI.analyzeFaces>>,
+                ),
+            typeof f.sharpnessScore === 'number'
+              ? Promise.resolve(f.sharpnessScore)
+              : scoreSharpness(thumbnail),
+            f.visualHash
+              ? Promise.resolve(f.visualHash)
+              : visualHash(thumbnail),
+            (typeof f.subjectSharpnessScore === 'number' && f.faceBoxes !== undefined)
+              ? Promise.resolve({
+                  subjectSharpnessScore: f.subjectSharpnessScore,
+                  faceCount: f.faceCount ?? 0,
+                  faceBoxes: f.faceBoxes,
+                  faceDetection: f.faceDetection,
+                  faceSignature: f.faceSignature,
+                  subjectReasons: f.subjectReasons ?? [],
+                })
+              : analyzeSubject(thumbnail),
+          ]);
+
+          const onnx = onnxArr[0]; // single-path call always returns 1 result
+          const onnxFaceBoxes = (onnx?.boxes ?? [])
+            .filter((box) => box.width > 0 && box.height > 0)
+            .map((box) => ({ x: box.x, y: box.y, width: box.width, height: box.height, score: box.score }));
+          const onnxPersonBoxes = (onnx?.personBoxes ?? [])
+            .filter((box) => box.width > 0 && box.height > 0)
+            .map((box) => ({ x: box.x, y: box.y, width: box.width, height: box.height, score: box.score }));
+          const mergedReasons = [
+            ...(subject.subjectReasons ?? []),
+            ...(onnxFaceBoxes.length > 0 ? ['onnx faces'] : []),
+            ...(onnxPersonBoxes.length > 0 ? ['person detected'] : []),
+          ];
+
+          const resolvedFaceBoxes = onnxFaceBoxes.length > 0
+            ? onnxFaceBoxes
+            : (subject.faceBoxes ?? []);
+
+          // Dispatch this single result immediately so the UI updates in real time
+          // rather than waiting for every file in the batch to complete.
+          const patch: Partial<MediaFile> = {
+            sharpnessScore,
+            visualHash: hash,
+            ...subject,
+            faceCount: resolvedFaceBoxes.length > 0 ? resolvedFaceBoxes.length : (subject.faceCount ?? 0),
+            faceBoxes: resolvedFaceBoxes,
+            faceDetection: onnxFaceBoxes.length > 0 ? 'native' : subject.faceDetection,
+            faceEmbedding: onnx?.embeddings?.[0] || f.faceEmbedding,
+            personCount: onnxPersonBoxes.length,
+            personBoxes: onnxPersonBoxes,
+            subjectReasons: [...new Set(mergedReasons)],
+          };
+          if (reviewGeneration === reviewGenerationRef.current) {
+            dispatch({ type: 'SET_REVIEW_SCORES', scores: { [f.path]: patch } });
+          }
+          return [f.path, patch];
+        } catch (err) {
+          console.error(`[review-loop] file error: ${f.path}`, err);
+          // On failure dispatch what we have so the file exits the candidate pool
+          // (sharpnessScore becomes a number → no longer selected as unanalyzed).
+          // Keep faceBoxes as-is (undefined → retryable on next Re-scan AI).
+          const patch: Partial<MediaFile> = {
+            sharpnessScore: f.sharpnessScore ?? 0,
+            subjectSharpnessScore: f.subjectSharpnessScore ?? 0,
+            visualHash: f.visualHash ?? failureTag,
+            faceCount: f.faceCount ?? 0,
+            faceBoxes: f.faceBoxes,       // keep undefined → retryable via Re-scan AI
+            faceDetection: f.faceDetection,
+            faceSignature: f.faceSignature ?? ((f.faceCount ?? 0) > 0 ? failureTag : undefined),
+            personCount: f.personCount ?? 0,
+            personBoxes: f.personBoxes,
+            subjectReasons: [...new Set([...(f.subjectReasons ?? []), 'analysis failed'])],
+          };
+          if (reviewGeneration === reviewGenerationRef.current) {
+            dispatch({ type: 'SET_REVIEW_SCORES', scores: { [f.path]: patch } });
+          }
+          return [f.path, patch];
+        }
       });
+
+      return entries;
+    })()
+      .then((entries) => {
+        // Individual dispatches already fired above; this final batch dispatch
+        // is a no-op for already-dispatched entries but ensures nothing is missed.
+        reviewBatchCounterRef.current += 1;
+        if (reviewGeneration !== reviewGenerationRef.current) return;
+        if (reviewBatchCounterRef.current % 5 === 0 || entries.length < batchSize) {
+          dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10 });
+          dispatch({ type: 'GROUP_VISUAL_DUPLICATES', threshold: 8 });
+        }
+      })
+      .catch((err) => { console.error('[review-loop] batch error:', err); })
+      .finally(() => {
+        if (reviewGeneration !== reviewGenerationRef.current) return;
+        sharpnessInFlightRef.current = false;
+        setReviewLoopTick((value) => value + 1);
+      });
+    };
     const hasIdle = typeof window.requestIdleCallback === 'function';
     const idle: number = hasIdle
-      ? window.requestIdleCallback(run, { timeout: 1200 })
+      ? window.requestIdleCallback(run, { timeout: 400 })
       : window.setTimeout(run, 250);
     return () => {
+      // Cancel the pending scheduler. Because sharpnessInFlightRef is now set
+      // INSIDE run() (not before scheduling it), if cleanup fires before the
+      // idle/timeout callback executes, the ref is still false — safe to leave.
+      // If run() already started, the ref is true and the async work is genuinely
+      // in-flight; its .finally() will reset it. We must NOT reset the ref here
+      // in that case — doing so was the original concurrent-batch race condition.
       if (hasIdle) {
         window.cancelIdleCallback(idle);
       } else {
-        clearTimeout(idle as number);
+        clearTimeout(idle as unknown as number);
       }
-      sharpnessInFlightRef.current = false;
     };
-  }, [files, dispatch, reviewPaused, viewMode]);
+  // Intentionally minimal deps — files/sortedFiles/settings are read via refs to avoid
+  // restarting (and racing) the loop on every SET_REVIEW_SCORES dispatch.
+  // The loop advances itself via setReviewLoopTick in .finally().
+  // focusedIndex is kept so the focused image is always prioritised in the sort.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dispatch, reviewLoopTick, focusedIndex]);
 
   useEffect(() => {
     setBackgroundPreviewPaused(backgroundLoadingPaused);
   }, [backgroundLoadingPaused]);
+
+  const resumeAiReview = useCallback(() => {
+    setReviewPaused(false);
+    reviewPausedRef.current = false;
+    setBackgroundLoadingPaused(false);
+    setReviewLoopTick((value) => value + 1);
+  }, []);
+
+  const pauseAiReview = useCallback(() => {
+    setReviewPaused(true);
+    reviewPausedRef.current = true;
+    setBackgroundLoadingPaused(true);
+    reviewGenerationRef.current++;
+    void window.electronAPI.cancelFaceAnalysis?.().catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    const resume = () => resumeAiReview();
+    window.addEventListener('photo-importer:resume-ai', resume);
+    return () => window.removeEventListener('photo-importer:resume-ai', resume);
+  }, [resumeAiReview]);
 
   useEffect(() => {
     const id = window.setInterval(() => setCacheStats(getPreviewCacheStats()), 750);
@@ -531,11 +1152,8 @@ export function ThumbnailGrid() {
 
   const pickFile = useCallback((pick: 'selected' | 'rejected' | undefined, advance: boolean) => {
     // Batch mode: apply to all selected files
-    if (selectedIndices.size > 0) {
-      const paths = Array.from(selectedIndices)
-        .filter((i) => i >= 0 && i < sortedFiles.length)
-        .map((i) => sortedFiles[i].path);
-      dispatch({ type: 'SET_PICK_BATCH', filePaths: paths, pick });
+    if (selectedPaths.length > 0) {
+      dispatch({ type: 'SET_PICK_BATCH', filePaths: selectedPaths, pick });
       return;
     }
     // Single mode
@@ -546,37 +1164,89 @@ export function ThumbnailGrid() {
     if (advance && newPick !== undefined && focusedIndex < sortedFiles.length - 1) {
       setFocused(focusedIndex + 1);
     }
-  }, [focusedIndex, sortedFiles, dispatch, setFocused, selectedIndices]);
+  }, [focusedIndex, selectedPaths, sortedFiles, dispatch, setFocused]);
 
-  // Keep a ref so handleCardClick/handleGridDoubleClick/handleBurstToggle stay
-  // Sync during render so event handlers never observe a stale Set.
-  // Required for React.memo on ThumbnailCard to bail out across renders.
-  const selectedIndicesRef = useRef(selectedIndices);
-  selectedIndicesRef.current = selectedIndices;
+  const queuePaths = useCallback((paths: string[]) => {
+    if (queueActionsDisabled) return;
+    dispatch({ type: 'QUEUE_ADD_PATHS', paths });
+  }, [dispatch, queueActionsDisabled]);
 
   const handleCardClick = useCallback((index: number, e: React.MouseEvent) => {
-    const sel = selectedIndicesRef.current;
+    const currentSortedFiles = sortedFilesRef.current;
+    const clickedFile = currentSortedFiles[index];
+    if (!clickedFile) return;
+    const clickedPath = clickedFile.path;
+    const sel = selectedPathSetRef.current;
     const metaKey = e.metaKey || e.ctrlKey;
+    const multiSelectEnabled = multiClickSelectRef.current;
 
-    if (e.shiftKey && lastClickedRef.current >= 0) {
-      const start = Math.min(lastClickedRef.current, index);
-      const end = Math.max(lastClickedRef.current, index);
-      const next = new Set(metaKey ? sel : new Set<number>());
-      for (let i = start; i <= end; i++) next.add(i);
-      setSelectedIndices(next);
+    if (
+      !e.shiftKey &&
+      !metaKey &&
+      clickedFile.burstId &&
+      clickedFile.burstSize &&
+      clickedFile.burstSize > 1 &&
+      (filter === 'queue' || collapsedSet.has(clickedFile.burstId))
+    ) {
+      dispatch({ type: 'SET_FILTER', filter: `burst:${encodeURIComponent(clickedFile.burstId)}` as FilterMode });
+      if (collapsedSet.has(clickedFile.burstId)) dispatch({ type: 'TOGGLE_BURST_COLLAPSE', burstId: clickedFile.burstId });
+      clearSelection();
+      setFocused(0);
+      lastClickedPathRef.current = clickedPath;
+      return;
+    }
+
+    if (e.shiftKey && lastClickedPathRef.current) {
+      const anchorIndex = currentSortedFiles.findIndex((file) => file.path === lastClickedPathRef.current);
+      if (anchorIndex >= 0) {
+        const start = Math.min(anchorIndex, index);
+        const end = Math.max(anchorIndex, index);
+        const rangePaths = currentSortedFiles.slice(start, end + 1).map((file) => file.path);
+        if (metaKey) {
+          const next = [...selectedPathsRef.current];
+          for (const path of rangePaths) {
+            if (!sel.has(path)) next.push(path);
+          }
+          applySelectedPaths(next);
+        } else {
+          applySelectedPaths(rangePaths);
+        }
+      } else {
+        applySelectedPaths([clickedPath]);
+      }
       setFocused(index);
+      lastClickedPathRef.current = clickedPath;
     } else if (metaKey) {
       const next = new Set(sel);
-      if (next.has(index)) { next.delete(index); } else { next.add(index); }
-      setSelectedIndices(next);
+      if (next.has(clickedPath)) { next.delete(clickedPath); } else { next.add(clickedPath); }
+      const ordered = selectedPathsRef.current.filter((path) => next.has(path));
+      if (!sel.has(clickedPath)) ordered.push(clickedPath);
+      applySelectedPaths(ordered);
       setFocused(index);
-      lastClickedRef.current = index;
+      lastClickedPathRef.current = clickedPath;
     } else {
-      setSelectedIndices(new Set());
+      if (multiSelectEnabled) {
+        if (sel.size === 0) {
+          applySelectedPaths([clickedPath]);
+        } else if (!sel.has(clickedPath)) {
+          applySelectedPaths([...selectedPathsRef.current, clickedPath]);
+        }
+      } else if (sel.size === 0) {
+        clearSelection();
+      } else {
+        clearSelection();
+      }
       setFocused(index);
-      lastClickedRef.current = index;
+      lastClickedPathRef.current = clickedPath;
     }
-  }, [setFocused]); // stable — reads selectedIndices via ref
+  }, [applySelectedPaths, clearSelection, collapsedSet, dispatch, filter, setFocused]); // stable — reads selected selection via refs
+
+  const handleMultiToggle = useCallback(() => {
+    const nextMultiSelect = !multiClickSelect;
+    multiClickSelectRef.current = nextMultiSelect;
+    setMultiClickSelect(nextMultiSelect);
+    if (!nextMultiSelect) clearSelection();
+  }, [clearSelection, multiClickSelect]);
 
   const handleGridDoubleClick = useCallback((index: number) => {
     setFocused(index);
@@ -584,45 +1254,120 @@ export function ThumbnailGrid() {
   }, [setFocused, dispatch]);
 
   const handleBurstToggle = useCallback((burstId: string) => {
+    if (filter === 'queue' || filter.startsWith('burst:')) {
+      dispatch({ type: 'SET_FILTER', filter: `burst:${encodeURIComponent(burstId)}` as FilterMode });
+      if (collapsedSet.has(burstId)) dispatch({ type: 'TOGGLE_BURST_COLLAPSE', burstId });
+      setFocused(0);
+      return;
+    }
     dispatch({ type: 'TOGGLE_BURST_COLLAPSE', burstId });
-  }, [dispatch]);
+  }, [collapsedSet, dispatch, filter, setFocused]);
+
+  // Trigger ONNX face scan for any unscanned photos about to appear in a panel.
+  const scanUnscannedPanelFiles = useCallback((paths: string[]) => {
+    const unscanned = files
+      .filter((f) => paths.includes(f.path) && f.type === 'photo' && f.faceBoxes === undefined);
+    if (unscanned.length === 0) return;
+    void (async () => {
+      for (const f of unscanned) {
+        try {
+          const results = await window.electronAPI.analyzeFaces(f.path);
+          const result = results[0];
+          if (!result) continue;
+          dispatch({
+            type: 'SET_REVIEW_SCORES',
+            scores: {
+              [f.path]: {
+                faceCount: result.boxes.length,
+                faceBoxes: result.boxes.map((b) => ({ x: b.x, y: b.y, width: b.width, height: b.height, score: b.score })),
+                faceDetection: result.boxes.length > 0 ? 'native' : undefined,
+                faceEmbedding: result.embeddings?.[0] || f.faceEmbedding,
+                personCount: result.personBoxes.length,
+                personBoxes: result.personBoxes.map((b) => ({ x: b.x, y: b.y, width: b.width, height: b.height, score: b.score })),
+              },
+            },
+          });
+        } catch { /* ignore */ }
+      }
+    })();
+  }, [files, dispatch]);
 
   const openBestOfSelection = useCallback(() => {
     const focused = focusedIndex >= 0 && focusedIndex < sortedFiles.length ? sortedFiles[focusedIndex] : null;
+    let panelPaths: string[] = [];
     if (focused?.burstId) {
       const burstFiles = files
         .filter((f) => f.burstId === focused.burstId)
         .sort((a, b) => (a.burstIndex ?? 0) - (b.burstIndex ?? 0));
-      const burstPaths = new Set(burstFiles.map((f) => f.path));
+      panelPaths = burstFiles.map((f) => f.path);
+      const burstPaths = new Set(panelPaths);
       const visibleIndices = new Set<number>();
-      sortedFiles.forEach((f, i) => {
-        if (burstPaths.has(f.path)) visibleIndices.add(i);
-      });
+      sortedFiles.forEach((f, i) => { if (burstPaths.has(f.path)) visibleIndices.add(i); });
       setSelectedIndices(visibleIndices);
       setBestScope({
-        paths: burstFiles.map((f) => f.path),
+        paths: panelPaths,
         title: 'Best of Burst',
         subtitle: `Burst ${focused.burstIndex ?? 1}/${focused.burstSize ?? burstFiles.length}`,
       });
-    } else if (selectedIndices.size >= 2) {
-      setBestScope({
-        paths: Array.from(selectedIndices)
-          .filter((i) => i >= 0 && i < sortedFiles.length)
-          .map((i) => sortedFiles[i].path),
-        title: 'Best of Selection',
-      });
+    } else if (focused?.faceGroupId && focused.faceGroupSize && focused.faceGroupSize > 1) {
+      const faceFiles = files
+        .filter((f) => f.faceGroupId === focused.faceGroupId)
+        .sort((a, b) => (a.dateTaken ? Date.parse(a.dateTaken) : 0) - (b.dateTaken ? Date.parse(b.dateTaken) : 0));
+      panelPaths = faceFiles.map((f) => f.path);
+      const facePaths = new Set(panelPaths);
+      const visibleIndices = new Set<number>();
+      sortedFiles.forEach((f, i) => { if (facePaths.has(f.path)) visibleIndices.add(i); });
+      setSelectedIndices(visibleIndices);
+      setBestScope({ paths: panelPaths, title: 'Best Face Group', subtitle: `${faceFiles.length} similar face shots` });
+    } else if (selectedPaths.length >= 2) {
+      panelPaths = selectedPaths;
+      setBestScope({ paths: panelPaths, title: 'Best of Selection' });
     } else if (sortedFiles.length > 0) {
       const start = Math.max(0, focusedIndex);
       const windowFiles = sortedFiles.slice(start, Math.min(sortedFiles.length, start + 8));
+      panelPaths = windowFiles.map((f) => f.path);
       setSelectedIndices(new Set(windowFiles.map((_, offset) => start + offset)));
-      setBestScope({
-        paths: windowFiles.map((f) => f.path),
-        title: 'Best Nearby',
-        subtitle: 'No burst found',
-      });
+      setBestScope({ paths: panelPaths, title: 'Best Nearby', subtitle: 'No burst found' });
     }
+    if (panelPaths.length > 0) scanUnscannedPanelFiles(panelPaths);
     setShowBestOfSelection(true);
-  }, [files, focusedIndex, selectedIndices, sortedFiles]);
+  }, [files, focusedIndex, selectedPaths, sortedFiles, scanUnscannedPanelFiles]);
+
+  const BATCH_PAGE_SIZE = 120;
+
+  const openBestOfBatch = useCallback((offset = 0) => {
+    const eligible = sortedFiles.filter((f) => f.type === 'photo' && f.pick !== 'rejected');
+    if (eligible.length === 0) return;
+    const clampedOffset = Math.max(0, Math.min(offset, eligible.length - 1));
+    const candidates = eligible.slice(clampedOffset, clampedOffset + BATCH_PAGE_SIZE);
+    if (candidates.length === 0) return;
+    const paths = candidates.map((f) => f.path);
+    const pathSet = new Set(paths);
+    const visibleIndices = new Set<number>();
+    sortedFiles.forEach((f, i) => {
+      if (pathSet.has(f.path)) visibleIndices.add(i);
+    });
+    setSelectedIndices(visibleIndices);
+    setBatchOffset(clampedOffset);
+    const totalPages = Math.ceil(eligible.length / BATCH_PAGE_SIZE);
+    const currentPage = Math.floor(clampedOffset / BATCH_PAGE_SIZE) + 1;
+    setBestScope({
+      paths,
+      title: 'Best of Batch',
+      subtitle: totalPages > 1
+        ? `Page ${currentPage}/${totalPages} · ${candidates.length} photos`
+        : `${candidates.length} visible photos ranked together`,
+    });
+    scanUnscannedPanelFiles(paths);
+    setShowBestOfSelection(true);
+  }, [sortedFiles, scanUnscannedPanelFiles]);
+
+  const openAdjacentBatch = useCallback((direction: 1 | -1) => {
+    const eligible = sortedFiles.filter((f) => f.type === 'photo' && f.pick !== 'rejected');
+    const newOffset = batchOffset + direction * BATCH_PAGE_SIZE;
+    const clamped = Math.max(0, Math.min(newOffset, eligible.length - 1));
+    openBestOfBatch(clamped);
+  }, [batchOffset, openBestOfBatch, sortedFiles]);
 
   const openAdjacentBurst = useCallback((direction: 1 | -1) => {
     if (files.length === 0) return;
@@ -655,17 +1400,39 @@ export function ThumbnailGrid() {
       if (burstPaths.has(f.path)) visibleIndices.add(i);
     });
     setSelectedIndices(visibleIndices);
+    const burstPathList = burstFiles.map((f) => f.path);
     setBestScope({
-      paths: burstFiles.map((f) => f.path),
+      paths: burstPathList,
       title: 'Best of Burst',
       subtitle: `Burst ${nextIndex + 1}/${burstIdsInOrder.length}`,
     });
+    scanUnscannedPanelFiles(burstPathList);
     setShowBestOfSelection(true);
-  }, [bestScope?.paths, files, focusedIndex, setFocused, sortedFiles]);
+  }, [bestScope?.paths, files, focusedIndex, setFocused, sortedFiles, scanUnscannedPanelFiles]);
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      const target = e.target;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        (target instanceof HTMLElement && (target.isContentEditable || target.closest('[contenteditable="true"]')))
+      ) return;
+      if (showShortcuts) {
+        if (e.key === 'Escape' || e.key === '?') {
+          e.preventDefault();
+          setShowShortcuts(false);
+        }
+        return;
+      }
+      if (showBestOfSelection) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setShowBestOfSelection(false);
+        }
+        return;
+      }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
         e.preventDefault();
         dispatch({ type: 'UNDO_FILE_EDIT' });
@@ -673,39 +1440,249 @@ export function ThumbnailGrid() {
       }
       if (sortedFiles.length === 0) return;
 
-      const cols = viewMode === 'single' || viewMode === 'split' || viewMode === 'compare' ? 1 : getColumnsCount();
+      const cols = viewMode === 'single' || viewMode === 'split' || viewMode === 'compare'
+        ? 1
+        : virtualGridEnabled ? virtualGridColumns : getColumnsCount();
 
       // Cmd/Ctrl+A: select all
-      if ((e.metaKey || e.ctrlKey) && e.key === 'a' && viewMode !== 'single') {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a' && viewMode !== 'single') {
         e.preventDefault();
-        const all = new Set<number>();
-        for (let i = 0; i < sortedFiles.length; i++) all.add(i);
-        setSelectedIndices(all);
+        selectAllVisible();
         return;
+      }
+
+      // Ctrl+C: copy exposure recipe from focused file
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'c') {
+        const source = focusedFile ?? selectedFiles[0];
+        if (source) {
+          e.preventDefault();
+          setExposureClipboard({
+            manualStops: source.exposureAdjustmentStops ?? 0,
+            normalizeToAnchor: !!source.normalizeToAnchor,
+            anchorPath: exposureAnchorPath,
+            whiteBalanceAdjustment: source.whiteBalanceAdjustment,
+          });
+          return;
+        }
+      }
+
+      // Ctrl+V: paste exposure recipe to selected/focused
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'v') {
+        if (exposureClipboard !== null) {
+          e.preventDefault();
+          const targets = selectedPaths.length > 0
+            ? selectedPaths
+            : focusedIndex >= 0 ? [sortedFiles[focusedIndex].path] : [];
+          if (targets.length > 0) {
+            if (
+              exposureClipboard.normalizeToAnchor &&
+              exposureClipboard.anchorPath &&
+              files.some((file) => file.path === exposureClipboard.anchorPath)
+            ) {
+              dispatch({ type: 'SET_EXPOSURE_ANCHOR', path: exposureClipboard.anchorPath });
+              dispatch({
+                type: 'SET_NORMALIZE_TO_ANCHOR',
+                filePaths: targets,
+                value: true,
+              });
+            } else {
+              dispatch({
+                type: 'SET_NORMALIZE_TO_ANCHOR',
+                filePaths: targets,
+                value: false,
+              });
+            }
+            dispatch({
+              type: 'SET_EXPOSURE_ADJUSTMENT',
+              filePaths: targets,
+              stops: exposureClipboard.manualStops,
+            });
+            dispatch({
+              type: 'SET_WHITE_BALANCE_ADJUSTMENT',
+              filePaths: targets,
+              temperature: exposureClipboard.whiteBalanceAdjustment?.temperature ?? 0,
+              tint: exposureClipboard.whiteBalanceAdjustment?.tint ?? 0,
+            });
+            return;
+          }
+        }
+      }
+
+      // ── Remappable keybind actions ────────────────────────────────────
+      // Check each customisable binding before falling through to the static
+      // switch. Modifier keys (Shift, Ctrl, Meta) still work as before for
+      // the bulk-pick shortcuts — we only intercept the plain key.
+      if (!e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (e.key === keybinds.pick) {
+          e.preventDefault();
+          pickFile('selected', true);
+          return;
+        }
+        if (e.key === keybinds.reject) {
+          e.preventDefault();
+          pickFile('rejected', true);
+          return;
+        }
+        if (e.key === keybinds.unflag) {
+          e.preventDefault();
+          pickFile(undefined, false);
+          return;
+        }
+        if (e.key === keybinds.compareMode) {
+          e.preventDefault();
+          dispatch({ type: 'TOGGLE_CULL_MODE' });
+          return;
+        }
+        if (e.key === keybinds.queuePhoto) {
+          e.preventDefault();
+          const targets = selectedPaths.length > 0
+            ? selectedPaths
+            : focusedIndex >= 0 && focusedIndex < sortedFiles.length
+              ? [sortedFiles[focusedIndex].path]
+              : [];
+          if (targets.length > 0) queuePaths(targets);
+          return;
+        }
+        if (e.key === keybinds.nextPhoto) {
+          e.preventDefault();
+          if (selectedPaths.length > 0) {
+            const anchor = focusedIndex >= 0 ? focusedIndex : Math.min(...selectedIndices);
+            setFocused(Math.min(anchor + 1, sortedFiles.length - 1));
+          } else {
+            setFocused(Math.min(focusedIndex + 1, sortedFiles.length - 1));
+          }
+          return;
+        }
+        if (e.key === keybinds.prevPhoto) {
+          e.preventDefault();
+          if (selectedPaths.length > 0) {
+            const anchor = focusedIndex >= 0 ? focusedIndex : Math.min(...selectedIndices);
+            setFocused(Math.max(anchor - 1, 0));
+          } else {
+            setFocused(Math.max(focusedIndex - 1, 0));
+          }
+          return;
+        }
+        if (e.key === keybinds.burstSelect) {
+          e.preventDefault();
+          if (focusedIndex >= 0 && focusedIndex < sortedFiles.length) {
+            const focused = sortedFiles[focusedIndex];
+            if (focused.burstId) {
+              const next = new Set<number>();
+              sortedFiles.forEach((f, i) => { if (f.burstId === focused.burstId) next.add(i); });
+              setSelectedIndices(next);
+            }
+          }
+          return;
+        }
+        if (e.key === keybinds.burstCollapse) {
+          e.preventDefault();
+          if (focusedIndex >= 0 && focusedIndex < sortedFiles.length) {
+            const focused = sortedFiles[focusedIndex];
+            if (focused.burstId) dispatch({ type: 'TOGGLE_BURST_COLLAPSE', burstId: focused.burstId });
+          }
+          return;
+        }
+        if (e.key === keybinds.jumpUnreviewed) {
+          e.preventDefault();
+          const startIdx = focusedIndex >= 0 ? focusedIndex + 1 : 0;
+          const nextUnreviewed = sortedFiles.findIndex(
+            (f, i) => i >= startIdx && f.pick === undefined,
+          );
+          if (nextUnreviewed >= 0) setFocused(nextUnreviewed);
+          return;
+        }
+        if (e.key === keybinds.batchRejectBurst && (viewMode === 'single' || viewMode === 'split')) {
+          e.preventDefault();
+          if (focusedIndex >= 0 && focusedIndex < sortedFiles.length) {
+            const focused = sortedFiles[focusedIndex];
+            if (focused.burstId) {
+              const paths = sortedFiles.filter((f) => f.burstId === focused.burstId).map((f) => f.path);
+              dispatch({ type: 'SET_PICK_BATCH', filePaths: paths, pick: 'rejected' });
+            } else {
+              pickFile('rejected', true);
+            }
+          }
+          return;
+        }
+        // Star rating keys (remappable)
+        const ratingKeys: (keyof typeof keybinds)[] = ['clearRating', 'rateOne', 'rateTwo', 'rateThree', 'rateFour', 'rateFive'];
+        const ratingValues = [0, 1, 2, 3, 4, 5];
+        const ratingIdx = ratingKeys.findIndex((k) => keybinds[k] === e.key);
+        if (ratingIdx >= 0) {
+          e.preventDefault();
+          const rating = ratingValues[ratingIdx];
+          if (selectedPaths.length > 0) {
+            selectedPaths.forEach((path) => dispatch({ type: 'SET_RATING', filePath: path, rating }));
+          } else if (focusedIndex >= 0 && focusedIndex < sortedFiles.length) {
+            dispatch({ type: 'SET_RATING', filePath: sortedFiles[focusedIndex].path, rating });
+            if (cullMode && focusedIndex < sortedFiles.length - 1) setFocused(focusedIndex + 1);
+          }
+          return;
+        }
+      }
+
+      // ── Shift-modified bulk pick shortcuts (non-remappable, keep as-is) ──
+      if (e.shiftKey && !e.metaKey && !e.ctrlKey) {
+        if (e.key.toLowerCase() === keybinds.pick.toLowerCase() && focusedIndex >= 0 && lastClickedPathRef.current) {
+          const anchorIndex = sortedFiles.findIndex((file) => file.path === lastClickedPathRef.current);
+          if (anchorIndex >= 0) {
+            e.preventDefault();
+            const start = Math.min(focusedIndex, anchorIndex);
+            const end = Math.max(focusedIndex, anchorIndex);
+            const paths = sortedFiles.slice(start, end + 1).map((f) => f.path);
+            dispatch({ type: 'SET_PICK_BATCH', filePaths: paths, pick: 'selected' });
+            setSelectedIndices(new Set(paths.map((_, offset) => start + offset)));
+            return;
+          }
+        }
+        if (e.key.toLowerCase() === keybinds.reject.toLowerCase() && focusedIndex >= 0 && lastClickedPathRef.current) {
+          const anchorIndex = sortedFiles.findIndex((file) => file.path === lastClickedPathRef.current);
+          if (anchorIndex >= 0) {
+            e.preventDefault();
+            const start = Math.min(focusedIndex, anchorIndex);
+            const end = Math.max(focusedIndex, anchorIndex);
+            const paths = sortedFiles.slice(start, end + 1).map((f) => f.path);
+            dispatch({ type: 'SET_PICK_BATCH', filePaths: paths, pick: 'rejected' });
+            setSelectedIndices(new Set(paths.map((_, offset) => start + offset)));
+            return;
+          }
+        }
       }
 
       switch (e.key) {
         case 'ArrowRight':
           e.preventDefault();
-          if (e.shiftKey) {
+          if (e.shiftKey && (e.metaKey || e.ctrlKey)) {
+            // Ctrl/Cmd+Shift+→: next batch page (when batch panel is open)
+            if (showBestOfSelection) openAdjacentBatch(1);
+          } else if (e.shiftKey) {
             openAdjacentBurst(1);
+          } else if (selectedPaths.length > 0) {
+            const anchor = focusedIndex >= 0 ? focusedIndex : Math.min(...selectedIndices);
+            const nextIndex = Math.min(anchor + 1, sortedFiles.length - 1);
+            setFocused(nextIndex);
           } else {
-            setSelectedIndices(new Set());
             setFocused(Math.min(focusedIndex + 1, sortedFiles.length - 1));
           }
           break;
         case 'ArrowLeft':
           e.preventDefault();
-          if (e.shiftKey) {
+          if (e.shiftKey && (e.metaKey || e.ctrlKey)) {
+            // Ctrl/Cmd+Shift+←: prev batch page (when batch panel is open)
+            if (showBestOfSelection) openAdjacentBatch(-1);
+          } else if (e.shiftKey) {
             openAdjacentBurst(-1);
+          } else if (selectedPaths.length > 0) {
+            const anchor = focusedIndex >= 0 ? focusedIndex : Math.min(...selectedIndices);
+            const nextIndex = Math.max(anchor - 1, 0);
+            setFocused(nextIndex);
           } else {
-            setSelectedIndices(new Set());
             setFocused(Math.max(focusedIndex - 1, 0));
           }
           break;
         case 'ArrowDown':
           e.preventDefault();
-          setSelectedIndices(new Set());
           if (viewMode === 'single' || viewMode === 'split') {
             setFocused(Math.min(focusedIndex + 1, sortedFiles.length - 1));
           } else {
@@ -714,7 +1691,6 @@ export function ThumbnailGrid() {
           break;
         case 'ArrowUp':
           e.preventDefault();
-          setSelectedIndices(new Set());
           if (viewMode === 'single' || viewMode === 'split') {
             setFocused(Math.max(focusedIndex - 1, 0));
           } else {
@@ -724,26 +1700,32 @@ export function ThumbnailGrid() {
         case 'p':
         case 'P':
           e.preventDefault();
-          if (e.shiftKey && focusedIndex >= 0 && lastClickedRef.current >= 0) {
-            const start = Math.min(focusedIndex, lastClickedRef.current);
-            const end = Math.max(focusedIndex, lastClickedRef.current);
-            const paths = sortedFiles.slice(start, end + 1).map((f) => f.path);
-            dispatch({ type: 'SET_PICK_BATCH', filePaths: paths, pick: 'selected' });
-            setSelectedIndices(new Set(paths.map((_, offset) => start + offset)));
-            break;
+          if (e.shiftKey && focusedIndex >= 0 && lastClickedPathRef.current) {
+            const anchorIndex = sortedFiles.findIndex((file) => file.path === lastClickedPathRef.current);
+            if (anchorIndex >= 0) {
+              const start = Math.min(focusedIndex, anchorIndex);
+              const end = Math.max(focusedIndex, anchorIndex);
+              const paths = sortedFiles.slice(start, end + 1).map((f) => f.path);
+              dispatch({ type: 'SET_PICK_BATCH', filePaths: paths, pick: 'selected' });
+              setSelectedIndices(new Set(paths.map((_, offset) => start + offset)));
+              break;
+            }
           }
           pickFile('selected', true);
           break;
         case 'x':
         case 'X':
           e.preventDefault();
-          if (e.shiftKey && focusedIndex >= 0 && lastClickedRef.current >= 0) {
-            const start = Math.min(focusedIndex, lastClickedRef.current);
-            const end = Math.max(focusedIndex, lastClickedRef.current);
-            const paths = sortedFiles.slice(start, end + 1).map((f) => f.path);
-            dispatch({ type: 'SET_PICK_BATCH', filePaths: paths, pick: 'rejected' });
-            setSelectedIndices(new Set(paths.map((_, offset) => start + offset)));
-            break;
+          if (e.shiftKey && focusedIndex >= 0 && lastClickedPathRef.current) {
+            const anchorIndex = sortedFiles.findIndex((file) => file.path === lastClickedPathRef.current);
+            if (anchorIndex >= 0) {
+              const start = Math.min(focusedIndex, anchorIndex);
+              const end = Math.max(focusedIndex, anchorIndex);
+              const paths = sortedFiles.slice(start, end + 1).map((f) => f.path);
+              dispatch({ type: 'SET_PICK_BATCH', filePaths: paths, pick: 'rejected' });
+              setSelectedIndices(new Set(paths.map((_, offset) => start + offset)));
+              break;
+            }
           }
           pickFile('rejected', true);
           break;
@@ -760,11 +1742,9 @@ export function ThumbnailGrid() {
         case '5': {
           e.preventDefault();
           const rating = parseInt(e.key, 10);
-          if (selectedIndices.size > 0) {
-            Array.from(selectedIndices).forEach((i) => {
-              if (i >= 0 && i < sortedFiles.length) {
-                dispatch({ type: 'SET_RATING', filePath: sortedFiles[i].path, rating });
-              }
+          if (selectedPaths.length > 0) {
+            selectedPaths.forEach((path) => {
+              dispatch({ type: 'SET_RATING', filePath: path, rating });
             });
           } else if (focusedIndex >= 0 && focusedIndex < sortedFiles.length) {
             dispatch({ type: 'SET_RATING', filePath: sortedFiles[focusedIndex].path, rating });
@@ -779,6 +1759,24 @@ export function ThumbnailGrid() {
           if (!(e.metaKey || e.ctrlKey)) {
             e.preventDefault();
             dispatch({ type: 'TOGGLE_CULL_MODE' });
+          }
+          break;
+        case 'q':
+        case 'Q': {
+          if (e.metaKey || e.ctrlKey) break;
+          e.preventDefault();
+          const targets = selectedPaths.length > 0
+            ? selectedPaths
+            : focusedIndex >= 0 && focusedIndex < sortedFiles.length
+              ? [sortedFiles[focusedIndex].path]
+              : [];
+          if (targets.length > 0) queuePaths(targets);
+          break;
+        }
+        case 'Enter':
+          if (focusedIndex >= 0 && focusedIndex < sortedFiles.length && viewMode === 'grid') {
+            e.preventDefault();
+            dispatch({ type: 'SET_VIEW_MODE', mode: 'single' });
           }
           break;
         case 'b':
@@ -817,10 +1815,37 @@ export function ThumbnailGrid() {
         case 'A': {
           if (e.metaKey || e.ctrlKey) break;
           e.preventDefault();
-          const targets = selectedIndices.size > 0
-            ? Array.from(selectedIndices)
-                .filter((i) => i >= 0 && i < sortedFiles.length)
-                .map((i) => sortedFiles[i].path)
+          if (e.altKey) {
+            const targets = selectedPaths.length > 0
+              ? selectedPaths
+              : focusedIndex >= 0 && focusedIndex < sortedFiles.length
+                ? [sortedFiles[focusedIndex].path]
+                : [];
+            if (targets.length >= 2) {
+              dispatch({ type: 'NORMALIZE_SELECTION_TO_MEDIAN', filePaths: targets });
+            }
+            break;
+          }
+          // Shift+A: select all photos in the focused file's burst/visual group
+          if (e.shiftKey) {
+            if (focusedIndex >= 0 && focusedIndex < sortedFiles.length) {
+              const focused = sortedFiles[focusedIndex];
+              const next = new Set<number>();
+              if (focused.burstId) {
+                sortedFiles.forEach((f, i) => { if (f.burstId === focused.burstId) next.add(i); });
+              } else if (focused.visualGroupId) {
+                sortedFiles.forEach((f, i) => { if (f.visualGroupId === focused.visualGroupId) next.add(i); });
+              } else if (focused.faceGroupId) {
+                sortedFiles.forEach((f, i) => { if (f.faceGroupId === focused.faceGroupId) next.add(i); });
+              } else {
+                next.add(focusedIndex);
+              }
+              setSelectedIndices(next);
+            }
+            break;
+          }
+          const targets = selectedPaths.length > 0
+            ? selectedPaths
             : focusedIndex >= 0 && focusedIndex < sortedFiles.length
               ? [sortedFiles[focusedIndex].path]
               : [];
@@ -834,25 +1859,25 @@ export function ThumbnailGrid() {
         case ']':
           e.preventDefault();
           {
-            const targets = selectedIndices.size > 0
-              ? Array.from(selectedIndices).filter((i) => i >= 0 && i < sortedFiles.length).map((i) => sortedFiles[i].path)
+            const targets = selectedPaths.length > 0
+              ? selectedPaths
               : focusedIndex >= 0 && focusedIndex < sortedFiles.length ? [sortedFiles[focusedIndex].path] : [];
-            dispatch({ type: 'NUDGE_EXPOSURE_ADJUSTMENT', filePaths: targets, delta: e.key === '[' ? -0.33 : 0.33 });
+            dispatch({ type: 'NUDGE_EXPOSURE_ADJUSTMENT', filePaths: targets, delta: e.key === '[' ? -exposureAdjustmentStep : exposureAdjustmentStep });
           }
           break;
         case '\\':
           e.preventDefault();
           {
-            const targets = selectedIndices.size > 0
-              ? Array.from(selectedIndices).filter((i) => i >= 0 && i < sortedFiles.length).map((i) => sortedFiles[i].path)
+            const targets = selectedPaths.length > 0
+              ? selectedPaths
               : focusedIndex >= 0 && focusedIndex < sortedFiles.length ? [sortedFiles[focusedIndex].path] : [];
             dispatch({ type: 'SET_EXPOSURE_ADJUSTMENT', filePaths: targets, stops: 0 });
           }
           break;
         case 'Escape':
-          if (selectedIndices.size > 0) {
+          if (selectedPaths.length > 0) {
             e.preventDefault();
-            setSelectedIndices(new Set());
+            clearSelection();
           } else if (viewMode === 'settings') {
             e.preventDefault();
             dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' });
@@ -869,18 +1894,34 @@ export function ThumbnailGrid() {
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [focusedIndex, sortedFiles, viewMode, getColumnsCount, setFocused, pickFile, dispatch, selectedIndices, cullMode, files, openBestOfSelection]);
+  }, [focusedIndex, sortedFiles, viewMode, virtualGridColumns, virtualGridEnabled, getColumnsCount, setFocused, pickFile, dispatch, selectedIndices, selectedPaths, cullMode, files, openBestOfSelection, openAdjacentBatch, openAdjacentBurst, queuePaths, showBestOfSelection, showShortcuts, selectAllVisible, clearSelection, keybinds]);
+
+  useEffect(() => {
+    const open = () => setShowShortcuts(true);
+    window.addEventListener('photo-importer:shortcuts', open);
+    return () => window.removeEventListener('photo-importer:shortcuts', open);
+  }, []);
+
+  useEffect(() => {
+    setShowBestOfSelection(false);
+    setBestScope(null);
+    setShowTagSuggestions(false);
+    setToolbarPos(null);
+    if (viewMode !== 'grid') setShowAdvancedTools(false);
+  }, [viewMode]);
 
   useEffect(() => {
     if (focusedIndex < 0) return;
-    if (viewMode === 'grid' && gridRef.current) {
+    if (viewMode === 'grid' && virtualGridEnabled) {
+      rowVirtualizer.scrollToIndex(Math.floor(focusedIndex / virtualGridColumns), { align: 'auto' });
+    } else if (viewMode === 'grid' && gridRef.current) {
       const card = gridRef.current.children[focusedIndex] as HTMLElement | undefined;
       card?.scrollIntoView({ block: 'nearest', behavior: 'instant' });
     } else if (viewMode === 'split' && splitGridRef.current) {
       const card = splitGridRef.current.children[focusedIndex] as HTMLElement | undefined;
       card?.scrollIntoView({ block: 'nearest', behavior: 'instant' });
     }
-  }, [focusedIndex, viewMode]);
+  }, [focusedIndex, rowVirtualizer, viewMode, virtualGridColumns, virtualGridEnabled]);
 
   // Preload adjacent photos so SingleView navigation feels instant.
   // Fire-and-forget: generatePreview deduplicates in-flight requests.
@@ -888,54 +1929,119 @@ export function ThumbnailGrid() {
   useEffect(() => {
     if (viewMode !== 'single' && viewMode !== 'split') return;
     if (focusedIndex < 0 || sortedFiles.length === 0) return;
-    const neighbors = [
-      focusedIndex + 1, focusedIndex + 2, focusedIndex + 3, focusedIndex + 4,
-      focusedIndex - 1, focusedIndex - 2,
-    ];
+    const focusedFile = sortedFiles[focusedIndex];
+    const isRawFocused = !!focusedFile && /\.(nef|nrw|cr2|cr3|arw|raf|rw2|orf|dng|pef|srw)$/i.test(focusedFile.name || focusedFile.extension);
+    const neighbors = isRawFocused
+      ? [focusedIndex + 1]
+      : [
+          focusedIndex + 1, focusedIndex + 2, focusedIndex + 3,
+          focusedIndex - 1,
+        ];
     const id = setTimeout(() => {
       for (const i of neighbors) {
         if (i >= 0 && i < sortedFiles.length) {
-          warmPreview(sortedFiles[i].path, i === focusedIndex + 1 ? 'normal' : 'low');
+          const candidate = sortedFiles[i];
+          const isRawCandidate = /\.(nef|nrw|cr2|cr3|arw|raf|rw2|orf|dng|pef|srw)$/i.test(candidate.name || candidate.extension);
+          if (isRawFocused || isRawCandidate) {
+            if (i === focusedIndex + 1) warmPreview(candidate.path, 'normal');
+          } else {
+            warmPreview(candidate.path, i === focusedIndex + 1 ? 'normal' : 'low');
+          }
         }
       }
-    }, 40);
+    }, isRawFocused ? 180 : 50);
     return () => clearTimeout(id);
   }, [focusedIndex, viewMode, sortedFiles]);
 
   // Expose-normalize button state (computed before early returns so the
   // handleNormalizeToggle useCallback is always called unconditionally).
   const focusedFile = focusedIndex >= 0 && focusedIndex < sortedFiles.length ? sortedFiles[focusedIndex] : null;
-  const hasBatchSelection = selectedIndices.size > 0;
+  const selectedFileMap = useMemo(() => new Map(files.map((file) => [file.path, file])), [files]);
+  const selectedFiles = useMemo(() => (
+    selectedPaths
+      .map((path) => selectedFileMap.get(path))
+      .filter((file): file is NonNullable<typeof file> => !!file)
+  ), [selectedFileMap, selectedPaths]);
+  const hasBatchSelection = selectedPaths.length > 0;
   const anchorFile = exposureAnchorPath ? files.find((f) => f.path === exposureAnchorPath) : null;
   const anchorHasEV = typeof anchorFile?.exposureValue === 'number';
   const canNormalize = anchorHasEV && saveFormat !== 'original';
   const getThumbnailExposureStops = useCallback((file: typeof files[number]): number => {
-    if (!file.normalizeToAnchor || !anchorHasEV || typeof anchorFile?.exposureValue !== 'number' || typeof file.exposureValue !== 'number') {
-      return 0;
-    }
-    return clampStops(file.exposureValue - anchorFile.exposureValue, exposureMaxStops);
+    if (!file.normalizeToAnchor || !anchorHasEV) return 0;
+    return getNormalizedExposureStops(
+      file.exposureValue,
+      anchorFile?.exposureValue,
+      exposureMaxStops,
+    );
   }, [anchorFile?.exposureValue, anchorHasEV, exposureMaxStops]);
+  const getThumbnailWhiteBalance = useCallback((file: typeof files[number]) => {
+    if (saveFormat === 'original') return undefined;
+    if (file.whiteBalanceAdjustment) return file.whiteBalanceAdjustment;
+    const temperature = whiteBalanceTemperature ?? 0;
+    const tint = whiteBalanceTint ?? 0;
+    return Math.abs(temperature) >= 0.5 || Math.abs(tint) >= 0.5
+      ? { temperature, tint }
+      : undefined;
+  }, [saveFormat, whiteBalanceTemperature, whiteBalanceTint]);
   const normalizeTargetPaths = hasBatchSelection
-    ? Array.from(selectedIndices).filter((i) => i >= 0 && i < sortedFiles.length).map((i) => sortedFiles[i].path)
+    ? selectedPaths
     : focusedFile ? [focusedFile.path] : [];
   const compareFiles = (hasBatchSelection
-    ? Array.from(selectedIndices).filter((i) => i >= 0 && i < sortedFiles.length).map((i) => sortedFiles[i])
+    ? selectedFiles
     : focusedFile ? [focusedFile] : []
   ).slice(0, 4);
-  const selectedFiles = useMemo(() => (
-    hasBatchSelection
-      ? Array.from(selectedIndices)
-          .filter((i) => i >= 0 && i < sortedFiles.length)
-          .map((i) => sortedFiles[i])
-      : focusedFile ? [focusedFile] : []
-  ), [focusedFile, hasBatchSelection, selectedIndices, sortedFiles]);
+  const compareDisplayFiles = compareFiles.length >= 2
+    ? compareFiles
+    : sortedFiles.slice(Math.max(0, focusedIndex), Math.max(0, focusedIndex) + 2);
+  const comparePreviewStopsByPath = useMemo(() => (
+    Object.fromEntries(
+      compareDisplayFiles.map((file) => [
+        file.path,
+        clampStops((file.exposureAdjustmentStops ?? 0) + getThumbnailExposureStops(file), exposureMaxStops),
+      ]),
+    )
+  ), [compareDisplayFiles, exposureMaxStops, getThumbnailExposureStops]);
+  const comparePreviewWhiteBalanceByPath = useMemo(() => (
+    Object.fromEntries(
+      compareDisplayFiles.map((file) => [file.path, getThumbnailWhiteBalance(file)]),
+    )
+  ), [compareDisplayFiles, getThumbnailWhiteBalance]);
+  const handleCompareWinner = useCallback((winner: MediaFile) => {
+    const comparedPaths = compareDisplayFiles.map((file) => file.path);
+    const rejectPaths = comparedPaths.filter((path) => path !== winner.path);
+    dispatch({ type: 'SET_PICK', filePath: winner.path, pick: 'selected' });
+    if (rejectPaths.length > 0) {
+      dispatch({ type: 'SET_PICK_BATCH', filePaths: rejectPaths, pick: 'rejected' });
+    }
+    dispatch({ type: 'QUEUE_ADD_PATHS', paths: [winner.path] });
+  }, [compareDisplayFiles, dispatch]);
+  const handleCompareReject = useCallback((file: MediaFile) => {
+    dispatch({ type: 'SET_PICK', filePath: file.path, pick: 'rejected' });
+  }, [dispatch]);
+  const handleCompareQueue = useCallback((file: MediaFile) => {
+    dispatch({ type: 'QUEUE_ADD_PATHS', paths: [file.path] });
+  }, [dispatch]);
+  const handleCompareFocus = useCallback((file: MediaFile) => {
+    const index = sortedFiles.findIndex((entry) => entry.path === file.path);
+    if (index >= 0) {
+      setFocused(index);
+      dispatch({ type: 'SET_VIEW_MODE', mode: 'single' });
+    }
+  }, [dispatch, setFocused, sortedFiles]);
   const bestPanelFiles = useMemo(() => {
     if (!bestScope) return selectedFiles;
     const byPath = new Map(files.map((f) => [f.path, f]));
     return bestScope.paths.map((p) => byPath.get(p)).filter((f): f is NonNullable<typeof f> => !!f);
   }, [bestScope, files, selectedFiles]);
   const bestOfSelection = bestPanelFiles.length > 0 ? rankBestOfSelection(bestPanelFiles)[0] : null;
-  const forceVisibleThumbnails = filter !== 'all' || sortedFiles.length <= 160;
+  const forceVisibleThumbnails = useCallback((index: number, filePath: string) => {
+    if (selectedIndices.has(index) || queuedSet.has(filePath) || index === focusedIndex) return true;
+    if (sortedFiles.length <= 72) return true;
+    if (viewMode === 'split') return focusedIndex < 0 ? index < 56 : Math.abs(index - focusedIndex) <= 28;
+    if (viewMode === 'single' || viewMode === 'compare') return focusedIndex < 0 ? index < 24 : Math.abs(index - focusedIndex) <= 12;
+    if (filter !== 'all' || searchText.trim()) return index < 96;
+    return index < 40 || (focusedIndex >= 0 && Math.abs(index - focusedIndex) <= 24);
+  }, [filter, focusedIndex, queuedSet, searchText, selectedIndices, sortedFiles.length, viewMode]);
 
   // Map path → index in sortedFiles so the folder-group render doesn't
   // have to call indexOf() for every card.
@@ -977,17 +2083,97 @@ export function ThumbnailGrid() {
     return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
   }, [groupByFolder, selectedSource, sortedFiles]);
 
+  useEffect(() => {
+    setCollapsedFolders(new Set());
+  }, [selectedSource, groupByFolder]);
+
   const reviewStats = useMemo(() => {
     const photoFiles = files.filter((f) => f.type === 'photo');
     const analyzed = photoFiles.filter((f) =>
       typeof f.sharpnessScore === 'number' ||
       typeof f.subjectSharpnessScore === 'number' ||
-      typeof f.reviewScore === 'number'
+      typeof f.reviewScore === 'number' ||
+      f.faceBoxes !== undefined ||
+      !!f.faceEmbedding
     ).length;
-    const faces = photoFiles.filter((f) => (f.faceCount ?? 0) > 0).length;
+    const faceFiles = photoFiles.filter((f) => (f.faceCount ?? f.faceBoxes?.length ?? 0) > 0);
+    const faces = faceFiles.length;
+    const faceBoxes = faceFiles.reduce((sum, file) => sum + (file.faceBoxes?.length ?? file.faceCount ?? 0), 0);
+    const faceGroups = new Set(faceFiles.map((f) => f.faceGroupId).filter(Boolean)).size;
+    const embeddings = photoFiles.filter((f) => !!f.faceEmbedding).length;
+    const lowConfidenceFaces = faceFiles.filter((f) => faceSignalConfidence(f) < 0.55).length;
+    const nativeFaces = faceFiles.filter((f) => f.faceDetection === 'native').length;
     const blur = photoFiles.filter((f) => f.blurRisk === 'high' || f.blurRisk === 'medium').length;
-    return { total: photoFiles.length, analyzed, faces, blur };
-  }, [files]);
+    const highBlur = photoFiles.filter((f) => f.blurRisk === 'high').length;
+    const picked = photoFiles.filter((f) => f.pick === 'selected').length;
+    const rejected = photoFiles.filter((f) => f.pick === 'rejected').length;
+    const pending = photoFiles.filter((f) => !f.pick).length;
+    const strongCandidates = photoFiles.filter((f) =>
+      (f.reviewScore ?? 0) >= 70 &&
+      f.blurRisk !== 'high' &&
+      f.pick !== 'rejected' &&
+      !f.duplicate,
+    ).length;
+    const duplicates = photoFiles.filter((f) => f.duplicate).length;
+    return {
+      total: photoFiles.length,
+      analyzed,
+      faces,
+      faceBoxes,
+      faceGroups,
+      embeddings,
+      lowConfidenceFaces,
+      nativeFaces,
+      blur,
+      highBlur,
+      picked,
+      rejected,
+      pending,
+      queued: queuedPaths.length,
+      strongCandidates,
+      duplicates,
+    };
+  }, [files, queuedPaths.length]);
+  const aiOverview = useMemo(() => {
+    const ready = reviewStats.total > 0 && reviewStats.analyzed >= reviewStats.total;
+    const status = reviewWaitingForThumbnails
+      ? `Waiting for thumbnails ${readyThumbnailCount}/${reviewStats.total}`
+      : reviewPaused
+        ? `Paused at ${reviewStats.analyzed}/${reviewStats.total}`
+        : ready
+          ? `Ready ${reviewStats.analyzed}/${reviewStats.total}`
+          : `Analyzing ${reviewStats.analyzed}/${reviewStats.total}`;
+    const mode = fastKeeperMode ? 'Fast Keeper mode' : faceProviderSummary;
+    const items = [
+      `${reviewStats.faces} face photo${reviewStats.faces === 1 ? '' : 's'}`,
+      `${reviewStats.faceBoxes} box${reviewStats.faceBoxes === 1 ? '' : 'es'}`,
+      `${reviewStats.faceGroups} face group${reviewStats.faceGroups === 1 ? '' : 's'}`,
+      `${reviewStats.embeddings} match-ready`,
+      `${reviewStats.nativeFaces} model-scanned`,
+      `${reviewStats.strongCandidates} strong candidate${reviewStats.strongCandidates === 1 ? '' : 's'}`,
+      `${reviewStats.queued} queued`,
+    ];
+    const attention = [
+      reviewStats.lowConfidenceFaces > 0 ? `${reviewStats.lowConfidenceFaces} face check${reviewStats.lowConfidenceFaces === 1 ? '' : 's'}` : null,
+      reviewStats.blur > 0 ? `${reviewStats.blur} blur risk${reviewStats.highBlur > 0 ? ` (${reviewStats.highBlur} high)` : ''}` : null,
+      reviewStats.duplicates > 0 ? `${reviewStats.duplicates} duplicate${reviewStats.duplicates === 1 ? '' : 's'}` : null,
+    ].filter((item): item is string => !!item);
+    return { status, mode, items, attention, ready };
+  }, [
+    faceProviderSummary,
+    fastKeeperMode,
+    readyThumbnailCount,
+    reviewPaused,
+    reviewStats,
+    reviewWaitingForThumbnails,
+  ]);
+  const sprintRemaining = useMemo(() => (
+    sortedFiles.filter((file) =>
+      file.type === 'photo' &&
+      !file.pick &&
+      (!file.reviewScore || file.blurRisk === 'high' || !!file.visualGroupId || !!file.burstId)
+    ).length
+  ), [sortedFiles]);
   const visibleThumbStats = useMemo(() => {
     const total = sortedFiles.length;
     const ready = sortedFiles.filter((f) => !!f.thumbnail).length;
@@ -998,6 +2184,20 @@ export function ThumbnailGrid() {
   const duplicateCount = files.filter((f) => f.duplicate).length;
   const avgManualStops = normalizeTargetPaths.length > 0
     ? normalizeTargetPaths.reduce((sum, p) => sum + (files.find((f) => f.path === p)?.exposureAdjustmentStops ?? 0), 0) / normalizeTargetPaths.length
+    : 0;
+  const avgEffectiveStops = normalizeTargetPaths.length > 0
+    ? normalizeTargetPaths.reduce((sum, p) => {
+      const file = files.find((entry) => entry.path === p);
+      return sum + (file
+        ? getEffectiveExposureStops(
+            file.exposureAdjustmentStops,
+            file.exposureValue,
+            anchorFile?.exposureValue,
+            file.normalizeToAnchor,
+            exposureMaxStops,
+          )
+        : 0);
+    }, 0) / normalizeTargetPaths.length
     : 0;
 
   // Burst collapse/expand state (useMemo must be before early returns to
@@ -1026,21 +2226,109 @@ export function ThumbnailGrid() {
     dispatch({ type: 'NORMALIZE_SELECTION_TO_MEDIAN', filePaths: normalizeTargetPaths });
   }, [dispatch, normalizeTargetPaths]);
 
+  const clearExposureAdjustments = useCallback(() => {
+    if (normalizeTargetPaths.length === 0) return;
+    dispatch({ type: 'SET_NORMALIZE_TO_ANCHOR', filePaths: normalizeTargetPaths, value: false });
+    dispatch({ type: 'SET_EXPOSURE_ADJUSTMENT', filePaths: normalizeTargetPaths, stops: 0 });
+  }, [dispatch, normalizeTargetPaths]);
+
   const copyExposureAdjustment = useCallback(() => {
     const source = focusedFile ?? selectedFiles[0];
     if (!source) return;
-    setExposureClipboard(source.exposureAdjustmentStops ?? 0);
-  }, [focusedFile, selectedFiles]);
+    setExposureClipboard({
+      manualStops: source.exposureAdjustmentStops ?? 0,
+      normalizeToAnchor: !!source.normalizeToAnchor,
+      anchorPath: exposureAnchorPath,
+      whiteBalanceAdjustment: source.whiteBalanceAdjustment,
+    });
+  }, [exposureAnchorPath, focusedFile, selectedFiles]);
 
   const pasteExposureAdjustment = useCallback(() => {
     if (exposureClipboard === null || normalizeTargetPaths.length === 0) return;
-    dispatch({ type: 'SET_EXPOSURE_ADJUSTMENT', filePaths: normalizeTargetPaths, stops: exposureClipboard });
-  }, [dispatch, exposureClipboard, normalizeTargetPaths]);
+    if (
+      exposureClipboard.normalizeToAnchor &&
+      exposureClipboard.anchorPath &&
+      files.some((file) => file.path === exposureClipboard.anchorPath)
+    ) {
+      dispatch({ type: 'SET_EXPOSURE_ANCHOR', path: exposureClipboard.anchorPath });
+      dispatch({ type: 'SET_NORMALIZE_TO_ANCHOR', filePaths: normalizeTargetPaths, value: true });
+    } else {
+      dispatch({ type: 'SET_NORMALIZE_TO_ANCHOR', filePaths: normalizeTargetPaths, value: false });
+    }
+    dispatch({
+      type: 'SET_EXPOSURE_ADJUSTMENT',
+      filePaths: normalizeTargetPaths,
+      stops: exposureClipboard.manualStops,
+    });
+    dispatch({
+      type: 'SET_WHITE_BALANCE_ADJUSTMENT',
+      filePaths: normalizeTargetPaths,
+      temperature: exposureClipboard.whiteBalanceAdjustment?.temperature ?? 0,
+      tint: exposureClipboard.whiteBalanceAdjustment?.tint ?? 0,
+    });
+  }, [dispatch, exposureClipboard, files, normalizeTargetPaths]);
 
-  const queuePaths = useCallback((paths: string[]) => {
-    dispatch({ type: 'QUEUE_ADD_PATHS', paths });
-  }, [dispatch]);
+  const openCustomExposureEditor = useCallback(() => {
+    if (saveFormat === 'original' || normalizeTargetPaths.length === 0) return;
+    const defaultValue = normalizeExposureStops(avgManualStops, 0.01).toFixed(2);
+    const subjectLabel = normalizeTargetPaths.length === 1
+      ? (focusedFile?.name ?? 'this photo')
+      : `${normalizeTargetPaths.length} selected photos`;
+    const input = window.prompt(`Set custom exposure adjustment (EV) for ${subjectLabel}`, defaultValue);
+    if (input === null) return;
+    const cleaned = input.trim().replace(/\s*ev$/i, '');
+    if (!cleaned) {
+      dispatch({ type: 'SET_EXPOSURE_ADJUSTMENT', filePaths: normalizeTargetPaths, stops: 0 });
+      return;
+    }
+    const parsed = Number(cleaned);
+    if (!Number.isFinite(parsed)) {
+      window.alert('Enter a valid EV number, for example 0, 0.33, or -0.67.');
+      return;
+    }
+    dispatch({ type: 'SET_EXPOSURE_ADJUSTMENT', filePaths: normalizeTargetPaths, stops: parsed });
+  }, [avgManualStops, dispatch, focusedFile?.name, normalizeTargetPaths, saveFormat]);
 
+  const handleExposureValueTap = useCallback(() => {
+    if (saveFormat === 'original') return;
+    const now = Date.now();
+    if (now - lastExposureTapRef.current <= 360) {
+      lastExposureTapRef.current = 0;
+      openCustomExposureEditor();
+      return;
+    }
+    lastExposureTapRef.current = now;
+  }, [openCustomExposureEditor, saveFormat]);
+
+  const handleToolbarDragStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const el = toolbarRef.current;
+    const parent = el?.parentElement;
+    if (!el || !parent) return;
+    const elRect = el.getBoundingClientRect();
+    const parentRect = parent.getBoundingClientRect();
+    toolbarDragState.current = {
+      startMouseX: e.clientX,
+      startMouseY: e.clientY,
+      startLeft: elRect.left - parentRect.left,
+      startTop: elRect.top - parentRect.top,
+    };
+    const onMove = (ev: MouseEvent) => {
+      const s = toolbarDragState.current;
+      if (!s) return;
+      setToolbarPos({
+        x: s.startLeft + (ev.clientX - s.startMouseX),
+        y: s.startTop + (ev.clientY - s.startMouseY),
+      });
+    };
+    const onUp = () => {
+      toolbarDragState.current = null;
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }, []);
 
   const saveSelectionSet = useCallback(() => {
     const paths = normalizeTargetPaths;
@@ -1058,14 +2346,10 @@ export function ThumbnailGrid() {
   const applySelectionSet = useCallback((name: string) => {
     const set = selectionSets.find((s) => s.name === name);
     if (!set) return;
-    const pathSet = new Set(set.paths);
-    const next = new Set<number>();
-    sortedFiles.forEach((f, i) => {
-      if (pathSet.has(f.path)) next.add(i);
-    });
-    setSelectedIndices(next);
     dispatch({ type: 'SELECTION_SET_APPLY', name });
-  }, [dispatch, selectionSets, sortedFiles]);
+    const firstVisibleIndex = sortedFiles.findIndex((file) => set.paths.includes(file.path));
+    if (firstVisibleIndex >= 0) setFocused(firstVisibleIndex);
+  }, [dispatch, selectionSets, setFocused, sortedFiles]);
 
   const deleteSelectionSet = useCallback((name: string) => {
     const next = selectionSets.filter((s) => s.name !== name);
@@ -1096,42 +2380,69 @@ export function ThumbnailGrid() {
     return { count: evs.length, min, max, range: max - min };
   }, [files, normalizeTargetPaths]);
 
+  const shortcutsOverlay = showShortcuts
+    ? <ShortcutsOverlay onClose={() => setShowShortcuts(false)} />
+    : null;
+
+  if (viewMode === 'settings') {
+    return (
+      <div className="h-full flex flex-col relative">
+        {shortcutsOverlay}
+        <SettingsPage
+          inline
+          onClose={() => dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' })}
+        />
+      </div>
+    );
+  }
+
   if (!selectedSource) {
-    return <EmptyState />;
+    return (
+      <div className="h-full relative">
+        {shortcutsOverlay}
+        <EmptyState />
+      </div>
+    );
   }
 
   if (phase === 'scanning' && files.length === 0) {
     return (
-      <div className="h-full flex flex-col items-center justify-center gap-3">
-        <div className={`w-8 h-8 border-2 border-text-muted border-t-text rounded-full ${scanPaused ? '' : 'animate-spin'}`} />
-        <p className="text-sm text-text-secondary">{scanPaused ? 'Scan paused' : 'Scanning files...'}</p>
-        <button
-          onClick={() => scanPaused ? resumeScan() : pauseScan()}
-          className="px-3 py-1 text-xs bg-surface-raised hover:bg-border rounded text-text-secondary transition-colors"
-        >
-          {scanPaused ? 'Resume Scan' : 'Pause Scan'}
-        </button>
+      <div className="h-full relative">
+        {shortcutsOverlay}
+        <div className="h-full flex flex-col items-center justify-center gap-3">
+          <div className={`w-8 h-8 border-2 border-text-muted border-t-text rounded-full ${scanPaused ? '' : 'animate-spin'}`} />
+          <p className="text-sm text-text-secondary">{scanPaused ? 'Scan paused' : 'Scanning files...'}</p>
+          <button
+            onClick={() => scanPaused ? resumeScan() : pauseScan()}
+            className="px-3 py-1 text-xs bg-surface-raised hover:bg-border rounded text-text-secondary transition-colors"
+          >
+            {scanPaused ? 'Resume Scan' : 'Pause Scan'}
+          </button>
+        </div>
       </div>
     );
   }
 
   if (files.length === 0 && phase !== 'scanning') {
     return (
-      <div className="h-full flex flex-col items-center justify-center gap-2">
-        {scanError ? (
-          <p className="text-sm text-red-400">{scanError}</p>
-        ) : (
-          <>
-            <p className="text-sm text-text-secondary">No supported files found</p>
-            <p className="text-xs text-text-muted">Supports JPG, RAW, HEIC, MOV, MP4</p>
-          </>
-        )}
-        <button
-          onClick={() => startScan()}
-          className="mt-2 px-3 py-1 text-xs bg-surface-raised hover:bg-border rounded text-text-secondary transition-colors"
-        >
-          Rescan
-        </button>
+      <div className="h-full relative">
+        {shortcutsOverlay}
+        <div className="h-full flex flex-col items-center justify-center gap-2">
+          {scanError ? (
+            <p className="text-sm text-red-400">{scanError}</p>
+          ) : (
+            <>
+              <p className="text-sm text-text-secondary">No supported files found</p>
+              <p className="text-xs text-text-muted">Supports JPG, RAW, HEIC, MOV, MP4</p>
+            </>
+          )}
+          <button
+            onClick={() => startScan()}
+            className="mt-2 px-3 py-1 text-xs bg-surface-raised hover:bg-border rounded text-text-secondary transition-colors"
+          >
+            Rescan
+          </button>
+        </div>
       </div>
     );
   }
@@ -1142,7 +2453,26 @@ export function ThumbnailGrid() {
   const allBurstsCollapsed = burstIds.size > 0 && burstIds.size === collapsedBursts.length;
 
   const floatingToolbar = (focusedFile || hasBatchSelection) ? (
-    <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-px bg-surface-alt/95 backdrop-blur-sm border border-border rounded-lg shadow-lg overflow-hidden z-20">
+    <div
+      ref={toolbarRef}
+      className="flex items-center gap-px bg-surface-alt/95 backdrop-blur-sm border border-border rounded-lg shadow-lg z-20"
+      style={toolbarPos
+        ? { position: 'absolute', left: toolbarPos.x, top: toolbarPos.y }
+        : { position: 'absolute', bottom: '0.75rem', left: '50%', transform: 'translateX(-50%)' }
+      }
+    >
+      <div
+        className="px-1.5 py-1.5 text-text-faint hover:text-text-secondary cursor-grab active:cursor-grabbing select-none"
+        onMouseDown={handleToolbarDragStart}
+        title="Drag to move toolbar"
+      >
+        <svg className="w-2.5 h-3" viewBox="0 0 8 12" fill="currentColor">
+          <circle cx="2" cy="2" r="1.1"/><circle cx="6" cy="2" r="1.1"/>
+          <circle cx="2" cy="6" r="1.1"/><circle cx="6" cy="6" r="1.1"/>
+          <circle cx="2" cy="10" r="1.1"/><circle cx="6" cy="10" r="1.1"/>
+        </svg>
+      </div>
+      <div className="w-px h-4 bg-border" />
       {!hasBatchSelection && (
         <>
           <button
@@ -1160,7 +2490,7 @@ export function ThumbnailGrid() {
       )}
       {hasBatchSelection && (
         <>
-          <span className="px-2.5 py-1.5 text-[11px] text-blue-400 font-medium">{selectedIndices.size}</span>
+          <span className="px-2.5 py-1.5 text-[11px] text-blue-400 font-medium">{selectedPaths.length}</span>
           <div className="w-px h-4 bg-border" />
         </>
       )}
@@ -1233,41 +2563,49 @@ export function ThumbnailGrid() {
         <>
           <div className="w-px h-4 bg-border" />
           <button
-            onClick={() => dispatch({ type: 'NUDGE_EXPOSURE_ADJUSTMENT', filePaths: normalizeTargetPaths, delta: -0.33 })}
+            onClick={() => dispatch({ type: 'NUDGE_EXPOSURE_ADJUSTMENT', filePaths: normalizeTargetPaths, delta: -exposureAdjustmentStep })}
             className="px-2 py-1.5 text-[11px] text-text-secondary hover:text-sky-300 hover:bg-sky-500/10 transition-colors"
-            title="Darken selection by 0.33 EV ([)"
+            title={`Darken selection by ${exposureAdjustmentStep.toFixed(2)} EV ([)`}
           >
             -
           </button>
-          <span className="px-2 py-1.5 text-[10px] font-mono text-sky-300" title="Average manual exposure offset">
-            {avgManualStops >= 0 ? '+' : ''}{avgManualStops.toFixed(2)}
-          </span>
           <button
-            onClick={() => dispatch({ type: 'NUDGE_EXPOSURE_ADJUSTMENT', filePaths: normalizeTargetPaths, delta: 0.33 })}
+            type="button"
+            onClick={handleExposureValueTap}
+            onDoubleClick={openCustomExposureEditor}
+            className="rounded px-2 py-1.5 text-[10px] font-mono text-sky-300 transition-colors hover:bg-sky-500/10 hover:text-sky-200"
+            title="Average final exposure change for the current target. Double-click or double-tap to type a custom manual EV."
+          >
+            {avgEffectiveStops >= 0 ? '+' : ''}{avgEffectiveStops.toFixed(2)}
+          </button>
+          <button
+            onClick={() => dispatch({ type: 'NUDGE_EXPOSURE_ADJUSTMENT', filePaths: normalizeTargetPaths, delta: exposureAdjustmentStep })}
             className="px-2 py-1.5 text-[11px] text-text-secondary hover:text-sky-300 hover:bg-sky-500/10 transition-colors"
-            title="Brighten selection by 0.33 EV (])"
+            title={`Brighten selection by ${exposureAdjustmentStep.toFixed(2)} EV (])`}
           >
             +
           </button>
           <button
-            onClick={() => dispatch({ type: 'SET_EXPOSURE_ADJUSTMENT', filePaths: normalizeTargetPaths, stops: 0 })}
+            onClick={clearExposureAdjustments}
             className="px-2 py-1.5 text-[11px] text-text-muted hover:text-text hover:bg-surface-raised transition-colors"
-            title="Reset manual exposure offset (\\)"
+            title="Reset exposure recipe for current target (clear manual EV and auto-normalize)"
           >
             0
           </button>
           <button
             onClick={copyExposureAdjustment}
             className="px-2 py-1.5 text-[11px] text-text-muted hover:text-sky-300 hover:bg-sky-500/10 transition-colors"
-            title="Copy the focused file's manual EV offset"
+            title="Copy the focused photo's exposure and per-photo white balance recipe"
           >
-            Copy EV
+            Copy Edit
           </button>
           <button
             onClick={pasteExposureAdjustment}
             disabled={exposureClipboard === null}
             className="px-2 py-1.5 text-[11px] text-text-muted hover:text-sky-300 hover:bg-sky-500/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-            title={exposureClipboard === null ? 'Copy an EV offset first' : `Paste ${exposureClipboard >= 0 ? '+' : ''}${exposureClipboard.toFixed(2)} EV to current target`}
+            title={exposureClipboard === null
+              ? 'Copy an edit recipe first'
+              : `Paste ${exposureClipboard.manualStops >= 0 ? '+' : ''}${exposureClipboard.manualStops.toFixed(2)} EV${exposureClipboard.normalizeToAnchor ? ' with auto-normalize' : ''}${exposureClipboard.whiteBalanceAdjustment ? ' and WB' : ''} to current target`}
           >
             Paste
           </button>
@@ -1292,9 +2630,9 @@ export function ThumbnailGrid() {
             <button
               onClick={handleMatchToMedian}
               className="px-3 py-1.5 text-[11px] text-text-secondary hover:text-orange-400 hover:bg-orange-500/10 transition-colors"
-              title="Pick the median-exposure shot as the anchor and flag the rest for normalization"
+              title="Auto-normalize this batch by picking the median-exposure shot as the anchor and flagging the rest for normalization (Alt+A)"
             >
-              Match
+              Auto-norm
             </button>
           )}
         </>
@@ -1329,172 +2667,261 @@ export function ThumbnailGrid() {
     </div>
   ) : null;
 
+  const toolbarFtpReady = !ftpDestEnabled || (!!ftpDestConfig.host && !!ftpDestConfig.remotePath);
+  const toolbarImportDisabled =
+    queuedPaths.length === 0 ||
+    !destination ||
+    !licenseStatus?.valid ||
+    !toolbarFtpReady ||
+    !(phase === 'ready' || phase === 'scanning');
+  const toolbarImportTitle = !destination
+    ? 'Choose a destination folder in the output panel first.'
+    : !licenseStatus?.valid
+      ? 'Activate a valid license before importing.'
+      : !toolbarFtpReady
+        ? 'Finish FTP output settings before importing.'
+        : queuedPaths.length === 0
+          ? 'Queue files before importing.'
+          : phase === 'importing'
+            ? 'Import already in progress.'
+            : 'Import all queued files to the destination folder set in the output panel.';
+
   const nextActionToolbar = files.length > 0 ? (
     <div className="shrink-0 px-3 py-1.5 flex items-center gap-1.5 border-b border-border bg-surface-alt/60 overflow-x-auto">
-      {/* Workflow steps — guide beginners left to right */}
-      <span className="text-[9px] font-medium text-text-faint uppercase tracking-wider shrink-0 pr-1">Steps:</span>
 
+      {/* ── Step 1: Review ── */}
       <button
         onClick={() => {
+          setReviewSprintMode(true);
           dispatch({ type: 'SET_FILTER', filter: 'unmarked' });
           dispatch({ type: 'SET_VIEW_MODE', mode: 'single' });
           if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0);
         }}
         className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-surface-raised text-text-secondary hover:text-text hover:bg-border transition-colors shrink-0"
-        title="Review unmarked files one by one in the large viewer. Use P to pick, X to reject, arrows to move."
+        title="Open single-photo view filtered to unmarked files. Use P to pick, X to reject, ← → to navigate."
       >
         1. Review
       </button>
 
+      {/* ── Step 2: Queue best keepers for this batch ── */}
       <button
-        onClick={() => dispatch({ type: 'QUEUE_BEST' })}
-        className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-surface-raised text-text-secondary hover:text-yellow-300 hover:bg-yellow-500/10 transition-colors shrink-0"
-        title={`Add high-scoring keeper candidates to the queue. Based on review score, protected flag, star rating, blur risk, and subject focus. Analyzed ${reviewStats.analyzed}/${reviewStats.total}.`}
+        onClick={() => {
+          if (!queueActionsDisabled) dispatch({ type: 'QUEUE_BEST' });
+        }}
+        disabled={queueActionsDisabled}
+        className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-surface-raised text-text-secondary hover:text-yellow-300 hover:bg-yellow-500/10 transition-colors shrink-0 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-surface-raised disabled:hover:text-text-secondary"
+        title={queueActionsDisabled
+          ? 'Wait for the current scan/import to finish before changing the import queue.'
+          : `Queue the best keeper from each burst/similar group, plus standalone keepable photos. Skips rejected photos and duplicates. AI done: ${reviewStats.analyzed}/${reviewStats.total}.`}
       >
-        2. Queue Best
+        2. Queue Keepers
       </button>
 
+      {/* ── Step 3: Import or queue all ── */}
       {queuedPaths.length > 0 ? (
         <button
-          onClick={startImport}
-          className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 transition-colors shrink-0"
-          title="Import the queued files using the destination/output settings on the right panel."
+          onClick={() => {
+            if (!toolbarImportDisabled) void startImport();
+          }}
+          disabled={toolbarImportDisabled}
+          className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 transition-colors shrink-0 disabled:cursor-not-allowed disabled:bg-surface-raised disabled:text-text-muted disabled:hover:bg-surface-raised"
+          title={toolbarImportTitle}
         >
           3. Import ({queuedPaths.length})
         </button>
       ) : (
         <button
           onClick={() => queuePaths(sortedFiles.map((f) => f.path))}
-          className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-surface-raised text-text-secondary hover:text-emerald-300 hover:bg-emerald-500/10 transition-colors shrink-0"
-          title={`Add every currently visible file to the queue. Visible thumbnails ready: ${visibleThumbStats.ready}/${visibleThumbStats.total}.`}
+          disabled={queueActionsDisabled}
+          className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-surface-raised text-text-secondary hover:text-emerald-300 hover:bg-emerald-500/10 transition-colors shrink-0 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-surface-raised disabled:hover:text-text-secondary"
+          title={queueActionsDisabled
+            ? 'Wait for the current scan/import to finish before changing the import queue.'
+            : `Queue every visible file for import. Thumbnails ready: ${visibleThumbStats.ready}/${visibleThumbStats.total}.`}
         >
           3. Queue All
         </button>
       )}
 
-      <div className="w-px h-4 bg-border shrink-0 mx-1" />
+      <div className="w-px h-4 bg-border shrink-0 mx-0.5" />
 
-      {/* Secondary tools */}
-      <button
-        onClick={() => dispatch({ type: 'SET_FILTER', filter: 'best' })}
-        className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-yellow-300 transition-colors shrink-0"
-        title={`Show files with strong local keeper scores. Review analyzed ${reviewStats.analyzed}/${reviewStats.total}; faces found in ${reviewStats.faces}.`}
-      >
-        Find Best
-      </button>
+      {/* ── Best of Burst ── visible, deeper batch tools are tucked under More ── */}
       <button
         onClick={openBestOfSelection}
         className="px-2 py-1 text-[10px] rounded-md bg-yellow-500/10 text-yellow-300 hover:bg-yellow-500/20 transition-colors shrink-0"
-        title="Rank the focused burst first. Priority: protected/rating, then faces, subject sharpness, blur risk, whole-image sharpness, and smart score. Shortcut: Shift+B."
+        title="Compare shots in the focused burst side-by-side and pick the best one. Shortcut: Shift+B."
       >
         Best of Burst
       </button>
+
+      <div className="w-px h-4 bg-border shrink-0 mx-0.5" />
+
       <button
-        onClick={() => {
-          setReviewPaused(false);
-          dispatch({ type: 'SET_FILTER', filter: 'blur-risk' });
-        }}
-        className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-red-300 transition-colors shrink-0"
-        title={`Show photos marked medium/high blur risk. ${reviewStats.blur} found so far; analysis ${reviewStats.analyzed}/${reviewStats.total}.`}
-      >
-        Blur Check
-      </button>
-      <button
-        onClick={() => setReviewPaused((v) => !v)}
+        onClick={() => setShowAdvancedTools((v) => !v)}
         className={`px-2 py-1 text-[10px] rounded-md transition-colors shrink-0 ${
-          reviewPaused ? 'bg-yellow-500/15 text-yellow-300' : 'bg-surface-raised text-text-muted hover:text-text'
+          showAdvancedTools ? 'bg-blue-500/15 text-blue-300' : 'bg-surface-raised text-text-muted hover:text-text'
         }`}
-        title={`Pause or resume local review analysis. It computes blur risk, subject focus, face count, visual similarity, and keeper score. Done ${reviewStats.analyzed}/${reviewStats.total}.`}
+        title="Show extra tools: blur filter, auto-cull, duplicates, safe cull, cache stats."
       >
-        {reviewPaused ? 'Resume Review' : 'Pause Review'} {reviewStats.analyzed}/{reviewStats.total}
+        {showAdvancedTools ? '− Less' : '+ More'}
       </button>
-      <button
-        onClick={() => {
-          dispatch({ type: 'CLEAR_FACE_DATA' });
-          setReviewPaused(false);
-        }}
-        className={`px-2 py-1 text-[10px] rounded-md transition-colors shrink-0 ${
-          reviewStats.faces > 0
-            ? 'bg-violet-500/10 text-violet-300 hover:bg-violet-500/20'
-            : 'bg-surface-raised text-text-muted hover:text-violet-300'
-        }`}
-        title={`Re-run BlazeFace detection on all ${reviewStats.total} photos. Faces found so far: ${reviewStats.faces}.`}
-      >
-        Faces {reviewStats.faces}
-      </button>
-      <button
-        onClick={() => setBackgroundLoadingPaused((v) => !v)}
-        className={`px-2 py-1 text-[10px] rounded-md transition-colors shrink-0 ${
-          backgroundLoadingPaused ? 'bg-yellow-500/15 text-yellow-300' : 'bg-surface-raised text-text-muted hover:text-text'
-        }`}
-        title={`Pause or resume background preview preloading. The current full photo still loads. Visible thumbnails ready ${visibleThumbStats.ready}/${visibleThumbStats.total}.`}
-      >
-        {backgroundLoadingPaused ? 'Start Loading' : 'Stop Loading'} {visibleThumbStats.ready}/{visibleThumbStats.total}
-      </button>
-      <span
-        className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-faint shrink-0"
-        title={`Preview cache: ${cacheStats.cached} cached, ${cacheStats.decoded} decoded, ${cacheStats.inflight} in flight, ${cacheStats.queued} queued.`}
-      >
-        Cache {cacheStats.cached}/{cacheStats.active + cacheStats.queued}
-      </span>
-      {files.some((f) => f.blurRisk === 'high') && (
-        <button
-          onClick={() => dispatch({
-            type: 'SET_PICK_BATCH',
-            filePaths: files.filter((f) => f.blurRisk === 'high' && f.pick !== 'selected').map((f) => f.path),
-            pick: 'rejected',
-          })}
-          className="px-2 py-1 text-[10px] rounded-md bg-red-500/10 text-red-300 hover:bg-red-500/20 transition-colors shrink-0"
-          title={`Reject high blur-risk photos that are not already picked. Current blur-risk count: ${reviewStats.blur}.`}
-        >
-          Reject Blur
-        </button>
-      )}
-      {files.some((f) => (f.burstId && f.burstSize && f.burstSize > 1) || (f.visualGroupId && f.visualGroupSize && f.visualGroupSize > 1)) && (
-        <button
-          onClick={() => dispatch({ type: 'AUTO_CULL_SAFE' })}
-          className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-red-300 transition-colors shrink-0"
-          title="Conservative auto-cull: never rejects protected, starred, or picked files; only rejects clearly worse blur/similar/burst alternatives when a stronger keeper exists. Undo with Ctrl+Z."
-        >
-          Safe Cull
-        </button>
-      )}
-      {duplicateCount > 0 && (
-        <button
-          onClick={() => {
-            dispatch({ type: 'SET_FILTER', filter: 'near-duplicates' });
-            dispatch({ type: 'SET_VIEW_MODE', mode: 'compare' });
-          }}
-          className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-blue-300 transition-colors shrink-0"
-          title="Compare visually similar or duplicate photos side-by-side so you can keep one and reject the rest."
-        >
-          Dupes
-        </button>
-      )}
-      {burstGrouping && burstIds.size > 0 && (
-        <button
-          onClick={() => dispatch({ type: 'PICK_BEST_IN_GROUPS' })}
-          className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-yellow-300 transition-colors shrink-0"
-          title="For every burst/similar group, pick the top-ranked file and reject the rest. Priority: protected/rating, then faces/subject sharpness, blur risk, whole-image sharpness, and smart score."
-        >
-          Pick Burst Keepers
-        </button>
-      )}
-      <button
-        onClick={() => window.electronAPI.exportContactSheet(files.filter((f) => f.pick !== 'rejected'))}
-        className="hidden px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-text transition-colors shrink-0"
-        title="Export a PDF contact sheet of every non-rejected photo. Useful for client selects or a quick review handoff."
-      >
-        Contact Sheet
-      </button>
+
       {queuedPaths.length > 0 && (
         <button
-          onClick={() => dispatch({ type: 'QUEUE_CLEAR' })}
-          className="px-2 py-1 text-[10px] rounded-md text-text-faint hover:text-red-300 transition-colors shrink-0"
-          title={`Remove all ${queuedPaths.length} queued files. Does not clear pick/reject flags.`}
+          onClick={() => {
+            if (!queueActionsDisabled) dispatch({ type: 'QUEUE_CLEAR' });
+          }}
+          disabled={queueActionsDisabled}
+          className="px-2 py-1 text-[10px] rounded-md text-text-faint hover:text-red-300 transition-colors shrink-0 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-text-faint"
+          title={queueActionsDisabled
+            ? 'Wait for the current scan/import to finish before changing the import queue.'
+            : `Remove all ${queuedPaths.length} queued files from the queue. Does not clear pick/reject flags.`}
         >
           Clear Queue
         </button>
+      )}
+
+      {showAdvancedTools && (
+        <>
+          <div className="w-px h-4 bg-border shrink-0 mx-0.5" />
+          <button
+            onClick={() => {
+              const next = !reviewSprintMode;
+              setReviewSprintMode(next);
+              dispatch({ type: 'SET_FILTER', filter: next ? 'review-needed' : 'all' });
+              dispatch({ type: 'SET_VIEW_MODE', mode: next ? 'split' : 'grid' });
+              if (next && focusedIndex < 0 && sortedFiles.length > 0) setFocused(0);
+            }}
+            className={`px-2 py-1 text-[10px] rounded-md transition-colors shrink-0 ${
+              reviewSprintMode
+                ? 'bg-blue-500/20 text-blue-300 hover:bg-blue-500/30'
+                : 'bg-surface-raised text-text-muted hover:text-blue-300'
+            }`}
+            title="Focus Review opens a faster review lane for photos that still need a decision."
+          >
+            {reviewSprintMode ? `Focus Review · ${sprintRemaining} left` : 'Focus Review'}
+          </button>
+          <button
+            onClick={() => openBestOfBatch(0)}
+            className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-yellow-300 transition-colors shrink-0"
+            title={`Rank all visible photos together and show the top candidates. AI: ${reviewStats.analyzed}/${reviewStats.total}, faces: ${reviewStats.faces}.`}
+          >
+            Best of Batch
+          </button>
+          <button
+            onClick={() => {
+              dispatch({ type: 'GROUP_SCENE_BUCKETS' });
+              dispatch({ type: 'SET_FILTER', filter: 'review-needed' });
+            }}
+            className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-blue-300 transition-colors shrink-0"
+            title="Rebuild scene buckets, then show low-confidence and unreviewed decisions."
+          >
+            Review Needed
+          </button>
+          <button
+            onClick={() => {
+              if (reviewWaitingForThumbnails) return;
+              if (reviewPaused) resumeAiReview();
+              else pauseAiReview();
+            }}
+            className={`px-2 py-1 text-[10px] rounded-md transition-colors shrink-0 ${
+              reviewWaitingForThumbnails
+                ? 'bg-blue-500/10 text-blue-300'
+                : reviewPaused
+                  ? 'bg-yellow-500/15 text-yellow-300 hover:bg-yellow-500/25'
+                  : 'bg-surface-raised text-text-muted hover:text-text'
+            }`}
+            title={reviewWaitingForThumbnails
+              ? `AI review starts once the first thumbnails are ready. Ready: ${readyThumbnailCount}/${totalPhotoCount}.`
+              : reviewPaused
+                ? `Resume AI analysis and preview loading. Done ${reviewStats.analyzed}/${reviewStats.total}.`
+                : `Pause AI analysis and preview loading. Done ${reviewStats.analyzed}/${reviewStats.total}.`}
+          >
+            {reviewWaitingForThumbnails
+              ? `AI waiting ${readyThumbnailCount}/${totalPhotoCount}`
+              : reviewPaused
+                ? `Resume AI ${reviewStats.analyzed}/${reviewStats.total}`
+                : `Pause AI ${reviewStats.analyzed}/${reviewStats.total}`}
+          </button>
+          <button
+            onClick={() => {
+              resumeAiReview();
+            }}
+            className={`px-2 py-1 text-[10px] rounded-md transition-colors shrink-0 ${
+              reviewStats.faces > 0
+                ? 'bg-violet-500/10 text-violet-300 hover:bg-violet-500/20'
+                : 'bg-surface-raised text-text-muted hover:text-violet-300'
+            }`}
+            title={`Continue AI review from where it left off. Faces found: ${reviewStats.faces}, blur risk: ${reviewStats.blur}.`}
+          >
+            Resume Scan
+          </button>
+          {/* Blur filter */}
+          <button
+            onClick={() => dispatch({ type: 'SET_FILTER', filter: 'blur-risk' })}
+            className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-red-300 transition-colors shrink-0"
+            title={`Filter to photos with medium/high blur risk. ${reviewStats.blur} found.`}
+          >
+            Blur {reviewStats.blur > 0 ? reviewStats.blur : ''}
+          </button>
+          {files.some((f) => f.blurRisk === 'high') && (
+            <button
+              onClick={() => dispatch({
+                type: 'SET_PICK_BATCH',
+                filePaths: files.filter((f) => f.blurRisk === 'high' && f.pick !== 'selected').map((f) => f.path),
+                pick: 'rejected',
+              })}
+              className="px-2 py-1 text-[10px] rounded-md bg-red-500/10 text-red-300 hover:bg-red-500/20 transition-colors shrink-0"
+              title={`Reject all high blur-risk photos that aren't already picked. ${reviewStats.blur} at risk.`}
+            >
+              Reject Blur
+            </button>
+          )}
+          {files.some((f) => (f.burstId && f.burstSize && f.burstSize > 1) || (f.visualGroupId && f.visualGroupSize && f.visualGroupSize > 1)) && (
+            <button
+              onClick={() => dispatch({ type: 'AUTO_CULL_SAFE' })}
+              className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-red-300 transition-colors shrink-0"
+              title="Auto-reject clearly worse shots in bursts/similar groups when a strong keeper exists. Never touches protected, starred, or already-picked files. Undo: Ctrl+Z."
+            >
+              Safe Cull
+            </button>
+          )}
+          {burstGrouping && burstIds.size > 0 && (
+            <button
+              onClick={() => dispatch({ type: 'PICK_BEST_IN_GROUPS' })}
+              className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-yellow-300 transition-colors shrink-0"
+              title="Pick the top-scored shot in each burst/group and reject the rest."
+            >
+              Pick Burst Best
+            </button>
+          )}
+          {focusedFile && (
+            <button
+              onClick={() => dispatch({ type: 'SYNC_EDITS_FROM_FOCUSED', filePath: focusedFile.path })}
+              className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-cyan-300 transition-colors shrink-0"
+              title="Sync the focused photo's exposure and white-balance recipe to the selected photos, or to its burst/scene if nothing is selected."
+            >
+              Sync Edits
+            </button>
+          )}
+          {duplicateCount > 0 && (
+            <button
+              onClick={() => {
+                dispatch({ type: 'SET_FILTER', filter: 'near-duplicates' });
+                dispatch({ type: 'SET_VIEW_MODE', mode: 'compare' });
+              }}
+              className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-blue-300 transition-colors shrink-0"
+              title="Compare near-duplicate photos side-by-side to keep one and reject the rest."
+            >
+              Dupes ({duplicateCount})
+            </button>
+          )}
+          <span
+            className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-faint shrink-0 cursor-default"
+            title={`Preview cache: ${cacheStats.cached} cached, ${cacheStats.decoded} decoded, ${cacheStats.inflight} in-flight, ${cacheStats.queued} queued.`}
+          >
+            Cache {cacheStats.cached}
+          </span>
+        </>
       )}
     </div>
   ) : null;
@@ -1510,6 +2937,9 @@ export function ThumbnailGrid() {
           isBurst={bestScope?.title === 'Best of Burst'}
           onPrevBurst={() => openAdjacentBurst(-1)}
           onNextBurst={() => openAdjacentBurst(1)}
+          isBatch={bestScope?.title === 'Best of Batch'}
+          onPrevBatch={() => openAdjacentBatch(-1)}
+          onNextBatch={() => openAdjacentBatch(1)}
           onClose={() => {
             setShowBestOfSelection(false);
             setBestScope(null);
@@ -1519,7 +2949,7 @@ export function ThumbnailGrid() {
             dispatch({ type: 'SET_PICK', filePath: file.path, pick: 'selected' });
             setFocused(sortedFiles.findIndex((f) => f.path === file.path));
           }}
-          onQueueBest={(file) => dispatch({ type: 'QUEUE_ADD_PATHS', paths: [file.path] })}
+          onQueueBest={(file) => queuePaths([file.path])}
           onRejectRest={(best) => {
             dispatch({
               type: 'SET_PICK_BATCH',
@@ -1532,24 +2962,10 @@ export function ThumbnailGrid() {
       )}
       {/* Unified header */}
       <div className="shrink-0 px-2 py-1 flex items-center gap-1 border-b border-border">
-        {/* Left panel toggle */}
-        <button
-          onClick={() => dispatch({ type: 'TOGGLE_LEFT_PANEL' })}
-          className="p-0.5 rounded hover:bg-surface-raised shrink-0"
-          title={showLeftPanel ? 'Hide source panel' : 'Show source panel'}
-        >
-          <svg className="w-4 h-4" viewBox="0 0 16 16" fill="none">
-            <rect x="0.5" y="0.5" width="15" height="15" rx="1.5" stroke="var(--color-text-muted)" strokeWidth="1" />
-            <rect x="2" y="2" width="3.5" height="12" rx="0.75" fill={showLeftPanel ? 'var(--color-text-secondary)' : 'var(--color-text-faint)'} />
-          </svg>
-        </button>
-
-        <div className="w-px h-3 bg-border mx-1 shrink-0" />
-
         {/* File count / selection label */}
         <div className="flex items-center gap-1.5 min-w-0 shrink-0">
           {hasBatchSelection ? (
-            <span className="text-xs text-blue-400 font-medium">{selectedIndices.size} selected</span>
+            <span className="text-xs text-blue-400 font-medium">{selectedPaths.length} selected</span>
           ) : isSingle ? (
             <>
               <span className="text-xs font-mono text-text truncate max-w-[120px]">{focusedFile.name}</span>
@@ -1571,30 +2987,41 @@ export function ThumbnailGrid() {
         {/* Pick actions — batch vs single */}
         {sortedFiles.length > 0 && phase !== 'scanning' && (
           <div className="flex items-center gap-px ml-2 shrink-0">
+            {focusedFile && (
+              <>
+                <button
+                  onClick={handleMultiToggle}
+                  title={multiClickSelect ? 'Plain clicks add more photos to the current selection' : 'Plain clicks keep just one photo selected'}
+                  className={`px-2 py-0.5 text-[11px] rounded border transition-colors ${
+                    multiClickSelect
+                      ? 'border-blue-500/40 bg-blue-500/15 text-blue-300'
+                      : 'border-border/80 text-text-muted hover:text-text hover:bg-surface-raised'
+                  }`}
+                >Multi {multiClickSelect ? 'On' : 'Off'}</button>
+                <button
+                  onClick={clearSelection}
+                  title="Deselect all (Esc)"
+                  className="px-2 py-0.5 text-[11px] text-text-muted hover:text-text hover:bg-surface-raised rounded transition-colors"
+                >Clear</button>
+                <div className="w-px h-3 bg-border mx-1" />
+              </>
+            )}
             {hasBatchSelection ? (
               <>
                 <button onClick={() => pickFile('selected', false)} title="Pick selected (P)" className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-yellow-400 hover:bg-yellow-400/10 rounded transition-colors">Pick</button>
                 <button onClick={() => pickFile('rejected', false)} title="Reject selected (X)" className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-red-400 hover:bg-red-500/10 rounded transition-colors">Reject</button>
                 <button onClick={() => pickFile(undefined, false)} title="Clear flags (U)" className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-text hover:bg-surface-raised rounded transition-colors">Unflag</button>
-                <button onClick={() => queuePaths(normalizeTargetPaths)} title="Add selected to import queue" className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-emerald-400 hover:bg-emerald-500/10 rounded transition-colors">Queue</button>
+                <button
+                  onClick={() => queuePaths(normalizeTargetPaths)}
+                  disabled={queueActionsDisabled}
+                  title={queueActionsDisabled ? 'Wait for the current scan/import to finish before changing the import queue.' : 'Add selected to import queue'}
+                  className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-emerald-400 hover:bg-emerald-500/10 rounded transition-colors disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-text-secondary"
+                >Queue</button>
                 <button onClick={openBestOfSelection} title="If the focused photo is in a burst, rank that whole burst. Otherwise rank the selected candidates. Shortcut: Shift+B." className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-yellow-300 hover:bg-yellow-500/10 rounded transition-colors">Best</button>
                 <div className="w-px h-3 bg-border mx-1" />
-                <button onClick={() => setSelectedIndices(new Set())} title="Deselect all (Esc)" className="px-2 py-0.5 text-[11px] text-text-muted hover:text-text hover:bg-surface-raised rounded transition-colors">Deselect</button>
+                <button onClick={selectAllVisible} title="Select all visible files (Ctrl/Cmd+A)" className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-blue-300 hover:bg-blue-500/10 rounded transition-colors">Select all</button>
               </>
-            ) : (
-              <>
-                <button
-                  onClick={() => { const paths = sortedFiles.map((f) => f.path); dispatch({ type: 'SET_PICK_BATCH', filePaths: paths, pick: 'selected' }); }}
-                  title="Pick all visible files for import"
-                  className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-yellow-400 hover:bg-yellow-400/10 rounded transition-colors"
-                >Pick All</button>
-                <button
-                  onClick={() => dispatch({ type: 'CLEAR_PICKS' })}
-                  title="Clear all pick/reject flags"
-                  className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-text hover:bg-surface-raised rounded transition-colors"
-                >Clear</button>
-              </>
-            )}
+            ) : null}
           </div>
         )}
 
@@ -1612,43 +3039,42 @@ export function ThumbnailGrid() {
               title="Search by filename, camera, lens, date or file type"
             />
 
-            {/* Core filter pills */}
-            {(['all', 'picked', 'rejected'] as const).map((f) => (
+            {filter.startsWith('burst:') && (
               <button
-                key={f}
-                onClick={() => dispatch({ type: 'SET_FILTER', filter: f })}
-                className={`px-1.5 py-0.5 text-[10px] rounded transition-colors ${filter === f ? 'bg-surface-raised text-text' : 'text-text-muted hover:text-text'}`}
+                onClick={() => dispatch({ type: 'SET_FILTER', filter: 'queue' })}
+                className="px-1.5 py-0.5 text-[10px] rounded bg-blue-500/10 text-blue-300 hover:bg-blue-500/20 transition-colors"
+                title="Showing every photo in the opened burst. Click to return to Queue."
               >
-                {f === 'all' ? 'All' : f[0].toUpperCase() + f.slice(1)}
+                Burst Review
               </button>
-            ))}
-            <button
-              onClick={() => dispatch({ type: 'SET_FILTER', filter: 'queue' })}
-              className={`px-1.5 py-0.5 text-[10px] rounded transition-colors ${filter === 'queue' ? 'bg-surface-raised text-text' : 'text-text-muted hover:text-text'}`}
-            >
-              Queue{queuedPaths.length > 0 ? ` ${queuedPaths.length}` : ''}
-            </button>
+            )}
 
-            {/* Single consolidated filter dropdown — replaces 6 individual ones */}
             <select
-              value=""
+              value={filter.startsWith('burst:') ? '' : filter}
               onChange={(e) => {
                 if (!e.target.value) return;
                 dispatch({ type: 'SET_FILTER', filter: e.target.value as typeof filter });
-                e.currentTarget.value = '';
               }}
               className="px-1 py-0.5 text-[10px] bg-surface border border-border rounded text-text-muted hover:text-text focus:outline-none focus:border-text cursor-pointer"
-              title="More filters"
+              title={filter === 'all' ? 'Filter photos' : `Active filter: ${filter}`}
             >
-              <option value="">Filter ▾</option>
-              <optgroup label="Status">
+              <optgroup label="Review">
+                <option value="all">All photos</option>
                 <option value="unmarked">Unmarked</option>
+                <option value="picked">Picked</option>
+                <option value="rejected">Rejected</option>
+                <option value="queue">Queue{queuedPaths.length > 0 ? ` (${queuedPaths.length})` : ''}</option>
+              </optgroup>
+              <optgroup label="Status">
                 <option value="protected">Protected</option>
                 <option value="unrated">Unrated</option>
                 <option value="duplicates">Duplicates</option>
                 <option value="best">Best shots</option>
+                <option value="faces">Faces detected</option>
+                <option value="face-groups">Face groups</option>
                 <option value="blur-risk">Blur risk</option>
                 <option value="near-duplicates">Similar photos</option>
+                <option value="review-needed">Second pass</option>
               </optgroup>
               <optgroup label="Type">
                 <option value="photos">Photos only</option>
@@ -1675,6 +3101,11 @@ export function ThumbnailGrid() {
               {metadataFilters.dates.length > 0 && (
                 <optgroup label="Date">
                   {metadataFilters.dates.map((v) => <option key={v} value={`date:${encodeURIComponent(v)}`}>{v}</option>)}
+                </optgroup>
+              )}
+              {metadataFilters.scenes.length > 0 && (
+                <optgroup label="Scene">
+                  {metadataFilters.scenes.map((v) => <option key={v} value={`scene:${encodeURIComponent(v)}`}>{v}</option>)}
                 </optgroup>
               )}
               {metadataFilters.exts.length > 1 && (
@@ -1708,7 +3139,7 @@ export function ThumbnailGrid() {
           <button onClick={() => { dispatch({ type: 'SET_VIEW_MODE', mode: 'single' }); if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0); }} className={`p-0.5 rounded transition-colors ${viewMode === 'single' ? 'text-text bg-surface-raised' : 'text-text-muted hover:text-text'}`} title="Detail view (double-click a photo)">
             <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M1 4.75C1 3.784 1.784 3 2.75 3h14.5c.966 0 1.75.784 1.75 1.75v10.515a1.75 1.75 0 01-1.75 1.75H2.75A1.75 1.75 0 011 15.265V4.75zm1.5 0a.25.25 0 01.25-.25h14.5a.25.25 0 01.25.25v10.515a.25.25 0 01-.25.25H2.75a.25.25 0 01-.25-.25V4.75z" clipRule="evenodd" /></svg>
           </button>
-          <button onClick={() => { dispatch({ type: 'SET_VIEW_MODE', mode: 'compare' }); if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0); }} className={`p-0.5 rounded transition-colors ${viewMode === 'compare' ? 'text-text bg-surface-raised' : 'text-text-muted hover:text-text'}`} title="Compare view (select 2–4 photos)">
+          <button onClick={() => { dispatch({ type: 'SET_VIEW_MODE', mode: 'compare' }); if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0); }} className={`p-0.5 rounded transition-colors ${viewMode === 'compare' ? 'text-text bg-surface-raised' : 'text-text-muted hover:text-text'}`} title="Compare view (select 2+ photos, shows up to 4 at once)">
             <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path d="M2 4.5A2.5 2.5 0 014.5 2h4A2.5 2.5 0 0111 4.5v11A2.5 2.5 0 018.5 18h-4A2.5 2.5 0 012 15.5v-11zM12 4.5A2.5 2.5 0 0114.5 2h1A2.5 2.5 0 0118 4.5v11a2.5 2.5 0 01-2.5 2.5h-1a2.5 2.5 0 01-2.5-2.5v-11z" /></svg>
           </button>
           <button
@@ -1726,43 +3157,160 @@ export function ThumbnailGrid() {
           </button>
         </div>
 
-        <div className="w-px h-3 bg-border mx-1 shrink-0" />
-
-        {/* Settings */}
-        <button
-          onClick={() => dispatch({ type: 'SET_VIEW_MODE', mode: viewMode === 'settings' ? 'grid' : 'settings' })}
-          className={`p-0.5 rounded transition-colors shrink-0 ${viewMode === 'settings' ? 'text-text bg-surface-raised' : 'text-text-muted hover:text-text'}`}
-          title="Settings"
-        >
-          <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M7.84 1.804A1 1 0 018.82 1h2.36a1 1 0 01.98.804l.331 1.652a6.993 6.993 0 011.929 1.115l1.598-.54a1 1 0 011.186.447l1.18 2.044a1 1 0 01-.205 1.251l-1.267 1.113a7.047 7.047 0 010 2.228l1.267 1.113a1 1 0 01.206 1.25l-1.18 2.045a1 1 0 01-1.187.447l-1.598-.54a6.993 6.993 0 01-1.929 1.115l-.33 1.652a1 1 0 01-.98.804H8.82a1 1 0 01-.98-.804l-.331-1.652a6.993 6.993 0 01-1.929-1.115l-1.598.54a1 1 0 01-1.186-.447l-1.18-2.044a1 1 0 01.205-1.251l1.267-1.114a7.05 7.05 0 010-2.227L1.821 7.773a1 1 0 01-.206-1.25l1.18-2.045a1 1 0 011.187-.447l1.598.54A6.993 6.993 0 017.51 3.456l.33-1.652zM10 13a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" /></svg>
-        </button>
-
-        <div className="w-px h-3 bg-border mx-1 shrink-0" />
-
-        {/* Right panel toggle */}
-        <button
-          onClick={() => dispatch({ type: 'TOGGLE_RIGHT_PANEL' })}
-          className="p-0.5 rounded hover:bg-surface-raised shrink-0"
-          title={showRightPanel ? 'Hide output panel' : 'Show output panel'}
-        >
-          <svg className="w-4 h-4" viewBox="0 0 16 16" fill="none">
-            <rect x="0.5" y="0.5" width="15" height="15" rx="1.5" stroke="var(--color-text-muted)" strokeWidth="1" />
-            <rect x="10.5" y="2" width="3.5" height="12" rx="0.75" fill={showRightPanel ? 'var(--color-text-secondary)' : 'var(--color-text-faint)'} />
-          </svg>
-        </button>
       </div>
+
+      {/* ── Multi-select tag bar ─────────────────────────────────────── */}
+      {hasBatchSelection && (
+        <div className="shrink-0 px-3 py-1.5 flex items-center gap-2 border-b border-border bg-blue-500/5">
+          <span className="text-[10px] text-blue-300 font-medium shrink-0">Tag {selectedPaths.length} photos:</span>
+          <div className="relative flex-1">
+            <input
+              type="text"
+              value={tagInput}
+              onChange={(e) => {
+                setTagInput(e.target.value);
+                setShowTagSuggestions(e.target.value.trim().length > 0);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && tagInput.trim()) {
+                  e.preventDefault();
+                  const newTags = tagInput.split(',').map((t) => t.trim()).filter(Boolean);
+                  // Merge into session memory
+                  setSessionTags((prev) => {
+                    const merged = [...prev];
+                    newTags.forEach((t) => { if (!merged.includes(t)) merged.push(t); });
+                    return merged;
+                  });
+                  // Append to global metadataKeywords setting
+                  const existing = metadataKeywords ?? '';
+                  const existingArr = existing ? existing.split(',').map((t: string) => t.trim()).filter(Boolean) : [];
+                  const merged = [...new Set([...existingArr, ...newTags])].join(', ');
+                  dispatch({ type: 'SET_WORKFLOW_STRING', key: 'metadataKeywords', value: merged });
+                  void window.electronAPI.setSettings({ metadataKeywords: merged });
+                  setTagInput('');
+                  setShowTagSuggestions(false);
+                }
+                if (e.key === 'Escape') {
+                  setTagInput('');
+                  setShowTagSuggestions(false);
+                }
+              }}
+              onFocus={() => setShowTagSuggestions(tagInput.trim().length > 0 || sessionTags.length > 0)}
+              onBlur={() => setTimeout(() => setShowTagSuggestions(false), 150)}
+              placeholder="Add keywords (comma-separated), Enter to apply"
+              className="w-full px-2 py-0.5 text-[11px] bg-surface border border-border rounded text-text placeholder-text-muted focus:outline-none focus:border-blue-500/50"
+            />
+            {showTagSuggestions && sessionTags.length > 0 && (
+              <div className="absolute top-full left-0 z-50 mt-0.5 bg-surface border border-border rounded shadow-lg max-h-32 overflow-y-auto min-w-full">
+                {sessionTags
+                  .filter((t) => tagInput.trim() === '' || t.toLowerCase().includes(tagInput.toLowerCase()))
+                  .map((tag) => (
+                    <button
+                      key={tag}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        setTagInput((prev) => {
+                          const parts = prev.split(',').map((p) => p.trim()).filter(Boolean);
+                          if (!parts.includes(tag)) parts.push(tag);
+                          return parts.join(', ');
+                        });
+                      }}
+                      className="w-full text-left px-2 py-1 text-[11px] text-text-secondary hover:bg-surface-raised hover:text-text transition-colors"
+                    >
+                      {tag}
+                    </button>
+                  ))}
+              </div>
+            )}
+          </div>
+          {sessionTags.length > 0 && (
+            <div className="flex flex-wrap gap-1 shrink-0">
+              {sessionTags.slice(-5).map((tag) => (
+                <button
+                  key={tag}
+                  onClick={() => {
+                    const newTags = [tag];
+                    const existing = metadataKeywords ?? '';
+                    const existingArr = existing ? existing.split(',').map((t) => t.trim()).filter(Boolean) : [];
+                    const merged = [...new Set([...existingArr, ...newTags])].join(', ');
+                    dispatch({ type: 'SET_WORKFLOW_STRING', key: 'metadataKeywords', value: merged });
+                    void window.electronAPI.setSettings({ metadataKeywords: merged });
+                  }}
+                  className="px-1.5 py-0.5 text-[10px] bg-blue-500/15 text-blue-300 rounded border border-blue-500/25 hover:bg-blue-500/25 transition-colors"
+                  title={`Apply "${tag}" to selected photos`}
+                >
+                  {tag}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {nextActionToolbar}
+
+      {totalPhotoCount > 0 && showAiReviewStrip && (
+        <div className="shrink-0 border-b border-border bg-surface-alt/55 px-3 py-1.5">
+          <div className="flex flex-wrap items-center gap-2 text-[10px] text-text-muted">
+            <span className="font-semibold uppercase tracking-wide text-text-secondary">AI Overview</span>
+            <span className={aiOverview.ready ? 'text-emerald-300' : reviewPaused ? 'text-yellow-300' : 'text-blue-300'}>
+              {aiOverview.status}
+            </span>
+            {aiOverview.items.map((item) => (
+              <span key={item} className="rounded bg-surface-raised px-1.5 py-0.5 text-text-secondary">
+                {item}
+              </span>
+            ))}
+            {aiOverview.attention.map((item) => (
+              <span key={item} className="rounded bg-yellow-500/10 px-1.5 py-0.5 text-yellow-300">
+                {item}
+              </span>
+            ))}
+            {reviewSprintMode && (
+              <span className="rounded bg-blue-500/10 px-1.5 py-0.5 text-blue-300">
+                focus {reviewStats.picked} kept / {reviewStats.rejected} rejected / {reviewStats.pending} open
+              </span>
+            )}
+            <span className="text-text-faint">{aiOverview.mode}</span>
+            <button
+              type="button"
+              onClick={() => setShowAiReviewStrip(false)}
+              className="ml-auto rounded px-1 text-[10px] text-text-muted hover:bg-surface-raised hover:text-text"
+              title="Hide AI status strip"
+            >
+              Hide
+            </button>
+          </div>
+        </div>
+      )}
+      {totalPhotoCount > 0 && !showAiReviewStrip && (
+        <div className="shrink-0 border-b border-border bg-surface-alt/35 px-3 py-1">
+          <button
+            type="button"
+            onClick={() => setShowAiReviewStrip(true)}
+            className="rounded border border-border bg-surface-raised px-2 py-0.5 text-[10px] text-text-secondary hover:border-accent/50 hover:text-text"
+            title="Show the AI Overview status bar"
+          >
+            Show AI Overview ({aiAnalyzedCount}/{totalPhotoCount})
+          </button>
+        </div>
+      )}
 
       {/* Content */}
       <div className="flex-1 min-h-0">
-        {viewMode === 'settings' ? (
-          <SettingsPage
-            inline
-            onClose={() => dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' })}
-          />
-        ) : viewMode === 'compare' ? (
+        {viewMode === 'compare' ? (
           <div className="h-full relative">
-            <CompareView files={compareFiles.length >= 2 ? compareFiles : sortedFiles.slice(Math.max(0, focusedIndex), Math.max(0, focusedIndex) + 2)} />
+            <CompareView
+              files={compareDisplayFiles}
+              previewStopsByPath={comparePreviewStopsByPath}
+              previewWhiteBalanceByPath={comparePreviewWhiteBalanceByPath}
+              selectionCount={compareFiles.length >= 2 ? selectedPaths.length : 0}
+              queuedPaths={queuedPaths}
+              onPickWinner={handleCompareWinner}
+              onRejectFile={handleCompareReject}
+              onQueueFile={handleCompareQueue}
+              onFocusFile={handleCompareFocus}
+            />
             {floatingToolbar}
           </div>
         ) : viewMode === 'single' && focusedFile ? (
@@ -1789,8 +3337,10 @@ export function ThumbnailGrid() {
                     focused={i === focusedIndex}
                     selected={selectedIndices.has(i)}
                     queued={queuedSet.has(file.path)}
-                    forceLoad={forceVisibleThumbnails}
+                    forceLoad={forceVisibleThumbnails(i, file.path)}
                     exposurePreviewStops={getThumbnailExposureStops(file)}
+                    whiteBalancePreview={getThumbnailWhiteBalance(file)}
+                    isBurstBest={false}
                     compact
                     frameNumber={i + 1}
                     burstCollapsed={!!file.burstId && collapsedSet.has(file.burstId)}
@@ -1818,11 +3368,29 @@ export function ThumbnailGrid() {
           </div>
         ) : (
           <div className="h-full relative">
-            <div className="h-full overflow-y-auto px-4 pt-3 pb-16">
+            <div ref={flatScrollRef} className="h-full overflow-y-auto px-4 pt-3 pb-16">
               {folderGroups ? (
-                /* ── Folder view: one section per sub-directory, ranked by ★ ── */
+                /* Folder view: one section per sub-directory, ranked by star */
                 <div className="flex flex-col gap-8">
+                  {folderGroups.length > 1 && (
+                    <div className="sticky top-0 z-20 -mb-4 flex items-center gap-2 border-b border-border bg-surface/95 py-2">
+                      <span className="text-[11px] text-text-secondary">{folderGroups.length} folders</span>
+                      <button
+                        onClick={() => setCollapsedFolders(new Set(folderGroups.map(([folder]) => folder)))}
+                        className="rounded bg-surface-raised px-2 py-1 text-[10px] text-text-muted hover:text-text"
+                      >
+                        Collapse all
+                      </button>
+                      <button
+                        onClick={() => setCollapsedFolders(new Set())}
+                        className="rounded bg-surface-raised px-2 py-1 text-[10px] text-text-muted hover:text-text"
+                      >
+                        Expand all
+                      </button>
+                    </div>
+                  )}
                   {folderGroups.map(([folder, folderFiles]) => {
+                    const collapsed = collapsedFolders.has(folder);
                     const ratedFiles = folderFiles.filter((f) => (f.rating ?? 0) > 0);
                     const avgRating = ratedFiles.length > 0
                       ? ratedFiles.reduce((s, f) => s + (f.rating ?? 0), 0) / ratedFiles.length
@@ -1832,8 +3400,22 @@ export function ThumbnailGrid() {
                       : 0;
                     return (
                       <div key={folder}>
-                        {/* Folder header */}
-                        <div className="flex items-center gap-2 mb-2 pb-1 border-b border-border sticky top-0 bg-surface z-10 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCollapsedFolders((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(folder)) next.delete(folder);
+                              else next.add(folder);
+                              return next;
+                            });
+                          }}
+                          className="flex w-full items-center gap-2 mb-2 pb-1 border-b border-border sticky top-0 bg-surface z-10 pt-1 text-left hover:bg-surface-alt/40"
+                          title={collapsed ? 'Expand folder' : 'Collapse folder'}
+                        >
+                          <svg className={`w-3 h-3 text-text-muted shrink-0 transition-transform ${collapsed ? '-rotate-90' : ''}`} viewBox="0 0 20 20" fill="currentColor">
+                            <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" />
+                          </svg>
                           <svg className="w-3.5 h-3.5 text-text-muted shrink-0" viewBox="0 0 20 20" fill="currentColor">
                             <path fillRule="evenodd" d="M2 6a2 2 0 012-2h4l2 2h4a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" clipRule="evenodd" />
                           </svg>
@@ -1846,13 +3428,13 @@ export function ThumbnailGrid() {
                           {ratedFiles.length > 0 && (
                             <span
                               className="text-[10px] text-yellow-400 shrink-0"
-                              title={`${ratedFiles.length} rated · avg ${avgRating.toFixed(1)}★ · best ${maxRating}★`}
+                              title={`${ratedFiles.length} rated · avg ${avgRating.toFixed(1)} · best ${maxRating}`}
                             >
-                              {'★'.repeat(maxRating)}{'☆'.repeat(5 - maxRating)} best · avg {avgRating.toFixed(1)}★
+                              {'\u2605'.repeat(maxRating)}{'\u2606'.repeat(5 - maxRating)} best · avg {avgRating.toFixed(1)}
                             </span>
                           )}
-                        </div>
-                        {/* Thumbnail grid for this folder */}
+                        </button>
+                        {!collapsed && (
                         <div className="thumbnail-grid grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-3">
                           {folderFiles.map((file) => {
                             const i = pathToSortedIndex.get(file.path) ?? -1;
@@ -1864,8 +3446,10 @@ export function ThumbnailGrid() {
                                 focused={i === focusedIndex}
                                 selected={selectedIndices.has(i)}
                                 queued={queuedSet.has(file.path)}
-                                forceLoad={forceVisibleThumbnails}
+                                forceLoad={forceVisibleThumbnails(i, file.path)}
                                 exposurePreviewStops={getThumbnailExposureStops(file)}
+                                whiteBalancePreview={getThumbnailWhiteBalance(file)}
+                                isBurstBest={false}
                                 burstCollapsed={!!file.burstId && collapsedSet.has(file.burstId)}
                                 onBurstToggle={handleBurstToggle}
                                 onClickCard={handleCardClick}
@@ -1874,12 +3458,58 @@ export function ThumbnailGrid() {
                             );
                           })}
                         </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : virtualGridEnabled ? (
+                <div
+                  ref={gridRef}
+                  className="relative"
+                  style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
+                >
+                  {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                    const startIndex = virtualRow.index * virtualGridColumns;
+                    const rowFiles = sortedFiles.slice(startIndex, startIndex + virtualGridColumns);
+                    return (
+                      <div
+                        key={virtualRow.key}
+                        ref={rowVirtualizer.measureElement}
+                        data-index={virtualRow.index}
+                        className="absolute left-0 top-0 grid w-full gap-3 pb-3"
+                        style={{
+                          transform: `translateY(${virtualRow.start}px)`,
+                          gridTemplateColumns: `repeat(${virtualGridColumns}, minmax(0, 1fr))`,
+                        }}
+                      >
+                        {rowFiles.map((file, offset) => {
+                          const i = startIndex + offset;
+                          return (
+                            <ThumbnailCard
+                              key={file.path}
+                              index={i}
+                              file={file}
+                              focused={i === focusedIndex}
+                              selected={selectedIndices.has(i)}
+                              queued={queuedSet.has(file.path)}
+                              forceLoad={forceVisibleThumbnails(i, file.path)}
+                              exposurePreviewStops={getThumbnailExposureStops(file)}
+                              whiteBalancePreview={getThumbnailWhiteBalance(file)}
+                              isBurstBest={false}
+                              burstCollapsed={!!file.burstId && collapsedSet.has(file.burstId)}
+                              onBurstToggle={handleBurstToggle}
+                              onClickCard={handleCardClick}
+                              onDoubleClickCard={handleGridDoubleClick}
+                            />
+                          );
+                        })}
                       </div>
                     );
                   })}
                 </div>
               ) : (
-                /* ── Normal flat grid ── */
+                /* Normal flat grid */
                 <div
                   ref={gridRef}
                   className="thumbnail-grid grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-3"
@@ -1892,8 +3522,10 @@ export function ThumbnailGrid() {
                       focused={i === focusedIndex}
                       selected={selectedIndices.has(i)}
                       queued={queuedSet.has(file.path)}
-                      forceLoad={forceVisibleThumbnails}
+                      forceLoad={forceVisibleThumbnails(i, file.path)}
                       exposurePreviewStops={getThumbnailExposureStops(file)}
+                      whiteBalancePreview={getThumbnailWhiteBalance(file)}
+                      isBurstBest={false}
                       burstCollapsed={!!file.burstId && collapsedSet.has(file.burstId)}
                       onBurstToggle={handleBurstToggle}
                       onClickCard={handleCardClick}
