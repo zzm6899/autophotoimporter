@@ -36,7 +36,14 @@ if (!licensePublicKeyPem) throw new Error('LICENSE_PUBLIC_KEY or LICENSE_PUBLIC_
 
 function requiredSecret(name, forbiddenDefault) {
   const value = String(process.env[name] || '');
-  if (!value || value === forbiddenDefault || value.length < 32) {
+  const normalized = value.toLowerCase();
+  const isPlaceholder =
+    value === forbiddenDefault ||
+    normalized.includes('change_me') ||
+    normalized.includes('change-me') ||
+    normalized.includes('replace_with') ||
+    normalized.includes('replace-with');
+  if (!value || isPlaceholder || value.length < 32) {
     throw new Error(`${name} must be set to a unique secret of at least 32 characters.`);
   }
   return value;

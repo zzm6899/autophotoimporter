@@ -112,6 +112,24 @@ describe('update-checker', () => {
     expect(result.message).toContain('network down');
   });
 
+  it('tries the updates subdomain when the primary update host fails', async () => {
+    fetchMock
+      .mockRejectedValueOnce(new Error('net::ERR_SSL_PROTOCOL_ERROR'))
+      .mockResolvedValueOnce(jsonResponse({ allowed: true, latestVersion: '1.2.0' }));
+    const result = await checkForUpdate();
+    expect(result.status).toBe('up-to-date');
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('https://keptra.z2hs.au/api/v1/app/update');
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain('https://updates.keptra.z2hs.au/api/v1/app/update');
+  });
+
+  it('shows a friendly message when secure update checks fail', async () => {
+    fetchMock.mockRejectedValue(new Error('net::ERR_SSL_PROTOCOL_ERROR'));
+    const result = await checkForUpdate();
+    expect(result.status).toBe('error');
+    expect(result.message).toContain('secure connection');
+    expect(result.message).not.toContain('ERR_SSL_PROTOCOL_ERROR');
+  });
+
   it('skips malformed release history entries', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ releases: [{ version: '1.2.2' }, { releaseName: 'bad' }, { version: '1.2.2' }] }));
     const history = await fetchUpdateHistory();

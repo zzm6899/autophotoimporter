@@ -6,6 +6,7 @@ import path from 'node:path';
 import { log } from '../logger';
 
 const UPDATE_BASE_URL = 'https://keptra.z2hs.au';
+const UPDATE_FALLBACK_BASE_URL = 'https://updates.keptra.z2hs.au';
 const UPDATE_ALLOWED_HOSTS = new Set(['keptra.z2hs.au', 'updates.keptra.z2hs.au', 'admin.keptra.z2hs.au']);
 const UPDATE_ALLOWED_SCHEMES = new Set(['https:']);
 const TIMEOUT_MS = 10_000;
@@ -210,85 +211,111 @@ async function fetchJson<T>(url: string, licenseKey?: string): Promise<T> {
   }
 }
 
+function describeUpdateNetworkError(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err || '');
+  if (
+    message.includes('ERR_SSL_PROTOCOL_ERROR') ||
+    message.includes('ERR_CERT') ||
+    message.toLowerCase().includes('ssl') ||
+    message.toLowerCase().includes('tls')
+  ) {
+    return 'Could not establish a secure connection to the update service. Please try again in a moment.';
+  }
+  return message || 'Could not reach the update service.';
+}
+
 export async function checkForUpdate(licenseKey?: string): Promise<UpdateState> {
   const version = currentVersion();
   const platform = currentPlatform();
   const checkedAt = new Date().toISOString();
+  let lastError: unknown;
 
-  try {
-    const url = `${UPDATE_BASE_URL}/api/v1/app/update?platform=${encodeURIComponent(platform)}&version=${encodeURIComponent(version)}&channel=stable`;
-    const data = await fetchJson<CheckResponse>(url, licenseKey);
-    const releaseUrl = normalizeUpdateUrl(data.releaseUrl);
-    const downloadUrl = normalizeUpdateUrl(data.downloadUrl);
-    const feedUrl = normalizeUpdateUrl(data.feedUrl);
+  for (const baseUrl of [UPDATE_BASE_URL, UPDATE_FALLBACK_BASE_URL]) {
+    try {
+      const url = `${baseUrl}/api/v1/app/update?platform=${encodeURIComponent(platform)}&version=${encodeURIComponent(version)}&channel=stable`;
+      const data = await fetchJson<CheckResponse>(url, licenseKey);
+      const releaseUrl = normalizeUpdateUrl(data.releaseUrl);
+      const downloadUrl = normalizeUpdateUrl(data.downloadUrl);
+      const feedUrl = normalizeUpdateUrl(data.feedUrl);
 
-    if (!data.allowed) {
-      return {
-        status: 'denied',
-        currentVersion: version,
-        lastCheckedAt: checkedAt,
-        message: data.message || 'This install is not entitled to updates.',
-      };
-    }
-
-    if (!data.latestVersion) {
-      logUpdateDiagnostic('metadata-malformed', { reason: 'missing-latest-version' });
-      return {
-        status: 'error',
-        currentVersion: version,
-        lastCheckedAt: checkedAt,
-        message: 'Update metadata is malformed. Showing your last known update state.',
-      };
-    }
-
-    if (!isNewer(version, data.latestVersion)) {
-      if (data.latestVersion !== version) {
-        logUpdateDiagnostic('downgrade-blocked', { currentVersion: version, offeredVersion: data.latestVersion });
+      if (!data.allowed) {
+        return {
+          status: 'denied',
+          currentVersion: version,
+          lastCheckedAt: checkedAt,
+          message: data.message || 'This install is not entitled to updates.',
+        };
       }
+
+      if (!data.latestVersion) {
+        logUpdateDiagnostic('metadata-malformed', { reason: 'missing-latest-version' });
+        return {
+          status: 'error',
+          currentVersion: version,
+          lastCheckedAt: checkedAt,
+          message: 'Update metadata is malformed. Showing your last known update state.',
+        };
+      }
+
+      if (!isNewer(version, data.latestVersion)) {
+        if (data.latestVersion !== version) {
+          logUpdateDiagnostic('downgrade-blocked', { currentVersion: version, offeredVersion: data.latestVersion });
+        }
+        return {
+          status: 'up-to-date',
+          currentVersion: version,
+          latestVersion: data.latestVersion ?? version,
+          lastCheckedAt: checkedAt,
+          message: data.message || 'You already have the latest version.',
+        };
+      }
+
+      if (!isAllowedUpdateUrl(feedUrl) || !isAllowedUpdateUrl(downloadUrl) || !isAllowedUpdateUrl(releaseUrl)) {
+        logUpdateDiagnostic('metadata-malformed', { reason: 'url-not-allowlisted' });
+        return {
+          status: 'error',
+          currentVersion: version,
+          lastCheckedAt: checkedAt,
+          message: 'Update metadata failed trust checks. Please contact support.',
+        };
+      }
+
+      await writeLastKnownGoodUpdateMetadata({
+        latestVersion: data.latestVersion,
+        releaseName: data.releaseName,
+        releaseDate: data.releaseDate,
+        releaseUrl,
+        downloadUrl,
+        feedUrl,
+        savedAt: checkedAt,
+      });
+      logUpdateDiagnostic('metadata-saved', { latestVersion: data.latestVersion, platform });
+
       return {
-        status: 'up-to-date',
+        status: 'available',
         currentVersion: version,
-        latestVersion: data.latestVersion ?? version,
+        latestVersion: data.latestVersion,
+        releaseName: data.releaseName,
+        releaseNotes: data.releaseNotes,
+        releaseDate: data.releaseDate,
+        releaseUrl,
+        downloadUrl,
+        feedUrl,
         lastCheckedAt: checkedAt,
-        message: data.message || 'You already have the latest version.',
+        message: data.message,
       };
+    } catch (err) {
+      lastError = err;
+      logUpdateDiagnostic('check-failed', {
+        baseUrl,
+        message: err instanceof Error ? err.message : 'unknown-error',
+        ...(err instanceof UpdateServiceMetadataError ? err.diagnostic : {}),
+      });
     }
+  }
 
-    if (!isAllowedUpdateUrl(feedUrl) || !isAllowedUpdateUrl(downloadUrl) || !isAllowedUpdateUrl(releaseUrl)) {
-      logUpdateDiagnostic('metadata-malformed', { reason: 'url-not-allowlisted' });
-      return {
-        status: 'error',
-        currentVersion: version,
-        lastCheckedAt: checkedAt,
-        message: 'Update metadata failed trust checks. Please contact support.',
-      };
-    }
-
-    await writeLastKnownGoodUpdateMetadata({
-      latestVersion: data.latestVersion,
-      releaseName: data.releaseName,
-      releaseDate: data.releaseDate,
-      releaseUrl,
-      downloadUrl,
-      feedUrl,
-      savedAt: checkedAt,
-    });
-    logUpdateDiagnostic('metadata-saved', { latestVersion: data.latestVersion, platform });
-
-    return {
-      status: 'available',
-      currentVersion: version,
-      latestVersion: data.latestVersion,
-      releaseName: data.releaseName,
-      releaseNotes: data.releaseNotes,
-      releaseDate: data.releaseDate,
-      releaseUrl,
-      downloadUrl,
-      feedUrl,
-      lastCheckedAt: checkedAt,
-      message: data.message,
-    };
-  } catch (err) {
+  {
+    const err = lastError;
     logUpdateDiagnostic('check-failed', {
       message: err instanceof Error ? err.message : 'unknown-error',
       ...(err instanceof UpdateServiceMetadataError ? err.diagnostic : {}),
@@ -297,7 +324,7 @@ export async function checkForUpdate(licenseKey?: string): Promise<UpdateState> 
       status: 'error',
       currentVersion: version,
       lastCheckedAt: checkedAt,
-      message: err instanceof Error ? err.message : 'Could not reach the update service.',
+      message: describeUpdateNetworkError(err),
     };
   }
 }
