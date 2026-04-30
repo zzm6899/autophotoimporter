@@ -104,6 +104,7 @@ describe('validateLicenseKey', () => {
     expect(result.valid).toBe(true);
     expect(result.entitlement?.expiresAt).toBe('2026-05-11');
     expect(result.message).toContain('active');
+    expect(String(vi.mocked(fetch).mock.calls[0]?.[0])).toBe('https://keptra.z2hs.au/api/v1/license/resolve');
   });
 
   it('preserves an existing activation code when hosted status omits it', async () => {

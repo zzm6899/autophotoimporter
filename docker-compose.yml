@@ -34,7 +34,7 @@ services:
       GITHUB_RELEASE_REPO: ${GITHUB_RELEASE_REPO}
       GITHUB_RELEASE_TOKEN: ${GITHUB_RELEASE_TOKEN}
       GITHUB_API_BASE_URL: ${GITHUB_API_BASE_URL:-https://api.github.com}
-      PUBLIC_UPDATES_BASE_URL: https://updates.keptra.z2hs.au
+      PUBLIC_UPDATES_BASE_URL: https://keptra.z2hs.au
       COOKIE_SECURE: "true"
     ports:
       - "5071:5071"
@@ -54,6 +54,7 @@ services:
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./artifacts:/srv/artifacts:ro
+      - ./web:/srv/web:ro
       - caddy_data:/data
       - caddy_config:/config
 

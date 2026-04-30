@@ -152,7 +152,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const performanceSectionRef = useRef<HTMLDivElement | null>(null);
   const [gpuLoadStreams, setGpuLoadStreams] = useState(8);
 
-  const BASE_URL = 'https://updates.keptra.z2hs.au';
+  const BASE_URL = 'https://keptra.z2hs.au';
   const [diagnosing, setDiagnosing] = useState(false);
   const [diagResult, setDiagResult] = useState<string | null>(null);
   const [macDoctor, setMacDoctor] = useState<MacFirstRunDoctor | null>(null);
@@ -770,7 +770,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     setTrialBusy(true);
     setTrialFeedback(null);
     try {
-      const resp = await fetch('https://updates.keptra.z2hs.au/api/v1/trial/request', {
+      const resp = await fetch('https://keptra.z2hs.au/api/v1/trial/request', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, email }),

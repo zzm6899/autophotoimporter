@@ -4,7 +4,7 @@ Use this when publishing Keptra downloads from the public website while keeping 
 
 ## DNS
 
-- Put `updates.keptra.z2hs.au` behind the orange-cloud Cloudflare proxy.
+- Put `keptra.z2hs.au` behind the orange-cloud Cloudflare proxy.
 - Put `admin.keptra.z2hs.au` behind the orange-cloud Cloudflare proxy.
 - Avoid exposing the TrueNAS/origin IP in public DNS. A proxied record should resolve to Cloudflare IP ranges, not the server's direct IP.
 - If possible, firewall the origin so ports 80 and 443 only accept Cloudflare IP ranges.
@@ -23,7 +23,7 @@ Use this when publishing Keptra downloads from the public website while keeping 
 ## WAF and access control
 
 - Add a Cloudflare WAF rule or Zero Trust Access policy for `admin.keptra.z2hs.au/*`.
-- Keep `updates.keptra.z2hs.au` public for downloads and API endpoints.
+- Keep `keptra.z2hs.au` public for downloads and API endpoints.
 - Add bot/challenge rules for:
   - `/admin/*`
   - `/api/v1/checkout/create`
@@ -56,8 +56,8 @@ It also strips `X-Powered-By`.
 After deployment, run:
 
 ```powershell
-Invoke-WebRequest -Uri "https://updates.keptra.z2hs.au/" -Method Head | Select-Object -ExpandProperty Headers
-Resolve-DnsName updates.keptra.z2hs.au -Type A
+Invoke-WebRequest -Uri "https://keptra.z2hs.au/" -Method Head | Select-Object -ExpandProperty Headers
+Resolve-DnsName keptra.z2hs.au -Type A
 ```
 
 Expected:

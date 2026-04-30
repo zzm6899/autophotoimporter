@@ -197,7 +197,7 @@ let lastFtpSyncStatus: FtpSyncStatus = {
   message: 'FTP sync is idle.',
 };
 
-const UPDATE_ALLOWED_HOSTS = new Set(['updates.keptra.z2hs.au']);
+const UPDATE_ALLOWED_HOSTS = new Set(['keptra.z2hs.au', 'updates.keptra.z2hs.au', 'admin.keptra.z2hs.au']);
 const UPDATE_ALLOWED_SCHEMES = new Set(['https:']);
 
 function logUpdateDiagnostic(event: string, details: Record<string, unknown>) {
@@ -1187,7 +1187,9 @@ function isSafeHttpsUrl(value: unknown): value is string {
     const url = new URL(value);
     if (url.protocol !== 'https:') return false;
     return [
+      'keptra.z2hs.au',
       'updates.keptra.z2hs.au',
+      'admin.keptra.z2hs.au',
       'github.com',
       'checkout.stripe.com',
     ].includes(url.hostname);

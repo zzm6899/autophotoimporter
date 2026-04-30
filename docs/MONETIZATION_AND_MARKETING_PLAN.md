@@ -239,7 +239,7 @@ So I built Keptra for Mac and Windows. It lets you cull before import, use P/X/1
 
 There is a free version and a Pro trial. I would genuinely love workflow feedback from photographers, especially anyone who culls from SD cards before opening Lightroom/Capture One/etc.
 
-Link: https://updates.keptra.z2hs.au/
+Link: https://keptra.z2hs.au/
 
 ### X / Threads posts
 

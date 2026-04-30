@@ -2,8 +2,8 @@
 
 This stack hosts:
 
+- `keptra.z2hs.au` for the public website, desktop app update API, license API, checkout, and download redirects
 - `admin.keptra.z2hs.au` for the admin panel
-- `updates.keptra.z2hs.au` for the desktop app update API and download redirects
 
 The Node service listens on `0.0.0.0:5071` inside the app container, and the reverse proxy publishes it over HTTPS.
 
@@ -44,8 +44,9 @@ In TrueNAS:
 3. Make sure `../../scripts/license-keys/public.pem` contains the public key that matches the private key used to generate customer licenses.
 4. If you want the hosted admin panel to generate customer keys itself, also mount `../../scripts/license-keys/private.pem` into the app container. Keep it secret.
 5. Point DNS for:
+   - `keptra.z2hs.au`
    - `admin.keptra.z2hs.au`
-   - `updates.keptra.z2hs.au`
+   - `updates.keptra.z2hs.au` only if you still need the legacy update subdomain
 6. Start the stack:
 
 ```bash
@@ -73,7 +74,7 @@ node scripts/publish-update-release.mjs \
   --platform windows \
   --release-name "Keptra 1.1.1" \
   --file ./out/make/squirrel.windows/x64/Keptra-Setup.exe \
-  --release-url https://admin.keptra.z2hs.au/releases/1.1.1 \
+  --release-url https://keptra.z2hs.au/releases/1.1.1 \
   --notes "Improved culling and hosted updates" \
   --rollout live
 ```

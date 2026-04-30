@@ -1,3 +1,24 @@
+keptra.z2hs.au {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+		Content-Security-Policy "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https://keptra.z2hs.au https://admin.keptra.z2hs.au; form-action 'self'"
+		-X-Powered-By
+	}
+	@app_paths path /api/* /stripe/* /artifacts/* /releases/* /healthz
+	handle @app_paths {
+		reverse_proxy app:5071
+	}
+	handle {
+		root * /srv/web
+		try_files {path} {path}.html /index.html
+		file_server
+	}
+}
+
 admin.keptra.z2hs.au {
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
@@ -5,7 +26,7 @@ admin.keptra.z2hs.au {
 		X-Frame-Options "DENY"
 		Referrer-Policy "strict-origin-when-cross-origin"
 		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
-		Content-Security-Policy "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https://updates.keptra.z2hs.au https://admin.keptra.z2hs.au; form-action 'self'"
+		Content-Security-Policy "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https://keptra.z2hs.au https://admin.keptra.z2hs.au https://updates.keptra.z2hs.au; form-action 'self'"
 		-X-Powered-By
 	}
 	reverse_proxy app:5071
@@ -18,7 +39,7 @@ updates.keptra.z2hs.au {
 		X-Frame-Options "DENY"
 		Referrer-Policy "strict-origin-when-cross-origin"
 		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
-		Content-Security-Policy "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https://updates.keptra.z2hs.au https://admin.keptra.z2hs.au; form-action 'self'"
+		Content-Security-Policy "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https://keptra.z2hs.au https://admin.keptra.z2hs.au https://updates.keptra.z2hs.au; form-action 'self'"
 		-X-Powered-By
 	}
 

@@ -244,8 +244,8 @@ docker compose up -d --build
 
 Public endpoints:
 
+- `https://keptra.z2hs.au`
 - `https://admin.keptra.z2hs.au`
-- `https://updates.keptra.z2hs.au`
 
 If you prefer the TrueNAS Apps UI instead of shell-driven `docker compose`, use:
 
@@ -257,7 +257,7 @@ The hosted admin image is published from the private GitHub repo to:
 
 Artifacts are served from the repo-root `artifacts/` directory through Caddy at:
 
-- `https://updates.keptra.z2hs.au/artifacts/...`
+- `https://keptra.z2hs.au/artifacts/...`
 
 Optional private-GitHub sync for the admin panel:
 
@@ -270,7 +270,7 @@ Local/manual release registration:
 
 ```powershell
 $env:UPDATE_ADMIN_API_TOKEN="your-admin-api-token"
-npm run update:publish -- --endpoint https://updates.keptra.z2hs.au --platform windows --version 1.1.11 --file .\out\make\squirrel.windows\x64\Keptra-Setup.exe --release-name "Keptra 1.1.11" --release-url https://admin.keptra.z2hs.au/releases/1.1.11 --notes "Manual release import" --rollout live
+npm run update:publish -- --endpoint https://admin.keptra.z2hs.au --platform windows --version 1.1.11 --file .\out\make\squirrel.windows\x64\Keptra-Setup.exe --release-name "Keptra 1.1.11" --release-url https://keptra.z2hs.au/releases/1.1.11 --notes "Manual release import" --rollout live
 ```
 
 That helper uploads the installer to the hosted admin/update service and registers the release record there. GitHub Actions does the same thing automatically once `UPDATE_ADMIN_ENDPOINT` and `UPDATE_ADMIN_API_TOKEN` are configured as repo secrets.

@@ -28,7 +28,7 @@ const rolloutState = getArg('rollout') || 'draft';
 const uploadOnly = hasArg('upload-only');
 
 if (!endpoint || !token || !platform || (!artifactUrl && !filePath) || (!uploadOnly && !version)) {
-  console.error('Usage: node scripts/publish-update-release.mjs --endpoint https://admin.keptra.z2hs.au --token <token> --platform windows (--artifact-url https://updates.keptra.z2hs.au/... | --file ./artifact.exe) [--version 1.1.1] [--release-name "..."] [--release-url "..."] [--notes "..."] [--channel stable] [--rollout live] [--upload-only]');
+  console.error('Usage: node scripts/publish-update-release.mjs --endpoint https://admin.keptra.z2hs.au --token <token> --platform windows (--artifact-url https://keptra.z2hs.au/... | --file ./artifact.exe) [--version 1.1.1] [--release-name "..."] [--release-url "..."] [--notes "..."] [--channel stable] [--rollout live] [--upload-only]');
   process.exit(1);
 }
 

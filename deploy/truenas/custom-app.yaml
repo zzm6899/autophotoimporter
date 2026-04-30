@@ -30,7 +30,7 @@ services:
       GITHUB_RELEASE_REPO: autophotoimporter
       GITHUB_RELEASE_TOKEN: CHANGE_ME_GITHUB_RELEASE_TOKEN
       GITHUB_API_BASE_URL: https://api.github.com
-      PUBLIC_UPDATES_BASE_URL: https://updates.keptra.z2hs.au
+      PUBLIC_UPDATES_BASE_URL: https://keptra.z2hs.au
       COOKIE_SECURE: "true"
 
       # --- SMTP email (Gmail or any SMTP server) ---
@@ -45,7 +45,7 @@ services:
       STRIPE_SECRET_KEY: CHANGE_ME_STRIPE_SECRET_KEY
       STRIPE_PUBLISHABLE_KEY: CHANGE_ME_STRIPE_PUBLISHABLE_KEY
       # Webhook secret — from https://dashboard.stripe.com/webhooks
-      # Register: https://updates.keptra.z2hs.au/stripe/webhook
+      # Register: https://keptra.z2hs.au/stripe/webhook
       # Events: checkout.session.completed, customer.subscription.updated
       STRIPE_WEBHOOK_SECRET: CHANGE_ME_STRIPE_WEBHOOK_SECRET
 

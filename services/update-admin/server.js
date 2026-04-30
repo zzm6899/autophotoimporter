@@ -371,7 +371,22 @@ function planPill(plan, expiresAt) {
 }
 
 function publicUpdatesBaseUrl() {
-  return String(process.env.PUBLIC_UPDATES_BASE_URL || 'https://updates.keptra.z2hs.au').replace(/\/$/, '');
+  return String(process.env.PUBLIC_UPDATES_BASE_URL || 'https://keptra.z2hs.au').replace(/\/$/, '');
+}
+
+function publicReleaseUrl(version) {
+  return `${publicUpdatesBaseUrl()}/releases/${version}`;
+}
+
+function normalizePublicKeptraUrl(value) {
+  if (!value) return value;
+  const base = publicUpdatesBaseUrl();
+  return String(value)
+    .replace(/^https:\/\/updates\.culler\.z2hs\.au/i, base)
+    .replace(/^https:\/\/admin\.culler\.z2hs\.au/i, base)
+    .replace(/^https:\/\/culler\.z2hs\.au/i, 'https://keptra.z2hs.au')
+    .replace(/^https:\/\/updates\.keptra\.z2hs\.au/i, base)
+    .replace(/^https:\/\/admin\.keptra\.z2hs\.au/i, base);
 }
 
 function sanitizeArtifactFilename(name) {
@@ -1030,8 +1045,8 @@ function serializePublicRelease(row) {
     version: row.version,
     releaseName: row.release_name,
     notes: row.release_notes,
-    releaseUrl: row.release_url,
-    artifactUrl: row.artifact_url,
+    releaseUrl: normalizePublicKeptraUrl(row.release_url),
+    artifactUrl: normalizePublicKeptraUrl(row.artifact_url),
     publishedAt: row.published_at,
     channel: row.channel,
     platform: row.platform,
@@ -2166,8 +2181,8 @@ app.get('/admin/releases', authSession, async (req, res) => {
             <div><label>Rollout</label><select name="rolloutState"><option value="live">Live</option><option value="draft">Draft</option><option value="hidden">Hidden</option></select></div>
           </div>
           <label>Release name</label><input name="releaseName" placeholder="Keptra 1.1.1" required />
-          <label>Artifact URL</label><input name="artifactUrl" placeholder="https://updates.keptra.z2hs.au/artifacts/windows/Keptra-Setup-1.1.1.exe" required />
-          <label>Release URL <span style="font-weight:400">(optional)</span></label><input name="releaseUrl" placeholder="https://admin.keptra.z2hs.au/releases/1.1.1" />
+          <label>Artifact URL</label><input name="artifactUrl" placeholder="https://keptra.z2hs.au/artifacts/windows/Keptra-Setup-1.1.1.exe" required />
+          <label>Release URL <span style="font-weight:400">(optional)</span></label><input name="releaseUrl" placeholder="https://keptra.z2hs.au/releases/1.1.1" />
           <label>Release notes <span style="font-weight:400">(optional)</span></label><textarea name="releaseNotes" rows="4"></textarea>
           <div class="actions" style="margin-top:16px">
             <button type="submit">Save release</button>
@@ -2276,7 +2291,7 @@ app.post('/admin/releases/sync-github', authSession, async (_req, res) => {
 
 app.post('/admin/releases', authSession, async (req, res) => {
   const version = req.body.version;
-  const releaseUrl = req.body.releaseUrl || publicUpdatesBaseUrl().replace('updates.', 'admin.') + `/releases/${version}`;
+  const releaseUrl = req.body.releaseUrl || publicReleaseUrl(version);
   await pool.query(
     `INSERT INTO releases (version, platform, channel, release_name, release_notes, release_url, artifact_url, rollout_state, published_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())`,
@@ -2581,7 +2596,7 @@ app.post('/admin/api/releases/import', requireAdminApiToken, async (req, res) =>
   if (!version || !platform || !releaseName || !artifactUrl) {
     return res.status(400).json({ error: 'version, platform, releaseName, and artifactUrl are required.' });
   }
-  const resolvedReleaseUrl = releaseUrl || publicUpdatesBaseUrl().replace('updates.', 'admin.') + `/releases/${version}`;
+  const resolvedReleaseUrl = releaseUrl || publicReleaseUrl(version);
   const result = await pool.query(
     `INSERT INTO releases (version, platform, channel, release_name, release_notes, release_url, artifact_url, rollout_state, published_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
@@ -3231,7 +3246,7 @@ app.post('/stripe/webhook/test', authSession, async (req, res) => {
 // ---------------------------------------------------------------------------
 // Stripe webhook  POST /stripe/webhook
 // Must be registered as a raw-body route (before express.json parses it).
-// In your Stripe dashboard point the webhook at: https://updates.keptra.z2hs.au/stripe/webhook
+// In your Stripe dashboard point the webhook at: https://keptra.z2hs.au/stripe/webhook
 // Events to listen for: checkout.session.completed
 // ---------------------------------------------------------------------------
 app.post(

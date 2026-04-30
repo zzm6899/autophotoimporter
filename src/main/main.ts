@@ -106,7 +106,9 @@ function isSafeExternalUrl(value: string): boolean {
     const url = new URL(value);
     if (url.protocol !== 'https:') return false;
     return [
+      'keptra.z2hs.au',
       'updates.keptra.z2hs.au',
+      'admin.keptra.z2hs.au',
       'github.com',
       'checkout.stripe.com',
     ].includes(url.hostname);

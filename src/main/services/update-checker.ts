@@ -5,8 +5,8 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { log } from '../logger';
 
-const UPDATE_BASE_URL = 'https://updates.keptra.z2hs.au';
-const UPDATE_ALLOWED_HOSTS = new Set(['updates.keptra.z2hs.au']);
+const UPDATE_BASE_URL = 'https://keptra.z2hs.au';
+const UPDATE_ALLOWED_HOSTS = new Set(['keptra.z2hs.au', 'updates.keptra.z2hs.au', 'admin.keptra.z2hs.au']);
 const UPDATE_ALLOWED_SCHEMES = new Set(['https:']);
 const TIMEOUT_MS = 10_000;
 
@@ -33,6 +33,16 @@ type HistoryResponse = {
   }>;
 };
 
+type UpdateFetchResponse = {
+  ok: boolean;
+  status: number;
+  headers?: {
+    get(name: string): string | null;
+  };
+  text?: () => Promise<string>;
+  json?: () => Promise<unknown>;
+};
+
 export interface PersistedUpdateMetadata {
   latestVersion: string;
   releaseName?: string;
@@ -45,6 +55,13 @@ export interface PersistedUpdateMetadata {
 
 function logUpdateDiagnostic(event: string, details: Record<string, unknown>) {
   log.info('[updates]', JSON.stringify({ event, ...details }));
+}
+
+class UpdateServiceMetadataError extends Error {
+  constructor(message: string, readonly diagnostic: Record<string, unknown>) {
+    super(message);
+    this.name = 'UpdateServiceMetadataError';
+  }
 }
 
 function isNewer(local: string, remote: string): boolean {
@@ -88,6 +105,16 @@ function isAllowedUpdateUrl(value?: string): boolean {
   }
 }
 
+function normalizeUpdateUrl(value?: string): string | undefined {
+  if (!value) return undefined;
+  return value
+    .replace(/^https:\/\/updates\.culler\.z2hs\.au/i, UPDATE_BASE_URL)
+    .replace(/^https:\/\/admin\.culler\.z2hs\.au/i, UPDATE_BASE_URL)
+    .replace(/^https:\/\/culler\.z2hs\.au/i, UPDATE_BASE_URL)
+    .replace(/^https:\/\/updates\.keptra\.z2hs\.au/i, UPDATE_BASE_URL)
+    .replace(/^https:\/\/admin\.keptra\.z2hs\.au/i, UPDATE_BASE_URL);
+}
+
 function getUpdateMetadataPath() {
   return path.join(app.getPath('userData'), 'update-metadata.json');
 }
@@ -107,6 +134,57 @@ export async function readLastKnownGoodUpdateMetadata(): Promise<PersistedUpdate
   }
 }
 
+function getResponseHeader(response: UpdateFetchResponse, name: string): string | null {
+  try {
+    return response.headers?.get(name) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function readUpdateJson<T>(response: UpdateFetchResponse): Promise<T> {
+  const contentType = getResponseHeader(response, 'content-type') ?? '';
+
+  if (typeof response.text === 'function') {
+    const raw = await response.text();
+    const trimmed = raw.trim();
+
+    if (!trimmed) {
+      throw new UpdateServiceMetadataError('Update service returned an empty response.', {
+        reason: 'empty-json-response',
+        contentType,
+        bytes: raw.length,
+      });
+    }
+
+    try {
+      return JSON.parse(trimmed) as T;
+    } catch {
+      throw new UpdateServiceMetadataError('Update service returned invalid metadata JSON.', {
+        reason: 'invalid-json-response',
+        contentType,
+        bytes: raw.length,
+      });
+    }
+  }
+
+  if (typeof response.json === 'function') {
+    try {
+      return await response.json() as T;
+    } catch {
+      throw new UpdateServiceMetadataError('Update service returned invalid metadata JSON.', {
+        reason: 'invalid-json-response',
+        contentType,
+      });
+    }
+  }
+
+  throw new UpdateServiceMetadataError('Update service response could not be read.', {
+    reason: 'unreadable-response',
+    contentType,
+  });
+}
+
 async function fetchJson<T>(url: string, licenseKey?: string): Promise<T> {
   const { controller, clear } = createTimeoutController();
   try {
@@ -114,7 +192,7 @@ async function fetchJson<T>(url: string, licenseKey?: string): Promise<T> {
     const response = await net.fetch(url, {
       headers: {
         Accept: 'application/json',
-        'User-Agent': 'photo-importer',
+        'User-Agent': 'keptra',
         'X-Device-Id': device.id,
         'X-Device-Name': device.name,
         ...(licenseKey ? { 'X-License-Key': licenseKey } : {}),
@@ -126,7 +204,7 @@ async function fetchJson<T>(url: string, licenseKey?: string): Promise<T> {
       throw new Error(`Update service returned ${response.status}`);
     }
 
-    return await response.json() as T;
+    return await readUpdateJson<T>(response);
   } finally {
     clear();
   }
@@ -140,6 +218,9 @@ export async function checkForUpdate(licenseKey?: string): Promise<UpdateState> 
   try {
     const url = `${UPDATE_BASE_URL}/api/v1/app/update?platform=${encodeURIComponent(platform)}&version=${encodeURIComponent(version)}&channel=stable`;
     const data = await fetchJson<CheckResponse>(url, licenseKey);
+    const releaseUrl = normalizeUpdateUrl(data.releaseUrl);
+    const downloadUrl = normalizeUpdateUrl(data.downloadUrl);
+    const feedUrl = normalizeUpdateUrl(data.feedUrl);
 
     if (!data.allowed) {
       return {
@@ -173,7 +254,7 @@ export async function checkForUpdate(licenseKey?: string): Promise<UpdateState> 
       };
     }
 
-    if (!isAllowedUpdateUrl(data.feedUrl) || !isAllowedUpdateUrl(data.downloadUrl) || !isAllowedUpdateUrl(data.releaseUrl)) {
+    if (!isAllowedUpdateUrl(feedUrl) || !isAllowedUpdateUrl(downloadUrl) || !isAllowedUpdateUrl(releaseUrl)) {
       logUpdateDiagnostic('metadata-malformed', { reason: 'url-not-allowlisted' });
       return {
         status: 'error',
@@ -187,9 +268,9 @@ export async function checkForUpdate(licenseKey?: string): Promise<UpdateState> 
       latestVersion: data.latestVersion,
       releaseName: data.releaseName,
       releaseDate: data.releaseDate,
-      releaseUrl: data.releaseUrl,
-      downloadUrl: data.downloadUrl,
-      feedUrl: data.feedUrl,
+      releaseUrl,
+      downloadUrl,
+      feedUrl,
       savedAt: checkedAt,
     });
     logUpdateDiagnostic('metadata-saved', { latestVersion: data.latestVersion, platform });
@@ -201,14 +282,17 @@ export async function checkForUpdate(licenseKey?: string): Promise<UpdateState> 
       releaseName: data.releaseName,
       releaseNotes: data.releaseNotes,
       releaseDate: data.releaseDate,
-      releaseUrl: data.releaseUrl,
-      downloadUrl: data.downloadUrl,
-      feedUrl: data.feedUrl,
+      releaseUrl,
+      downloadUrl,
+      feedUrl,
       lastCheckedAt: checkedAt,
       message: data.message,
     };
   } catch (err) {
-    logUpdateDiagnostic('check-failed', { message: err instanceof Error ? err.message : 'unknown-error' });
+    logUpdateDiagnostic('check-failed', {
+      message: err instanceof Error ? err.message : 'unknown-error',
+      ...(err instanceof UpdateServiceMetadataError ? err.diagnostic : {}),
+    });
     return {
       status: 'error',
       currentVersion: version,
