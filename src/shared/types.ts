@@ -581,6 +581,22 @@ export const DEFAULT_METADATA_EXPORT: MetadataExportFlags = {
   stripGps: false,
 };
 
+export interface ViewOverlayPreferences {
+  photoStats: boolean;
+  histogram: boolean;
+  faceBoxes: boolean;
+  peopleBoxes: boolean;
+  aiReasons: boolean;
+}
+
+export const DEFAULT_VIEW_OVERLAY_PREFERENCES: ViewOverlayPreferences = {
+  photoStats: true,
+  histogram: true,
+  faceBoxes: false,
+  peopleBoxes: false,
+  aiReasons: false,
+};
+
 export interface AppSettings {
   lastDestination: string;
   skipDuplicates: boolean;
@@ -663,6 +679,8 @@ export interface AppSettings {
   keybinds?: Partial<KeybindMap>;
   // Metadata export control
   metadataExport?: Partial<MetadataExportFlags>;
+  // Single-photo review overlay visibility
+  viewOverlayPreferences?: Partial<ViewOverlayPreferences>;
   licenseKey?: string;
   licenseActivationCode?: string;
   licenseStatus?: LicenseValidation;

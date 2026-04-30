@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { useAppDispatch, useAppState, useMergedFiles } from '../context/ImportContext';
 import { useFileScanner } from '../hooks/useFileScanner';
-import { useImport } from '../hooks/useImport';
 
 const isMac = typeof window !== 'undefined' && window.electronAPI?.platform === 'darwin';
 const MOD = isMac ? 'Cmd' : 'Ctrl';
@@ -23,8 +22,6 @@ export function HelpBar() {
   const files = useMergedFiles();
   const dispatch = useAppDispatch();
   const { pauseScan, resumeScan } = useFileScanner();
-  const { startImport } = useImport();
-  const [clearing, setClearing] = useState(false);
   const [showAiStats, setShowAiStats] = useState(true);
 
   const picked = files.filter((f) => f.pick === 'selected').length;
@@ -50,21 +47,6 @@ export function HelpBar() {
   const isImporting = phase === 'importing' && importProgress;
   const isScanning = phase === 'scanning';
   const tip = getContextTip(phase, files.length, picked, queuedPaths.length);
-  const pickedPaths = files.filter((f) => f.pick === 'selected').map((f) => f.path);
-  const cta = (() => {
-    if (isImporting || isScanning) return null;
-    if (files.length === 0) return { label: 'Choose Source', title: 'Show the source panel', run: () => dispatch({ type: 'TOGGLE_LEFT_PANEL' }) };
-    if (queuedPaths.length > 0) return { label: 'Import', title: 'Start importing queued files', run: () => { void startImport(); } };
-    if (pickedPaths.length > 0) return { label: 'Queue Picks', title: 'Add picked photos to the import queue', run: () => dispatch({ type: 'QUEUE_ADD_PATHS', paths: pickedPaths }) };
-    return {
-      label: 'Start Review',
-      title: 'Open detail review on the first photo',
-      run: () => {
-        if (focusedIndex < 0) dispatch({ type: 'SET_FOCUSED', index: 0 });
-        dispatch({ type: 'SET_VIEW_MODE', mode: 'single' });
-      },
-    };
-  })();
 
   const importPct = isImporting
     ? Math.round((importProgress.currentIndex / Math.max(1, importProgress.totalFiles)) * 100)
@@ -205,94 +187,6 @@ export function HelpBar() {
         )}
 
         {tip && <span className="hidden shrink-0 italic text-text-faint lg:inline">{tip}</span>}
-        {cta && (
-          <button
-            type="button"
-            onClick={cta.run}
-            className="shrink-0 rounded bg-blue-500/15 px-2 py-0.5 text-blue-200 transition-colors hover:bg-blue-500/25"
-            title={cta.title}
-          >
-            {cta.label}
-          </button>
-        )}
-
-        <div className="ml-auto flex shrink-0 items-center gap-1">
-          {files.length > 0 && !isImporting && (
-            <>
-              <button
-                onClick={() => dispatch({ type: 'SET_FILTER', filter: 'faces' })}
-                className="rounded bg-surface-raised px-2 py-0.5 text-text-secondary transition-colors hover:bg-border"
-                title="Show photos with native or estimated face detections."
-              >
-                Faces{faceFiles > 0 ? ` ${faceFiles}` : ''}
-              </button>
-              <button
-                onClick={() => window.dispatchEvent(new Event('photo-importer:resume-ai'))}
-                className="rounded bg-surface-raised px-2 py-0.5 text-text-secondary transition-colors hover:bg-border"
-                title="Continue AI review from where it left off, skipping photos that already have face data."
-              >
-                Re-scan AI
-              </button>
-              <button
-                onClick={() => dispatch({ type: 'SET_FILTER', filter: 'review-needed' })}
-                className="rounded bg-surface-raised px-2 py-0.5 text-text-secondary transition-colors hover:bg-border"
-                title="Show files that still need a decision: unpicked, blur-risk, similar, or not fully scored."
-              >
-                Review
-              </button>
-              <button
-                onClick={() => dispatch({ type: 'SET_FILTER', filter: 'best' })}
-                className="rounded bg-surface-raised px-2 py-0.5 text-text-secondary transition-colors hover:bg-border"
-            title="Show top-scored keeper candidates using rating, protected status, subject focus, blur risk, and review score."
-          >
-            Best
-          </button>
-          <button
-            onClick={() => dispatch({ type: 'QUEUE_BEST' })}
-            className="rounded bg-surface-raised px-2 py-0.5 text-text-secondary transition-colors hover:bg-border"
-            title="Queue the best keeper from each burst/similar group, plus standalone keepable photos. Skips rejected photos and duplicates."
-          >
-            Queue Keepers
-          </button>
-            </>
-          )}
-          <button
-            className="rounded bg-surface-raised px-2 py-0.5 text-text-secondary transition-colors hover:bg-border disabled:opacity-50"
-            title="Clear thumbnail/preview disk cache — frees space and forces previews to regenerate"
-            disabled={clearing}
-            onClick={async () => {
-              setClearing(true);
-              try {
-                await window.electronAPI.clearCache();
-                dispatch({ type: 'CLEAR_FACE_DATA' });
-                window.dispatchEvent(new Event('photo-importer:resume-ai'));
-              } finally { setClearing(false); }
-            }}
-          >
-            {clearing ? 'Clearing…' : 'Clear Cache'}
-          </button>
-          <button
-            className="rounded bg-surface-raised px-2 py-0.5 text-text-secondary transition-colors hover:bg-border"
-            title={viewMode === 'settings' ? 'Back to grid' : 'Open settings'}
-            onClick={() => dispatch({ type: 'SET_VIEW_MODE', mode: viewMode === 'settings' ? 'grid' : 'settings' })}
-          >
-            Settings
-          </button>
-          <button
-            className="rounded bg-surface-raised px-2 py-0.5 text-text-secondary transition-colors hover:bg-border"
-            title="Open the quick-start tutorial"
-            onClick={() => window.dispatchEvent(new Event('photo-importer:tutorial'))}
-          >
-            Tutorial
-          </button>
-          <button
-            className="rounded bg-surface-raised px-2 py-0.5 text-text-secondary transition-colors hover:bg-border"
-            title="Press ? to see all keyboard shortcuts"
-            onClick={() => window.dispatchEvent(new Event('photo-importer:shortcuts'))}
-          >
-            Help
-          </button>
-        </div>
       </div>
     </div>
   );

@@ -1,13 +1,13 @@
-culler.z2hs.au {
+keptra.z2hs.au {
 	root * /srv/web
 	file_server
 	try_files {path} {path}.html /index.html
 }
 
-admin.culler.z2hs.au {
+admin.keptra.z2hs.au {
 	reverse_proxy app:5071
 }
 
-updates.culler.z2hs.au {
+updates.keptra.z2hs.au {
 	reverse_proxy app:5071
 }

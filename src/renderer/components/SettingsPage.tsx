@@ -148,10 +148,11 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const [buyNameInput, setBuyNameInput] = useState('');
   const [buyEmailInput, setBuyEmailInput] = useState('');
   const [activeTopic, setActiveTopic] = useState<SettingsTopic>('general');
+  const settingsBodyRef = useRef<HTMLDivElement | null>(null);
   const performanceSectionRef = useRef<HTMLDivElement | null>(null);
   const [gpuLoadStreams, setGpuLoadStreams] = useState(8);
 
-  const BASE_URL = 'https://updates.culler.z2hs.au';
+  const BASE_URL = 'https://updates.keptra.z2hs.au';
   const [diagnosing, setDiagnosing] = useState(false);
   const [diagResult, setDiagResult] = useState<string | null>(null);
   const [macDoctor, setMacDoctor] = useState<MacFirstRunDoctor | null>(null);
@@ -252,6 +253,10 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     window.addEventListener(OPEN_PERFORMANCE_EVENT, openPerformance);
     return () => window.removeEventListener(OPEN_PERFORMANCE_EVENT, openPerformance);
   }, []);
+
+  useEffect(() => {
+    settingsBodyRef.current?.scrollTo({ top: 0, behavior: 'auto' });
+  }, [activeTopic]);
 
   const set = <K extends string>(key: K, value: unknown) => {
     void window.electronAPI.setSettings({ [key]: value } as Record<string, unknown>);
@@ -765,7 +770,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     setTrialBusy(true);
     setTrialFeedback(null);
     try {
-      const resp = await fetch('https://updates.culler.z2hs.au/api/v1/trial/request', {
+      const resp = await fetch('https://updates.keptra.z2hs.au/api/v1/trial/request', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, email }),
@@ -836,13 +841,16 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
         <h2 className="text-sm font-semibold text-text">Settings</h2>
         <button
           onClick={onClose}
-          className="p-1 rounded text-text-muted hover:text-text hover:bg-surface-raised transition-colors"
-          title={inline ? 'Back to grid (Esc)' : 'Close (Esc)'}
+          className={`rounded text-text-muted hover:text-text hover:bg-surface-raised transition-colors ${inline ? 'flex items-center gap-1.5 px-2 py-1' : 'p-1'}`}
+          title={inline ? 'Back to review (Esc)' : 'Close (Esc)'}
         >
           {inline ? (
-            <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-              <path fillRule="evenodd" d="M17 10a.75.75 0 01-.75.75H5.612l4.158 3.96a.75.75 0 11-1.04 1.08l-5.5-5.25a.75.75 0 010-1.08l5.5-5.25a.75.75 0 111.04 1.08L5.612 9.25H16.25A.75.75 0 0117 10z" clipRule="evenodd" />
-            </svg>
+            <>
+              <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M17 10a.75.75 0 01-.75.75H5.612l4.158 3.96a.75.75 0 11-1.04 1.08l-5.5-5.25a.75.75 0 010-1.08l5.5-5.25a.75.75 0 111.04 1.08L5.612 9.25H16.25A.75.75 0 0117 10z" clipRule="evenodd" />
+              </svg>
+              <span className="text-[11px]">Back</span>
+            </>
           ) : (
             <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
               <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
@@ -852,7 +860,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
       </div>
 
       {/* Scrollable body */}
-      <div className={`overflow-y-auto flex-1 space-y-4 ${inline ? 'px-5 py-3' : 'px-4 py-3'}`}>
+      <div ref={settingsBodyRef} className={`overflow-y-auto flex-1 space-y-4 ${inline ? 'px-5 py-3' : 'px-4 py-3'}`}>
           <div className="sticky top-0 z-10 -mx-1 border-b border-border bg-surface/95 px-1 pb-3 backdrop-blur">
             <div className="flex gap-1 overflow-x-auto">
               {SETTINGS_TOPICS.map((topic) => (

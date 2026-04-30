@@ -11,6 +11,7 @@ interface CompareViewProps {
   previewStopsByPath?: Record<string, number>;
   previewWhiteBalanceByPath?: Record<string, { temperature?: number; tint?: number } | undefined>;
   selectionCount?: number;
+  queuedPaths?: string[];
   onPickWinner?: (file: MediaFile) => void;
   onRejectFile?: (file: MediaFile) => void;
   onQueueFile?: (file: MediaFile) => void;
@@ -22,12 +23,14 @@ export function CompareView({
   previewStopsByPath,
   previewWhiteBalanceByPath,
   selectionCount = files.length,
+  queuedPaths = [],
   onPickWinner,
   onRejectFile,
   onQueueFile,
   onFocusFile,
 }: CompareViewProps) {
   const visible = useMemo(() => files.slice(0, 4), [files]);
+  const queuedPathSet = useMemo(() => new Set(queuedPaths), [queuedPaths]);
   const [previews, setPreviews] = useState<Record<string, string | undefined>>({});
   const [zoom, setZoom] = useState(1);
   const [drawerPath, setDrawerPath] = useState<string | null>(null);
@@ -70,6 +73,10 @@ export function CompareView({
     }
   }, [visible]); // previews removed from deps — loadedRef prevents duplicate fetches
 
+  useEffect(() => {
+    setDrawerPath((path) => (path && visible.some((file) => file.path === path) ? path : null));
+  }, [visible]);
+
   if (visible.length === 0) {
     return <div className="h-full flex items-center justify-center text-sm text-text-muted">Select images to compare</div>;
   }
@@ -93,6 +100,8 @@ export function CompareView({
         const aiReasons = buildAiReasons(file);
         const drawerOpen = drawerPath === file.path;
         const isAiWinner = file.path === bestPath && visible.length > 1;
+        const isQueued = queuedPathSet.has(file.path);
+        const queueDisabled = isQueued || file.pick === 'rejected';
         const previewFilter = [
           buildPreviewExposureFilter(previewStopsByPath?.[file.path] ?? 0),
           buildPreviewWhiteBalanceFilter(file.whiteBalanceAdjustment ?? previewWhiteBalanceByPath?.[file.path]),
@@ -153,7 +162,7 @@ export function CompareView({
               </span>
             </div>
             {(file.normalizeToAnchor || file.exposureAdjustmentStops || file.whiteBalanceAdjustment || previewWhiteBalanceByPath?.[file.path]) && (
-              <div className="absolute top-2 left-2 text-[10px] font-mono text-orange-200 bg-orange-600/75 px-1.5 py-0.5 rounded">
+              <div className="absolute left-2 top-8 z-20 text-[10px] font-mono text-orange-200 bg-orange-600/75 px-1.5 py-0.5 rounded">
                 {file.normalizeToAnchor ? 'ANCHOR ' : ''}{file.exposureAdjustmentStops ? `${file.exposureAdjustmentStops > 0 ? '+' : ''}${file.exposureAdjustmentStops.toFixed(2)} EV` : ''}
                 {(file.whiteBalanceAdjustment || previewWhiteBalanceByPath?.[file.path]) ? ' WB' : ''}
               </div>
@@ -192,11 +201,14 @@ export function CompareView({
               {onQueueFile && (
                 <button
                   type="button"
-                  onClick={() => onQueueFile(file)}
-                  className="rounded bg-emerald-500/85 px-2 py-1 text-[10px] font-semibold text-white hover:bg-emerald-500"
-                  title="Add this photo to the import queue"
+                  onClick={() => {
+                    if (!queueDisabled) onQueueFile(file);
+                  }}
+                  disabled={queueDisabled}
+                  className="rounded bg-emerald-500/85 px-2 py-1 text-[10px] font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-black/50 disabled:text-white/45"
+                  title={isQueued ? 'Already queued for import' : file.pick === 'rejected' ? 'Clear rejection before queueing this photo' : 'Add this photo to the import queue'}
                 >
-                  Queue
+                  {isQueued ? 'Queued' : 'Queue'}
                 </button>
               )}
               {onRejectFile && (

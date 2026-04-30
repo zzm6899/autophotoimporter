@@ -189,6 +189,12 @@ export function useSettings() {
       if (settings.metadataExport && typeof settings.metadataExport === 'object') {
         dispatch({ type: 'SET_METADATA_EXPORT', flags: settings.metadataExport });
       }
+      if (settings.viewOverlayPreferences && typeof settings.viewOverlayPreferences === 'object') {
+        dispatch({
+          type: 'SET_VIEW_OVERLAY_PREFERENCES',
+          preferences: settings.viewOverlayPreferences,
+        });
+      }
 
       dispatch({ type: 'HYDRATE_LICENSE_STATUS', status: settings.licenseStatus ?? null });
       const savedLicenseInput = settings.licenseActivationCode || settings.licenseKey;

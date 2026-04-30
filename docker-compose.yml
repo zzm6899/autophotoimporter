@@ -3,7 +3,7 @@ version: "3.9"
 services:
   db:
     image: postgres:16-alpine
-    container_name: culler-update-db
+    container_name: keptra-update-db
     restart: unless-stopped
     environment:
       POSTGRES_DB: photo_importer_updates
@@ -16,7 +16,7 @@ services:
   app:
     build:
       context: ./services/update-admin
-    container_name: culler-update-app
+    container_name: keptra-update-app
     restart: unless-stopped
     depends_on:
       - db
@@ -34,7 +34,7 @@ services:
       GITHUB_RELEASE_REPO: ${GITHUB_RELEASE_REPO}
       GITHUB_RELEASE_TOKEN: ${GITHUB_RELEASE_TOKEN}
       GITHUB_API_BASE_URL: ${GITHUB_API_BASE_URL:-https://api.github.com}
-      PUBLIC_UPDATES_BASE_URL: https://updates.culler.z2hs.au
+      PUBLIC_UPDATES_BASE_URL: https://updates.keptra.z2hs.au
       COOKIE_SECURE: "true"
     ports:
       - "5071:5071"
@@ -44,7 +44,7 @@ services:
 
   proxy:
     image: caddy:2.8-alpine
-    container_name: culler-update-proxy
+    container_name: keptra-update-proxy
     restart: unless-stopped
     depends_on:
       - app

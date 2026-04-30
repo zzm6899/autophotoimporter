@@ -11,6 +11,7 @@ const { validateLicenseKey } = require('./lib/license');
 
 const app = express();
 const port = Number(process.env.PORT || 5071);
+app.disable('x-powered-by');
 
 // Keys can be supplied as env vars (LICENSE_PUBLIC_KEY / LICENSE_PRIVATE_KEY)
 // or as file paths (LICENSE_PUBLIC_KEY_PATH / LICENSE_PRIVATE_KEY_PATH).
@@ -65,7 +66,7 @@ const smtpConfig = {
     pass: process.env.MAIL_PASSWORD || '',
   },
 };
-const emailFromAddress = process.env.MAIL_FROM || process.env.MAIL_USERNAME || 'no-reply@culler.z2hs.au';
+const emailFromAddress = process.env.MAIL_FROM || process.env.MAIL_USERNAME || 'no-reply@keptra.z2hs.au';
 
 // --- Trial config ---
 const trialDays = Math.max(1, Number.parseInt(process.env.TRIAL_DAYS || '14', 10) || 14);
@@ -73,8 +74,8 @@ const trialMaxDevices = Math.max(1, Number.parseInt(process.env.TRIAL_MAX_DEVICE
 const trialCooldownDays = Math.max(1, Number.parseInt(process.env.TRIAL_COOLDOWN_DAYS || '30', 10) || 30);
 
 // CORS origins allowed to call public API endpoints from the Electron renderer
-// and from the website (localhost:5173 for dev, culler.z2hs.au for prod).
-const corsAllowedOrigins = (process.env.CORS_ALLOWED_ORIGINS || 'https://culler.z2hs.au,http://culler.z2hs.au')
+// and from the website (localhost:5173 for dev, keptra.z2hs.au for prod).
+const corsAllowedOrigins = (process.env.CORS_ALLOWED_ORIGINS || 'https://keptra.z2hs.au,http://keptra.z2hs.au')
   .split(',').map((o) => o.trim()).filter(Boolean);
 
 const KEPTRA_LOGO_SVG = '<svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect width="256" height="256" rx="56" fill="#0D1416"/><rect x="13" y="13" width="230" height="230" rx="46" fill="#142629" stroke="#37B69F" stroke-width="12"/><path d="M128 49L178 136H78L128 49Z" fill="#37B69F"/><path d="M211 116L161 202L112 116H211Z" fill="#52D7B5"/><path d="M55 152L104 67L154 152H55Z" fill="#2585A1"/><path d="M88 139L121 173L190 92" stroke="#F6FBFA" stroke-width="21" stroke-linecap="round" stroke-linejoin="round"/><path d="M67 67H101M67 67V101M188 67H222M222 67V101M67 188V222H101M188 222H222V188" stroke="#F6FBFA" stroke-opacity=".78" stroke-width="11" stroke-linecap="round"/></svg>';
@@ -370,7 +371,7 @@ function planPill(plan, expiresAt) {
 }
 
 function publicUpdatesBaseUrl() {
-  return String(process.env.PUBLIC_UPDATES_BASE_URL || 'https://updates.culler.z2hs.au').replace(/\/$/, '');
+  return String(process.env.PUBLIC_UPDATES_BASE_URL || 'https://updates.keptra.z2hs.au').replace(/\/$/, '');
 }
 
 function sanitizeArtifactFilename(name) {
@@ -1150,7 +1151,7 @@ app.get('/admin/login', (req, res, next) => {
           <button type="submit" style="width:100%">Enter admin</button>
         </form>
         <div class="notice" style="margin-top:16px">
-          <p class="muted">This panel controls live licensing and update delivery for <code>culler.z2hs.au</code>.</p>
+          <p class="muted">This panel controls live licensing and update delivery for <code>keptra.z2hs.au</code>.</p>
         </div>
       </div>
     </div>
@@ -2165,8 +2166,8 @@ app.get('/admin/releases', authSession, async (req, res) => {
             <div><label>Rollout</label><select name="rolloutState"><option value="live">Live</option><option value="draft">Draft</option><option value="hidden">Hidden</option></select></div>
           </div>
           <label>Release name</label><input name="releaseName" placeholder="Keptra 1.1.1" required />
-          <label>Artifact URL</label><input name="artifactUrl" placeholder="https://updates.culler.z2hs.au/artifacts/windows/Keptra-Setup-1.1.1.exe" required />
-          <label>Release URL <span style="font-weight:400">(optional)</span></label><input name="releaseUrl" placeholder="https://admin.culler.z2hs.au/releases/1.1.1" />
+          <label>Artifact URL</label><input name="artifactUrl" placeholder="https://updates.keptra.z2hs.au/artifacts/windows/Keptra-Setup-1.1.1.exe" required />
+          <label>Release URL <span style="font-weight:400">(optional)</span></label><input name="releaseUrl" placeholder="https://admin.keptra.z2hs.au/releases/1.1.1" />
           <label>Release notes <span style="font-weight:400">(optional)</span></label><textarea name="releaseNotes" rows="4"></textarea>
           <div class="actions" style="margin-top:16px">
             <button type="submit">Save release</button>
@@ -2858,7 +2859,7 @@ app.get('/api/v1/app/update', async (req, res) => {
 
 function setPublicCors(req, res) {
   const origin = req.headers.origin;
-  const allowed = ['https://culler.z2hs.au', 'http://culler.z2hs.au'];
+  const allowed = ['https://keptra.z2hs.au', 'http://keptra.z2hs.au'];
   res.setHeader('Access-Control-Allow-Origin', allowed.includes(origin) ? origin : '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Accept, Content-Type');
@@ -3230,7 +3231,7 @@ app.post('/stripe/webhook/test', authSession, async (req, res) => {
 // ---------------------------------------------------------------------------
 // Stripe webhook  POST /stripe/webhook
 // Must be registered as a raw-body route (before express.json parses it).
-// In your Stripe dashboard point the webhook at: https://updates.culler.z2hs.au/stripe/webhook
+// In your Stripe dashboard point the webhook at: https://updates.keptra.z2hs.au/stripe/webhook
 // Events to listen for: checkout.session.completed
 // ---------------------------------------------------------------------------
 app.post(
@@ -4394,7 +4395,7 @@ app.get('/checkout-success', (_req, res) => {
           </div>
         </div>
         <div class="actions">
-          <a href="https://culler.z2hs.au/download.html" target="_blank" rel="noreferrer"><button type="button">Download Keptra</button></a>
+          <a href="https://keptra.z2hs.au/download.html" target="_blank" rel="noreferrer"><button type="button">Download Keptra</button></a>
           <a href="/manage-license"><button class="secondary" type="button">Manage license</button></a>
         </div>
       </div>
@@ -4442,7 +4443,7 @@ app.get('/checkout-success', (_req, res) => {
               </div>
             </div>
             <div class="actions" style="margin-top:18px">
-              <a href="https://culler.z2hs.au/download.html" target="_blank" rel="noreferrer"><button type="button">Open download page</button></a>
+              <a href="https://keptra.z2hs.au/download.html" target="_blank" rel="noreferrer"><button type="button">Open download page</button></a>
               <a href="/manage-license"><button class="secondary" type="button">Open license manager</button></a>
             </div>
           </div>

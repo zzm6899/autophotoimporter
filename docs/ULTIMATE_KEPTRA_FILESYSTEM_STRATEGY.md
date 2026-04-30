@@ -1,4 +1,4 @@
-# Ultimate Culler: File-System Optimization Strategy
+# Ultimate Keptra: File-System Optimization Strategy
 
 This document proposes a practical plan to make Keptra feel "instant" on very large shoots (5k-100k photos), with emphasis on disk I/O, metadata pipelines, and cache architecture.
 
@@ -83,7 +83,7 @@ For output/import destination writes:
 - Worker pool executes copies/conversions with checksum verification.
 - On crash/restart, resume exactly-once semantics for completed outputs.
 
-## 3) "Ultimate Culler" Feature Ideas (Built on FS Work)
+## 3) "Ultimate Keptra" Feature Ideas (Built on FS Work)
 
 - **Instant reopen**: restore prior project in seconds with preserved stacks, picks, filters.
 - **Smart prefetch by user behavior**: pre-decode likely next images based on navigation rhythm.
@@ -130,4 +130,4 @@ Track these per import/session:
 
 ---
 
-If implemented in this order, Keptra can become a genuinely "instant-feeling" culler even on huge weddings/events, while still remaining stable on lower-end systems.
+If implemented in this order, Keptra can become a genuinely instant-feeling photo culling workflow even on huge weddings/events, while still remaining stable on lower-end systems.

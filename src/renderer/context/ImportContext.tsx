@@ -1,6 +1,6 @@
 import { createContext, useContext, useReducer, useRef, useMemo, useCallback, useState, type Dispatch, type ReactNode } from 'react';
-import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, SourceKind, FtpConfig, FtpSyncSettings, FtpSyncStatus, RatingFilter, SelectionSet, LicenseValidation, WatermarkPosition, WatermarkMode, KeybindMap, MetadataExportFlags, EventMode, CullConfidence, KeeperQuota } from '../../shared/types';
-import { FOLDER_PRESETS, DEFAULT_KEYBINDS, DEFAULT_METADATA_EXPORT } from '../../shared/types';
+import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, SourceKind, FtpConfig, FtpSyncSettings, FtpSyncStatus, RatingFilter, SelectionSet, LicenseValidation, WatermarkPosition, WatermarkMode, KeybindMap, MetadataExportFlags, ViewOverlayPreferences, EventMode, CullConfidence, KeeperQuota } from '../../shared/types';
+import { FOLDER_PRESETS, DEFAULT_KEYBINDS, DEFAULT_METADATA_EXPORT, DEFAULT_VIEW_OVERLAY_PREFERENCES } from '../../shared/types';
 import { groupBursts } from '../../shared/burst';
 import { clampStops, normalizeExposureStops } from '../../shared/exposure';
 import { assignSceneBuckets, autoCullGroup, bestInGroup, groupByFaceSimilarity, groupByVisualHash, scoreReview } from '../../shared/review';
@@ -26,6 +26,7 @@ interface State {
   importResult: ImportResult | null;
   focusedIndex: number;
   viewMode: ViewMode;
+  previousViewMode: Exclude<ViewMode, 'settings'> | null;
   theme: 'light' | 'dark';
   showLeftPanel: boolean;
   showRightPanel: boolean;
@@ -110,6 +111,7 @@ interface State {
   keybinds: KeybindMap;
   // Metadata export control
   metadataExport: MetadataExportFlags;
+  viewOverlayPreferences: ViewOverlayPreferences;
 }
 
 export type Action =
@@ -236,7 +238,8 @@ export type Action =
   | { type: 'SET_KEYBIND'; action: keyof KeybindMap; key: string }
   | { type: 'SET_KEYBINDS'; keybinds: Partial<KeybindMap> }
   | { type: 'RESET_KEYBINDS' }
-  | { type: 'SET_METADATA_EXPORT'; flags: Partial<MetadataExportFlags> };
+  | { type: 'SET_METADATA_EXPORT'; flags: Partial<MetadataExportFlags> }
+  | { type: 'SET_VIEW_OVERLAY_PREFERENCES'; preferences: Partial<ViewOverlayPreferences> };
 
 const systemDark = typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches;
 
@@ -256,6 +259,7 @@ const initialState: State = {
   importResult: null,
   focusedIndex: -1,
   viewMode: 'grid' as ViewMode,
+  previousViewMode: null,
   theme: systemDark ? 'dark' : 'light',
   showLeftPanel: true,
   showRightPanel: true,
@@ -352,6 +356,7 @@ const initialState: State = {
   faceConcurrency: 1,
   keybinds: { ...DEFAULT_KEYBINDS },
   metadataExport: { ...DEFAULT_METADATA_EXPORT },
+  viewOverlayPreferences: { ...DEFAULT_VIEW_OVERLAY_PREFERENCES },
 };
 
 function withFileHistory(state: State, files: MediaFile[]): State {
@@ -519,6 +524,18 @@ export function reducer(state: State, action: Action): State {
     case 'SET_FOCUSED':
       return { ...state, focusedIndex: action.index };
     case 'SET_VIEW_MODE':
+      if (action.mode === 'settings') {
+        return {
+          ...state,
+          viewMode: 'settings',
+          previousViewMode: state.viewMode === 'settings'
+            ? state.previousViewMode
+            : state.viewMode as Exclude<ViewMode, 'settings'>,
+        };
+      }
+      if (state.viewMode === 'settings' && action.mode === 'grid' && state.previousViewMode) {
+        return { ...state, viewMode: state.previousViewMode, previousViewMode: null };
+      }
       return { ...state, viewMode: action.mode };
     case 'SET_THEME':
       return { ...state, theme: action.theme };
@@ -984,7 +1001,7 @@ export function reducer(state: State, action: Action): State {
         ...state,
         licenseStatus: action.status,
         licenseHydrated: true,
-        licensePromptOpen: !valid,
+        licensePromptOpen: false,
         licenseBannerDismissed: false,
       };
     }
@@ -1056,6 +1073,14 @@ export function reducer(state: State, action: Action): State {
       return { ...state, keybinds: { ...DEFAULT_KEYBINDS } };
     case 'SET_METADATA_EXPORT':
       return { ...state, metadataExport: { ...state.metadataExport, ...action.flags } };
+    case 'SET_VIEW_OVERLAY_PREFERENCES':
+      return {
+        ...state,
+        viewOverlayPreferences: {
+          ...state.viewOverlayPreferences,
+          ...action.preferences,
+        },
+      };
     default:
       return state;
   }

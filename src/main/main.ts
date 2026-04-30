@@ -106,7 +106,7 @@ function isSafeExternalUrl(value: string): boolean {
     const url = new URL(value);
     if (url.protocol !== 'https:') return false;
     return [
-      'updates.culler.z2hs.au',
+      'updates.keptra.z2hs.au',
       'github.com',
       'checkout.stripe.com',
     ].includes(url.hostname);
@@ -263,7 +263,10 @@ const createWindow = () => {
           const dismiss = async () => {
             for (const pattern of [/Dismiss performance setup/i, /Got it/i, /Later/i, /^Close$/i]) {
               const button = findButton(pattern);
-              if (button && /Quick Start|Activate Keptra|performance setup|Optimize settings/i.test(text())) {
+              if (
+                button &&
+                /Quick Start|Activate Keptra|performance setup|Optimize settings|Update check failed|Updates locked|Update available|Update ready/i.test(text())
+              ) {
                 button.click();
                 await wait(120);
               }
@@ -280,10 +283,10 @@ const createWindow = () => {
           interactions.push(await clickButton('settings page', /(^|\\s)Settings(\\s|$)/i, [/General/i, /Workflow/i, /Account/i]));
           interactions.push(await clickButton('settings workflow tab', /(^|\\s)Workflow(\\s|$)/i, [/Backup Copy/i, /Folder/i]));
           interactions.push(await clickButton('settings account tab', /(^|\\s)Account(\\s|$)/i, [/License/i, /Buy license|Activate|Manage/i]));
-          interactions.push(await clickButton('settings close', /Back to grid|Close/i, [/Start with a camera card or folder/i]));
+          interactions.push(await clickButton('settings close', /Back|Close/i, [/HOW IT WORKS|Choose Folder/i]));
           await dismiss();
           interactions.push(await clickButton('help center', /(^|\\s)Help(\\s|$)/i, [/Help Center/i, /Fast Cull/i, /Fixed Shortcuts/i]));
-          interactions.push(await clickButton('help close', /(^|\\s)Close(\\s|$)/i, [/Start with a camera card or folder/i]));
+          interactions.push(await clickButton('help close', /(^|\\s)Close(\\s|$)/i, [/HOW IT WORKS|Choose Folder/i]));
           const api = window.electronAPI || {};
           const root = document.getElementById('root');
           const bodyText = document.body?.innerText || '';

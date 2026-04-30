@@ -5,8 +5,8 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { log } from '../logger';
 
-const UPDATE_BASE_URL = 'https://updates.culler.z2hs.au';
-const UPDATE_ALLOWED_HOSTS = new Set(['updates.culler.z2hs.au']);
+const UPDATE_BASE_URL = 'https://updates.keptra.z2hs.au';
+const UPDATE_ALLOWED_HOSTS = new Set(['updates.keptra.z2hs.au']);
 const UPDATE_ALLOWED_SCHEMES = new Set(['https:']);
 const TIMEOUT_MS = 10_000;
 

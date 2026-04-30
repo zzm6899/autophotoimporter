@@ -566,13 +566,14 @@ async function visualHash(src: string): Promise<string> {
 }
 
 export function ThumbnailGrid() {
-  const { phase, selectedSource, scanError, focusedIndex, viewMode, showLeftPanel, showRightPanel, filter, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, exposureAdjustmentStep, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused, fastKeeperMode, faceConcurrency, gpuFaceAcceleration, keybinds, metadataKeywords, whiteBalanceTemperature, whiteBalanceTint } = useAppState();
+  const { phase, selectedSource, scanError, focusedIndex, viewMode, showLeftPanel, showRightPanel, filter, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, exposureAdjustmentStep, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused, fastKeeperMode, faceConcurrency, gpuFaceAcceleration, keybinds, metadataKeywords, whiteBalanceTemperature, whiteBalanceTint, destination, licenseStatus, ftpDestEnabled, ftpDestConfig } = useAppState();
   // useMergedFiles() overlays face/review scores without re-running the full
   // reducer map — O(n) only when scores.size > 0, otherwise returns the same array.
   const files = useMergedFiles();
   const { startScan, pauseScan, resumeScan } = useFileScanner();
   const { startImport } = useImport();
   const dispatch = useAppDispatch();
+  const queueActionsDisabled = phase === 'scanning' || phase === 'importing';
   const gridRef = useRef<HTMLDivElement>(null);
   const flatScrollRef = useRef<HTMLDivElement>(null);
   const splitGridRef = useRef<HTMLDivElement>(null);
@@ -1155,8 +1156,9 @@ export function ThumbnailGrid() {
   }, [focusedIndex, selectedPaths, sortedFiles, dispatch, setFocused]);
 
   const queuePaths = useCallback((paths: string[]) => {
+    if (queueActionsDisabled) return;
     dispatch({ type: 'QUEUE_ADD_PATHS', paths });
-  }, [dispatch]);
+  }, [dispatch, queueActionsDisabled]);
 
   const handleCardClick = useCallback((index: number, e: React.MouseEvent) => {
     const currentSortedFiles = sortedFilesRef.current;
@@ -1890,6 +1892,14 @@ export function ThumbnailGrid() {
   }, []);
 
   useEffect(() => {
+    setShowBestOfSelection(false);
+    setBestScope(null);
+    setShowTagSuggestions(false);
+    setToolbarPos(null);
+    if (viewMode !== 'grid') setShowAdvancedTools(false);
+  }, [viewMode]);
+
+  useEffect(() => {
     if (focusedIndex < 0) return;
     if (viewMode === 'grid' && virtualGridEnabled) {
       rowVirtualizer.scrollToIndex(Math.floor(focusedIndex / virtualGridColumns), { align: 'auto' });
@@ -2580,6 +2590,25 @@ export function ThumbnailGrid() {
     </div>
   ) : null;
 
+  const toolbarFtpReady = !ftpDestEnabled || (!!ftpDestConfig.host && !!ftpDestConfig.remotePath);
+  const toolbarImportDisabled =
+    queuedPaths.length === 0 ||
+    !destination ||
+    !licenseStatus?.valid ||
+    !toolbarFtpReady ||
+    !(phase === 'ready' || phase === 'scanning');
+  const toolbarImportTitle = !destination
+    ? 'Choose a destination folder in the output panel first.'
+    : !licenseStatus?.valid
+      ? 'Activate a valid license before importing.'
+      : !toolbarFtpReady
+        ? 'Finish FTP output settings before importing.'
+        : queuedPaths.length === 0
+          ? 'Queue files before importing.'
+          : phase === 'importing'
+            ? 'Import already in progress.'
+            : 'Import all queued files to the destination folder set in the output panel.';
+
   const nextActionToolbar = files.length > 0 ? (
     <div className="shrink-0 px-3 py-1.5 flex items-center gap-1.5 border-b border-border bg-surface-alt/60 overflow-x-auto">
 
@@ -2599,9 +2628,14 @@ export function ThumbnailGrid() {
 
       {/* ── Step 2: Queue best keepers for this batch ── */}
       <button
-        onClick={() => dispatch({ type: 'QUEUE_BEST' })}
-        className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-surface-raised text-text-secondary hover:text-yellow-300 hover:bg-yellow-500/10 transition-colors shrink-0"
-        title={`Queue the best keeper from each burst/similar group, plus standalone keepable photos. Skips rejected photos and duplicates. AI done: ${reviewStats.analyzed}/${reviewStats.total}.`}
+        onClick={() => {
+          if (!queueActionsDisabled) dispatch({ type: 'QUEUE_BEST' });
+        }}
+        disabled={queueActionsDisabled}
+        className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-surface-raised text-text-secondary hover:text-yellow-300 hover:bg-yellow-500/10 transition-colors shrink-0 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-surface-raised disabled:hover:text-text-secondary"
+        title={queueActionsDisabled
+          ? 'Wait for the current scan/import to finish before changing the import queue.'
+          : `Queue the best keeper from each burst/similar group, plus standalone keepable photos. Skips rejected photos and duplicates. AI done: ${reviewStats.analyzed}/${reviewStats.total}.`}
       >
         2. Queue Keepers
       </button>
@@ -2609,17 +2643,23 @@ export function ThumbnailGrid() {
       {/* ── Step 3: Import or queue all ── */}
       {queuedPaths.length > 0 ? (
         <button
-          onClick={() => { void startImport(); }}
-          className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 transition-colors shrink-0"
-          title="Import all queued files to the destination folder set in the right panel."
+          onClick={() => {
+            if (!toolbarImportDisabled) void startImport();
+          }}
+          disabled={toolbarImportDisabled}
+          className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 transition-colors shrink-0 disabled:cursor-not-allowed disabled:bg-surface-raised disabled:text-text-muted disabled:hover:bg-surface-raised"
+          title={toolbarImportTitle}
         >
           3. Import ({queuedPaths.length})
         </button>
       ) : (
         <button
           onClick={() => queuePaths(sortedFiles.map((f) => f.path))}
-          className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-surface-raised text-text-secondary hover:text-emerald-300 hover:bg-emerald-500/10 transition-colors shrink-0"
-          title={`Queue every visible file for import. Thumbnails ready: ${visibleThumbStats.ready}/${visibleThumbStats.total}.`}
+          disabled={queueActionsDisabled}
+          className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-surface-raised text-text-secondary hover:text-emerald-300 hover:bg-emerald-500/10 transition-colors shrink-0 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-surface-raised disabled:hover:text-text-secondary"
+          title={queueActionsDisabled
+            ? 'Wait for the current scan/import to finish before changing the import queue.'
+            : `Queue every visible file for import. Thumbnails ready: ${visibleThumbStats.ready}/${visibleThumbStats.total}.`}
         >
           3. Queue All
         </button>
@@ -2650,9 +2690,14 @@ export function ThumbnailGrid() {
 
       {queuedPaths.length > 0 && (
         <button
-          onClick={() => dispatch({ type: 'QUEUE_CLEAR' })}
-          className="px-2 py-1 text-[10px] rounded-md text-text-faint hover:text-red-300 transition-colors shrink-0"
-          title={`Remove all ${queuedPaths.length} queued files from the queue. Does not clear pick/reject flags.`}
+          onClick={() => {
+            if (!queueActionsDisabled) dispatch({ type: 'QUEUE_CLEAR' });
+          }}
+          disabled={queueActionsDisabled}
+          className="px-2 py-1 text-[10px] rounded-md text-text-faint hover:text-red-300 transition-colors shrink-0 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-text-faint"
+          title={queueActionsDisabled
+            ? 'Wait for the current scan/import to finish before changing the import queue.'
+            : `Remove all ${queuedPaths.length} queued files from the queue. Does not clear pick/reject flags.`}
         >
           Clear Queue
         </button>
@@ -2827,7 +2872,7 @@ export function ThumbnailGrid() {
             dispatch({ type: 'SET_PICK', filePath: file.path, pick: 'selected' });
             setFocused(sortedFiles.findIndex((f) => f.path === file.path));
           }}
-          onQueueBest={(file) => dispatch({ type: 'QUEUE_ADD_PATHS', paths: [file.path] })}
+          onQueueBest={(file) => queuePaths([file.path])}
           onRejectRest={(best) => {
             dispatch({
               type: 'SET_PICK_BATCH',
@@ -2903,7 +2948,12 @@ export function ThumbnailGrid() {
                 <button onClick={() => pickFile('selected', false)} title="Pick selected (P)" className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-yellow-400 hover:bg-yellow-400/10 rounded transition-colors">Pick</button>
                 <button onClick={() => pickFile('rejected', false)} title="Reject selected (X)" className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-red-400 hover:bg-red-500/10 rounded transition-colors">Reject</button>
                 <button onClick={() => pickFile(undefined, false)} title="Clear flags (U)" className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-text hover:bg-surface-raised rounded transition-colors">Unflag</button>
-                <button onClick={() => queuePaths(normalizeTargetPaths)} title="Add selected to import queue" className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-emerald-400 hover:bg-emerald-500/10 rounded transition-colors">Queue</button>
+                <button
+                  onClick={() => queuePaths(normalizeTargetPaths)}
+                  disabled={queueActionsDisabled}
+                  title={queueActionsDisabled ? 'Wait for the current scan/import to finish before changing the import queue.' : 'Add selected to import queue'}
+                  className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-emerald-400 hover:bg-emerald-500/10 rounded transition-colors disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-text-secondary"
+                >Queue</button>
                 <button onClick={openBestOfSelection} title="If the focused photo is in a burst, rank that whole burst. Otherwise rank the selected candidates. Shortcut: Shift+B." className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-yellow-300 hover:bg-yellow-500/10 rounded transition-colors">Best</button>
                 <div className="w-px h-3 bg-border mx-1" />
                 <button onClick={selectAllVisible} title="Select all visible files (Ctrl/Cmd+A)" className="px-2 py-0.5 text-[11px] text-text-secondary hover:text-blue-300 hover:bg-blue-500/10 rounded transition-colors">Select all</button>
@@ -3092,17 +3142,6 @@ export function ThumbnailGrid() {
 
         <div className="w-px h-3 bg-border mx-1 shrink-0" />
 
-        {/* Settings */}
-        <button
-          onClick={() => dispatch({ type: 'SET_VIEW_MODE', mode: 'settings' })}
-          className="p-0.5 rounded transition-colors shrink-0 text-text-muted hover:text-text"
-          title="Settings"
-        >
-          <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M7.84 1.804A1 1 0 018.82 1h2.36a1 1 0 01.98.804l.331 1.652a6.993 6.993 0 011.929 1.115l1.598-.54a1 1 0 011.186.447l1.18 2.044a1 1 0 01-.205 1.251l-1.267 1.113a7.047 7.047 0 010 2.228l1.267 1.113a1 1 0 01.206 1.25l-1.18 2.045a1 1 0 01-1.187.447l-1.598-.54a6.993 6.993 0 01-1.929 1.115l-.33 1.652a1 1 0 01-.98.804H8.82a1 1 0 01-.98-.804l-.331-1.652a6.993 6.993 0 01-1.929-1.115l-1.598.54a1 1 0 01-1.186-.447l-1.18-2.044a1 1 0 01.205-1.251l1.267-1.114a7.05 7.05 0 010-2.227L1.821 7.773a1 1 0 01-.206-1.25l1.18-2.045a1 1 0 011.187-.447l1.598.54A6.993 6.993 0 017.51 3.456l.33-1.652zM10 13a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" /></svg>
-        </button>
-
-        <div className="w-px h-3 bg-border mx-1 shrink-0" />
-
         {/* Right panel toggle */}
         <button
           onClick={() => dispatch({ type: 'TOGGLE_RIGHT_PANEL' })}
@@ -3246,6 +3285,7 @@ export function ThumbnailGrid() {
               previewStopsByPath={comparePreviewStopsByPath}
               previewWhiteBalanceByPath={comparePreviewWhiteBalanceByPath}
               selectionCount={compareFiles.length >= 2 ? selectedPaths.length : 0}
+              queuedPaths={queuedPaths}
               onPickWinner={handleCompareWinner}
               onRejectFile={handleCompareReject}
               onQueueFile={handleCompareQueue}

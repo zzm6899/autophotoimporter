@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { reducer, type Action, type AppPhase } from '../ImportContext';
 import type { MediaFile, ImportProgress, ImportResult, SaveFormat } from '../../../shared/types';
-import { FOLDER_PRESETS } from '../../../shared/types';
+import { DEFAULT_VIEW_OVERLAY_PREFERENCES, FOLDER_PRESETS } from '../../../shared/types';
 
 function makeState(overrides: Record<string, unknown> = {}) {
   return {
@@ -20,6 +20,7 @@ function makeState(overrides: Record<string, unknown> = {}) {
     importResult: null as ImportResult | null,
     focusedIndex: -1,
     viewMode: 'grid' as const,
+    previousViewMode: null,
     theme: 'dark' as const,
     showLeftPanel: true,
     showRightPanel: true,
@@ -119,6 +120,7 @@ function makeState(overrides: Record<string, unknown> = {}) {
     faceConcurrency: 1,
     keybinds: { pick: 'p', reject: 'x', unflag: 'u', nextPhoto: 'ArrowRight', prevPhoto: 'ArrowLeft', rateOne: '1', rateTwo: '2', rateThree: '3', rateFour: '4', rateFive: '5', clearRating: '0', compareMode: 'c', burstSelect: 'b', burstCollapse: 'g', queuePhoto: 'q', jumpUnreviewed: 'Tab', batchRejectBurst: 'r' },
     metadataExport: { keywords: true, title: true, caption: true, creator: true, copyright: true, rating: true, pickLabel: true, stripGps: false },
+    viewOverlayPreferences: { ...DEFAULT_VIEW_OVERLAY_PREFERENCES },
     ...overrides,
   };
 }
@@ -478,10 +480,10 @@ describe('ImportContext reducer', () => {
   });
 
   describe('license UI state', () => {
-    it('opens the license prompt on hydration when license is missing', () => {
+    it('keeps the license prompt closed on hydration when license is missing', () => {
       const next = reducer(makeState(), { type: 'HYDRATE_LICENSE_STATUS', status: null });
       expect(next.licenseHydrated).toBe(true);
-      expect(next.licensePromptOpen).toBe(true);
+      expect(next.licensePromptOpen).toBe(false);
       expect(next.licenseBannerDismissed).toBe(false);
     });
 
@@ -537,6 +539,27 @@ describe('ImportContext reducer', () => {
     it('SET_VIEW_MODE', () => {
       const next = reducer(makeState(), { type: 'SET_VIEW_MODE', mode: 'single' });
       expect(next.viewMode).toBe('single');
+    });
+
+    it('returns from settings to the previous view mode', () => {
+      const inSettings = reducer(makeState({ viewMode: 'single' }), { type: 'SET_VIEW_MODE', mode: 'settings' });
+      expect(inSettings.viewMode).toBe('settings');
+      expect(inSettings.previousViewMode).toBe('single');
+
+      const back = reducer(inSettings, { type: 'SET_VIEW_MODE', mode: 'grid' });
+      expect(back.viewMode).toBe('single');
+      expect(back.previousViewMode).toBe(null);
+    });
+
+    it('merges view overlay preferences without resetting other toggles', () => {
+      const next = reducer(makeState(), {
+        type: 'SET_VIEW_OVERLAY_PREFERENCES',
+        preferences: { faceBoxes: true },
+      });
+      expect(next.viewOverlayPreferences).toEqual({
+        ...DEFAULT_VIEW_OVERLAY_PREFERENCES,
+        faceBoxes: true,
+      });
     });
 
     it('SET_THEME', () => {

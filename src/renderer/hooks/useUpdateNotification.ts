@@ -17,6 +17,16 @@ export function useUpdateNotification() {
     });
 
     void window.electronAPI.checkForUpdates().then((state) => {
+      if (state.status === 'error' || state.status === 'denied') {
+        setUpdateState((prev) => ({
+          ...prev,
+          currentVersion: state.currentVersion ?? prev.currentVersion,
+          latestVersion: state.latestVersion ?? prev.latestVersion,
+          lastCheckedAt: state.lastCheckedAt ?? prev.lastCheckedAt,
+          status: 'idle',
+        }));
+        return;
+      }
       setUpdateState(state);
     }).catch(() => undefined);
 

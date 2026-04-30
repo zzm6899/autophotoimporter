@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import type { MediaFile } from '../../shared/types';
+import type { MediaFile, ViewOverlayPreferences } from '../../shared/types';
 import { buildExposure, formatFileSize } from '../utils/formatters';
 import { useAppState, useAppDispatch, useMergedFiles } from '../context/ImportContext';
 import {
@@ -88,9 +88,22 @@ export function SingleView({ file, index, total }: SingleViewProps) {
     exposureMaxStops,
     whiteBalanceTemperature,
     whiteBalanceTint,
+    viewOverlayPreferences,
   } = useAppState();
   const files = useMergedFiles();
   const dispatch = useAppDispatch();
+  const {
+    photoStats: showStats,
+    histogram: showHistogram,
+    faceBoxes: showFaceBoxes,
+    peopleBoxes: showPersonBoxes,
+    aiReasons: showAiReasons,
+  } = viewOverlayPreferences;
+  const setOverlayPreference = useCallback((patch: Partial<ViewOverlayPreferences>) => {
+    const next = { ...viewOverlayPreferences, ...patch };
+    dispatch({ type: 'SET_VIEW_OVERLAY_PREFERENCES', preferences: patch });
+    void window.electronAPI.setSettings({ viewOverlayPreferences: next });
+  }, [dispatch, viewOverlayPreferences]);
   const anchor = exposureAnchorPath ? files.find((f) => f.path === exposureAnchorPath) : null;
   const isAnchor = anchor?.path === file.path;
   const anchorHasEV = typeof anchor?.exposureValue === 'number';
@@ -105,11 +118,6 @@ export function SingleView({ file, index, total }: SingleViewProps) {
   const [holdOriginal, setHoldOriginal] = useState(false);
   const [manualQuarterTurns, setManualQuarterTurns] = useState(0);
   const [showViewOptions, setShowViewOptions] = useState(false);
-  const [showHistogram, setShowHistogram] = useState(true);
-  const [showStats, setShowStats] = useState(true);
-  const [showFaceBoxes, setShowFaceBoxes] = useState(false);
-  const [showPersonBoxes, setShowPersonBoxes] = useState(false);
-  const [showAiReasons, setShowAiReasons] = useState(false);
   const [showEdits, setShowEdits] = useState(false);
   const [clipping, setClipping] = useState<{ highlights: number; shadows: number } | null>(null);
   const [imageNatural, setImageNatural] = useState<{ width: number; height: number } | null>(null);
@@ -126,7 +134,6 @@ export function SingleView({ file, index, total }: SingleViewProps) {
     setPreviewNormalized(false);
     setHoldOriginal(false);
     setManualQuarterTurns(0);
-    setShowAiReasons(false);
     setShowEdits(false);
     setShowViewOptions(false);
     setImageNatural(null);
@@ -749,24 +756,24 @@ export function SingleView({ file, index, total }: SingleViewProps) {
             </button>
           </div>
           <div className="grid gap-1">
-            <button type="button" onClick={() => setShowStats((value) => !value)} className="flex items-center justify-between rounded px-2 py-1 text-left hover:bg-white/10">
+            <button type="button" onClick={() => setOverlayPreference({ photoStats: !showStats })} className="flex items-center justify-between rounded px-2 py-1 text-left hover:bg-white/10">
               <span>Photo stats</span>
               <span className={showStats ? 'text-emerald-300' : 'text-white/35'}>{showStats ? 'On' : 'Off'}</span>
             </button>
-            <button type="button" onClick={() => setShowHistogram((value) => !value)} className="flex items-center justify-between rounded px-2 py-1 text-left hover:bg-white/10">
+            <button type="button" onClick={() => setOverlayPreference({ histogram: !showHistogram })} className="flex items-center justify-between rounded px-2 py-1 text-left hover:bg-white/10">
               <span>Histogram</span>
               <span className={showHistogram ? 'text-emerald-300' : 'text-white/35'}>{showHistogram ? 'On' : 'Off'}</span>
             </button>
-            <button type="button" onClick={() => setShowFaceBoxes((value) => !value)} className="flex items-center justify-between rounded px-2 py-1 text-left hover:bg-white/10">
+            <button type="button" onClick={() => setOverlayPreference({ faceBoxes: !showFaceBoxes })} className="flex items-center justify-between rounded px-2 py-1 text-left hover:bg-white/10">
               <span>Face boxes</span>
               <span className={showFaceBoxes ? 'text-emerald-300' : 'text-white/35'}>{showFaceBoxes ? 'On' : 'Off'}</span>
             </button>
-            <button type="button" onClick={() => setShowPersonBoxes((value) => !value)} className="flex items-center justify-between rounded px-2 py-1 text-left hover:bg-white/10">
+            <button type="button" onClick={() => setOverlayPreference({ peopleBoxes: !showPersonBoxes })} className="flex items-center justify-between rounded px-2 py-1 text-left hover:bg-white/10">
               <span>People boxes</span>
               <span className={showPersonBoxes ? 'text-emerald-300' : 'text-white/35'}>{showPersonBoxes ? 'On' : 'Off'}</span>
             </button>
             {aiReasons.length > 0 && (
-              <button type="button" onClick={() => setShowAiReasons((value) => !value)} className="flex items-center justify-between rounded px-2 py-1 text-left hover:bg-white/10">
+              <button type="button" onClick={() => setOverlayPreference({ aiReasons: !showAiReasons })} className="flex items-center justify-between rounded px-2 py-1 text-left hover:bg-white/10">
                 <span>AI reasons</span>
                 <span className={showAiReasons ? 'text-emerald-300' : 'text-white/35'}>{showAiReasons ? 'On' : 'Off'}</span>
               </button>

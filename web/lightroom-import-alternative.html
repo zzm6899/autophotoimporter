@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lightroom Import Alternative — Keptra</title>
+  <meta name="description" content="A local Lightroom import alternative for photographers who want to cull, verify, and organize photos before opening their editor." />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0c0f11; --surface: #141719; --surface-raised: #1c2124;
+      --border: #2b3337; --text: #f2f6f7; --text-muted: #9ba9ae;
+      --accent: #37b69f; --accent-hover: #45c6af; --green: #5ad69d;
+      --radius: 8px;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      --page-width: 1080px;
+    }
+    body {
+      font-family: var(--font);
+      color: var(--text);
+      background: #0c0f11;
+      line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: inherit; text-decoration: none; }
+    nav {
+      display: flex; align-items: center; justify-content: space-between;
+      width: min(var(--page-width), calc(100% - 32px));
+      margin: 0 auto;
+      padding: 22px 0;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+    }
+    .brand { color: var(--text); font-weight: 700; }
+    .nav-links { display: flex; gap: 18px; align-items: center; }
+    .nav-links a:hover { color: var(--text); }
+    .nav-cta {
+      padding: 8px 13px;
+      border-radius: var(--radius);
+      background: var(--accent);
+      color: #041210;
+      font-weight: 700;
+    }
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+      gap: clamp(28px, 5vw, 56px);
+      align-items: center;
+      width: min(var(--page-width), calc(100% - 32px));
+      margin: 28px auto 0;
+      padding: clamp(28px, 6vw, 64px) 0 clamp(42px, 7vw, 76px);
+    }
+    .eyebrow {
+      color: var(--accent);
+      font-size: 0.78rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 14px;
+    }
+    h1 {
+      max-width: 620px;
+      font-size: clamp(2.2rem, 5vw, 4.2rem);
+      line-height: 1.04;
+      letter-spacing: 0;
+      margin-bottom: 18px;
+    }
+    .hero p {
+      max-width: 560px;
+      color: var(--text-muted);
+      font-size: 1.03rem;
+      margin-bottom: 26px;
+    }
+    .actions { display: flex; flex-wrap: wrap; gap: 12px; }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      padding: 10px 16px;
+      border-radius: var(--radius);
+      font-weight: 700;
+      font-size: 0.95rem;
+    }
+    .btn.primary { background: var(--accent); color: #041210; }
+    .btn.primary:hover { background: var(--accent-hover); }
+    .btn.secondary { border: 1px solid var(--border); background: var(--surface-raised); }
+    .media {
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: var(--surface);
+      box-shadow: 0 28px 70px rgba(0,0,0,.4);
+    }
+    .media img { display: block; width: 100%; height: auto; aspect-ratio: 960 / 560; object-fit: cover; }
+    .band {
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      background: #101416;
+      padding: clamp(34px, 6vw, 56px) 0;
+    }
+    .inner { width: min(var(--page-width), calc(100% - 32px)); margin: 0 auto; }
+    .section-head { max-width: 650px; margin-bottom: 28px; }
+    .section-head h2 { font-size: clamp(1.5rem, 3vw, 2.3rem); line-height: 1.18; letter-spacing: 0; margin-bottom: 10px; }
+    .section-head p { color: var(--text-muted); }
+    .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+    .item {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      padding: 18px;
+    }
+    .item strong { display: block; margin-bottom: 7px; }
+    .item p { color: var(--text-muted); font-size: 0.92rem; }
+    .compare { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius); background: var(--border); }
+    .compare div { background: var(--surface); padding: 18px; }
+    .compare h3 { font-size: 0.95rem; margin-bottom: 8px; }
+    .compare p { color: var(--text-muted); font-size: 0.9rem; }
+    .cta { text-align: center; padding: clamp(44px, 7vw, 72px) 16px; }
+    .cta h2 { font-size: clamp(1.7rem, 3vw, 2.5rem); margin-bottom: 10px; letter-spacing: 0; }
+    .cta p { color: var(--text-muted); margin: 0 auto 22px; max-width: 560px; }
+    footer {
+      width: min(var(--page-width), calc(100% - 32px));
+      margin: 0 auto;
+      padding: 22px 0 34px;
+      color: var(--text-muted);
+      font-size: 0.82rem;
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    @media (max-width: 820px) {
+      .hero, .grid, .compare { grid-template-columns: 1fr; }
+      .nav-links { gap: 10px; }
+      .nav-links a:not(.nav-cta) { display: none; }
+      .actions .btn { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <nav>
+    <a class="brand" href="index.html">Keptra</a>
+    <div class="nav-links">
+      <a href="index.html#features">Features</a>
+      <a href="index.html#pricing">Pricing</a>
+      <a href="download.html">Download</a>
+      <a class="nav-cta" href="download.html">Try free</a>
+    </div>
+  </nav>
+
+  <main>
+    <section class="hero">
+      <div>
+        <div class="eyebrow">Lightroom import alternative</div>
+        <h1>Keep the import workflow. Skip the Lightroom subscription.</h1>
+        <p>Keptra helps you review a card before everything lands in your library. Cull with the keyboard, copy only the keepers, skip duplicates, and verify each transfer before the card gets formatted.</p>
+        <div class="actions">
+          <a class="btn primary" href="download.html">Download Keptra</a>
+          <a class="btn secondary" href="index.html#pricing">See pricing</a>
+        </div>
+      </div>
+      <div class="media">
+        <img src="assets/demo/real-app-capture.png" alt="Keptra showing photo culling before import" width="960" height="560" />
+      </div>
+    </section>
+
+    <section class="band">
+      <div class="inner">
+        <div class="section-head">
+          <h2>Built for the card-to-drive step</h2>
+          <p>Lightroom is a full catalog and editor. Keptra focuses on the moment before that: deciding what deserves to be copied, where it should go, and whether it arrived safely.</p>
+        </div>
+        <div class="grid">
+          <div class="item">
+            <strong>Cull before import</strong>
+            <p>Use P, X, arrows, and 1-5 star ratings to move through a card without reaching for the mouse.</p>
+          </div>
+          <div class="item">
+            <strong>Copy with confidence</strong>
+            <p>Files are checked after copying, and a second local destination can mirror every import.</p>
+          </div>
+          <div class="item">
+            <strong>Stay local</strong>
+            <p>Sharpness and face review run on your machine. Your photos do not need to be uploaded for culling.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="band" style="border-top:none;background:#0c0f11">
+      <div class="inner">
+        <div class="section-head">
+          <h2>Where Keptra fits</h2>
+          <p>Use it before Lightroom, Capture One, Affinity, darktable, or any folder-based editing workflow.</p>
+        </div>
+        <div class="compare">
+          <div>
+            <h3>Lightroom</h3>
+            <p>Best when you want a full catalog, editor, presets, and Adobe ecosystem.</p>
+          </div>
+          <div>
+          <h3>AI culling tools</h3>
+            <p>Best when you want heavier automated selection and editing across huge shoots.</p>
+          </div>
+          <div>
+            <h3>Keptra</h3>
+            <p>Best when you want fast local culling, safe copy verification, and organized imports before editing.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="cta">
+      <h2>Give your next card a cleaner landing</h2>
+      <p>Download free for Mac or Windows, then start a Pro trial inside the app when you want local AI review, auto-import, backup destinations, and FTP/NAS output.</p>
+      <a class="btn primary" href="download.html">Try Keptra free</a>
+    </section>
+  </main>
+
+  <footer>
+    <span>Keptra</span>
+    <span><a href="index.html">Home</a> · <a href="mailto:help@z2hs.au">Contact</a></span>
+  </footer>
+</body>
+</html>

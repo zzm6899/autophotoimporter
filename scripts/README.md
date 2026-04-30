@@ -26,5 +26,5 @@ Important:
 - As long as you keep the same `private.pem`, new customer licenses will work with your existing EXE.
 - If you replace the keypair, build and ship a new EXE.
 - Run `npm run release:manifest` after packaging and smoke checks to snapshot release readiness before tagging or manual publish.
-- Use `npm run update:publish -- ...` after CI or local release builds to register a hosted update with `admin.culler.z2hs.au`.
+- Use `npm run update:publish -- ...` after CI or local release builds to register a hosted update with `admin.keptra.z2hs.au`.
 - The hosted update-admin image is published to `ghcr.io/zzm6899/photo-importer-update-admin:latest` by `.github/workflows/publish-update-admin-image.yml`.

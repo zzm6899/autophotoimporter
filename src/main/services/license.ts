@@ -6,7 +6,7 @@ import { getDeviceIdentity } from './device-id';
 const LICENSE_PREFIX = 'PI1-';
 const ACTIVATION_PREFIX = 'PIC-';
 const PRODUCT_ID = 'photo-importer';
-const LICENSE_SERVICE_BASE_URL = 'https://updates.culler.z2hs.au';
+const LICENSE_SERVICE_BASE_URL = 'https://updates.keptra.z2hs.au';
 
 type CompactPayload = {
   n: string;

@@ -3,7 +3,7 @@ import { readFile, writeFile, mkdir, open, rm, rename, statfs, readdir, stat, co
 import { execFile, spawn } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 import path from 'node:path';
-import { IPC } from '../shared/types';
+import { DEFAULT_VIEW_OVERLAY_PREFERENCES, IPC } from '../shared/types';
 import type { ImportConfig, ImportResult, AppSettings, MediaFile, FtpConfig, FtpSyncStatus, Volume, UpdateState, ImportLedger, MacFirstRunDoctor } from '../shared/types';
 import { listVolumes, startWatching, stopWatching } from './services/volume-watcher';
 import { scanFiles, cancelScan, pauseScan, resumeScan } from './services/file-scanner';
@@ -62,6 +62,14 @@ function isFtpConfig(value: unknown): value is FtpConfig {
     && isNonEmptyString(value.remotePath);
 }
 
+function isViewOverlayPreferencesPatch(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  for (const key of ['photoStats', 'histogram', 'faceBoxes', 'peopleBoxes', 'aiReasons']) {
+    if (value[key] != null && !isBoolean(value[key])) return false;
+  }
+  return true;
+}
+
 function isImportConfig(value: unknown): value is ImportConfig {
   if (!isRecord(value)) return false;
   return isNonEmptyString(value.sourcePath)
@@ -91,6 +99,7 @@ function isSettingsPatch(value: unknown): value is Partial<AppSettings> {
   if (!isRecord(value)) return false;
   if (value.ftpConfig != null && !isFtpConfig(value.ftpConfig)) return false;
   if (value.ftpDestConfig != null && !isFtpConfig(value.ftpDestConfig)) return false;
+  if (value.viewOverlayPreferences != null && !isViewOverlayPreferencesPatch(value.viewOverlayPreferences)) return false;
   if (value.lastDestination != null && typeof value.lastDestination !== 'string') return false;
   return true;
 }
@@ -188,7 +197,7 @@ let lastFtpSyncStatus: FtpSyncStatus = {
   message: 'FTP sync is idle.',
 };
 
-const UPDATE_ALLOWED_HOSTS = new Set(['updates.culler.z2hs.au']);
+const UPDATE_ALLOWED_HOSTS = new Set(['updates.keptra.z2hs.au']);
 const UPDATE_ALLOWED_SCHEMES = new Set(['https:']);
 
 function logUpdateDiagnostic(event: string, details: Record<string, unknown>) {
@@ -515,6 +524,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   fastKeeperMode: false,
   previewConcurrency: 2,
   faceConcurrency: 1,
+  viewOverlayPreferences: { ...DEFAULT_VIEW_OVERLAY_PREFERENCES },
 };
 
 // ---------------------------------------------------------------------------
@@ -618,7 +628,14 @@ async function loadSettings(): Promise<AppSettings> {
   try {
     const data = await readSettingsData();
     const parsed = JSON.parse(data) as Partial<AppSettings>;
-    const merged = { ...DEFAULT_SETTINGS, ...parsed };
+    const merged = {
+      ...DEFAULT_SETTINGS,
+      ...parsed,
+      viewOverlayPreferences: {
+        ...DEFAULT_VIEW_OVERLAY_PREFERENCES,
+        ...(isRecord(parsed.viewOverlayPreferences) ? parsed.viewOverlayPreferences : {}),
+      },
+    };
     const storedActivationCode = merged.licenseActivationCode?.trim();
     const licenseStatus = merged.licenseKey
       ? {
@@ -1170,7 +1187,7 @@ function isSafeHttpsUrl(value: unknown): value is string {
     const url = new URL(value);
     if (url.protocol !== 'https:') return false;
     return [
-      'updates.culler.z2hs.au',
+      'updates.keptra.z2hs.au',
       'github.com',
       'checkout.stripe.com',
     ].includes(url.hostname);
