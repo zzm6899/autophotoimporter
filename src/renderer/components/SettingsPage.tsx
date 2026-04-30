@@ -64,6 +64,16 @@ const SETTINGS_TOPICS = [
 
 type SettingsTopic = typeof SETTINGS_TOPICS[number]['id'];
 
+function isSafeCheckoutUrl(value?: string): boolean {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && ['checkout.stripe.com', 'keptra.z2hs.au'].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const {
     theme,
@@ -739,6 +749,8 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
       } else {
         setLicenseFeedback(status.message);
       }
+    } catch {
+      setLicenseFeedback('Could not activate license. Check your connection and try again.');
     } finally {
       setLicenseBusy(false);
     }
@@ -751,6 +763,8 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
       dispatch({ type: 'SET_LICENSE_STATUS', status });
       setLicenseInput('');
       setLicenseFeedback(null);
+    } catch {
+      setLicenseFeedback('Could not clear license. Try again.');
     } finally {
       setLicenseBusy(false);
     }
@@ -814,6 +828,10 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
       const data = await resp.json() as { url?: string; error?: string };
       if (!resp.ok || !data.url) {
         setBuyFeedback(data.error ?? 'Could not create checkout. Try again.');
+        return;
+      }
+      if (!isSafeCheckoutUrl(data.url)) {
+        setBuyFeedback('Checkout link failed security checks. Please contact support.');
         return;
       }
       // Open Stripe Checkout in the system browser

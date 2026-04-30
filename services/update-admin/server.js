@@ -33,8 +33,17 @@ const licensePrivateKeyPem = loadKey(
   '',
 );
 if (!licensePublicKeyPem) throw new Error('LICENSE_PUBLIC_KEY or LICENSE_PUBLIC_KEY_PATH must be set');
-const sessionSecret = process.env.ADMIN_SESSION_SECRET || 'change-me-admin-session-secret';
-const updateSecret = process.env.UPDATE_TOKEN_SECRET || 'change-me-update-token-secret';
+
+function requiredSecret(name, forbiddenDefault) {
+  const value = String(process.env[name] || '');
+  if (!value || value === forbiddenDefault || value.length < 32) {
+    throw new Error(`${name} must be set to a unique secret of at least 32 characters.`);
+  }
+  return value;
+}
+
+const sessionSecret = requiredSecret('ADMIN_SESSION_SECRET', 'change-me-admin-session-secret');
+const updateSecret = requiredSecret('UPDATE_TOKEN_SECRET', 'change-me-update-token-secret');
 const adminApiToken = process.env.ADMIN_API_TOKEN || '';
 const artifactsRoot = process.env.ARTIFACTS_ROOT || '/srv/artifacts';
 const githubApiBase = process.env.GITHUB_API_BASE_URL || 'https://api.github.com';
@@ -409,6 +418,50 @@ function normalizeReleasePlatform(platform) {
   const value = String(platform || '').trim().toLowerCase();
   if (value === 'windows' || value === 'macos') return value;
   throw new Error('Platform must be windows or macos.');
+}
+
+function isPathInside(root, candidate) {
+  const resolvedRoot = path.resolve(root);
+  const resolvedCandidate = path.resolve(candidate);
+  const relative = path.relative(resolvedRoot, resolvedCandidate);
+  return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function githubDownloadPrefix() {
+  if (!hasGitHubReleaseConfig()) return null;
+  return `https://github.com/${githubRepoOwner}/${githubRepoName}/releases/download/`;
+}
+
+function normalizeArtifactUrl(value, platform) {
+  const normalizedPlatform = normalizeReleasePlatform(platform);
+  const normalized = normalizePublicKeptraUrl(value);
+  let parsed;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    throw new Error('Artifact URL must be a valid URL.');
+  }
+  if (parsed.protocol !== 'https:') {
+    throw new Error('Artifact URL must use HTTPS.');
+  }
+
+  const artifactHosts = new Set([
+    'keptra.z2hs.au',
+    'updates.keptra.z2hs.au',
+    'culler.z2hs.au',
+    'updates.culler.z2hs.au',
+  ]);
+  const artifactPathPrefix = `/artifacts/${normalizedPlatform}/`;
+  if (artifactHosts.has(parsed.hostname) && parsed.pathname.startsWith(artifactPathPrefix)) {
+    return normalized;
+  }
+
+  const ghPrefix = githubDownloadPrefix();
+  if (ghPrefix && normalized.startsWith(ghPrefix)) {
+    return normalized;
+  }
+
+  throw new Error('Artifact URL must point to a Keptra artifact or the configured GitHub release repository.');
 }
 
 function signSession(payload) {
@@ -1127,13 +1180,14 @@ app.get('/releases/:version', async (req, res) => {
     `));
   }
 
-  return res.send(htmlPage(`${release.release_name} (${release.version})`, `
+  const safeRelease = serializePublicRelease(release);
+  return res.send(htmlPage(`${escapeHtml(safeRelease.releaseName)} (${escapeHtml(safeRelease.version)})`, `
     <div class="panel" style="max-width:760px;margin:48px auto">
-      <h1>${release.release_name}</h1>
-      <p class="muted">Version ${release.version} - ${release.platform} - ${release.channel} - ${fmtDate(release.published_at)}</p>
-      ${release.release_notes ? `<pre style="white-space:pre-wrap;background:#020617;border:1px solid #334155;border-radius:12px;padding:14px;margin-top:16px">${release.release_notes}</pre>` : '<p class="muted">No release notes were provided for this version.</p>'}
+      <h1>${escapeHtml(safeRelease.releaseName)}</h1>
+      <p class="muted">Version ${escapeHtml(safeRelease.version)} - ${escapeHtml(safeRelease.platform)} - ${escapeHtml(safeRelease.channel)} - ${fmtDate(safeRelease.publishedAt)}</p>
+      ${safeRelease.notes ? `<pre style="white-space:pre-wrap;background:#020617;border:1px solid #334155;border-radius:12px;padding:14px;margin-top:16px">${escapeHtml(safeRelease.notes)}</pre>` : '<p class="muted">No release notes were provided for this version.</p>'}
       <div class="actions" style="margin-top:16px">
-        <a href="${release.artifact_url}"><button type="button">Download installer</button></a>
+        <a href="${escapeHtml(safeRelease.artifactUrl)}"><button type="button">Download installer</button></a>
       </div>
     </div>
   `));
@@ -2240,8 +2294,8 @@ app.get('/admin/releases', authSession, async (req, res) => {
         <table class="table-stack">
           <thead><tr><th>Release</th><th>Distribution</th><th>State</th><th>Published</th><th>Actions</th></tr></thead><tbody>
           ${releases.rows.map((row) => `<tr>
-            <td data-label="Release"><span style="font-weight:700">${row.release_name}</span><div class="muted">v${row.version}</div></td>
-            <td data-label="Distribution" class="muted">${row.platform} · ${row.channel}${row.release_url ? `<div><a href="${row.release_url}" class="muted">Hosted page</a></div>` : ''}${row.artifact_url ? `<div><a href="${row.artifact_url}" class="muted">Artifact</a></div>` : ''}</td>
+            <td data-label="Release"><span style="font-weight:700">${escapeHtml(row.release_name)}</span><div class="muted">v${escapeHtml(row.version)}</div></td>
+            <td data-label="Distribution" class="muted">${escapeHtml(row.platform)} · ${escapeHtml(row.channel)}${row.release_url ? `<div><a href="${escapeHtml(row.release_url)}" class="muted">Hosted page</a></div>` : ''}${row.artifact_url ? `<div><a href="${escapeHtml(row.artifact_url)}" class="muted">Artifact</a></div>` : ''}</td>
             <td data-label="State">${statusPill(row.rollout_state)}</td>
             <td data-label="Published" class="muted">${fmtTime(row.published_at)}</td>
             <td data-label="Actions" class="cell-actions">
@@ -2283,7 +2337,7 @@ app.post('/admin/releases/sync-github', authSession, async (_req, res) => {
           asset.platform,
           latest.name || `Keptra ${version}`,
           latest.body || null,
-          latest.htmlUrl || null,
+          publicReleaseUrl(version),
           asset.url,
           latest.publishedAt || new Date().toISOString(),
         ],
@@ -2292,24 +2346,34 @@ app.post('/admin/releases/sync-github', authSession, async (_req, res) => {
     return res.redirect('/admin/releases');
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Could not sync the latest GitHub release.';
-    return res.status(400).send(htmlPage('GitHub Sync Error', `<div class="panel"><h1>GitHub sync failed</h1><p class="bad">${message}</p><a href="/admin/releases">Back</a></div>`));
+    return res.status(400).send(htmlPage('GitHub Sync Error', `<div class="panel"><h1>GitHub sync failed</h1><p class="bad">${escapeHtml(message)}</p><a href="/admin/releases">Back</a></div>`));
   }
 });
 
 app.post('/admin/releases', authSession, async (req, res) => {
   const version = req.body.version;
-  const releaseUrl = req.body.releaseUrl || publicReleaseUrl(version);
+  let platform;
+  let releaseUrl;
+  let artifactUrl;
+  try {
+    platform = normalizeReleasePlatform(req.body.platform);
+    releaseUrl = normalizePublicKeptraUrl(req.body.releaseUrl || publicReleaseUrl(version));
+    artifactUrl = normalizeArtifactUrl(req.body.artifactUrl, platform);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Invalid release metadata.';
+    return res.status(400).send(htmlPage('Release Error', `<div class="panel"><h1>Release was not saved</h1><p class="bad">${escapeHtml(message)}</p><a href="/admin/releases">Back</a></div>`));
+  }
   await pool.query(
     `INSERT INTO releases (version, platform, channel, release_name, release_notes, release_url, artifact_url, rollout_state, published_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())`,
     [
       version,
-      req.body.platform,
+      platform,
       req.body.channel || 'stable',
       req.body.releaseName,
       req.body.releaseNotes || null,
       releaseUrl,
-      req.body.artifactUrl,
+      artifactUrl,
       req.body.rolloutState || 'draft',
     ],
   );
@@ -2332,16 +2396,16 @@ app.get('/admin/releases/:id/edit', authSession, async (req, res) => {
     return res.status(404).send(htmlPage('Not Found', `<div class="panel"><h1>Release not found</h1><a href="/admin/releases">Back</a></div>`));
   }
   const row = result.rows[0];
-  return res.send(htmlPage(`Edit ${row.release_name}`, `
+  return res.send(htmlPage(`Edit ${escapeHtml(row.release_name)}`, `
     <div class="hero">
       <div class="hero-copy">
         <div class="hero-kicker">Edit Release</div>
-        <h1>${row.release_name}</h1>
+        <h1>${escapeHtml(row.release_name)}</h1>
         <p>Update rollout state, copy, and artifact details without leaving the admin flow.</p>
         <div class="hero-meta">
-          <span class="hero-note">v${row.version}</span>
-          <span class="hero-note">${row.platform}</span>
-          <span class="hero-note">${row.channel}</span>
+          <span class="hero-note">v${escapeHtml(row.version)}</span>
+          <span class="hero-note">${escapeHtml(row.platform)}</span>
+          <span class="hero-note">${escapeHtml(row.channel)}</span>
         </div>
       </div>
       ${nav('releases')}
@@ -2355,7 +2419,7 @@ app.get('/admin/releases/:id/edit', authSession, async (req, res) => {
       </div>
       <form method="post" action="/admin/releases/${row.id}/edit">
         <label>Release name</label>
-        <input name="releaseName" value="${row.release_name}" required />
+        <input name="releaseName" value="${escapeHtml(row.release_name)}" required />
         <div class="row">
           <div>
             <label>Channel</label>
@@ -2374,9 +2438,9 @@ app.get('/admin/releases/:id/edit', authSession, async (req, res) => {
           </div>
         </div>
         <label>Artifact URL</label>
-        <input name="artifactUrl" value="${row.artifact_url}" required />
+        <input name="artifactUrl" value="${escapeHtml(row.artifact_url)}" required />
         <label>Release notes</label>
-        <textarea name="releaseNotes" rows="8">${row.release_notes || ''}</textarea>
+        <textarea name="releaseNotes" rows="8">${escapeHtml(row.release_notes || '')}</textarea>
         <div class="actions">
           <button type="submit">Save changes</button>
           <a href="/admin/releases"><button class="secondary" type="button">Cancel</button></a>
@@ -2390,7 +2454,7 @@ app.get('/admin/releases/:id/edit', authSession, async (req, res) => {
           <p class="muted">Deleting a release removes it from the database and also tries to clean up the hosted artifact if it lives on this server or in GitHub assets.</p>
         </div>
       </div>
-      <form method="post" action="/admin/releases/${row.id}/delete" onsubmit="return confirm('Delete ${row.release_name} (${row.version})? This cannot be undone.')">
+      <form method="post" action="/admin/releases/${row.id}/delete" onsubmit="return confirm('Delete this release? This cannot be undone.')">
         <button class="danger" type="submit">Delete this release</button>
       </form>
     </div>
@@ -2398,6 +2462,15 @@ app.get('/admin/releases/:id/edit', authSession, async (req, res) => {
 });
 
 app.post('/admin/releases/:id/edit', authSession, async (req, res) => {
+  const current = await pool.query('SELECT platform FROM releases WHERE id = $1', [req.params.id]);
+  if (!current.rowCount) return res.redirect('/admin/releases');
+  let artifactUrl;
+  try {
+    artifactUrl = normalizeArtifactUrl(req.body.artifactUrl, current.rows[0].platform);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Invalid release artifact.';
+    return res.status(400).send(htmlPage('Release Error', `<div class="panel"><h1>Release was not updated</h1><p class="bad">${escapeHtml(message)}</p><a href="/admin/releases/${escapeHtml(req.params.id)}/edit">Back</a></div>`));
+  }
   await pool.query(
     `UPDATE releases
      SET release_name = $1, channel = $2, rollout_state = $3, artifact_url = $4, release_notes = $5
@@ -2406,7 +2479,7 @@ app.post('/admin/releases/:id/edit', authSession, async (req, res) => {
       req.body.releaseName,
       req.body.channel || 'stable',
       req.body.rolloutState || 'draft',
-      req.body.artifactUrl,
+      artifactUrl,
       req.body.releaseNotes || null,
       req.params.id,
     ],
@@ -2429,8 +2502,8 @@ app.post('/admin/releases/:id/delete', authSession, async (req, res) => {
   if (artifactUrl.startsWith(baseUrl + '/artifacts/')) {
     try {
       const relPath = artifactUrl.slice((baseUrl + '/artifacts/').length);
-      const localPath = path.join(artifactsRoot, decodeURIComponent(relPath));
-      if (localPath.startsWith(path.resolve(artifactsRoot))) {
+      const localPath = path.resolve(artifactsRoot, decodeURIComponent(relPath));
+      if (isPathInside(artifactsRoot, localPath)) {
         await fs.promises.unlink(localPath);
       }
     } catch (err) {
@@ -2603,12 +2676,22 @@ app.post('/admin/api/releases/import', requireAdminApiToken, async (req, res) =>
   if (!version || !platform || !releaseName || !artifactUrl) {
     return res.status(400).json({ error: 'version, platform, releaseName, and artifactUrl are required.' });
   }
-  const resolvedReleaseUrl = releaseUrl || publicReleaseUrl(version);
+  let normalizedPlatform;
+  let normalizedArtifactUrl;
+  let resolvedReleaseUrl;
+  try {
+    normalizedPlatform = normalizeReleasePlatform(platform);
+    normalizedArtifactUrl = normalizeArtifactUrl(artifactUrl, normalizedPlatform);
+    resolvedReleaseUrl = normalizePublicKeptraUrl(releaseUrl || publicReleaseUrl(version));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Invalid release artifact.';
+    return res.status(400).json({ error: message });
+  }
   const result = await pool.query(
     `INSERT INTO releases (version, platform, channel, release_name, release_notes, release_url, artifact_url, rollout_state, published_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
      RETURNING id`,
-    [version, platform, channel, releaseName, releaseNotes || null, resolvedReleaseUrl, artifactUrl, rolloutState],
+    [version, normalizedPlatform, channel, releaseName, releaseNotes || null, resolvedReleaseUrl, normalizedArtifactUrl, rolloutState],
   );
   return res.json({ ok: true, id: result.rows[0].id });
 });
@@ -2833,7 +2916,7 @@ app.get('/api/v1/app/update', async (req, res) => {
   const release = await latestRelease(platform, channel);
   if (!release) {
     await logUpdateEvent('update-check', {
-      fingerprint: resolved.fingerprint,
+      fingerprint: resolved?.fingerprint,
       appVersion: version,
       platform,
       channel,
@@ -2976,9 +3059,10 @@ app.get('/api/v1/app/download/:releaseId', async (req, res) => {
     });
     // Set Content-Disposition so the client can parse the real filename
     // before following the redirect (path.basename of the token URL is just the release ID).
-    const artifactFilename = decodeURIComponent(path.basename(release.rows[0].artifact_url));
+    const artifactUrl = normalizeArtifactUrl(release.rows[0].artifact_url, release.rows[0].platform);
+    const artifactFilename = decodeURIComponent(path.basename(new URL(artifactUrl).pathname));
     res.setHeader('Content-Disposition', `attachment; filename="${artifactFilename}"`);
-    return res.redirect(release.rows[0].artifact_url);
+    return res.redirect(artifactUrl);
   } catch {
     return res.status(403).send('Download token expired or invalid.');
   }
@@ -3274,7 +3358,11 @@ app.post(
   express.raw({ type: 'application/json' }),
   async (req, res) => {
     if (!stripeWebhookSecret) {
-      console.warn('[stripe] STRIPE_WEBHOOK_SECRET not set — accepting webhook without verification (dev only)');
+      if (process.env.NODE_ENV !== 'development' && process.env.ALLOW_UNSIGNED_STRIPE_WEBHOOKS !== 'true') {
+        console.error('[stripe-webhook] STRIPE_WEBHOOK_SECRET is required.');
+        return res.status(500).json({ error: 'Stripe webhook verification is not configured.' });
+      }
+      console.warn('[stripe] STRIPE_WEBHOOK_SECRET not set — accepting webhook without verification because development override is enabled');
     } else {
       const sig = req.headers['stripe-signature'];
       if (!sig || !verifyStripeSignature(req.body.toString('utf8'), sig, stripeWebhookSecret)) {

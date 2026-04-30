@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   db:
     image: postgres:16-alpine
@@ -39,6 +37,8 @@ services:
       DEFAULT_MAX_DEVICES: ${DEFAULT_MAX_DEVICES:-1}
     ports:
       - "5071:5071"
+    volumes:
+      - ../../artifacts:/srv/artifacts
     secrets:
       - license_public_key.pem
 
@@ -53,6 +53,7 @@ services:
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../../artifacts:/srv/artifacts:ro
       - ../../web:/srv/web:ro
       - caddy_data:/data
       - caddy_config:/config

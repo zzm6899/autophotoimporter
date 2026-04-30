@@ -9,7 +9,9 @@ export function useSettings() {
       if (settings.lastDestination) {
         dispatch({ type: 'SET_DESTINATION', path: settings.lastDestination });
       }
-      dispatch({ type: 'SET_SKIP_DUPLICATES', value: settings.skipDuplicates });
+      if (typeof settings.skipDuplicates === 'boolean') {
+        dispatch({ type: 'SET_SKIP_DUPLICATES', value: settings.skipDuplicates });
+      }
       if (settings.saveFormat) {
         dispatch({ type: 'SET_SAVE_FORMAT', format: settings.saveFormat });
       }

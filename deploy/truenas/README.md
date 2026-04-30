@@ -38,9 +38,9 @@ In TrueNAS:
    - `POSTGRES_PASSWORD`
    - `ADMIN_EMAIL`
    - `ADMIN_PASSWORD`
-   - `ADMIN_SESSION_SECRET`
-   - `UPDATE_TOKEN_SECRET`
-   - `ADMIN_API_TOKEN`
+   - `ADMIN_SESSION_SECRET` with at least 32 random characters
+   - `UPDATE_TOKEN_SECRET` with at least 32 random characters
+   - `ADMIN_API_TOKEN` with at least 32 random characters
    - `GITHUB_RELEASE_TOKEN` if the repo is private and you want the admin panel to read the latest GitHub release metadata
 3. Make sure `../../scripts/license-keys/public.pem` contains the public key that matches the private key used to generate customer licenses.
 4. If you want the hosted admin panel to generate customer keys itself, also mount `../../scripts/license-keys/private.pem` into the app container. Keep it secret.

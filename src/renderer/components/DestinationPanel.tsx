@@ -272,7 +272,7 @@ export function DestinationPanel() {
 
   const ftpReady = !ftpDestEnabled || (!!ftpDestConfig.host && !!ftpDestConfig.remotePath);
   const licenseValid = !!licenseStatus?.valid;
-  const canImport = licenseValid && selectedSource && destination && ftpReady && importFiles.length > 0 && (phase === 'ready' || phase === 'scanning');
+  const canImport = licenseValid && selectedSource && destination && ftpReady && importFiles.length > 0 && phase === 'ready';
   const totalSize = importFiles.reduce((sum, f) => sum + f.size, 0);
   const exposureEditCount = importFiles.filter((f) => f.normalizeToAnchor || f.exposureAdjustmentStops).length;
   const queuedRejectedCount = importFiles.filter((f) => f.pick === 'rejected').length;

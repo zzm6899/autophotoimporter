@@ -197,7 +197,14 @@ let lastFtpSyncStatus: FtpSyncStatus = {
   message: 'FTP sync is idle.',
 };
 
-const UPDATE_ALLOWED_HOSTS = new Set(['keptra.z2hs.au', 'updates.keptra.z2hs.au', 'admin.keptra.z2hs.au']);
+const UPDATE_ALLOWED_HOSTS = new Set([
+  'keptra.z2hs.au',
+  'updates.keptra.z2hs.au',
+  'admin.keptra.z2hs.au',
+  'github.com',
+  'objects.githubusercontent.com',
+  'github-releases.githubusercontent.com',
+]);
 const UPDATE_ALLOWED_SCHEMES = new Set(['https:']);
 
 function logUpdateDiagnostic(event: string, details: Record<string, unknown>) {
@@ -209,9 +216,24 @@ function isAllowlistedUpdateUrl(value?: unknown): boolean {
   if (typeof value !== 'string') return false;
   try {
     const parsed = new URL(value);
-    return UPDATE_ALLOWED_SCHEMES.has(parsed.protocol) && UPDATE_ALLOWED_HOSTS.has(parsed.hostname);
+    if (!UPDATE_ALLOWED_SCHEMES.has(parsed.protocol) || !UPDATE_ALLOWED_HOSTS.has(parsed.hostname)) {
+      return false;
+    }
+    if (parsed.hostname === 'github.com') {
+      return /^\/[^/]+\/[^/]+\/releases\/download\//.test(parsed.pathname);
+    }
+    return true;
   } catch {
     return false;
+  }
+}
+
+function resolveRedirectUrl(currentUrl: string, location: string | null): string | null {
+  if (!location) return null;
+  try {
+    return new URL(location, currentUrl).toString();
+  } catch {
+    return null;
   }
 }
 
@@ -1062,17 +1084,33 @@ function parseContentDispositionFilename(header: string | null) {
 }
 
 async function downloadInstallerAsset(downloadUrl: string, versionLabel: string) {
-  // First request: no-redirect so we can capture the Content-Disposition header
-  // from our server before it redirects to GitHub (which won't send it).
+  // Follow redirects manually so every hop stays inside the update allowlist.
   let fileNameFromHeader: string | null = null;
-  try {
-    const headResp = await fetch(downloadUrl, { redirect: 'manual' });
-    fileNameFromHeader = parseContentDispositionFilename(headResp.headers.get('content-disposition'));
-  } catch {
-    // ignore — fall through to redirect-following fetch below
+  let currentUrl = downloadUrl;
+  let response: Response | null = null;
+
+  for (let hop = 0; hop < 5; hop += 1) {
+    if (!isAllowlistedUpdateUrl(currentUrl)) {
+      throw new Error('Update download redirect failed trust checks.');
+    }
+    response = await fetch(currentUrl, { redirect: 'manual' });
+    fileNameFromHeader ??= parseContentDispositionFilename(response.headers.get('content-disposition'));
+
+    if (response.status >= 300 && response.status < 400) {
+      const nextUrl = resolveRedirectUrl(currentUrl, response.headers.get('location'));
+      if (!nextUrl || !isAllowlistedUpdateUrl(nextUrl)) {
+        throw new Error('Update download redirect failed trust checks.');
+      }
+      currentUrl = nextUrl;
+      continue;
+    }
+
+    break;
   }
 
-  const response = await fetch(downloadUrl);
+  if (!response || response.status >= 300 && response.status < 400) {
+    throw new Error('Update download redirected too many times.');
+  }
   if (!response.ok || !response.body) {
     throw new Error(`Download failed with status ${response.status}`);
   }
@@ -1083,8 +1121,8 @@ async function downloadInstallerAsset(downloadUrl: string, versionLabel: string)
   if (!fileNameFromHeader) {
     fileNameFromHeader = parseContentDispositionFilename(response.headers.get('content-disposition'));
   }
-  const fallbackName = `Keptra-${versionLabel}${installerExtensionForPlatform(downloadUrl)}`;
-  const fileName = sanitizeDownloadName(fileNameFromHeader || path.basename(new URL(downloadUrl).pathname) || fallbackName);
+  const fallbackName = `Keptra-${versionLabel}${installerExtensionForPlatform(currentUrl)}`;
+  const fileName = sanitizeDownloadName(fileNameFromHeader || path.basename(new URL(currentUrl).pathname) || fallbackName);
   const targetPath = path.join(updatesDir, fileName);
   const tempPath = `${targetPath}.partial`;
   const totalBytes = Number(response.headers.get('content-length') || 0);

@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   db:
     image: postgres:16-alpine
@@ -39,6 +37,8 @@ services:
       COOKIE_SECURE: "true"
     ports:
       - "5071:5071"
+    volumes:
+      - ./artifacts:/srv/artifacts
     secrets:
       - license_public_key.pem
       - license_private_key.pem

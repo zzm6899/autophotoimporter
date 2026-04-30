@@ -109,13 +109,23 @@ function ThumbnailCardInner({
   const imageFilter = [previewFilter, whiteBalanceFilter].filter(Boolean).join(' ') || undefined;
   const orientation = orientationTransform(file.orientation);
   const { containerRef, activeSrc } = useLazySrc(file.thumbnail, forceLoad || focused || selected);
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.preventDefault();
+    onClickCard(index, e as unknown as React.MouseEvent);
+  };
 
   return (
     <div
       className={`group relative cursor-pointer transition-all ${
         isRejected ? 'opacity-50' : ''
       } ${file.duplicate && !file.pick ? 'opacity-40' : ''}`}
+      role="button"
+      tabIndex={0}
+      aria-label={`Select ${file.name}`}
+      aria-pressed={selected}
       onClick={(e) => onClickCard(index, e)}
+      onKeyDown={handleKeyDown}
       onDoubleClick={() => onDoubleClickCard(index)}
     >
       <div className={`relative bg-surface overflow-hidden ${
