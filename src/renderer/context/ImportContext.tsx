@@ -385,9 +385,25 @@ function queueBestPaths(
   files: MediaFile[],
   _options: { cullConfidence?: CullConfidence; groupPhotoEveryoneGood?: boolean; keeperQuota?: KeeperQuota } = {},
 ): string[] {
-  return files
-    .filter((f) => f.type === 'photo' && f.pick !== 'rejected' && !f.duplicate)
-    .map((f) => f.path);
+  const eligible = files.filter((f) => f.type === 'photo' && f.pick !== 'rejected' && !f.duplicate);
+  const groups = collectReviewGroups(eligible, false);
+  const groupedPaths = new Set<string>();
+  const queued = new Set<string>();
+
+  for (const group of groups.values()) {
+    for (const f of group) {
+      groupedPaths.add(f.path);
+      if (f.pick === 'selected' || f.isProtected || (f.rating ?? 0) > 0) queued.add(f.path);
+    }
+    const best = bestInGroup(group);
+    if (best) queued.add(best.path);
+  }
+
+  for (const f of eligible) {
+    if (!groupedPaths.has(f.path)) queued.add(f.path);
+  }
+
+  return eligible.filter((f) => queued.has(f.path)).map((f) => f.path);
 }
 
 export function reducer(state: State, action: Action): State {

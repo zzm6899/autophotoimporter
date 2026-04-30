@@ -380,7 +380,7 @@ describe('ImportContext reducer', () => {
       expect(next.fileHistory).toHaveLength(1);
     });
 
-    it('queues every keepable batch photo', () => {
+    it('queues every keepable standalone photo', () => {
       const files = [
         makeFile({ path: '/best.jpg', reviewScore: 80 }),
         makeFile({ path: '/weak.jpg', reviewScore: 40 }),
@@ -391,23 +391,23 @@ describe('ImportContext reducer', () => {
       expect(next.queuedPaths).toEqual(['/best.jpg', '/weak.jpg']);
     });
 
-    it('keeps every unrejected burst photo in the batch queue', () => {
+    it('queues one best keeper per burst group', () => {
       const files = [
         makeFile({ path: '/burst-soft.jpg', burstId: 'b1', burstSize: 2, burstIndex: 1, reviewScore: 92, sharpnessScore: 20 }),
         makeFile({ path: '/burst-sharp.jpg', burstId: 'b1', burstSize: 2, burstIndex: 2, reviewScore: 82, sharpnessScore: 220 }),
       ];
       const next = reducer(makeState({ files }), { type: 'QUEUE_BEST' });
-      expect(next.queuedPaths).toEqual(['/burst-soft.jpg', '/burst-sharp.jpg']);
+      expect(next.queuedPaths).toEqual(['/burst-sharp.jpg']);
       expect(next.filter).toBe('queue');
     });
 
-    it('always includes manually starred files in the batch-best queue', () => {
+    it('prefers a manually starred file as the burst keeper', () => {
       const files = [
         makeFile({ path: '/starred.jpg', burstId: 'b1', burstSize: 2, burstIndex: 1, rating: 1, reviewScore: 20, sharpnessScore: 20 }),
         makeFile({ path: '/algorithm-best.jpg', burstId: 'b1', burstSize: 2, burstIndex: 2, reviewScore: 85, sharpnessScore: 220 }),
       ];
       const next = reducer(makeState({ files }), { type: 'QUEUE_BEST' });
-      expect(next.queuedPaths).toEqual(expect.arrayContaining(['/starred.jpg', '/algorithm-best.jpg']));
+      expect(next.queuedPaths).toEqual(['/starred.jpg']);
     });
   });
 

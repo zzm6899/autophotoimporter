@@ -250,7 +250,7 @@ export function HelpBar() {
           <button
             onClick={() => dispatch({ type: 'QUEUE_BEST' })}
             className="rounded bg-surface-raised px-2 py-0.5 text-text-secondary transition-colors hover:bg-border"
-            title="Queue every keepable photo in the batch. Skips rejected photos and duplicates."
+            title="Queue the best keeper from each burst/similar group, plus standalone keepable photos. Skips rejected photos and duplicates."
           >
             Queue Keepers
           </button>

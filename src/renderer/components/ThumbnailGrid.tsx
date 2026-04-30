@@ -2597,11 +2597,11 @@ export function ThumbnailGrid() {
         1. Review
       </button>
 
-      {/* ── Step 2: Queue keepers for this batch ── */}
+      {/* ── Step 2: Queue best keepers for this batch ── */}
       <button
         onClick={() => dispatch({ type: 'QUEUE_BEST' })}
         className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-surface-raised text-text-secondary hover:text-yellow-300 hover:bg-yellow-500/10 transition-colors shrink-0"
-        title={`Queue every keepable photo in this batch. Skips rejected photos and duplicates. AI done: ${reviewStats.analyzed}/${reviewStats.total}.`}
+        title={`Queue the best keeper from each burst/similar group, plus standalone keepable photos. Skips rejected photos and duplicates. AI done: ${reviewStats.analyzed}/${reviewStats.total}.`}
       >
         2. Queue Keepers
       </button>
