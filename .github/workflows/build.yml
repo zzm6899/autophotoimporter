@@ -213,3 +213,10 @@ jobs:
               --channel stable \
               --rollout live
           fi
+
+      - name: Smoke live update endpoints
+        if: ${{ env.UPDATE_ADMIN_ENDPOINT != '' && env.UPDATE_ADMIN_API_TOKEN != '' }}
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          EXPECT_LATEST_VERSION="$VERSION" npm run release:smoke

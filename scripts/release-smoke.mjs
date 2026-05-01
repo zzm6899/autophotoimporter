@@ -9,6 +9,7 @@ const hosts = [
 const platform = process.env.UPDATE_PLATFORM || 'windows';
 const version = process.env.UPDATE_FROM_VERSION || '1.4.0';
 const channel = process.env.UPDATE_CHANNEL || 'stable';
+const expectedLatestVersion = process.env.EXPECT_LATEST_VERSION || '';
 
 function updateUrl(base) {
   const url = new URL('/api/v1/app/update', base);
@@ -68,6 +69,9 @@ for (const base of hosts) {
     }
     if (!downloadUrl) {
       throw new Error('update metadata did not include a downloadable URL');
+    }
+    if (expectedLatestVersion && latestVersion !== expectedLatestVersion) {
+      throw new Error(`expected latestVersion ${expectedLatestVersion}, got ${latestVersion}`);
     }
     const download = await probeDownload(downloadUrl);
     if (download.contentLength > 0 && download.contentLength < 1024 * 1024) {
