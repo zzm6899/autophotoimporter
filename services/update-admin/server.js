@@ -2954,13 +2954,14 @@ app.get('/api/v1/app/update', async (req, res) => {
     });
   }
 
-  // Only issue a download token for licensed installs
-  const token = resolved ? signDownloadToken({
-    fingerprint: resolved.fingerprint,
+  // Issue a short-lived token whenever a live release is offered. Older
+  // clients treat metadata without a downloadUrl as a notes-only release.
+  const token = signDownloadToken({
+    fingerprint: resolved?.fingerprint || 'anonymous',
     releaseId: release.id,
     platform,
     channel,
-  }) : null;
+  });
   await logUpdateEvent('update-check', {
     fingerprint: resolved?.fingerprint,
     appVersion: version,
@@ -2978,10 +2979,8 @@ app.get('/api/v1/app/update', async (req, res) => {
     releaseNotes: serializePublicRelease(release).notes,
     releaseDate: serializePublicRelease(release).publishedAt,
     releaseUrl: serializePublicRelease(release).releaseUrl,
-    ...(token ? {
-      downloadUrl: `${publicUpdatesBaseUrl()}/api/v1/app/download/${release.id}?token=${encodeURIComponent(token)}`,
-      feedUrl: platform === 'windows' ? `${publicUpdatesBaseUrl()}/artifacts/windows` : undefined,
-    } : {}),
+    downloadUrl: `${publicUpdatesBaseUrl()}/api/v1/app/download/${release.id}?token=${encodeURIComponent(token)}`,
+    feedUrl: platform === 'windows' ? `${publicUpdatesBaseUrl()}/artifacts/windows` : undefined,
   });
 });
 
