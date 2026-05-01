@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC } from '../shared/types';
-import type { ImportConfig, AppSettings, MediaFile, Volume, ImportProgress, ImportResult, UpdateInfo, UpdateReleaseSummary, UpdateState, FtpConfig, FtpSyncStatus, ImportError, LicenseValidation, ImportPreflight, ImportLedger, MacFirstRunDoctor } from '../shared/types';
+import type { ImportConfig, AppSettings, MediaFile, Volume, ImportProgress, ImportResult, UpdateInfo, UpdateReleaseSummary, UpdateState, FtpConfig, FtpSyncStatus, ImportError, LicenseValidation, ImportPreflight, ImportLedger, MacFirstRunDoctor, AppDiagnosticsSnapshot, UpdateRepairResult } from '../shared/types';
 import type { FaceBox } from './services/face-engine';
 import type { ModelDownloadProgress } from './services/model-downloader';
 
@@ -93,6 +93,8 @@ const api = {
     ipcRenderer.invoke(IPC.DIALOG_OPEN_PATH, path),
   exportDiagnostics: (): Promise<string> =>
     ipcRenderer.invoke(IPC.DIAGNOSTICS_EXPORT),
+  getDiagnosticsSnapshot: (): Promise<AppDiagnosticsSnapshot> =>
+    ipcRenderer.invoke(IPC.DIAGNOSTICS_SNAPSHOT),
   runBenchmarkSmoke: (): Promise<{ ok: boolean; outPath: string; files: number; bytes: number; records: number; error?: string }> =>
     ipcRenderer.invoke(IPC.BENCHMARK_SMOKE_RUN),
   openBenchmarkOutput: (): Promise<string> =>
@@ -131,6 +133,8 @@ const api = {
     ipcRenderer.invoke(IPC.UPDATE_INSTALL),
   openReleaseUrl: (url: string): Promise<void> =>
     ipcRenderer.invoke(IPC.UPDATE_OPEN_RELEASE, url),
+  repairUpdates: (): Promise<UpdateRepairResult> =>
+    ipcRenderer.invoke(IPC.UPDATE_REPAIR),
 
   // FTP source
   probeFtp: (config: FtpConfig): Promise<FtpProbeResult> =>

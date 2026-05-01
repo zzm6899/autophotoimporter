@@ -4,7 +4,7 @@ import { execFile, spawn } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 import path from 'node:path';
 import { DEFAULT_VIEW_OVERLAY_PREFERENCES, IPC } from '../shared/types';
-import type { ImportConfig, ImportResult, AppSettings, MediaFile, FtpConfig, FtpSyncStatus, Volume, UpdateState, ImportLedger, MacFirstRunDoctor } from '../shared/types';
+import type { ImportConfig, ImportResult, AppSettings, MediaFile, FtpConfig, FtpSyncStatus, Volume, UpdateState, ImportLedger, MacFirstRunDoctor, AppDiagnosticsSnapshot, UpdateRepairResult } from '../shared/types';
 import { listVolumes, startWatching, stopWatching } from './services/volume-watcher';
 import { scanFiles, cancelScan, pauseScan, resumeScan } from './services/file-scanner';
 import { importFiles, cancelImport, planImportFiles } from './services/import-engine';
@@ -206,6 +206,12 @@ const UPDATE_ALLOWED_HOSTS = new Set([
   'github-releases.githubusercontent.com',
 ]);
 const UPDATE_ALLOWED_SCHEMES = new Set(['https:']);
+const UPDATE_DIAGNOSTIC_ENDPOINTS: AppDiagnosticsSnapshot['endpoints'] = [
+  { url: 'https://keptra.z2hs.au/api/v1/app/update', role: 'primary' },
+  { url: 'https://updates.keptra.z2hs.au/api/v1/app/update', role: 'fallback' },
+  { url: 'https://culler.z2hs.au/api/v1/app/update', role: 'legacy' },
+  { url: 'https://updates.culler.z2hs.au/api/v1/app/update', role: 'legacy' },
+];
 
 function logUpdateDiagnostic(event: string, details: Record<string, unknown>) {
   console.info('[updates-ipc]', JSON.stringify({ event, ...details }));
@@ -251,6 +257,14 @@ function getLedgersDir(): string {
 
 function getLatestLedgerPath(): string {
   return path.join(getLedgersDir(), 'latest.json');
+}
+
+function getUpdateMetadataPath(): string {
+  return path.join(app.getPath('userData'), 'update-metadata.json');
+}
+
+function getUpdatesCachePath(): string {
+  return path.join(app.getPath('userData'), 'updates');
 }
 
 function getDiagnosticsDir(): string {
@@ -951,6 +965,89 @@ async function getStoredLicenseKey() {
   return status.valid ? status.key?.trim() || undefined : undefined;
 }
 
+async function buildDiagnosticsSnapshot(): Promise<AppDiagnosticsSnapshot> {
+  const [settings, cachedUpdate] = await Promise.all([
+    loadSettings().catch(() => null),
+    readLastKnownGoodUpdateMetadata().catch(() => null),
+  ]);
+  const license = settings?.licenseStatus;
+  const update = lastUpdateState;
+  return {
+    appVersion: app.getVersion(),
+    platform: process.platform,
+    arch: process.arch,
+    packaged: app.isPackaged,
+    userDataPath: app.getPath('userData'),
+    settingsPath: getSettingsPath(),
+    legacySettingsPath: getLegacySettingsPath(),
+    updateMetadataPath: getUpdateMetadataPath(),
+    updatesCachePath: getUpdatesCachePath(),
+    license: {
+      valid: !!license?.valid,
+      status: license?.status,
+      message: license?.message,
+      hasStoredKey: !!settings?.licenseKey?.trim(),
+      hasActivationCode: !!settings?.licenseActivationCode?.trim(),
+      activationCode: settings?.licenseActivationCode?.trim() || license?.activationCode,
+    },
+    update: {
+      status: update?.status ?? 'unknown',
+      currentVersion: update?.currentVersion ?? app.getVersion(),
+      latestVersion: update?.latestVersion,
+      lastCheckedAt: update?.lastCheckedAt,
+      message: update?.message,
+      releaseUrl: update?.releaseUrl,
+      downloadUrl: update?.downloadUrl,
+      feedUrl: update?.feedUrl,
+      cachedLatestVersion: cachedUpdate?.latestVersion,
+      cachedAt: cachedUpdate?.savedAt,
+    },
+    endpoints: UPDATE_DIAGNOSTIC_ENDPOINTS,
+  };
+}
+
+function userSafeUpdateMessage(message?: string): string {
+  const text = String(message || '').trim();
+  const lower = text.toLowerCase();
+  if (
+    lower.includes('err_ssl_protocol_error') ||
+    lower.includes('ssl') ||
+    lower.includes('tls') ||
+    lower.includes('cert')
+  ) {
+    return 'Keptra could not make a secure update connection. This is usually temporary; use Repair updates or try again shortly.';
+  }
+  if (lower.includes('fetch failed') || lower.includes('network') || lower.includes('timeout') || lower.includes('aborted')) {
+    return 'Keptra could not reach the update service. Check your connection, then try again.';
+  }
+  if (lower.includes('json') || lower.includes('metadata')) {
+    return 'The update service answered with unexpected metadata. Keptra will keep using the last trusted update information if available.';
+  }
+  return text || 'Keptra could not check for updates. Try again in a moment.';
+}
+
+async function repairUpdates(): Promise<UpdateRepairResult> {
+  const cleared: string[] = [];
+  const metadataPath = getUpdateMetadataPath();
+  const cachePath = getUpdatesCachePath();
+  await rm(metadataPath, { force: true }).then(() => cleared.push(metadataPath)).catch(() => undefined);
+  await rm(cachePath, { force: true, recursive: true }).then(() => cleared.push(cachePath)).catch(() => undefined);
+  downloadedInstallerPath = null;
+  downloadedInstallerVersion = null;
+  downloadedUpdateKind = null;
+  const updateState = await refreshUpdateState();
+  const diagnostics = await buildDiagnosticsSnapshot();
+  return {
+    ok: updateState.status !== 'error',
+    cleared,
+    updateState,
+    diagnostics,
+    message: updateState.status === 'error'
+      ? userSafeUpdateMessage(updateState.message)
+      : 'Update cache repaired and Keptra checked the update service again.',
+  };
+}
+
 async function refreshUpdateState() {
   sendToRenderer(IPC.UPDATE_STATUS, {
     status: 'checking',
@@ -984,6 +1081,12 @@ async function refreshUpdateState() {
       };
       logUpdateDiagnostic('fallback-last-known-good', { fallbackVersion: fallback.latestVersion, savedAt: fallback.savedAt });
     }
+  }
+  if (lastUpdateState.status === 'error') {
+    lastUpdateState = {
+      ...lastUpdateState,
+      message: userSafeUpdateMessage(lastUpdateState.message),
+    };
   }
   sendToRenderer(IPC.UPDATE_STATUS, lastUpdateState);
   return lastUpdateState;
@@ -1627,6 +1730,10 @@ export function registerIpcHandlers(): void {
     return dir;
   });
 
+  handleIpc(IPC.DIAGNOSTICS_SNAPSHOT, async () => {
+    return buildDiagnosticsSnapshot();
+  });
+
   handleIpc(IPC.MAC_FIRST_RUN_DOCTOR, async (): Promise<MacFirstRunDoctor> => {
     const resources = await getModelResourceStatus();
     const checks: MacFirstRunDoctor['checks'] = [
@@ -1733,6 +1840,10 @@ export function registerIpcHandlers(): void {
 
   handleIpc(IPC.UPDATE_CHECK_NOW, async () => {
     return refreshUpdateState();
+  });
+
+  handleIpc(IPC.UPDATE_REPAIR, async () => {
+    return repairUpdates();
   });
 
   handleIpc(IPC.UPDATE_FETCH_HISTORY, async () => {

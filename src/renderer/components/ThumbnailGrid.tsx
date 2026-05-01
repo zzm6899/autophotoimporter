@@ -1171,6 +1171,12 @@ export function ThumbnailGrid() {
     dispatch({ type: 'QUEUE_ADD_PATHS', paths });
   }, [dispatch, queueActionsDisabled]);
 
+  const visiblePaths = useMemo(() => sortedFiles.map((file) => file.path), [sortedFiles]);
+  const bulkPickVisible = useCallback((pick: 'selected' | 'rejected' | undefined) => {
+    if (visiblePaths.length === 0) return;
+    dispatch({ type: 'SET_PICK_BATCH', filePaths: visiblePaths, pick });
+  }, [dispatch, visiblePaths]);
+
   const handleCardClick = useCallback((index: number, e: React.MouseEvent) => {
     const currentSortedFiles = sortedFilesRef.current;
     const clickedFile = currentSortedFiles[index];
@@ -2685,6 +2691,17 @@ export function ThumbnailGrid() {
           : phase === 'importing'
             ? 'Import already in progress.'
             : 'Import all queued files to the destination folder set in the output panel.';
+  const importVisibleDisabled =
+    visiblePaths.length === 0 ||
+    !destination ||
+    !licenseStatus?.valid ||
+    !toolbarFtpReady ||
+    !(phase === 'ready' || phase === 'scanning');
+  const importVisible = useCallback(() => {
+    if (importVisibleDisabled) return;
+    dispatch({ type: 'QUEUE_ADD_PATHS', paths: visiblePaths });
+    void startImport({ selectedPathsOverride: visiblePaths });
+  }, [dispatch, importVisibleDisabled, startImport, visiblePaths]);
 
   const nextActionToolbar = files.length > 0 ? (
     <div className="shrink-0 px-3 py-1.5 flex items-center gap-1.5 border-b border-border bg-surface-alt/60 overflow-x-auto">
@@ -2816,6 +2833,38 @@ export function ThumbnailGrid() {
             title="Rebuild scene buckets, then show low-confidence and unreviewed decisions."
           >
             Review Needed
+          </button>
+          <button
+            onClick={() => bulkPickVisible('selected')}
+            disabled={sortedFiles.length === 0}
+            className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-yellow-300 transition-colors shrink-0 disabled:opacity-40"
+            title={`Pick all ${sortedFiles.length} currently visible files.`}
+          >
+            Pick Visible
+          </button>
+          <button
+            onClick={() => bulkPickVisible('rejected')}
+            disabled={sortedFiles.length === 0}
+            className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-red-300 transition-colors shrink-0 disabled:opacity-40"
+            title={`Reject all ${sortedFiles.length} currently visible files.`}
+          >
+            Reject Visible
+          </button>
+          <button
+            onClick={() => bulkPickVisible(undefined)}
+            disabled={sortedFiles.length === 0}
+            className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-text transition-colors shrink-0 disabled:opacity-40"
+            title={`Clear pick/reject flags on all ${sortedFiles.length} visible files.`}
+          >
+            Clear Visible
+          </button>
+          <button
+            onClick={importVisible}
+            disabled={importVisibleDisabled}
+            className="px-2 py-1 text-[10px] rounded-md bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 transition-colors shrink-0 disabled:cursor-not-allowed disabled:opacity-40"
+            title="Queue the current filtered set and immediately start import when the output panel is ready."
+          >
+            Import Visible
           </button>
           <button
             onClick={() => {

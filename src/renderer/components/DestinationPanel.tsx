@@ -292,7 +292,23 @@ export function DestinationPanel() {
   const metadataCount = metadataKeywords.split(/[\n,;]+/).map((value) => value.trim()).filter(Boolean).length;
   const activeEventMode = EVENT_MODE_PRESETS[eventMode] ?? EVENT_MODE_PRESETS.general;
   const activeEventKeywords = eventModeKeywords(eventMode);
-  const backupSameAsPrimary = !!backupDestRoot && !!destination && backupDestRoot === destination;
+  const normalizeLocalPath = (value: string | null | undefined) => String(value || '').replace(/[\\/]$/, '').toLowerCase();
+  const normalizedSource = normalizeLocalPath(selectedSource);
+  const normalizedDestination = normalizeLocalPath(destination);
+  const normalizedBackup = normalizeLocalPath(backupDestRoot);
+  const backupSameAsPrimary = !!normalizedBackup && !!normalizedDestination && normalizedBackup === normalizedDestination;
+  const destinationSameAsSource = !!normalizedSource && !!normalizedDestination && normalizedDestination === normalizedSource;
+  const backupSameAsSource = !!normalizedSource && !!normalizedBackup && normalizedBackup === normalizedSource;
+  const outputPathBlocked = backupSameAsPrimary || destinationSameAsSource || backupSameAsSource;
+  const metadataFieldLabels = [
+    metadataExport.keywords !== false && (metadataCount > 0 || activeEventKeywords.length > 0) ? `keywords (${metadataCount + activeEventKeywords.length})` : null,
+    metadataExport.title !== false && metadataTitle.trim() ? 'title' : null,
+    metadataExport.caption !== false && metadataCaption.trim() ? 'caption' : null,
+    metadataExport.creator !== false && metadataCreator.trim() ? 'creator' : null,
+    metadataExport.copyright !== false && metadataCopyright.trim() ? 'copyright' : null,
+    locationCount > 0 ? 'GPS/location' : null,
+    sceneCount > 0 ? 'scene buckets' : null,
+  ].filter(Boolean) as string[];
   const refreshPreflight = async (dryRun = false) => {
     const config = buildImportConfig(dryRun);
     if (!config) return;
@@ -824,6 +840,12 @@ export function DestinationPanel() {
             {backupSameAsPrimary && (
               <div className="text-[10px] text-red-400">Backup destination matches primary.</div>
             )}
+            {destinationSameAsSource && (
+              <div className="text-[10px] text-red-400">Destination matches source. Choose a different output folder before importing.</div>
+            )}
+            {backupSameAsSource && (
+              <div className="text-[10px] text-red-400">Backup destination matches source. Choose a different backup folder.</div>
+            )}
             {backupDestRoot && !backupSameAsPrimary && (
               <div className="text-[10px] text-emerald-500">Backup copy enabled for this import.</div>
             )}
@@ -911,6 +933,11 @@ export function DestinationPanel() {
               {preflight.watermarkEnabled && 'Watermark enabled. '}
               {preflight.dryRun && 'Dry-run preview only.'}
             </div>
+            {metadataFieldLabels.length > 0 && (
+              <div className="mt-1 text-[10px] text-sky-300/80">
+                Metadata: {metadataFieldLabels.join(', ')}
+              </div>
+            )}
             {preflight.items.some((item) => item.status !== 'will-import' || (item.warnings?.length ?? 0) > 0) && (
               <div className="mt-1 max-h-20 overflow-y-auto space-y-0.5">
                 {preflight.items
@@ -950,9 +977,9 @@ export function DestinationPanel() {
         </div>
         <button
           onClick={() => { void startImport(); }}
-          disabled={!canImport || insufficientSpace}
+          disabled={!canImport || insufficientSpace || outputPathBlocked}
           className={`w-full py-1.5 rounded text-xs font-medium transition-colors ${
-            canImport && !insufficientSpace
+            canImport && !insufficientSpace && !outputPathBlocked
               ? 'bg-accent hover:bg-accent-hover text-white'
               : 'bg-surface-raised text-text-muted cursor-not-allowed'
           }`}
@@ -963,6 +990,9 @@ export function DestinationPanel() {
               : !ftpReady ? 'Finish FTP output settings first'
               : importFiles.length === 0 ? 'No files to import'
               : insufficientSpace ? 'Not enough free space on the destination'
+              : destinationSameAsSource ? 'Destination cannot be the source folder'
+              : backupSameAsPrimary ? 'Backup destination cannot match the primary destination'
+              : backupSameAsSource ? 'Backup destination cannot be the source folder'
               : !canImport ? `Cannot import while ${phase}`
               : undefined
           }

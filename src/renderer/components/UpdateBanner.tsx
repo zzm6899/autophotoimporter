@@ -30,6 +30,15 @@ export function UpdateBanner() {
     visibleState.status === 'downloading' ? (visibleState.message || 'Downloading the latest update...') :
     `v${visibleState.latestVersion} is available${visibleState.releaseDate ? ` · ${formatDate(visibleState.releaseDate)}` : ''}.`;
 
+  const copyDiagnostics = async () => {
+    const diagnostics = await window.electronAPI.getDiagnosticsSnapshot();
+    await navigator.clipboard.writeText(JSON.stringify(diagnostics, null, 2));
+  };
+
+  const repairUpdates = async () => {
+    await window.electronAPI.repairUpdates();
+  };
+
   return (
     <div className="fixed bottom-4 right-4 z-40 max-w-sm w-full animate-in">
       <div className="bg-surface-raised border border-border rounded-lg shadow-lg p-4">
@@ -83,6 +92,22 @@ export function UpdateBanner() {
             >
               Later
             </button>
+          )}
+          {(visibleState.status === 'error' || visibleState.status === 'denied') && (
+            <>
+              <button
+                onClick={() => { void repairUpdates(); }}
+                className="flex-1 py-1.5 rounded text-xs font-medium bg-accent hover:bg-accent-hover text-white transition-colors"
+              >
+                Repair
+              </button>
+              <button
+                onClick={() => { void copyDiagnostics(); }}
+                className="flex-1 py-1.5 rounded text-xs font-medium bg-surface-alt hover:bg-border text-text-secondary transition-colors"
+              >
+                Copy diagnostics
+              </button>
+            </>
           )}
         </div>
       </div>

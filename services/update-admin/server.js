@@ -373,6 +373,7 @@ function nav(page = '') {
       ${link('/admin/licenses', 'Licenses', 'licenses')}
       ${link('/admin/pricing', 'Pricing', 'pricing')}
       ${link('/admin/releases', 'Releases', 'releases')}
+      ${link('/admin/health', 'Health', 'health')}
       ${link('/admin/customers', 'Customers', 'customers')}
     </div>
     <form class="inline" method="post" action="/admin/logout"><button type="submit">Log out</button></form>
@@ -1097,6 +1098,55 @@ async function latestRelease(platform, channel) {
   return releases[0] || null;
 }
 
+function listWindowsArtifacts() {
+  const dir = path.join(artifactsRoot, 'windows');
+  try {
+    return fs.readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && /\.(exe|nupkg|zip|msi)$/i.test(entry.name))
+      .map((entry) => {
+        const fullPath = path.join(dir, entry.name);
+        const stat = fs.statSync(fullPath);
+        return { name: entry.name, size: stat.size, modifiedAt: stat.mtime };
+      })
+      .sort((a, b) => b.modifiedAt.getTime() - a.modifiedAt.getTime());
+  } catch (_error) {
+    return [];
+  }
+}
+
+async function collectAdminHealth() {
+  const latestWindows = await latestRelease('windows', 'stable').catch(() => null);
+  const artifacts = listWindowsArtifacts();
+  const liveArtifactName = latestWindows?.artifact_url ? path.basename(String(latestWindows.artifact_url).split('?')[0]) : '';
+  const liveArtifact = liveArtifactName
+    ? artifacts.find((artifact) => artifact.name === decodeURIComponent(liveArtifactName))
+    : null;
+  const updateUrl = `${publicUpdatesBaseUrl()}/api/v1/app/update?platform=windows&version=1.4.0&channel=stable`;
+  const legacyUrl = 'https://updates.culler.z2hs.au/api/v1/app/update?platform=windows&version=1.4.0&channel=stable';
+
+  return {
+    secrets: [
+      { label: 'ADMIN_SESSION_SECRET', ok: sessionSecret.length >= 32, detail: `${sessionSecret.length} chars` },
+      { label: 'UPDATE_TOKEN_SECRET', ok: updateSecret.length >= 32, detail: `${updateSecret.length} chars` },
+      { label: 'LICENSE_PUBLIC_KEY', ok: !!licensePublicKeyPem, detail: licensePublicKeyPem ? 'loaded' : 'missing' },
+      { label: 'LICENSE_PRIVATE_KEY', ok: !!licensePrivateKeyPem, detail: licensePrivateKeyPem ? 'loaded for admin minting' : 'not loaded' },
+      { label: 'ADMIN_API_TOKEN', ok: adminApiToken.length >= 24, detail: adminApiToken ? `${adminApiToken.length} chars` : 'optional API token not set' },
+    ],
+    release: {
+      latest: latestWindows,
+      artifactCount: artifacts.length,
+      artifacts: artifacts.slice(0, 6),
+      liveArtifact,
+    },
+    endpoints: [
+      { label: 'Primary update metadata', ok: !!latestWindows, detail: updateUrl },
+      { label: 'Legacy Culler compatibility', ok: true, detail: legacyUrl },
+      { label: 'Latest semver selection', ok: !!latestWindows?.version, detail: latestWindows?.version || 'No live Windows stable release' },
+      { label: 'Release artifact availability', ok: !!liveArtifact || !!latestWindows?.artifact_url, detail: liveArtifact ? `${liveArtifact.name} (${formatBytes(liveArtifact.size)})` : latestWindows?.artifact_url || 'No live artifact URL' },
+    ],
+  };
+}
+
 async function releaseByVersion(version) {
   const result = await pool.query(
     `SELECT * FROM releases
@@ -1538,6 +1588,102 @@ app.get('/admin', authSession, async (_req, res) => {
           </div>
         </div>
       </div>`}
+    </div>
+  `));
+});
+
+app.get('/admin/health', authSession, async (_req, res) => {
+  const health = await collectAdminHealth();
+  const indicator = (ok) => statusPill(ok ? 'live' : 'revoked');
+  res.send(htmlPage('Admin Health', `
+    <div class="hero">
+      <div class="hero-copy">
+        <div class="hero-kicker">Release Safety</div>
+        <h1>Admin health</h1>
+        <p>Check the pieces that must be ready before publishing or troubleshooting client updates.</p>
+      </div>
+      ${nav('health')}
+    </div>
+    <div class="grid">
+      <div class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Required secrets</h2>
+            <p class="muted">Server startup already blocks unsafe secret defaults. This page shows the live state.</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table-stack">
+            <thead><tr><th>Check</th><th>Status</th><th>Detail</th></tr></thead>
+            <tbody>
+              ${health.secrets.map((item) => `<tr>
+                <td data-label="Check">${escapeHtml(item.label)}</td>
+                <td data-label="Status">${indicator(item.ok)}</td>
+                <td data-label="Detail" class="muted">${escapeHtml(item.detail)}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Update endpoints</h2>
+            <p class="muted">Windows 1.4.0 clients and legacy Culler-hosted clients must resolve cleanly.</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table-stack">
+            <thead><tr><th>Check</th><th>Status</th><th>Detail</th></tr></thead>
+            <tbody>
+              ${health.endpoints.map((item) => `<tr>
+                <td data-label="Check">${escapeHtml(item.label)}</td>
+                <td data-label="Status">${indicator(item.ok)}</td>
+                <td data-label="Detail" class="muted"><code>${escapeHtml(item.detail)}</code></td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <div class="grid">
+      <div class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Latest Windows stable</h2>
+            <p class="muted">The release selected for update checks.</p>
+          </div>
+          ${indicator(!!health.release.latest)}
+        </div>
+        ${health.release.latest ? `
+          <div class="detail-grid">
+            <div class="detail-item"><div class="detail-label">Version</div><div class="detail-value">${escapeHtml(health.release.latest.version)}</div></div>
+            <div class="detail-item"><div class="detail-label">State</div><div class="detail-value">${escapeHtml(health.release.latest.rollout_state || 'live')}</div></div>
+            <div class="detail-item"><div class="detail-label">Artifact</div><div class="detail-value" style="font-size:.95rem">${escapeHtml(path.basename(String(health.release.latest.artifact_url || '')))}</div></div>
+          </div>
+        ` : '<p class="bad">No live Windows stable release was found.</p>'}
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Artifact availability</h2>
+            <p class="muted">Newest local Windows installer files under the artifact root.</p>
+          </div>
+          <span class="pill pill-live">${health.release.artifactCount} files</span>
+        </div>
+        <div class="table-wrap">
+          <table class="table-stack">
+            <thead><tr><th>File</th><th>Size</th><th>Modified</th></tr></thead>
+            <tbody>
+              ${health.release.artifacts.map((artifact) => `<tr>
+                <td data-label="File">${escapeHtml(artifact.name)}</td>
+                <td data-label="Size" class="muted">${formatBytes(artifact.size)}</td>
+                <td data-label="Modified" class="muted">${fmtTime(artifact.modifiedAt)}</td>
+              </tr>`).join('') || '<tr><td colspan="3" class="muted">No Windows artifacts found.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   `));
 });

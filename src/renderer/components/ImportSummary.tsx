@@ -74,6 +74,22 @@ export function ImportSummary() {
     void startImport({ retryFailed: true });
   };
 
+  const handleCopyReport = () => {
+    const issueLines = displayedIssues.map((issue) => `${issue.file}: ${issue.error}`);
+    const report = [
+      'Keptra import report',
+      `Destination: ${destination || 'not set'}`,
+      ...reportDetails,
+      issueLines.length > 0 ? 'Issues:' : 'Issues: none',
+      ...issueLines,
+    ].join('\n');
+    void navigator.clipboard.writeText(report).catch(() => undefined);
+  };
+
+  const handleExportManifest = () => {
+    void window.electronAPI.exportManifest('csv');
+  };
+
   const summary = summarizeImportResult(importResult);
   const issueItems = importResult.ledgerItems?.filter((item) => item.status === 'failed' || item.status === 'pending') ?? [];
   const displayedIssues = issueItems.length > 0
@@ -192,6 +208,18 @@ export function ImportSummary() {
             title="Open the output folder. XMP sidecars, ratings, labels, keywords, GPS, and scene buckets are ready for Lightroom Classic import."
           >
             Lightroom Handoff
+          </button>
+          <button
+            onClick={handleCopyReport}
+            className="flex-1 min-w-[9rem] py-2 rounded text-sm bg-surface-raised hover:bg-accent/10 text-text transition-colors"
+          >
+            Copy Report
+          </button>
+          <button
+            onClick={handleExportManifest}
+            className="flex-1 min-w-[9rem] py-2 rounded text-sm bg-surface-raised hover:bg-accent/10 text-text transition-colors"
+          >
+            Export Manifest
           </button>
           {summary.issueCount > 0 && (
             <button

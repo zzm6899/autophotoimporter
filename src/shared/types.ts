@@ -744,6 +744,47 @@ export interface UpdateState {
   history?: UpdateReleaseSummary[];
 }
 
+export interface AppDiagnosticsSnapshot {
+  appVersion: string;
+  platform: NodeJS.Platform;
+  arch: string;
+  packaged: boolean;
+  userDataPath: string;
+  settingsPath: string;
+  legacySettingsPath: string;
+  updateMetadataPath: string;
+  updatesCachePath: string;
+  license: {
+    valid: boolean;
+    status?: string;
+    message?: string;
+    hasStoredKey: boolean;
+    hasActivationCode: boolean;
+    activationCode?: string;
+  };
+  update: {
+    status: UpdateStatus | 'unknown';
+    currentVersion: string;
+    latestVersion?: string;
+    lastCheckedAt?: string;
+    message?: string;
+    releaseUrl?: string;
+    downloadUrl?: string;
+    feedUrl?: string;
+    cachedLatestVersion?: string;
+    cachedAt?: string;
+  };
+  endpoints: Array<{ url: string; role: 'primary' | 'fallback' | 'legacy' }>;
+}
+
+export interface UpdateRepairResult {
+  ok: boolean;
+  cleared: string[];
+  updateState: UpdateState;
+  diagnostics: AppDiagnosticsSnapshot;
+  message: string;
+}
+
 export const PHOTO_EXTENSIONS = new Set([
   // Common
   '.jpg', '.jpeg', '.png', '.tif', '.tiff', '.heic', '.heif', '.webp', '.avif',
@@ -858,6 +899,8 @@ export const IPC = {
   UPDATE_DOWNLOAD: 'update:download',
   UPDATE_INSTALL: 'update:install',
   UPDATE_FETCH_HISTORY: 'update:fetch-history',
+  UPDATE_REPAIR: 'update:repair',
+  DIAGNOSTICS_SNAPSHOT: 'diagnostics:snapshot',
 
   // FTP source
   FTP_PROBE: 'ftp:probe',

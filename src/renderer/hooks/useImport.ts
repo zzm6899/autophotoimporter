@@ -7,6 +7,12 @@ import { eventModeKeywords } from '../../shared/types';
 
 let latestImportRunId = 0;
 
+type StartImportOptions = {
+  retryFailed?: boolean;
+  dryRun?: boolean;
+  selectedPathsOverride?: string[];
+};
+
 export function useImport() {
   const {
     selectedSource, destination, skipDuplicates, saveFormat, jpegQuality, phase,
@@ -24,7 +30,7 @@ export function useImport() {
   const dispatch = useAppDispatch();
   const importStateRef = useRef<NormalizedJobState>('queued');
 
-  const startImport = useCallback(async (options?: { retryFailed?: boolean; dryRun?: boolean }) => {
+  const startImport = useCallback(async (options?: StartImportOptions) => {
     if (!selectedSource || !destination) return;
     if (!licenseStatus?.valid) {
       importStateRef.current = 'failed';
@@ -51,7 +57,9 @@ export function useImport() {
     //   2. Pick/reject flags — if the user has picked any file, import the picks.
     //   3. Everything that isn't rejected and (when enabled) isn't a duplicate.
     let pathsToImport: string[] | undefined;
-    if (queuedPaths.length > 0) {
+    if (options?.selectedPathsOverride?.length) {
+      pathsToImport = options.selectedPathsOverride;
+    } else if (queuedPaths.length > 0) {
       pathsToImport = queuedPaths;
     } else if (selectedPaths.length > 0) {
       pathsToImport = selectedPaths;

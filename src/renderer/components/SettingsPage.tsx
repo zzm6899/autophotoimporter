@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
-import type { CullConfidence, KeeperQuota, SaveFormat, KeybindMap, MacFirstRunDoctor, MetadataExportFlags, WatermarkMode, WatermarkPosition } from '../../shared/types';
+import type { AppDiagnosticsSnapshot, CullConfidence, KeeperQuota, SaveFormat, KeybindMap, MacFirstRunDoctor, MetadataExportFlags, WatermarkMode, WatermarkPosition } from '../../shared/types';
 import { DEFAULT_KEYBINDS, FOLDER_PRESETS } from '../../shared/types';
 import { formatWhiteBalanceKelvin, kelvinToWhiteBalanceTemperature, WHITE_BALANCE_MAX_KELVIN, WHITE_BALANCE_MIN_KELVIN, whiteBalanceTemperatureToKelvin } from '../../shared/exposure';
 import { playCompletionSound } from '../utils/completionSound';
@@ -60,6 +60,7 @@ const SETTINGS_TOPICS = [
   { id: 'workflow', label: 'Workflow' },
   { id: 'editing', label: 'Editing' },
   { id: 'account', label: 'Account' },
+  { id: 'diagnostics', label: 'Diagnostics' },
 ] as const;
 
 type SettingsTopic = typeof SETTINGS_TOPICS[number]['id'];
@@ -165,6 +166,8 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const BASE_URL = 'https://keptra.z2hs.au';
   const [diagnosing, setDiagnosing] = useState(false);
   const [diagResult, setDiagResult] = useState<string | null>(null);
+  const [diagnosticsSnapshot, setDiagnosticsSnapshot] = useState<AppDiagnosticsSnapshot | null>(null);
+  const [updateRepairBusy, setUpdateRepairBusy] = useState(false);
   const [macDoctor, setMacDoctor] = useState<MacFirstRunDoctor | null>(null);
   const activationCode = licenseStatus?.activationCode?.trim() || '';
   const wbTemperature = whiteBalanceTemperature ?? 0;
@@ -266,6 +269,11 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
 
   useEffect(() => {
     settingsBodyRef.current?.scrollTo({ top: 0, behavior: 'auto' });
+  }, [activeTopic]);
+
+  useEffect(() => {
+    if (activeTopic !== 'diagnostics') return;
+    void refreshDiagnosticsSnapshot().catch(() => undefined);
   }, [activeTopic]);
 
   const set = <K extends string>(key: K, value: unknown) => {
@@ -557,6 +565,36 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
       setDiagResult(`Diagnostics export error: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setDiagnosing(false);
+    }
+  };
+
+  const refreshDiagnosticsSnapshot = async () => {
+    const snapshot = await window.electronAPI.getDiagnosticsSnapshot();
+    setDiagnosticsSnapshot(snapshot);
+    return snapshot;
+  };
+
+  const handleCopyDiagnostics = async () => {
+    try {
+      const snapshot = diagnosticsSnapshot ?? await refreshDiagnosticsSnapshot();
+      await navigator.clipboard.writeText(JSON.stringify(snapshot, null, 2));
+      setDiagResult('Diagnostics copied to clipboard.');
+    } catch (e) {
+      setDiagResult(`Could not copy diagnostics: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  const handleRepairUpdates = async () => {
+    setUpdateRepairBusy(true);
+    setDiagResult('Repairing update cache and checking endpoints...');
+    try {
+      const result = await window.electronAPI.repairUpdates();
+      setDiagnosticsSnapshot(result.diagnostics);
+      setDiagResult(`${result.message} Cleared ${result.cleared.length} update cache item${result.cleared.length === 1 ? '' : 's'}.`);
+    } catch (e) {
+      setDiagResult(`Repair updates failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setUpdateRepairBusy(false);
     }
   };
 
@@ -1291,6 +1329,79 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                 ))}
               </div>
             </section>
+          )}
+
+          {activeTopic === 'diagnostics' && (
+          <>
+          <section>
+            <h3 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-2">Diagnostics</h3>
+            <div className="space-y-2">
+              <div className="grid grid-cols-2 gap-1 text-[10px] text-text-muted">
+                <div className="rounded border border-border bg-surface-alt px-2 py-1">
+                  App: <span className="text-text-secondary">{diagnosticsSnapshot?.appVersion ?? updateState.currentVersion}</span>
+                </div>
+                <div className="rounded border border-border bg-surface-alt px-2 py-1">
+                  License: <span className={diagnosticsSnapshot?.license.valid ? 'text-emerald-300' : 'text-yellow-300'}>
+                    {diagnosticsSnapshot?.license.valid ? 'active' : 'not active'}
+                  </span>
+                </div>
+                <div className="rounded border border-border bg-surface-alt px-2 py-1">
+                  Update: <span className="text-text-secondary">{diagnosticsSnapshot?.update.status ?? updateState.status}</span>
+                </div>
+                <div className="rounded border border-border bg-surface-alt px-2 py-1">
+                  Latest: <span className="text-text-secondary">{diagnosticsSnapshot?.update.latestVersion ?? updateState.latestVersion ?? 'unknown'}</span>
+                </div>
+              </div>
+              {diagnosticsSnapshot && (
+                <div className="space-y-1 rounded border border-border bg-surface-alt px-2 py-2 text-[10px] text-text-muted">
+                  <div className="truncate" title={diagnosticsSnapshot.settingsPath}>Settings: <span className="font-mono text-text-secondary">{diagnosticsSnapshot.settingsPath}</span></div>
+                  <div className="truncate" title={diagnosticsSnapshot.updateMetadataPath}>Update metadata: <span className="font-mono text-text-secondary">{diagnosticsSnapshot.updateMetadataPath}</span></div>
+                  <div>Stored license key: <span className="text-text-secondary">{diagnosticsSnapshot.license.hasStoredKey ? 'yes' : 'no'}</span></div>
+                  <div>Activation code: <span className="text-text-secondary">{diagnosticsSnapshot.license.hasActivationCode ? diagnosticsSnapshot.license.activationCode ?? 'saved' : 'none'}</span></div>
+                  {diagnosticsSnapshot.update.message && (
+                    <div className="text-yellow-300">Update note: {diagnosticsSnapshot.update.message}</div>
+                  )}
+                  <div className="pt-1">
+                    {diagnosticsSnapshot.endpoints.map((endpoint) => (
+                      <div key={endpoint.url} className="truncate" title={endpoint.url}>
+                        {endpoint.role}: <span className="font-mono text-text-secondary">{endpoint.url}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={() => { void refreshDiagnosticsSnapshot(); }}
+                  className="px-3 py-1 text-xs rounded bg-surface-raised text-text-secondary hover:bg-border"
+                >
+                  Refresh
+                </button>
+                <button
+                  onClick={handleCopyDiagnostics}
+                  className="px-3 py-1 text-xs rounded bg-surface-raised text-text-secondary hover:bg-border"
+                >
+                  Copy diagnostics
+                </button>
+                <button
+                  onClick={handleRepairUpdates}
+                  disabled={updateRepairBusy}
+                  className="px-3 py-1 text-xs rounded bg-accent text-white hover:bg-accent-hover disabled:opacity-50"
+                >
+                  {updateRepairBusy ? 'Repairing...' : 'Repair updates'}
+                </button>
+                <button
+                  onClick={handleExportDiagnostics}
+                  disabled={diagnosing}
+                  className="px-3 py-1 text-xs rounded bg-surface-raised text-text-secondary hover:bg-border disabled:opacity-50"
+                >
+                  Export bundle
+                </button>
+              </div>
+              {diagResult && <p className="text-[10px] text-text-muted">{diagResult}</p>}
+            </div>
+          </section>
+          </>
           )}
 
           {activeTopic === 'workflow' && (
