@@ -91,6 +91,10 @@ typings/
 # Electron-Forge
 out/
 
+# Local video production workspaces
+web/video/
+web/assets/video/work-*/
+
 # Benchmark output and local large-shoot fixtures
 artifacts/benchmarks/*.jsonl
 artifacts/release/*.json

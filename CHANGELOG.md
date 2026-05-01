@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.4.15 - 2026-05-02
+
+### Changed
+- Prepared a clean `1.4.15` release build after the import reliability workflow work.
+- Confirmed the packaged app launch smoke reports the new app version through the packaged Electron runtime.
+
+### Verified
+- `npm run typecheck -- --pretty false`
+- `npm test`
+- `npm run visual:smoke`
+- `npm run package`
+- `npm run package:smoke`
+- `npm run make`
+- `npm run release:manifest`
+
 ## 1.4.12 - 2026-05-01
 
 ### Fixed
