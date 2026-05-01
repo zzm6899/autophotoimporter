@@ -32,13 +32,62 @@ if (!endpoint || !token || !platform || (!artifactUrl && !filePath) || (!uploadO
   process.exit(1);
 }
 
+function endpointCandidates(input) {
+  const trimmed = input.replace(/\/$/, '');
+  const candidates = [trimmed];
+
+  try {
+    const parsed = new URL(trimmed);
+    const hostname = parsed.hostname.toLowerCase();
+    const fallbacks = [];
+
+    if (hostname.endsWith('.culler.z2hs.au')) {
+      fallbacks.push(hostname.replace('.culler.z2hs.au', '.keptra.z2hs.au'));
+      fallbacks.push('admin.keptra.z2hs.au');
+      fallbacks.push('keptra.z2hs.au');
+    } else if (hostname === 'culler.z2hs.au') {
+      fallbacks.push('keptra.z2hs.au');
+      fallbacks.push('admin.keptra.z2hs.au');
+    }
+
+    for (const fallbackHostname of fallbacks) {
+      const fallback = new URL(parsed);
+      fallback.hostname = fallbackHostname;
+      const normalized = fallback.toString().replace(/\/$/, '');
+      if (!candidates.includes(normalized)) candidates.push(normalized);
+    }
+  } catch {
+    // Keep the original endpoint; fetch will report the actual error.
+  }
+
+  return candidates;
+}
+
+async function fetchWithEndpointFallback(path, options) {
+  let lastError;
+  for (const baseUrl of endpointCandidates(endpoint)) {
+    const url = `${baseUrl}${path}`;
+    try {
+      const response = await fetch(url, options);
+      if (baseUrl !== endpoint.replace(/\/$/, '')) {
+        console.log(`[publish-update-release] used fallback endpoint ${baseUrl}`);
+      }
+      return response;
+    } catch (error) {
+      lastError = error;
+      console.warn(`[publish-update-release] endpoint failed: ${baseUrl} (${error.message})`);
+    }
+  }
+  throw lastError;
+}
+
 let resolvedArtifactUrl = artifactUrl;
 
 if (!resolvedArtifactUrl && filePath) {
   const filename = basename(filePath);
   const buffer = await readFile(filePath);
-  const uploadResponse = await fetch(
-    `${endpoint.replace(/\/$/, '')}/admin/api/artifacts/upload?platform=${encodeURIComponent(platform)}&filename=${encodeURIComponent(filename)}`,
+  const uploadResponse = await fetchWithEndpointFallback(
+    `/admin/api/artifacts/upload?platform=${encodeURIComponent(platform)}&filename=${encodeURIComponent(filename)}`,
     {
       method: 'POST',
       headers: {
@@ -63,7 +112,7 @@ if (uploadOnly) {
   process.exit(0);
 }
 
-const response = await fetch(`${endpoint.replace(/\/$/, '')}/admin/api/releases/import`, {
+const response = await fetchWithEndpointFallback('/admin/api/releases/import', {
   method: 'POST',
   headers: {
     Authorization: `Bearer ${token}`,

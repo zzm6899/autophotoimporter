@@ -194,7 +194,7 @@ jobs:
               --platform macos \
               --release-name "Keptra $VERSION" \
               --file "$MAC_DMG" \
-              --release-url "${UPDATE_ADMIN_ENDPOINT%/}/releases/$VERSION" \
+              --release-url "https://keptra.z2hs.au/releases/$VERSION" \
               --notes "Automated release for $TAG_NAME" \
               --channel stable \
               --rollout live
@@ -207,7 +207,7 @@ jobs:
               --platform windows \
               --release-name "Keptra $VERSION" \
               --file "$WINDOWS_EXE" \
-              --release-url "${UPDATE_ADMIN_ENDPOINT%/}/releases/$VERSION" \
+              --release-url "https://keptra.z2hs.au/releases/$VERSION" \
               --notes "Automated release for $TAG_NAME" \
               --channel stable \
               --rollout live
