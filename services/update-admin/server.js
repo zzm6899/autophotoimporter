@@ -1108,6 +1108,28 @@ async function releaseByVersion(version) {
   return result.rows[0] || null;
 }
 
+function releaseVersionParts(version) {
+  return String(version || '')
+    .trim()
+    .replace(/^v/i, '')
+    .split(/[.-]/)
+    .map((part) => Number.parseInt(part, 10))
+    .filter((part) => Number.isFinite(part));
+}
+
+function compareReleaseRows(a, b) {
+  const aParts = releaseVersionParts(a.version);
+  const bParts = releaseVersionParts(b.version);
+  const length = Math.max(aParts.length, bParts.length, 3);
+  for (let i = 0; i < length; i += 1) {
+    const delta = (bParts[i] || 0) - (aParts[i] || 0);
+    if (delta !== 0) return delta;
+  }
+  const publishedDelta = new Date(b.published_at).getTime() - new Date(a.published_at).getTime();
+  if (publishedDelta !== 0) return publishedDelta;
+  return Number(b.id || 0) - Number(a.id || 0);
+}
+
 async function liveReleases({ platform = null, channel = 'stable', limit = 10 } = {}) {
   const safeLimit = Math.max(1, Math.min(Number(limit) || 10, 50));
   const rows = await pool.query(
@@ -1116,11 +1138,10 @@ async function liveReleases({ platform = null, channel = 'stable', limit = 10 } 
      WHERE ($1::text IS NULL OR platform = $1)
        AND channel = $2
        AND rollout_state = 'live'
-     ORDER BY published_at DESC, id DESC
-     LIMIT $3`,
-    [platform, channel, safeLimit],
+     ORDER BY published_at DESC, id DESC`,
+    [platform, channel],
   );
-  return rows.rows;
+  return rows.rows.sort(compareReleaseRows).slice(0, safeLimit);
 }
 
 function serializePublicRelease(row) {
