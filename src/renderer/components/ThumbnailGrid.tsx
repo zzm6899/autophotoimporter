@@ -1176,6 +1176,35 @@ export function ThumbnailGrid() {
     if (visiblePaths.length === 0) return;
     dispatch({ type: 'SET_PICK_BATCH', filePaths: visiblePaths, pick });
   }, [dispatch, visiblePaths]);
+  const toolbarFtpReady = !ftpDestEnabled || (!!ftpDestConfig.host && !!ftpDestConfig.remotePath);
+  const toolbarImportDisabled =
+    queuedPaths.length === 0 ||
+    !destination ||
+    !licenseStatus?.valid ||
+    !toolbarFtpReady ||
+    !(phase === 'ready' || phase === 'scanning');
+  const toolbarImportTitle = !destination
+    ? 'Choose a destination folder in the output panel first.'
+    : !licenseStatus?.valid
+      ? 'Activate a valid license before importing.'
+      : !toolbarFtpReady
+        ? 'Finish FTP output settings before importing.'
+        : queuedPaths.length === 0
+          ? 'Queue files before importing.'
+          : phase === 'importing'
+            ? 'Import already in progress.'
+            : 'Import all queued files to the destination folder set in the output panel.';
+  const importVisibleDisabled =
+    visiblePaths.length === 0 ||
+    !destination ||
+    !licenseStatus?.valid ||
+    !toolbarFtpReady ||
+    !(phase === 'ready' || phase === 'scanning');
+  const importVisible = useCallback(() => {
+    if (importVisibleDisabled) return;
+    dispatch({ type: 'QUEUE_ADD_PATHS', paths: visiblePaths });
+    void startImport({ selectedPathsOverride: visiblePaths });
+  }, [dispatch, importVisibleDisabled, startImport, visiblePaths]);
 
   const handleCardClick = useCallback((index: number, e: React.MouseEvent) => {
     const currentSortedFiles = sortedFilesRef.current;
@@ -2672,36 +2701,6 @@ export function ThumbnailGrid() {
       )}
     </div>
   ) : null;
-
-  const toolbarFtpReady = !ftpDestEnabled || (!!ftpDestConfig.host && !!ftpDestConfig.remotePath);
-  const toolbarImportDisabled =
-    queuedPaths.length === 0 ||
-    !destination ||
-    !licenseStatus?.valid ||
-    !toolbarFtpReady ||
-    !(phase === 'ready' || phase === 'scanning');
-  const toolbarImportTitle = !destination
-    ? 'Choose a destination folder in the output panel first.'
-    : !licenseStatus?.valid
-      ? 'Activate a valid license before importing.'
-      : !toolbarFtpReady
-        ? 'Finish FTP output settings before importing.'
-        : queuedPaths.length === 0
-          ? 'Queue files before importing.'
-          : phase === 'importing'
-            ? 'Import already in progress.'
-            : 'Import all queued files to the destination folder set in the output panel.';
-  const importVisibleDisabled =
-    visiblePaths.length === 0 ||
-    !destination ||
-    !licenseStatus?.valid ||
-    !toolbarFtpReady ||
-    !(phase === 'ready' || phase === 'scanning');
-  const importVisible = useCallback(() => {
-    if (importVisibleDisabled) return;
-    dispatch({ type: 'QUEUE_ADD_PATHS', paths: visiblePaths });
-    void startImport({ selectedPathsOverride: visiblePaths });
-  }, [dispatch, importVisibleDisabled, startImport, visiblePaths]);
 
   const nextActionToolbar = files.length > 0 ? (
     <div className="shrink-0 px-3 py-1.5 flex items-center gap-1.5 border-b border-border bg-surface-alt/60 overflow-x-auto">
