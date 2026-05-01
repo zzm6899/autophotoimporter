@@ -65,6 +65,18 @@ export function useSettings() {
       if (typeof settings.verifyChecksums === 'boolean') {
         dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'verifyChecksums', value: settings.verifyChecksums });
       }
+      if (settings.sourceProfile) {
+        dispatch({ type: 'SET_SOURCE_PROFILE', profile: settings.sourceProfile });
+      }
+      if (settings.defaultConflictPolicy) {
+        dispatch({ type: 'SET_CONFLICT_POLICY', policy: settings.defaultConflictPolicy });
+      }
+      if (typeof settings.conflictFolderName === 'string') {
+        dispatch({ type: 'SET_WORKFLOW_STRING', key: 'conflictFolderName', value: settings.conflictFolderName });
+      }
+      if (typeof settings.lastSessionId === 'string') {
+        dispatch({ type: 'SET_WORKFLOW_STRING', key: 'lastSessionId', value: settings.lastSessionId });
+      }
       if (typeof settings.autoImport === 'boolean') {
         dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'autoImport', value: settings.autoImport });
       }

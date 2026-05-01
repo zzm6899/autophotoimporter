@@ -75,6 +75,10 @@ function makeState(overrides: Record<string, unknown> = {}) {
     completeSoundPath: '',
     openFolderOnComplete: false,
     verifyChecksums: false,
+    sourceProfile: 'auto' as const,
+    conflictPolicy: 'skip' as const,
+    conflictFolderName: '_Conflicts',
+    lastSessionId: '',
     autoImport: false,
     autoImportDestRoot: '',
     volumeImportQueue: [] as string[],
@@ -193,6 +197,48 @@ describe('ImportContext reducer', () => {
     });
   });
 
+  describe('session and source profile', () => {
+    it('restores a persisted review session', () => {
+      const file = makeFile({ path: '/photos/IMG_002.jpg', pick: 'selected' });
+      const next = reducer(makeState(), {
+        type: 'RESTORE_SESSION',
+        session: {
+          id: 'session-1',
+          updatedAt: '2026-05-02T00:00:00.000Z',
+          sourcePath: '/photos',
+          destRoot: '/dest',
+          files: [file],
+          selectedPaths: [file.path],
+          queuedPaths: [file.path],
+          filter: 'queue',
+          focusedPath: file.path,
+          importLedgerId: 'ledger-1',
+          stats: { totalFiles: 1, picked: 1, rejected: 0, queued: 1, reviewed: 1 },
+        },
+      });
+
+      expect(next.selectedSource).toBe('/photos');
+      expect(next.destination).toBe('/dest');
+      expect(next.phase).toBe('ready');
+      expect(next.filter).toBe('queue');
+      expect(next.focusedIndex).toBe(0);
+      expect(next.lastSessionId).toBe('session-1');
+    });
+
+    it('applies conservative concurrency for NAS sources', () => {
+      const next = reducer(makeState({ previewConcurrency: 4, faceConcurrency: 3, rawPreviewQuality: 80 }), {
+        type: 'SET_SOURCE_PROFILE',
+        profile: 'nas',
+      });
+
+      expect(next.sourceProfile).toBe('nas');
+      expect(next.previewConcurrency).toBe(1);
+      expect(next.faceConcurrency).toBe(1);
+      expect(next.rawPreviewCache).toBe(true);
+      expect(next.rawPreviewQuality).toBeLessThanOrEqual(68);
+    });
+  });
+
   // --- SCAN_BATCH ---
 
   describe('SCAN_BATCH', () => {
@@ -232,6 +278,13 @@ describe('ImportContext reducer', () => {
       const state = makeState({ files: [file] });
       const next = reducer(state, { type: 'SET_DUPLICATE', filePath: '/photo.jpg' });
       expect(next.files[0].duplicate).toBe(true);
+    });
+  });
+
+  describe('catalog duplicate filter', () => {
+    it('stores catalog duplicate filter selection', () => {
+      const next = reducer(makeState(), { type: 'SET_FILTER', filter: 'catalog-duplicates' });
+      expect(next.filter).toBe('catalog-duplicates');
     });
   });
 
@@ -357,6 +410,20 @@ describe('ImportContext reducer', () => {
       expect(next.files[0].visualHash).toBe('0000000000000000');
       expect(next.files[0].blurRisk).toBe('high');
       expect(typeof next.files[0].reviewScore).toBe('number');
+    });
+
+    it('resolves second-pass files with an approved pick decision', () => {
+      const files = [makeFile({ path: '/keeper.jpg' }), makeFile({ path: '/later.jpg' })];
+      const next = reducer(makeState({ files }), {
+        type: 'RESOLVE_SECOND_PASS',
+        filePaths: ['/keeper.jpg'],
+        pick: 'selected',
+      });
+
+      expect(next.files.find((file) => file.path === '/keeper.jpg')?.pick).toBe('selected');
+      expect(next.files.find((file) => file.path === '/keeper.jpg')?.reviewApproved).toBe(true);
+      expect(next.files.find((file) => file.path === '/later.jpg')?.reviewApproved).toBeUndefined();
+      expect(next.fileHistory).toHaveLength(1);
     });
 
     it('groups visual duplicates by hash distance', () => {

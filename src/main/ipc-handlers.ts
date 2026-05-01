@@ -4,10 +4,11 @@ import { execFile, spawn } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 import path from 'node:path';
 import { DEFAULT_VIEW_OVERLAY_PREFERENCES, IPC } from '../shared/types';
-import type { ImportConfig, ImportResult, AppSettings, MediaFile, FtpConfig, FtpSyncStatus, Volume, UpdateState, ImportLedger, MacFirstRunDoctor, AppDiagnosticsSnapshot, UpdateRepairResult } from '../shared/types';
+import type { ImportConfig, ImportResult, AppSettings, MediaFile, FtpConfig, FtpSyncStatus, Volume, UpdateState, ImportLedger, ImportHealthSummary, MacFirstRunDoctor, AppDiagnosticsSnapshot, UpdateRepairResult, AppSession, WatchFolder, CatalogBrowserQuery } from '../shared/types';
 import { listVolumes, startWatching, stopWatching } from './services/volume-watcher';
 import { scanFiles, cancelScan, pauseScan, resumeScan } from './services/file-scanner';
 import { importFiles, cancelImport, planImportFiles } from './services/import-engine';
+import { writeLightroomHandoff } from './services/lightroom-handoff';
 import { isDuplicate } from './services/duplicate-detector';
 import { generatePreview } from './services/exif-parser';
 import { checkForUpdate, fetchUpdateHistory, readLastKnownGoodUpdateMetadata } from './services/update-checker';
@@ -17,6 +18,8 @@ import { analyzeFaces, faceModelsAvailable, serializeEmbedding, isGpuAvailable, 
 import { getCachedFaceResult, setCachedFaceResult, clearFaceCache } from './services/face-cache';
 import { detectDeviceTier, applyDeviceTier } from './services/device-tier';
 import { setRawPreviewQuality } from './services/exif-parser';
+import { openCatalog, type CatalogService } from './services/catalog';
+import { normalizeWatchFolders, WatchFolderManager, type WatchFolderTrigger } from './services/watch-folders';
 import { registerSettingsHandlers } from './ipc/settings-handlers';
 import { registerScanHandlers } from './ipc/scan-handlers';
 import { registerImportHandlers } from './ipc/import-handlers';
@@ -101,6 +104,51 @@ function isSettingsPatch(value: unknown): value is Partial<AppSettings> {
   if (value.ftpDestConfig != null && !isFtpConfig(value.ftpDestConfig)) return false;
   if (value.viewOverlayPreferences != null && !isViewOverlayPreferencesPatch(value.viewOverlayPreferences)) return false;
   if (value.lastDestination != null && typeof value.lastDestination !== 'string') return false;
+  if (value.sourceProfile != null && !['auto', 'ssd', 'usb', 'nas'].includes(String(value.sourceProfile))) return false;
+  if (value.defaultConflictPolicy != null && !['skip', 'rename', 'overwrite', 'conflicts-folder'].includes(String(value.defaultConflictPolicy))) return false;
+  if (value.conflictFolderName != null && typeof value.conflictFolderName !== 'string') return false;
+  if (value.watchFolders != null && !Array.isArray(value.watchFolders)) return false;
+  return true;
+}
+
+function isAppSession(value: unknown): value is AppSession {
+  if (!isRecord(value)) return false;
+  return typeof value.id === 'string'
+    && typeof value.updatedAt === 'string'
+    && (value.sourcePath === null || typeof value.sourcePath === 'string')
+    && (value.destRoot === null || typeof value.destRoot === 'string')
+    && Array.isArray(value.files)
+    && Array.isArray(value.selectedPaths)
+    && Array.isArray(value.queuedPaths)
+    && typeof value.filter === 'string'
+    && isRecord(value.stats);
+}
+
+function isMediaFileArray(value: unknown): value is MediaFile[] {
+  return Array.isArray(value) && value.every((file) =>
+    isRecord(file)
+    && isNonEmptyString(file.path)
+    && isNonEmptyString(file.name)
+    && isNumber(file.size)
+    && (file.type === 'photo' || file.type === 'video')
+    && typeof file.extension === 'string'
+  );
+}
+
+function isCatalogBrowserQuery(value: unknown): value is CatalogBrowserQuery {
+  if (value == null) return true;
+  if (!isRecord(value)) return false;
+  if (value.search != null && typeof value.search !== 'string') return false;
+  if (value.sourcePath != null && typeof value.sourcePath !== 'string') return false;
+  if (value.destinationPath != null && typeof value.destinationPath !== 'string') return false;
+  if (value.camera != null && typeof value.camera !== 'string') return false;
+  if (value.lens != null && typeof value.lens !== 'string') return false;
+  if (value.visualHash != null && typeof value.visualHash !== 'string') return false;
+  if (value.imported != null && !['any', 'imported', 'not-imported'].includes(String(value.imported))) return false;
+  if (value.limit != null && !isNumber(value.limit)) return false;
+  if (value.offset != null && !isNumber(value.offset)) return false;
+  if (value.sortBy != null && !['lastSeenAt', 'lastImportedAt', 'name', 'size'].includes(String(value.sortBy))) return false;
+  if (value.sortDirection != null && !['asc', 'desc'].includes(String(value.sortDirection))) return false;
   return true;
 }
 
@@ -179,7 +227,14 @@ function execFileAsync(
 let scannedFiles: MediaFile[] = [];
 let scannedFilesByPath = new Map<string, MediaFile>();
 let knownVolumePaths = new Set<string>();
-let autoImportQueue: Volume[] = [];
+type QueuedAutoImport = {
+  volume: Volume;
+  destRoot?: string;
+  requireGlobalAutoImport?: boolean;
+  autoEject?: boolean;
+};
+
+let autoImportQueue: QueuedAutoImport[] = [];
 let autoImportRunning = false;
 let currentAutoImportPath: string | null = null;
 let lastUpdateState: UpdateState | null = null;
@@ -196,6 +251,13 @@ let lastFtpSyncStatus: FtpSyncStatus = {
   stage: 'idle',
   message: 'FTP sync is idle.',
 };
+let watchFolderManager: WatchFolderManager | null = null;
+let catalogService: Promise<CatalogService> | null = null;
+
+function getCatalogService(): Promise<CatalogService> {
+  catalogService ??= openCatalog(path.join(app.getPath('userData'), 'catalog'));
+  return catalogService;
+}
 
 const UPDATE_ALLOWED_HOSTS = new Set([
   'keptra.z2hs.au',
@@ -257,6 +319,14 @@ function getLedgersDir(): string {
 
 function getLatestLedgerPath(): string {
   return path.join(getLedgersDir(), 'latest.json');
+}
+
+function getSessionsDir(): string {
+  return path.join(app.getPath('userData'), 'sessions');
+}
+
+function getLatestSessionPath(): string {
+  return path.join(getSessionsDir(), 'latest.json');
 }
 
 function getUpdateMetadataPath(): string {
@@ -458,6 +528,212 @@ async function readLatestImportLedger(): Promise<ImportLedger | null> {
   }
 }
 
+async function writePostImportLightroomHandoff(config: ImportConfig, ledger: ImportLedger): Promise<ImportResult['lightroomHandoff'] | undefined> {
+  if (!scannedFiles.length) return undefined;
+  return writeLightroomHandoff(scannedFiles, {
+    config,
+    ledger,
+    outputRoot: config.destRoot,
+    source: 'post-import',
+  });
+}
+
+async function pathExists(filePath: string): Promise<boolean> {
+  try {
+    await stat(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readCatalogStatsForHealth(): Promise<ImportHealthSummary['catalog']> {
+  try {
+    return (await getCatalogService()).getStats();
+  } catch (error) {
+    log.warn('[health] catalog stats unavailable', error);
+    return null;
+  }
+}
+
+async function buildImportHealthSummary(): Promise<ImportHealthSummary> {
+  const [settings, latestLedger, catalog] = await Promise.all([
+    loadSettings(),
+    readLatestImportLedger(),
+    readCatalogStatsForHealth(),
+  ]);
+  const retryableItems = latestLedger?.items.filter((item) => item.status === 'failed' || item.status === 'pending') ?? [];
+  const failed = latestLedger?.failed ?? latestLedger?.items.filter((item) => item.status === 'failed').length ?? 0;
+  const pending = latestLedger?.pending ?? latestLedger?.items.filter((item) => item.status === 'pending').length ?? 0;
+  const imported = latestLedger?.imported ?? 0;
+  const lastImportState: ImportHealthSummary['lastImport']['state'] = !latestLedger
+    ? 'none'
+    : failed > 0 && imported === 0
+      ? 'failed'
+      : failed + pending > 0
+        ? 'attention'
+        : 'healthy';
+
+  const checksumVerified = latestLedger?.checksumVerified ?? 0;
+  const checksumExpected = latestLedger?.imported ?? 0;
+  const checksumAvailable = typeof latestLedger?.checksumVerified === 'number';
+  const checksumEnabled = !!settings.verifyChecksums || checksumAvailable;
+  const checksumStatus: ImportHealthSummary['checksum']['status'] = !checksumEnabled
+    ? 'disabled'
+    : !latestLedger
+      ? 'unavailable'
+      : checksumExpected === 0
+        ? 'missing'
+        : checksumVerified >= checksumExpected
+          ? 'verified'
+          : checksumVerified > 0
+            ? 'partial'
+            : 'missing';
+
+  const backupTargets = latestLedger?.items.filter((item) => item.backupFullPath) ?? [];
+  const copiedBackups = backupTargets.filter((item) => item.status === 'imported' || item.status === 'verified').length;
+  const failedBackups = backupTargets.filter((item) => item.status === 'failed' && /backup/i.test(item.error ?? '')).length;
+  const backupEnabled = !!settings.backupDestRoot || backupTargets.length > 0;
+  const backupStatus: ImportHealthSummary['backup']['status'] = !backupEnabled
+    ? 'disabled'
+    : !latestLedger
+      ? 'unavailable'
+      : failedBackups > 0
+        ? 'attention'
+        : backupTargets.length > 0 && copiedBackups < backupTargets.length
+          ? 'partial'
+          : 'ok';
+
+  const ftpEnabled = !!settings.ftpDestEnabled || !!settings.ftpSync?.enabled;
+  const normalizedWatchFolders = normalizeWatchFolders(settings.watchFolders ?? []);
+  const watchFolderStatuses = await Promise.all(normalizedWatchFolders.map(async (folder) => {
+    const exists = folder.enabled ? await pathExists(folder.path) : false;
+    const needsDestination = folder.enabled && folder.autoImport && !(folder.destination || folder.destRoot);
+    const status: ImportHealthSummary['watchFolders']['folders'][number]['status'] = !folder.enabled
+      ? 'disabled'
+      : !exists
+        ? 'missing'
+        : needsDestination
+          ? 'needs-destination'
+          : 'ready';
+    return {
+      id: folder.id,
+      label: folder.label,
+      path: folder.path,
+      enabled: folder.enabled,
+      autoScan: folder.autoScan,
+      autoImport: folder.autoImport,
+      exists,
+      status,
+      lastTriggeredAt: folder.lastTriggeredAt,
+      lastImportedAt: folder.lastImportedAt,
+    };
+  }));
+  const triggeredDates = watchFolderStatuses
+    .map((folder) => folder.lastTriggeredAt)
+    .filter((value): value is string => !!value)
+    .sort();
+
+  return {
+    generatedAt: new Date().toISOString(),
+    latestLedger,
+    lastImport: {
+      state: lastImportState,
+      createdAt: latestLedger?.createdAt,
+      sourcePath: latestLedger?.sourcePath,
+      destRoot: latestLedger?.destRoot,
+      totalFiles: latestLedger?.totalFiles ?? 0,
+      imported,
+      skipped: latestLedger?.skipped ?? 0,
+      failed,
+      pending,
+      totalBytes: latestLedger?.totalBytes ?? 0,
+      durationMs: latestLedger?.durationMs ?? 0,
+    },
+    retryableItems,
+    checksum: {
+      enabled: checksumEnabled,
+      status: checksumStatus,
+      verified: checksumVerified,
+      expected: checksumExpected,
+    },
+    backup: {
+      enabled: backupEnabled,
+      status: backupStatus,
+      targetRoot: settings.backupDestRoot || undefined,
+      copied: copiedBackups,
+      failed: failedBackups,
+      totalTargets: backupTargets.length,
+    },
+    ftp: {
+      enabled: ftpEnabled,
+      status: ftpEnabled ? lastFtpSyncStatus.state : 'disabled',
+      stage: lastFtpSyncStatus.stage,
+      message: ftpEnabled ? lastFtpSyncStatus.message : 'FTP workflow is disabled.',
+      lastRunAt: lastFtpSyncStatus.lastRunAt,
+      lastSuccessAt: lastFtpSyncStatus.lastSuccessAt,
+      imported: lastFtpSyncStatus.imported,
+      skipped: lastFtpSyncStatus.skipped,
+      errors: lastFtpSyncStatus.errors,
+    },
+    catalog,
+    watchFolders: {
+      total: watchFolderStatuses.length,
+      enabled: watchFolderStatuses.filter((folder) => folder.enabled).length,
+      active: watchFolderStatuses.filter((folder) => folder.enabled && (folder.autoScan || folder.autoImport)).length,
+      autoScan: watchFolderStatuses.filter((folder) => folder.enabled && folder.autoScan).length,
+      autoImport: watchFolderStatuses.filter((folder) => folder.enabled && folder.autoImport).length,
+      missing: watchFolderStatuses.filter((folder) => folder.status === 'missing').length,
+      needsDestination: watchFolderStatuses.filter((folder) => folder.status === 'needs-destination').length,
+      lastTriggeredAt: triggeredDates.at(-1),
+      folders: watchFolderStatuses,
+    },
+  };
+}
+
+async function applyCatalogScanMemory(sourcePath: string): Promise<void> {
+  catalogService ??= openCatalog(path.join(app.getPath('userData'), 'catalog'));
+  const db = await catalogService;
+  const { duplicateCandidates } = await db.upsertMediaFiles(scannedFiles, sourcePath);
+  const byPath = new Map(duplicateCandidates.map((candidate) => [candidate.sourcePath, candidate]));
+  for (const file of scannedFiles) {
+    const candidate = byPath.get(file.path);
+    if (!candidate) continue;
+    file.duplicate = true;
+    file.duplicateMemory = {
+      kind: candidate.importedCount > 0 ? 'previous-import' : 'same-visual',
+      matchedPath: candidate.matchedPaths[0] ?? file.path,
+      importedAt: candidate.lastImportedAt,
+    };
+    sendToRenderer(IPC.SCAN_DUPLICATE, file.path);
+  }
+}
+
+async function recordCatalogImport(config: ImportConfig, result: ImportResult): Promise<void> {
+  if (!result.ledgerId || !result.ledgerItems?.length) return;
+  catalogService ??= openCatalog(path.join(app.getPath('userData'), 'catalog'));
+  const db = await catalogService;
+  await db.recordImportLedgerItems(result.ledgerId, result.ledgerItems, { sessionId: config.sourcePath });
+}
+
+async function persistAppSession(session: AppSession): Promise<AppSession> {
+  const dir = getSessionsDir();
+  await mkdir(dir, { recursive: true });
+  const content = JSON.stringify(session, null, 2);
+  await writeFile(path.join(dir, `${session.id}.json`), content, 'utf8');
+  await writeFile(getLatestSessionPath(), content, 'utf8');
+  await saveSettings({ lastSessionId: session.id });
+  return session;
+}
+
+async function readLatestAppSession(): Promise<AppSession | null> {
+  try {
+    return JSON.parse(await readFile(getLatestSessionPath(), 'utf8')) as AppSession;
+  } catch {
+    return null;
+  }
+}
+
 async function readSettingsData(): Promise<string> {
   const currentPath = getSettingsPath();
   try {
@@ -515,6 +791,11 @@ const DEFAULT_SETTINGS: AppSettings = {
   completeSoundPath: '',
   openFolderOnComplete: false,
   verifyChecksums: false,
+  sourceProfile: 'auto',
+  watchFolders: [],
+  lastSessionId: '',
+  defaultConflictPolicy: 'skip',
+  conflictFolderName: '_Conflicts',
   autoImport: false,
   autoImportDestRoot: '',
   autoImportPromptSeen: false,
@@ -667,6 +948,7 @@ async function loadSettings(): Promise<AppSettings> {
     const merged = {
       ...DEFAULT_SETTINGS,
       ...parsed,
+      watchFolders: normalizeWatchFolders(parsed.watchFolders),
       viewOverlayPreferences: {
         ...DEFAULT_VIEW_OVERLAY_PREFERENCES,
         ...(isRecord(parsed.viewOverlayPreferences) ? parsed.viewOverlayPreferences : {}),
@@ -725,6 +1007,7 @@ async function saveSettings(settings: Partial<AppSettings>): Promise<void> {
   const merged: AppSettings = {
     ...current,
     ...settings,
+    watchFolders: settings.watchFolders != null ? normalizeWatchFolders(settings.watchFolders) : current.watchFolders,
     licenseStatus: settings.licenseStatus ?? current.licenseStatus,
   };
   await writeSettingsFile(merged);
@@ -735,6 +1018,7 @@ async function saveSettings(settings: Partial<AppSettings>): Promise<void> {
   configureCpuOptimization(merged.cpuOptimization ?? false);
   setRawPreviewQuality(merged.rawPreviewQuality ?? 70);
   setFaceConcurrency(merged.faceConcurrency ?? 1);
+  watchFolderManager?.update(merged.watchFolders ?? []);
   };
 
   const nextSave = settingsSaveQueue.then(write, write);
@@ -874,6 +1158,8 @@ async function runAutomatedFtpSync(trigger: 'manual' | 'launch' | 'interval'): P
       skipDuplicates: settings.skipDuplicates,
       saveFormat: settings.saveFormat,
       jpegQuality: settings.jpegQuality,
+      conflictPolicy: settings.defaultConflictPolicy,
+      conflictFolderName: settings.conflictFolderName,
       separateProtected: settings.separateProtected,
       protectedFolderName: settings.protectedFolderName,
       backupDestRoot: settings.backupDestRoot || undefined,
@@ -1406,6 +1692,39 @@ export function registerIpcHandlers(): void {
   registerFtpHandlers();
   registerLicenseHandlers();
   registerFaceHandlers();
+  watchFolderManager ??= new WatchFolderManager((trigger: WatchFolderTrigger) => {
+    log.info('[watch-folder]', {
+      id: trigger.folder.id,
+      path: trigger.folder.path,
+      eventType: trigger.eventType,
+      filename: trigger.filename,
+      autoImport: trigger.folder.autoImport,
+    });
+    sendToRenderer(IPC.WATCH_FOLDER_TRIGGERED, trigger);
+    void (async () => {
+      const settings = await loadSettings();
+      const triggeredAt = trigger.triggeredAt;
+      const watchFolders = normalizeWatchFolders(settings.watchFolders ?? []).map((folder) =>
+        folder.id === trigger.folder.id
+          ? { ...folder, lastTriggeredAt: triggeredAt, updatedAt: triggeredAt }
+          : folder,
+      );
+      await saveSettings({ watchFolders });
+      const watchDestRoot = trigger.folder.destination || trigger.folder.destRoot || '';
+      if (!trigger.folder.autoImport || !watchDestRoot || !settings.licenseStatus?.valid) return;
+      queueAutoImport({
+        name: trigger.folder.label ?? path.basename(trigger.folder.path),
+        path: trigger.folder.path,
+        isRemovable: false,
+        isExternal: true,
+        hasDcim: true,
+      }, {
+        destRoot: watchDestRoot,
+        requireGlobalAutoImport: false,
+        autoEject: false,
+      });
+    })().catch((error) => log.warn('[watch-folder] trigger failed', error));
+  });
   // Volumes
   handleIpc(IPC.VOLUMES_LIST, async () => {
     return listVolumes();
@@ -1440,6 +1759,7 @@ export function registerIpcHandlers(): void {
   });
 
   void loadSettings().then((settings) => {
+    watchFolderManager?.update(settings.watchFolders ?? []);
     void scheduleFtpSync(settings);
     if (settings.ftpSync?.enabled && settings.ftpSync.runOnLaunch) {
       setTimeout(() => {
@@ -1450,6 +1770,7 @@ export function registerIpcHandlers(): void {
 
   app.on('before-quit', () => {
     stopWatching();
+    watchFolderManager?.stop();
     clearFtpSyncTimer();
     ftpSyncAbort?.abort();
   });
@@ -1477,6 +1798,7 @@ export function registerIpcHandlers(): void {
         folderPattern,
       );
       console.log(`[scan] Complete: ${total} files`);
+      await applyCatalogScanMemory(sourcePath).catch((error) => log.warn('[catalog] scan memory failed', error));
       sendToRenderer(IPC.SCAN_COMPLETE, total);
     } catch (err) {
       console.error('[scan] Error:', err);
@@ -1527,11 +1849,65 @@ export function registerIpcHandlers(): void {
   // Import
   handleIpc(IPC.IMPORT_PREFLIGHT, async (_event, config: ImportConfig) => {
     const filesToImport = filterFilesForImport(scannedFiles, config);
-    return planImportFiles(filesToImport, config);
+    const [plan, ledger] = await Promise.all([
+      planImportFiles(filesToImport, config),
+      readLatestImportLedger(),
+    ]);
+    const recoveryAvailable = !!ledger?.items?.some((item) => item.status === 'failed' || item.status === 'pending');
+    return {
+      ...plan,
+      recoveryAvailable,
+      sessionWarnings: [
+        ...plan.sessionWarnings,
+        ...(recoveryAvailable ? ['A previous failed/pending import can be retried from the recovery ledger.'] : []),
+      ],
+    };
   }, ([config]) => isImportConfig(config) ? null : ipcError('VALIDATION_ERROR', 'Invalid import config payload.'));
 
   handleIpc(IPC.IMPORT_LEDGER_LATEST, async () => {
     return readLatestImportLedger();
+  });
+
+  handleIpc(IPC.IMPORT_HEALTH_SUMMARY, async () => {
+    return buildImportHealthSummary();
+  });
+
+  handleIpc(IPC.CATALOG_STATS, async () => {
+    return (await getCatalogService()).getStats();
+  });
+
+  handleIpc(IPC.CATALOG_BROWSE, async (_event, query: CatalogBrowserQuery = {}) => {
+    return (await getCatalogService()).browse(query);
+  }, ([query]) => isCatalogBrowserQuery(query) ? null : ipcError('VALIDATION_ERROR', 'Invalid catalog query payload.'));
+
+  handleIpc(IPC.CATALOG_VERIFY_MISSING, async () => {
+    return (await getCatalogService()).verifyMissingPaths();
+  });
+
+  handleIpc(IPC.CATALOG_PRUNE_MISSING, async () => {
+    return (await getCatalogService()).pruneMissingEntries();
+  });
+
+  handleIpc(IPC.CATALOG_EXPORT_BACKUP, async () => {
+    const defaultPath = path.join(
+      app.getPath('documents'),
+      `keptra-catalog-backup-${new Date().toISOString().replace(/[:.]/g, '-')}.json`,
+    );
+    const result = await dialog.showSaveDialog({
+      title: 'Export Catalog Backup',
+      defaultPath,
+      filters: [{ name: 'JSON backup', extensions: ['json'] }],
+    });
+    if (result.canceled || !result.filePath) return null;
+    return (await getCatalogService()).exportBackup(result.filePath);
+  });
+
+  handleIpc(IPC.SESSION_SAVE, async (_event, session: AppSession) => {
+    return persistAppSession(session);
+  }, ([session]) => isAppSession(session) ? null : ipcError('VALIDATION_ERROR', 'Invalid session payload.'));
+
+  handleIpc(IPC.SESSION_LATEST, async () => {
+    return readLatestAppSession();
   });
 
   handleIpc(IPC.IMPORT_START, async (_event, config: ImportConfig) => {
@@ -1551,7 +1927,17 @@ export function registerIpcHandlers(): void {
       const result = await importFiles(filesToImport, config, (progress) => {
         sendToRenderer(IPC.IMPORT_PROGRESS, progress);
       });
-      await persistImportLedger(config, result);
+      const ledger = await persistImportLedger(config, result);
+      result.lightroomHandoff = await writePostImportLightroomHandoff(config, ledger)
+        .catch((error) => {
+          log.warn('[lightroom-handoff] post-import handoff failed', error);
+          result.errors.push({
+            file: 'lightroom-handoff',
+            error: error instanceof Error ? error.message : 'Could not write Lightroom handoff artifacts',
+          });
+          return undefined;
+        });
+      await recordCatalogImport(config, result).catch((error) => log.warn('[catalog] import record failed', error));
       if (config.autoEject && result.imported > 0 && config.sourcePath) {
         const eject = await ejectVolume(config.sourcePath);
         if (!eject.ok) {
@@ -1618,7 +2004,17 @@ export function registerIpcHandlers(): void {
       sendToRenderer(IPC.IMPORT_PROGRESS, progress);
     });
     result.recoveryCount = retryPaths.length;
-    await persistImportLedger(retryConfig, result);
+    const ledger = await persistImportLedger(retryConfig, result);
+    result.lightroomHandoff = await writePostImportLightroomHandoff(retryConfig, ledger)
+      .catch((error) => {
+        log.warn('[lightroom-handoff] retry handoff failed', error);
+        result.errors.push({
+          file: 'lightroom-handoff',
+          error: error instanceof Error ? error.message : 'Could not write Lightroom handoff artifacts',
+        });
+        return undefined;
+      });
+    await recordCatalogImport(retryConfig, result).catch((error) => log.warn('[catalog] retry record failed', error));
     return result;
   }, ([config]) => isImportConfig(config) ? null : ipcError('VALIDATION_ERROR', 'Invalid import config payload.'));
 
@@ -1802,6 +2198,17 @@ export function registerIpcHandlers(): void {
     const merged = await loadSettings();
     await scheduleFtpSync(merged);
   }, ([settings]) => isSettingsPatch(settings) ? null : ipcError('VALIDATION_ERROR', 'Invalid settings patch payload.'));
+
+  handleIpc(IPC.WATCH_FOLDERS_GET, async () => {
+    const settings = await loadSettings();
+    return settings.watchFolders ?? [];
+  });
+
+  handleIpc(IPC.WATCH_FOLDERS_SET, async (_event, folders: WatchFolder[]) => {
+    const watchFolders = normalizeWatchFolders(folders);
+    await saveSettings({ watchFolders });
+    return watchFolders;
+  }, ([folders]) => Array.isArray(folders) ? null : ipcError('VALIDATION_ERROR', 'Invalid watch folders payload.'));
 
   handleIpc(IPC.LICENSE_ACTIVATE, async (_event, key: string) => {
     const status = await activateLicenseInput(key);
@@ -2075,6 +2482,29 @@ export function registerIpcHandlers(): void {
     return result.filePath;
   });
 
+  handleIpc(IPC.EXPORT_LIGHTROOM_HANDOFF, async (_event, files?: MediaFile[]) => {
+    const handoffFiles = Array.isArray(files) && files.length > 0 ? files : scannedFiles;
+    const result = await dialog.showOpenDialog({
+      title: 'Choose Lightroom handoff folder',
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+
+    const latestLedger = await readLatestImportLedger();
+    const sourcePaths = new Set(handoffFiles.map((file) => file.path));
+    const matchingLedger = latestLedger
+      ? {
+          ...latestLedger,
+          items: latestLedger.items.filter((item) => sourcePaths.has(item.sourcePath)),
+        }
+      : undefined;
+    return writeLightroomHandoff(handoffFiles, {
+      ledger: matchingLedger && matchingLedger.items.length > 0 ? matchingLedger : undefined,
+      outputRoot: result.filePaths[0],
+      source: 'current-session',
+    });
+  }, ([files]) => files == null || isMediaFileArray(files) ? null : ipcError('VALIDATION_ERROR', 'Invalid Lightroom handoff file payload.'));
+
   handleIpc(IPC.EXPORT_CONTACT_SHEET, async (_event, files: MediaFile[]) => {
     const result = await dialog.showSaveDialog({
       title: 'Export contact sheet',
@@ -2327,10 +2757,16 @@ function filterFilesForImport(all: MediaFile[], config: ImportConfig): MediaFile
   });
 }
 
-function queueAutoImport(volume: Volume): void {
-  if (currentAutoImportPath === volume.path) return;
-  if (autoImportQueue.some((queued) => queued.path === volume.path)) return;
-  autoImportQueue.push(volume);
+function autoImportQueueKey(item: QueuedAutoImport): string {
+  return `${item.volume.path}\0${item.destRoot ?? ''}`;
+}
+
+function queueAutoImport(volume: Volume, options: Omit<QueuedAutoImport, 'volume'> = {}): void {
+  const item: QueuedAutoImport = { volume, ...options };
+  const key = autoImportQueueKey(item);
+  if (currentAutoImportPath === key) return;
+  if (autoImportQueue.some((queued) => autoImportQueueKey(queued) === key)) return;
+  autoImportQueue.push(item);
   void processAutoImportQueue();
 }
 
@@ -2339,10 +2775,10 @@ async function processAutoImportQueue(): Promise<void> {
   autoImportRunning = true;
   try {
     while (autoImportQueue.length > 0) {
-      const volume = autoImportQueue.shift();
-      if (volume) {
-        currentAutoImportPath = volume.path;
-        await runAutoImport(volume);
+      const item = autoImportQueue.shift();
+      if (item) {
+        currentAutoImportPath = autoImportQueueKey(item);
+        await runAutoImport(item.volume, item);
         currentAutoImportPath = null;
       }
     }
@@ -2354,15 +2790,17 @@ async function processAutoImportQueue(): Promise<void> {
 
 // Auto-import worker. Runs one volume at a time because the scan/import
 // services share process-level state and importFiles aborts a previous run.
-async function runAutoImport(volume: Volume): Promise<void> {
+async function runAutoImport(volume: Volume, options: Omit<QueuedAutoImport, 'volume'> = {}): Promise<void> {
   const settings = await loadSettings();
-  if (!settings.autoImport) return;
-  if (!settings.autoImportDestRoot) return;
+  if (options.requireGlobalAutoImport !== false && !settings.autoImport) return;
+  const destRoot = (options.destRoot || settings.autoImportDestRoot || '').trim();
+  if (!destRoot) return;
   if (!settings.licenseStatus?.valid) return;
+  const autoEject = options.autoEject ?? settings.autoEject;
 
   sendToRenderer(IPC.AUTO_IMPORT_STARTED, {
     volumePath: volume.path,
-    destRoot: settings.autoImportDestRoot,
+    destRoot,
   });
 
   try {
@@ -2385,18 +2823,19 @@ async function runAutoImport(volume: Volume): Promise<void> {
       },
       pattern,
     );
+    await applyCatalogScanMemory(volume.path).catch((error) => log.warn('[catalog] auto scan memory failed', error));
     sendToRenderer(IPC.SCAN_COMPLETE, total);
 
     const importConfig: ImportConfig = {
       sourcePath: volume.path,
-      destRoot: settings.autoImportDestRoot,
+      destRoot,
       skipDuplicates: settings.skipDuplicates,
       saveFormat: settings.saveFormat,
       jpegQuality: settings.jpegQuality,
       separateProtected: settings.separateProtected,
       protectedFolderName: settings.protectedFolderName,
       backupDestRoot: settings.backupDestRoot || undefined,
-      autoEject: settings.autoEject,
+      autoEject,
       verifyChecksums: settings.verifyChecksums,
       metadata: buildImportMetadata(settings),
       metadataExportFlags: settings.metadataExport,
@@ -2417,9 +2856,19 @@ async function runAutoImport(volume: Volume): Promise<void> {
     const result = await importFiles(filesToImport, importConfig, (progress) => {
       sendToRenderer(IPC.IMPORT_PROGRESS, progress);
     });
-    await persistImportLedger(importConfig, result);
+    const ledger = await persistImportLedger(importConfig, result);
+    result.lightroomHandoff = await writePostImportLightroomHandoff(importConfig, ledger)
+      .catch((error) => {
+        log.warn('[lightroom-handoff] auto import handoff failed', error);
+        result.errors.push({
+          file: 'lightroom-handoff',
+          error: error instanceof Error ? error.message : 'Could not write Lightroom handoff artifacts',
+        });
+        return undefined;
+      });
+    await recordCatalogImport(importConfig, result).catch((error) => log.warn('[catalog] auto import record failed', error));
 
-    if (settings.autoEject && result.imported > 0) {
+    if (autoEject && result.imported > 0) {
       void ejectVolume(volume.path);
     }
     sendToRenderer(IPC.AUTO_IMPORT_COMPLETE, result);

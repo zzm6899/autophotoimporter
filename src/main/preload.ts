@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC } from '../shared/types';
-import type { ImportConfig, AppSettings, MediaFile, Volume, ImportProgress, ImportResult, UpdateInfo, UpdateReleaseSummary, UpdateState, FtpConfig, FtpSyncStatus, ImportError, LicenseValidation, ImportPreflight, ImportLedger, MacFirstRunDoctor, AppDiagnosticsSnapshot, UpdateRepairResult } from '../shared/types';
+import type { ImportConfig, AppSettings, MediaFile, Volume, ImportProgress, ImportResult, UpdateInfo, UpdateReleaseSummary, UpdateState, FtpConfig, FtpSyncStatus, ImportError, LicenseValidation, ImportPreflight, ImportLedger, ImportHealthSummary, MacFirstRunDoctor, AppDiagnosticsSnapshot, UpdateRepairResult, AppSession, WatchFolder, CatalogStats, CatalogBrowserQuery, CatalogBrowserResult, CatalogMaintenanceResult, CatalogPruneResult, CatalogBackupResult, LightroomHandoffResult } from '../shared/types';
 import type { FaceBox } from './services/face-engine';
 import type { ModelDownloadProgress } from './services/model-downloader';
 
@@ -76,6 +76,12 @@ const api = {
     ipcRenderer.invoke(IPC.IMPORT_RETRY_FAILED, config),
   getLatestImportLedger: (): Promise<ImportLedger | null> =>
     ipcRenderer.invoke(IPC.IMPORT_LEDGER_LATEST),
+  getImportHealthSummary: (): Promise<ImportHealthSummary> =>
+    ipcRenderer.invoke(IPC.IMPORT_HEALTH_SUMMARY),
+  saveSession: (session: AppSession): Promise<AppSession> =>
+    ipcRenderer.invoke(IPC.SESSION_SAVE, session),
+  getLatestSession: (): Promise<AppSession | null> =>
+    ipcRenderer.invoke(IPC.SESSION_LATEST),
   onImportProgress: (cb: (progress: ImportProgress) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, progress: ImportProgress) => cb(progress);
     ipcRenderer.on(IPC.IMPORT_PROGRESS, handler);
@@ -107,6 +113,25 @@ const api = {
     ipcRenderer.invoke(IPC.SETTINGS_GET),
   setSettings: (settings: Partial<AppSettings>): Promise<void> =>
     ipcRenderer.invoke(IPC.SETTINGS_SET, settings),
+  getWatchFolders: (): Promise<WatchFolder[]> =>
+    ipcRenderer.invoke(IPC.WATCH_FOLDERS_GET),
+  setWatchFolders: (folders: WatchFolder[]): Promise<WatchFolder[]> =>
+    ipcRenderer.invoke(IPC.WATCH_FOLDERS_SET, folders),
+  getCatalogStats: (): Promise<CatalogStats> =>
+    ipcRenderer.invoke(IPC.CATALOG_STATS),
+  browseCatalog: (query: CatalogBrowserQuery = {}): Promise<CatalogBrowserResult> =>
+    ipcRenderer.invoke(IPC.CATALOG_BROWSE, query),
+  verifyCatalogMissingPaths: (): Promise<CatalogMaintenanceResult> =>
+    ipcRenderer.invoke(IPC.CATALOG_VERIFY_MISSING),
+  pruneCatalogMissingEntries: (): Promise<CatalogPruneResult> =>
+    ipcRenderer.invoke(IPC.CATALOG_PRUNE_MISSING),
+  exportCatalogBackup: (): Promise<CatalogBackupResult | null> =>
+    ipcRenderer.invoke(IPC.CATALOG_EXPORT_BACKUP),
+  onWatchFolderTriggered: (cb: (trigger: { folder: WatchFolder; eventType: string; filename?: string; triggeredAt: string }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, trigger: { folder: WatchFolder; eventType: string; filename?: string; triggeredAt: string }) => cb(trigger);
+    ipcRenderer.on(IPC.WATCH_FOLDER_TRIGGERED, handler);
+    return () => ipcRenderer.removeListener(IPC.WATCH_FOLDER_TRIGGERED, handler);
+  },
   activateLicense: (key: string): Promise<LicenseValidation> =>
     ipcRenderer.invoke(IPC.LICENSE_ACTIVATE, key),
   clearLicense: (): Promise<LicenseValidation> =>
@@ -159,6 +184,8 @@ const api = {
   // Export manifest
   exportManifest: (format: 'csv' | 'json'): Promise<string | null> =>
     ipcRenderer.invoke(IPC.EXPORT_MANIFEST, format),
+  exportLightroomHandoff: (files?: MediaFile[]): Promise<LightroomHandoffResult | null> =>
+    ipcRenderer.invoke(IPC.EXPORT_LIGHTROOM_HANDOFF, files),
   exportContactSheet: (files: MediaFile[]): Promise<string | null> =>
     ipcRenderer.invoke(IPC.EXPORT_CONTACT_SHEET, files),
 

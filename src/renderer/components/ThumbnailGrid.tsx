@@ -16,6 +16,7 @@ import { BestOfSelectionPanel, rankBestOfSelection } from './BestOfSelectionPane
 import { getPreviewCacheStats, setBackgroundPreviewPaused, warmPreview } from '../utils/previewCache';
 import { clampStops, getEffectiveExposureStops, getNormalizedExposureStops, normalizeExposureStops } from '../../shared/exposure';
 import { faceSignalConfidence } from '../../shared/review';
+import { needsSecondPass } from '../../shared/review-lane';
 
 // ── Laplacian sharpness-based subject detector ────────────────────────────
 // Uses focus sharpness (Laplacian variance) instead of colour/skin tone so it
@@ -688,6 +689,7 @@ export function ThumbnailGrid() {
         case 'rejected': return f.pick === 'rejected';
         case 'unrated': return !f.rating || f.rating === 0;
         case 'duplicates': return f.duplicate;
+        case 'catalog-duplicates': return !!f.duplicateMemory;
         case 'queue': return queuedSet.has(f.path);
         case 'unmarked': return !f.pick;
         case 'best': return (f.reviewScore ?? 0) >= 70;
@@ -695,7 +697,7 @@ export function ThumbnailGrid() {
         case 'face-groups': return !!f.faceGroupId;
         case 'blur-risk': return f.blurRisk === 'high' || f.blurRisk === 'medium';
         case 'near-duplicates': return !!f.visualGroupId;
-        case 'review-needed': return !f.reviewScore || f.blurRisk === 'high' || (f.pick === 'selected' && (f.reviewScore ?? 0) < 58) || (!!f.visualGroupId && !f.pick) || !f.pick;
+        case 'review-needed': return needsSecondPass(f);
         case 'needs-exposure': return typeof f.exposureValue === 'number' && !!exposureAnchorPath && !f.normalizeToAnchor;
         case 'normalized': return !!f.normalizeToAnchor;
         case 'adjusted': return typeof f.exposureAdjustmentStops === 'number' && Math.abs(f.exposureAdjustmentStops) >= 0.01;
@@ -3117,6 +3119,7 @@ export function ThumbnailGrid() {
                 <option value="protected">Protected</option>
                 <option value="unrated">Unrated</option>
                 <option value="duplicates">Duplicates</option>
+                <option value="catalog-duplicates">Catalog matches</option>
                 <option value="best">Best shots</option>
                 <option value="faces">Faces detected</option>
                 <option value="face-groups">Face groups</option>

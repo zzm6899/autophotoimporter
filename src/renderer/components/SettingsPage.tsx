@@ -7,6 +7,9 @@ import { playCompletionSound } from '../utils/completionSound';
 import { useUpdateNotification } from '../hooks/useUpdateNotification';
 import { OPEN_PERFORMANCE_EVENT } from './SettingsOptimizationPrompt';
 import { ImportResumeView } from './ImportResumeView';
+import { WatchFoldersPanel } from './WatchFoldersPanel';
+import { CatalogPanel } from './CatalogPanel';
+import { ImportHealthDashboard } from './ImportHealthDashboard';
 
 interface SettingsPageProps {
   onClose: () => void;
@@ -56,8 +59,10 @@ function keyDisplayName(key: string): string {
 }
 
 const SETTINGS_TOPICS = [
+  { id: 'health', label: 'Health' },
   { id: 'general', label: 'General' },
   { id: 'workflow', label: 'Workflow' },
+  { id: 'catalog', label: 'Catalog' },
   { id: 'editing', label: 'Editing' },
   { id: 'account', label: 'Account' },
   { id: 'diagnostics', label: 'Diagnostics' },
@@ -936,6 +941,10 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
             </div>
           </div>
 
+          {activeTopic === 'health' && (
+            <ImportHealthDashboard />
+          )}
+
           {/* Appearance */}
           {activeTopic === 'general' && (
           <section>
@@ -1404,6 +1413,10 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
           </>
           )}
 
+          {activeTopic === 'catalog' && (
+          <CatalogPanel />
+          )}
+
           {activeTopic === 'workflow' && (
           <>
           {/* Backup */}
@@ -1726,6 +1739,8 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
               </div>
             )}
           </section>
+
+          <WatchFoldersPanel />
 
           {/* Burst grouping */}
           <section>

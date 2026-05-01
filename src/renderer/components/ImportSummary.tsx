@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import { formatDuration, formatSize, formatSpeed } from '../utils/formatters';
 import { useImport } from '../hooks/useImport';
@@ -47,9 +47,10 @@ export function summarizeImportResult(result: ImportResult) {
 }
 
 export function ImportSummary() {
-  const { phase, importResult, destination } = useAppState();
+  const { phase, importResult, destination, files } = useAppState();
   const dispatch = useAppDispatch();
   const { startImport } = useImport();
+  const [handoffBusy, setHandoffBusy] = useState(false);
 
   useEffect(() => {
     if (phase !== 'complete' || !importResult) return;
@@ -88,6 +89,22 @@ export function ImportSummary() {
 
   const handleExportManifest = () => {
     void window.electronAPI.exportManifest('csv');
+  };
+
+  const handleLightroomHandoff = async () => {
+    if (handoffBusy) return;
+    const existingDir = importResult?.lightroomHandoff?.outputDir;
+    if (existingDir) {
+      void window.electronAPI.openPath(existingDir);
+      return;
+    }
+    setHandoffBusy(true);
+    try {
+      const handoff = await window.electronAPI.exportLightroomHandoff(files);
+      if (handoff?.outputDir) void window.electronAPI.openPath(handoff.outputDir);
+    } finally {
+      setHandoffBusy(false);
+    }
   };
 
   const summary = summarizeImportResult(importResult);
@@ -203,11 +220,12 @@ export function ImportSummary() {
             Open Destination
           </button>
           <button
-            onClick={handleOpenDestination}
+            onClick={() => { void handleLightroomHandoff(); }}
             className="flex-1 min-w-[9rem] py-2 rounded text-sm bg-surface-raised hover:bg-blue-500/10 text-blue-300 transition-colors"
-            title="Open the output folder. XMP sidecars, ratings, labels, keywords, GPS, and scene buckets are ready for Lightroom Classic import."
+            disabled={handoffBusy}
+            title="Open or export Keptra collection helper manifests for Lightroom Classic."
           >
-            Lightroom Handoff
+            {handoffBusy ? 'Exporting...' : 'Lightroom Handoff'}
           </button>
           <button
             onClick={handleCopyReport}

@@ -32,6 +32,14 @@ function AppInner() {
     autoImportDestRoot,
     phase,
     volumeImportQueue,
+    selectedSource,
+    destination,
+    files,
+    selectedPaths,
+    queuedPaths,
+    filter,
+    focusedIndex,
+    importResult,
   } = useAppState();
   const { startScan } = useFileScanner();
   const { startImport } = useImport();
@@ -101,6 +109,34 @@ function AppInner() {
       unsubComplete();
     };
   }, [dispatch, playSoundOnComplete, completeSoundPath, openFolderOnComplete, autoImportDestRoot]);
+
+  useEffect(() => {
+    if (!selectedSource || files.length === 0 || phase === 'scanning' || phase === 'importing') return;
+    const focusedPath = focusedIndex >= 0 ? files[focusedIndex]?.path : undefined;
+    const session = {
+      id: `${Date.now()}-${Math.abs([...selectedSource].reduce((sum, ch) => sum + ch.charCodeAt(0), 0))}`,
+      updatedAt: new Date().toISOString(),
+      sourcePath: selectedSource,
+      destRoot: destination,
+      files,
+      selectedPaths,
+      queuedPaths,
+      filter,
+      focusedPath,
+      importLedgerId: importResult?.ledgerId,
+      stats: {
+        totalFiles: files.length,
+        picked: files.filter((file) => file.pick === 'selected').length,
+        rejected: files.filter((file) => file.pick === 'rejected').length,
+        queued: queuedPaths.length,
+        reviewed: files.filter((file) => file.pick || typeof file.reviewScore === 'number').length,
+      },
+    };
+    const timer = window.setTimeout(() => {
+      void window.electronAPI.saveSession(session).catch(() => undefined);
+    }, 1200);
+    return () => window.clearTimeout(timer);
+  }, [selectedSource, destination, files, selectedPaths, queuedPaths, filter, focusedIndex, phase, importResult?.ledgerId]);
 
   return (
     <>

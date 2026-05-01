@@ -2,10 +2,11 @@ import { useMemo, useEffect, useState } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import { useImport } from '../hooks/useImport';
 import { ImportResumeView } from './ImportResumeView';
-import type { EventMode, SaveFormat, JobPreset, ImportConfig, ImportPreflight } from '../../shared/types';
+import type { EventMode, SaveFormat, JobPreset, ImportConfig, ImportPreflight, ImportConflictPolicy, SourceProfile } from '../../shared/types';
 import { EVENT_MODE_PRESETS, FOLDER_PRESETS, eventModeKeywords, resolvePattern } from '../../shared/types';
 import { formatSize } from '../utils/formatters';
 import { formatWhiteBalanceKelvin, kelvinToWhiteBalanceTemperature, WHITE_BALANCE_MAX_KELVIN, WHITE_BALANCE_MIN_KELVIN, whiteBalanceTemperatureToKelvin } from '../../shared/exposure';
+import { getSecondPassReasons, needsSecondPass } from '../../shared/review-lane';
 
 const FORMAT_EXT: Record<string, string> = {
   jpeg: '.jpg',
@@ -43,6 +44,8 @@ export function DestinationPanel() {
     autoStraighten,
     whiteBalanceTemperature, whiteBalanceTint, eventMode, metadataExport,
     verifyChecksums,
+    sourceProfile, conflictPolicy, conflictFolderName,
+    previewConcurrency, faceConcurrency, rawPreviewQuality,
     licenseStatus,
   } = useAppState();
   const dispatch = useAppDispatch();
@@ -53,6 +56,7 @@ export function DestinationPanel() {
   const [jobPresets, setJobPresets] = useState<JobPreset[]>([]);
   const [preflight, setPreflight] = useState<ImportPreflight | null>(null);
   const [preflightOpen, setPreflightOpen] = useState(false);
+  const [handoffBusy, setHandoffBusy] = useState(false);
 
   useEffect(() => {
     void window.electronAPI.getSettings().then((s) => setJobPresets(s.jobPresets ?? []));
@@ -111,6 +115,47 @@ export function DestinationPanel() {
   ) => {
     dispatch({ type: 'SET_WORKFLOW_OPTION', key, value });
     window.electronAPI.setSettings({ [key]: value } as Record<string, unknown>);
+  };
+
+  const handleExportLightroomHandoff = async () => {
+    if (handoffBusy || files.length === 0) return;
+    const existingDir = importResult?.lightroomHandoff?.outputDir;
+    if (existingDir) {
+      void window.electronAPI.openPath(existingDir);
+      return;
+    }
+    setHandoffBusy(true);
+    try {
+      const handoff = await window.electronAPI.exportLightroomHandoff(files);
+      if (handoff?.outputDir) void window.electronAPI.openPath(handoff.outputDir);
+    } finally {
+      setHandoffBusy(false);
+    }
+  };
+
+  const handleSourceProfile = (profile: SourceProfile) => {
+    const profileSettings = profile === 'ssd'
+      ? { previewConcurrency: Math.max(4, previewConcurrency), faceConcurrency: Math.max(2, faceConcurrency), rawPreviewQuality: Math.max(78, rawPreviewQuality) }
+      : profile === 'usb'
+        ? { previewConcurrency: 1, faceConcurrency: 1, rawPreviewQuality: Math.min(rawPreviewQuality, 65) }
+        : profile === 'nas'
+          ? { previewConcurrency: 1, faceConcurrency: 1, rawPreviewQuality: Math.min(rawPreviewQuality, 68), rawPreviewCache: true }
+          : {};
+    dispatch({ type: 'SET_SOURCE_PROFILE', profile });
+    window.electronAPI.setSettings({ sourceProfile: profile, ...profileSettings });
+    if ('faceConcurrency' in profileSettings && typeof profileSettings.faceConcurrency === 'number') {
+      void window.electronAPI.setFaceAnalysisConcurrency(profileSettings.faceConcurrency);
+    }
+  };
+
+  const handleConflictPolicy = (policy: ImportConflictPolicy) => {
+    dispatch({ type: 'SET_CONFLICT_POLICY', policy });
+    window.electronAPI.setSettings({ defaultConflictPolicy: policy });
+  };
+
+  const handleConflictFolderName = (value: string) => {
+    dispatch({ type: 'SET_WORKFLOW_STRING', key: 'conflictFolderName', value });
+    window.electronAPI.setSettings({ conflictFolderName: value });
   };
 
   const handleWhiteBalance = (temperature: number, tint: number) => {
@@ -230,6 +275,8 @@ export function DestinationPanel() {
       skipDuplicates,
       saveFormat,
       jpegQuality,
+      conflictPolicy,
+      conflictFolderName,
       selectedPaths: importFiles.map((file) => file.path),
       separateProtected,
       protectedFolderName,
@@ -319,6 +366,24 @@ export function DestinationPanel() {
 
   const handlePreviewImport = async () => {
     await refreshPreflight(true);
+  };
+
+  const secondPassFiles = files.filter(needsSecondPass);
+  const secondPassPaths = secondPassFiles.map((file) => file.path);
+  const secondPassReasonCounts = secondPassFiles.reduce((counts, file) => {
+    for (const reason of getSecondPassReasons(file)) {
+      counts[reason] = (counts[reason] ?? 0) + 1;
+    }
+    return counts;
+  }, {} as Record<string, number>);
+  const resolveSecondPass = (pick: 'selected' | 'rejected') => {
+    if (secondPassPaths.length === 0) return;
+    dispatch({ type: 'RESOLVE_SECOND_PASS', filePaths: secondPassPaths, pick });
+    dispatch({ type: 'SET_FILTER', filter: 'review-needed' });
+  };
+  const openSecondPassLane = () => {
+    dispatch({ type: 'SET_FILTER', filter: 'review-needed' });
+    dispatch({ type: 'SET_VIEW_MODE', mode: 'split' });
   };
 
   // Free-space check on the destination. Re-runs when the destination or
@@ -427,6 +492,67 @@ export function DestinationPanel() {
           <div className="bg-surface-raised rounded px-1.5 py-1">Rejected <span className="text-red-400">{rejectedCount}</span></div>
           <div className="bg-surface-raised rounded px-1.5 py-1">Protected <span className="text-emerald-400">{protectedCount}</span></div>
           <div className="bg-surface-raised rounded px-1.5 py-1">Queued <span className="text-emerald-400">{queuedPaths.length}</span></div>
+        </div>
+      )}
+
+      {files.length > 0 && (
+        <div className="px-2.5 mb-2.5">
+          <div className={`rounded border px-2 py-2 ${
+            secondPassFiles.length > 0
+              ? 'border-yellow-500/30 bg-yellow-500/10'
+              : 'border-emerald-500/25 bg-emerald-500/10'
+          }`}>
+            <div className="mb-1.5 flex items-center justify-between gap-2">
+              <h3 className="text-[10px] text-text-secondary uppercase tracking-wider">Second pass</h3>
+              <span className={`font-mono text-[10px] ${secondPassFiles.length > 0 ? 'text-yellow-300' : 'text-emerald-300'}`}>
+                {secondPassFiles.length}
+              </span>
+            </div>
+            {secondPassFiles.length > 0 ? (
+              <>
+                <div className="mb-1.5 flex flex-wrap gap-1">
+                  {[
+                    ['blur-risk', 'Blur'],
+                    ['low-confidence-keeper', 'Low keeper'],
+                    ['unreviewed', 'Unreviewed'],
+                    ['near-duplicate', 'Near dupes'],
+                    ['unmarked', 'Unmarked'],
+                  ].map(([key, label]) => (
+                    secondPassReasonCounts[key] ? (
+                      <span key={key} className="rounded bg-surface-raised px-1.5 py-0.5 text-[9px] text-text-secondary">
+                        {label} {secondPassReasonCounts[key]}
+                      </span>
+                    ) : null
+                  ))}
+                </div>
+                <div className="grid grid-cols-3 gap-1">
+                  <button
+                    type="button"
+                    onClick={openSecondPassLane}
+                    className="rounded bg-surface-raised px-1.5 py-1 text-[10px] text-text-secondary transition-colors hover:text-text"
+                  >
+                    Open
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => resolveSecondPass('selected')}
+                    className="rounded bg-emerald-600/15 px-1.5 py-1 text-[10px] text-emerald-300 transition-colors hover:bg-emerald-600/25"
+                  >
+                    Approve
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => resolveSecondPass('rejected')}
+                    className="rounded bg-red-600/15 px-1.5 py-1 text-[10px] text-red-300 transition-colors hover:bg-red-600/25"
+                  >
+                    Reject
+                  </button>
+                </div>
+              </>
+            ) : (
+              <p className="text-[10px] text-emerald-300">Clear</p>
+            )}
+          </div>
         </div>
       )}
 
@@ -696,6 +822,48 @@ export function DestinationPanel() {
         {showAdvanced && (
           <>
             <div className="mt-1.5 space-y-1.5">
+              <div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] text-text">Source profile</span>
+                  <span className="text-[10px] text-text-muted">tunes preview + AI load</span>
+                </div>
+                <select
+                  value={sourceProfile}
+                  onChange={(e) => handleSourceProfile(e.target.value as SourceProfile)}
+                  className="mt-0.5 w-full px-1.5 py-1 text-[11px] bg-surface-raised border border-border rounded text-text focus:border-text focus:outline-none appearance-none cursor-pointer"
+                >
+                  <option value="auto">Auto</option>
+                  <option value="ssd">Local SSD</option>
+                  <option value="usb">USB card / external drive</option>
+                  <option value="nas">NAS / network share</option>
+                </select>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] text-text">File conflicts</span>
+                  <span className="text-[10px] text-text-muted">when names already exist</span>
+                </div>
+                <select
+                  value={conflictPolicy}
+                  onChange={(e) => handleConflictPolicy(e.target.value as ImportConflictPolicy)}
+                  className="mt-0.5 w-full px-1.5 py-1 text-[11px] bg-surface-raised border border-border rounded text-text focus:border-text focus:outline-none appearance-none cursor-pointer"
+                >
+                  <option value="skip">Skip existing files</option>
+                  <option value="rename">Rename new copies</option>
+                  <option value="overwrite">Overwrite destination</option>
+                  <option value="conflicts-folder">Move to conflicts folder</option>
+                </select>
+                {conflictPolicy === 'conflicts-folder' && (
+                  <input
+                    value={conflictFolderName}
+                    onChange={(e) => handleConflictFolderName(e.target.value)}
+                    placeholder="_Conflicts"
+                    className="mt-1 w-full px-1.5 py-1 text-[11px] font-mono bg-surface-raised border border-border rounded text-text placeholder-text-muted focus:border-text focus:outline-none"
+                  />
+                )}
+              </div>
+
               {/* Backup destination */}
               <div>
                 <div className="flex items-center justify-between">
@@ -926,13 +1094,22 @@ export function DestinationPanel() {
               <div>Review flags <span className={preflight.lowConfidence ? 'text-yellow-400' : 'text-text-muted'}>{preflight.lowConfidence}</span></div>
             </div>
             <div className="mt-1 text-[10px] text-text-muted">
+              Conflict policy: {preflight.conflictPolicy === 'conflicts-folder' ? `conflicts folder (${preflight.conflictFolderName || '_Conflicts'})` : preflight.conflictPolicy}.{' '}
               {preflight.backupEnabled && 'Backup enabled. '}
               {preflight.ftpEnabled && 'FTP upload enabled. '}
               {preflight.checksumEnabled && 'Post-copy verification enabled. '}
               {preflight.metadataEnabled && 'XMP metadata enabled. '}
               {preflight.watermarkEnabled && 'Watermark enabled. '}
+              {preflight.recoveryAvailable && 'Recovery ledger available. '}
               {preflight.dryRun && 'Dry-run preview only.'}
             </div>
+            {preflight.sessionWarnings.length > 0 && (
+              <div className="mt-1 space-y-0.5">
+                {preflight.sessionWarnings.slice(0, 4).map((warning) => (
+                  <div key={warning} className="text-[10px] text-yellow-500">{warning}</div>
+                ))}
+              </div>
+            )}
             {metadataFieldLabels.length > 0 && (
               <div className="mt-1 text-[10px] text-sky-300/80">
                 Metadata: {metadataFieldLabels.join(', ')}
@@ -955,7 +1132,7 @@ export function DestinationPanel() {
             )}
           </div>
         )}
-        <div className="mb-1 grid grid-cols-2 gap-1">
+        <div className="mb-1 grid grid-cols-3 gap-1">
           <button
             onClick={() => { void handlePreviewImport(); }}
             disabled={!destination || importFiles.length === 0}
@@ -973,6 +1150,15 @@ export function DestinationPanel() {
             aria-label="Check destination conflicts, duplicates, and review flags"
           >
             Check Plan
+          </button>
+          <button
+            onClick={() => { void handleExportLightroomHandoff(); }}
+            disabled={files.length === 0 || handoffBusy}
+            className="py-1 rounded text-[10px] bg-surface-raised hover:bg-blue-500/10 text-blue-300 disabled:text-text-muted disabled:cursor-not-allowed"
+            title="Export selected, rejected, protected, second-pass, and catalog-match helper manifests for Lightroom."
+            aria-label="Export Lightroom handoff helpers for the current session"
+          >
+            {handoffBusy ? 'Exporting' : 'LR Handoff'}
           </button>
         </div>
         <button
@@ -1021,11 +1207,12 @@ export function DestinationPanel() {
               Open Folder
             </button>
             <button
-              onClick={handleOpenDestination}
+              onClick={() => { void handleExportLightroomHandoff(); }}
               className="py-1 rounded text-[10px] bg-surface-raised hover:bg-border text-text-secondary transition-colors"
-              title="Open the output folder with XMP sidecars ready for Lightroom Classic import."
+              disabled={handoffBusy}
+              title="Open or export Keptra collection helper manifests for Lightroom Classic."
             >
-              Lightroom Handoff
+              {handoffBusy ? 'Exporting' : 'Lightroom Handoff'}
             </button>
           </div>
         )}

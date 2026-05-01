@@ -19,6 +19,12 @@ export interface MediaFile {
   destPath?: string;
   thumbnail?: string; // base64 data URI
   duplicate?: boolean;
+  duplicateMemory?: {
+    kind: 'previous-import' | 'previous-reject' | 'same-visual';
+    matchedPath: string;
+    importedAt?: string;
+    rejectedAt?: string;
+  };
   pick?: 'selected' | 'rejected';
   orientation?: number; // EXIF orientation (1-8), 6/8 = portrait
   iso?: number;
@@ -109,6 +115,8 @@ export interface MediaFile {
   /** 0-100 local smart-review score. Higher = stronger keeper candidate. */
   reviewScore?: number;
   reviewReasons?: string[];
+  /** True after the operator has explicitly approved this file in second-pass review. */
+  reviewApproved?: boolean;
 }
 
 export type SourceKind = 'volume' | 'ftp';
@@ -420,6 +428,7 @@ export interface ImportResult {
   ledgerId?: string;
   recoveryCount?: number;
   ledgerItems?: ImportLedgerItem[];
+  lightroomHandoff?: LightroomHandoffResult;
 }
 
 export interface ImportError {
@@ -430,6 +439,7 @@ export interface ImportError {
 export type UpdateInstallMode = 'native' | 'installer' | 'manual-dmg';
 
 export type ImportConflictPolicy = 'skip' | 'rename' | 'overwrite' | 'conflicts-folder';
+export type SourceProfile = 'auto' | 'ssd' | 'usb' | 'nas';
 
 export type ImportPlanStatus = 'will-import' | 'duplicate' | 'conflict' | 'invalid';
 
@@ -453,6 +463,10 @@ export interface ImportPreflight {
   conflicts: number;
   invalid: number;
   lowConfidence: number;
+  conflictPolicy: ImportConflictPolicy;
+  conflictFolderName?: string;
+  sessionWarnings: string[];
+  recoveryAvailable: boolean;
   backupEnabled: boolean;
   ftpEnabled: boolean;
   checksumEnabled: boolean;
@@ -491,6 +505,226 @@ export interface ImportLedger {
   totalBytes: number;
   durationMs: number;
   items: ImportLedgerItem[];
+}
+
+export type LightroomCollectionKey =
+  | 'selected'
+  | 'rejected'
+  | 'protected'
+  | 'second-pass-approved'
+  | 'catalog-duplicate';
+
+export interface LightroomCollectionArtifact {
+  key: LightroomCollectionKey;
+  label: string;
+  count: number;
+  pathListPath: string;
+  csvPath: string;
+  xmpSidecarDir: string;
+}
+
+export interface LightroomHandoffResult {
+  createdAt: string;
+  source: 'post-import' | 'current-session';
+  outputDir: string;
+  manifestPath: string;
+  csvPath: string;
+  readmePath: string;
+  totalFiles: number;
+  totalMemberships: number;
+  collections: LightroomCollectionArtifact[];
+}
+
+export interface AppSession {
+  id: string;
+  updatedAt: string;
+  sourcePath: string | null;
+  destRoot: string | null;
+  files: MediaFile[];
+  selectedPaths: string[];
+  queuedPaths: string[];
+  filter: string;
+  focusedPath?: string;
+  importLedgerId?: string;
+  stats: {
+    totalFiles: number;
+    picked: number;
+    rejected: number;
+    queued: number;
+    reviewed: number;
+  };
+}
+
+export interface WatchFolder {
+  id: string;
+  label?: string;
+  path: string;
+  enabled: boolean;
+  destination?: string;
+  destRoot?: string;
+  sourceProfile?: SourceProfile;
+  autoScan: boolean;
+  autoImport: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+  lastTriggeredAt?: string;
+  lastImportedAt?: string;
+}
+
+export type CatalogImportedFilter = 'any' | 'imported' | 'not-imported';
+
+export interface CatalogBrowserQuery {
+  search?: string;
+  sourcePath?: string;
+  destinationPath?: string;
+  camera?: string;
+  lens?: string;
+  visualHash?: string;
+  imported?: CatalogImportedFilter;
+  limit?: number;
+  offset?: number;
+  sortBy?: 'lastSeenAt' | 'lastImportedAt' | 'name' | 'size';
+  sortDirection?: 'asc' | 'desc';
+}
+
+export interface CatalogBrowserRecord {
+  id: string;
+  sourcePath: string;
+  name: string;
+  size: number;
+  type?: MediaFile['type'];
+  extension?: string;
+  dateTaken?: string;
+  cameraMake?: string;
+  cameraModel?: string;
+  lensModel?: string;
+  visualHash?: string;
+  sessionId?: string;
+  firstSeenAt?: string;
+  lastSeenAt?: string;
+  imported: boolean;
+  importStatus?: ImportLedgerStatus;
+  destRelPath?: string;
+  destFullPath?: string;
+  backupFullPath?: string;
+  lastImportedAt?: string;
+  error?: string;
+}
+
+export interface CatalogBrowserResult {
+  records: CatalogBrowserRecord[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface CatalogMissingPath {
+  kind: 'source' | 'destination' | 'backup';
+  sourcePath: string;
+  path: string;
+  name: string;
+  imported: boolean;
+  lastSeenAt?: string;
+  lastImportedAt?: string;
+}
+
+export interface CatalogMaintenanceResult {
+  checked: number;
+  missingSources: number;
+  missingDestinations: number;
+  missingBackups: number;
+  missingPaths: CatalogMissingPath[];
+}
+
+export interface CatalogPruneResult extends CatalogMaintenanceResult {
+  removedMediaFiles: number;
+  removedImportOutcomes: number;
+}
+
+export interface CatalogBackupResult {
+  path: string;
+  bytes: number;
+  mediaFiles: number;
+  importOutcomes: number;
+}
+
+export interface CatalogStats {
+  storageKind: 'sqlite' | 'json';
+  catalogPath: string;
+  totalFiles: number;
+  totalBytes: number;
+  importedFiles: number;
+  duplicateIdentities: number;
+  importOutcomes: number;
+  lastSeenAt?: string;
+  lastImportedAt?: string;
+}
+
+export interface ImportHealthSummary {
+  generatedAt: string;
+  latestLedger: ImportLedger | null;
+  lastImport: {
+    state: 'none' | 'healthy' | 'attention' | 'failed';
+    createdAt?: string;
+    sourcePath?: string;
+    destRoot?: string;
+    totalFiles: number;
+    imported: number;
+    skipped: number;
+    failed: number;
+    pending: number;
+    totalBytes: number;
+    durationMs: number;
+  };
+  retryableItems: ImportLedgerItem[];
+  checksum: {
+    enabled: boolean;
+    status: 'unavailable' | 'disabled' | 'verified' | 'partial' | 'missing';
+    verified: number;
+    expected: number;
+  };
+  backup: {
+    enabled: boolean;
+    status: 'unavailable' | 'disabled' | 'ok' | 'partial' | 'attention';
+    targetRoot?: string;
+    copied: number;
+    failed: number;
+    totalTargets: number;
+  };
+  ftp: {
+    enabled: boolean;
+    status: FtpSyncStatus['state'] | 'disabled';
+    stage?: FtpSyncStatus['stage'];
+    message: string;
+    lastRunAt?: string;
+    lastSuccessAt?: string;
+    imported?: number;
+    skipped?: number;
+    errors?: number;
+  };
+  catalog: CatalogStats | null;
+  watchFolders: {
+    total: number;
+    enabled: number;
+    active: number;
+    autoScan: number;
+    autoImport: number;
+    missing: number;
+    needsDestination: number;
+    lastTriggeredAt?: string;
+    folders: Array<{
+      id: string;
+      label?: string;
+      path: string;
+      enabled: boolean;
+      autoScan: boolean;
+      autoImport: boolean;
+      exists: boolean;
+      status: 'ready' | 'disabled' | 'missing' | 'needs-destination';
+      lastTriggeredAt?: string;
+      lastImportedAt?: string;
+    }>;
+  };
 }
 
 export interface MacFirstRunDoctor {
@@ -666,6 +900,16 @@ export interface AppSettings {
   gpuStressStreams?: number;
   /** Device performance tier — 'auto' detects from CPU/RAM, or user override */
   perfTier?: 'auto' | 'low' | 'balanced' | 'high';
+  /** Source/storage profile used to tune UI-side preview and AI concurrency. */
+  sourceProfile?: SourceProfile;
+  /** Last review/import session snapshot id. */
+  lastSessionId?: string;
+  /** Default destination conflict behavior for imports. */
+  defaultConflictPolicy?: ImportConflictPolicy;
+  /** Subfolder used when conflicts are routed aside. */
+  conflictFolderName?: string;
+  /** Saved folders that can be monitored for staged scans/imports. */
+  watchFolders?: WatchFolder[];
   /** Last app version where the performance/setup prompt was shown or dismissed. */
   performancePromptSeenVersion?: string;
   /** Fast Keeper Mode: score using sharpness/exposure/ratings only, skip ONNX */
@@ -872,6 +1116,14 @@ export const IPC = {
   IMPORT_PREFLIGHT: 'import:preflight',
   IMPORT_RETRY_FAILED: 'import:retry-failed',
   IMPORT_LEDGER_LATEST: 'import:ledger-latest',
+  IMPORT_HEALTH_SUMMARY: 'import:health-summary',
+  SESSION_SAVE: 'session:save',
+  SESSION_LATEST: 'session:latest',
+  CATALOG_STATS: 'catalog:stats',
+  CATALOG_BROWSE: 'catalog:browse',
+  CATALOG_VERIFY_MISSING: 'catalog:verify-missing',
+  CATALOG_PRUNE_MISSING: 'catalog:prune-missing',
+  CATALOG_EXPORT_BACKUP: 'catalog:export-backup',
   IMPORT_PROGRESS: 'import:progress',
   IMPORT_COMPLETE: 'import:complete',
   IMPORT_CANCEL: 'import:cancel',
@@ -888,6 +1140,8 @@ export const IPC = {
   // Settings
   SETTINGS_GET: 'settings:get',
   SETTINGS_SET: 'settings:set',
+  WATCH_FOLDERS_GET: 'watch-folders:get',
+  WATCH_FOLDERS_SET: 'watch-folders:set',
   LICENSE_ACTIVATE: 'license:activate',
   LICENSE_CLEAR: 'license:clear',
 
@@ -912,6 +1166,7 @@ export const IPC = {
 
   // Workflow — manifest export
   EXPORT_MANIFEST: 'export:manifest',
+  EXPORT_LIGHTROOM_HANDOFF: 'export:lightroom-handoff',
   EXPORT_CONTACT_SHEET: 'export:contact-sheet',
 
   // Face analysis (onnxruntime-node)
@@ -937,6 +1192,7 @@ export const IPC = {
   AUTO_IMPORT_COMPLETE: 'auto-import:complete',
   EJECT_VOLUME: 'volume:eject',
   DISK_FREE_SPACE: 'disk:free-space',
+  WATCH_FOLDER_TRIGGERED: 'watch-folder:triggered',
 
   // Shell
   OPEN_EXTERNAL: 'shell:open-external',

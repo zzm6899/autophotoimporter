@@ -109,6 +109,21 @@ function ThumbnailCardInner({
   const imageFilter = [previewFilter, whiteBalanceFilter].filter(Boolean).join(' ') || undefined;
   const orientation = orientationTransform(file.orientation);
   const { containerRef, activeSrc } = useLazySrc(file.thumbnail, forceLoad || focused || selected);
+  const duplicateBadge = file.duplicate && !file.pick
+    ? {
+        label: file.duplicateMemory?.kind === 'same-visual'
+          ? 'CAT SIM'
+          : file.duplicateMemory?.kind === 'previous-reject'
+            ? 'CAT REJ'
+            : file.duplicateMemory
+              ? 'CAT SEEN'
+              : 'IMPORTED',
+        title: file.duplicateMemory
+          ? `Catalog match: ${file.duplicateMemory.matchedPath}${file.duplicateMemory.importedAt ? ` · imported ${new Date(file.duplicateMemory.importedAt).toLocaleString()}` : ''}`
+          : 'Already imported or exists at destination',
+        className: file.duplicateMemory ? 'bg-cyan-600/90 text-white' : 'bg-yellow-600/80 text-white',
+      }
+    : null;
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.key !== 'Enter' && e.key !== ' ') return;
     e.preventDefault();
@@ -175,14 +190,16 @@ function ThumbnailCardInner({
             </div>
           )}
 
-          {file.duplicate && !file.pick && (
-            <div className="absolute top-1.5 left-1.5 bg-yellow-600/80 text-[9px] text-white px-1 py-0.5 rounded font-medium z-20">
-              IMPORTED
-            </div>
-          )}
-
-          {(file.isProtected || file.normalizeToAnchor || file.exposureAdjustmentStops || whiteBalanceMarked) && (
+          {(duplicateBadge || file.isProtected || file.normalizeToAnchor || file.exposureAdjustmentStops || whiteBalanceMarked) && (
             <div className="absolute top-1.5 left-1.5 flex flex-col gap-0.5 z-20">
+              {duplicateBadge && (
+                <div
+                  className={`${duplicateBadge.className} text-[9px] px-1 py-0.5 rounded font-medium`}
+                  title={duplicateBadge.title}
+                >
+                  {duplicateBadge.label}
+                </div>
+              )}
               {file.isProtected && (
                 <div
                   className="bg-emerald-600/90 text-[9px] text-white px-1 py-0.5 rounded font-medium flex items-center gap-0.5"

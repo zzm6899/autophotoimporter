@@ -1,5 +1,5 @@
 import { createContext, useContext, useReducer, useRef, useMemo, useCallback, useState, type Dispatch, type ReactNode } from 'react';
-import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, SourceKind, FtpConfig, FtpSyncSettings, FtpSyncStatus, RatingFilter, SelectionSet, LicenseValidation, WatermarkPosition, WatermarkMode, KeybindMap, MetadataExportFlags, ViewOverlayPreferences, EventMode, CullConfidence, KeeperQuota } from '../../shared/types';
+import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, SourceKind, FtpConfig, FtpSyncSettings, FtpSyncStatus, RatingFilter, SelectionSet, LicenseValidation, WatermarkPosition, WatermarkMode, KeybindMap, MetadataExportFlags, ViewOverlayPreferences, EventMode, CullConfidence, KeeperQuota, SourceProfile, ImportConflictPolicy, AppSession } from '../../shared/types';
 import { FOLDER_PRESETS, DEFAULT_KEYBINDS, DEFAULT_METADATA_EXPORT, DEFAULT_VIEW_OVERLAY_PREFERENCES } from '../../shared/types';
 import { groupBursts } from '../../shared/burst';
 import { clampStops, normalizeExposureStops } from '../../shared/exposure';
@@ -8,7 +8,7 @@ import { assignSceneBuckets, autoCullGroup, bestInGroup, groupByFaceSimilarity, 
 export type AppPhase = 'idle' | 'scanning' | 'ready' | 'importing' | 'complete';
 export type ViewMode = 'grid' | 'single' | 'split' | 'compare' | 'settings';
 
-export type FilterMode = 'all' | 'protected' | 'picked' | 'rejected' | 'unrated' | 'duplicates' | 'unmarked' | 'queue' | 'best' | 'faces' | 'face-groups' | 'blur-risk' | 'near-duplicates' | 'review-needed' | 'needs-exposure' | 'normalized' | 'adjusted' | 'photos' | 'videos' | 'raw' | RatingFilter | `camera:${string}` | `lens:${string}` | `date:${string}` | `ext:${string}` | `scene:${string}` | `burst:${string}`;
+export type FilterMode = 'all' | 'protected' | 'picked' | 'rejected' | 'unrated' | 'duplicates' | 'catalog-duplicates' | 'unmarked' | 'queue' | 'best' | 'faces' | 'face-groups' | 'blur-risk' | 'near-duplicates' | 'review-needed' | 'needs-exposure' | 'normalized' | 'adjusted' | 'photos' | 'videos' | 'raw' | RatingFilter | `camera:${string}` | `lens:${string}` | `date:${string}` | `ext:${string}` | `scene:${string}` | `burst:${string}`;
 
 interface State {
   volumes: Volume[];
@@ -61,6 +61,10 @@ interface State {
   completeSoundPath: string;
   openFolderOnComplete: boolean;
   verifyChecksums: boolean;
+  sourceProfile: SourceProfile;
+  conflictPolicy: ImportConflictPolicy;
+  conflictFolderName: string;
+  lastSessionId: string;
   autoImport: boolean;
   autoImportDestRoot: string;
   volumeImportQueue: string[];
@@ -171,7 +175,9 @@ export type Action =
   | { type: 'SET_WORKFLOW_STRING'; key:
       | 'protectedFolderName' | 'backupDestRoot' | 'autoImportDestRoot' | 'completeSoundPath'
       | 'metadataKeywords' | 'metadataTitle' | 'metadataCaption' | 'metadataCreator' | 'metadataCopyright'
-      | 'watermarkText' | 'watermarkImagePath'; value: string }
+      | 'watermarkText' | 'watermarkImagePath' | 'conflictFolderName' | 'lastSessionId'; value: string }
+  | { type: 'SET_SOURCE_PROFILE'; profile: SourceProfile }
+  | { type: 'SET_CONFLICT_POLICY'; policy: ImportConflictPolicy }
   | { type: 'SET_WATERMARK_NUMBER'; key: 'watermarkOpacity' | 'watermarkScale'; value: number }
   | { type: 'SET_WATERMARK_POSITION'; orientation: 'landscape' | 'portrait'; position: WatermarkPosition }
   | { type: 'SET_WATERMARK_MODE'; mode: WatermarkMode }
@@ -201,6 +207,7 @@ export type Action =
   | { type: 'PICK_BURST_KEEPERS' }
   | { type: 'SET_SHARPNESS_BATCH'; scores: Record<string, number> }
   | { type: 'SET_REVIEW_SCORES'; scores: Record<string, Partial<MediaFile>> }
+  | { type: 'RESOLVE_SECOND_PASS'; filePaths: string[]; pick: 'selected' | 'rejected' }
   | { type: 'GROUP_VISUAL_DUPLICATES'; threshold?: number }
   | { type: 'GROUP_FACE_SIMILAR'; threshold?: number }
   | { type: 'GROUP_SCENE_BUCKETS' }
@@ -239,7 +246,8 @@ export type Action =
   | { type: 'SET_KEYBINDS'; keybinds: Partial<KeybindMap> }
   | { type: 'RESET_KEYBINDS' }
   | { type: 'SET_METADATA_EXPORT'; flags: Partial<MetadataExportFlags> }
-  | { type: 'SET_VIEW_OVERLAY_PREFERENCES'; preferences: Partial<ViewOverlayPreferences> };
+  | { type: 'SET_VIEW_OVERLAY_PREFERENCES'; preferences: Partial<ViewOverlayPreferences> }
+  | { type: 'RESTORE_SESSION'; session: AppSession };
 
 const systemDark = typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches;
 
@@ -311,6 +319,10 @@ const initialState: State = {
   completeSoundPath: '',
   openFolderOnComplete: false,
   verifyChecksums: false,
+  sourceProfile: 'auto',
+  conflictPolicy: 'skip',
+  conflictFolderName: '_Conflicts',
+  lastSessionId: '',
   autoImport: false,
   autoImportDestRoot: '',
   volumeImportQueue: [],
@@ -626,6 +638,20 @@ export function reducer(state: State, action: Action): State {
     }
     case 'SET_WORKFLOW_STRING':
       return { ...state, [action.key]: action.value } as State;
+    case 'SET_SOURCE_PROFILE': {
+      if (action.profile === 'ssd') {
+        return { ...state, sourceProfile: action.profile, previewConcurrency: Math.max(4, state.previewConcurrency), faceConcurrency: Math.max(2, state.faceConcurrency), rawPreviewQuality: Math.max(78, state.rawPreviewQuality) };
+      }
+      if (action.profile === 'usb') {
+        return { ...state, sourceProfile: action.profile, previewConcurrency: 1, faceConcurrency: Math.min(state.faceConcurrency, 1), rawPreviewQuality: Math.min(state.rawPreviewQuality, 65) };
+      }
+      if (action.profile === 'nas') {
+        return { ...state, sourceProfile: action.profile, previewConcurrency: 1, faceConcurrency: Math.min(state.faceConcurrency, 1), rawPreviewCache: true, rawPreviewQuality: Math.min(state.rawPreviewQuality, 68) };
+      }
+      return { ...state, sourceProfile: action.profile };
+    }
+    case 'SET_CONFLICT_POLICY':
+      return { ...state, conflictPolicy: action.policy };
     case 'SET_WATERMARK_NUMBER':
       return { ...state, [action.key]: action.value } as State;
     case 'SET_WATERMARK_POSITION':
@@ -810,6 +836,15 @@ export function reducer(state: State, action: Action): State {
         };
       });
       return changed ? { ...state, files } : state;
+    }
+    case 'RESOLVE_SECOND_PASS': {
+      if (action.filePaths.length === 0) return state;
+      const pathSet = new Set(action.filePaths);
+      return withFileHistory(state, state.files.map((f) =>
+        pathSet.has(f.path)
+          ? { ...f, pick: action.pick, reviewApproved: true }
+          : f,
+      ));
     }
     case 'CLEAR_FACE_DATA':
       // Wipe faceBoxes + subjectSharpnessScore so the background reviewer
@@ -1085,6 +1120,26 @@ export function reducer(state: State, action: Action): State {
           ...action.preferences,
         },
       };
+    case 'RESTORE_SESSION': {
+      const focusedPath = action.session.focusedPath;
+      const focusedIndex = focusedPath
+        ? action.session.files.findIndex((file) => file.path === focusedPath)
+        : -1;
+      return {
+        ...state,
+        selectedSource: action.session.sourcePath,
+        destination: action.session.destRoot,
+        files: action.session.files,
+        selectedPaths: action.session.selectedPaths,
+        queuedPaths: action.session.queuedPaths,
+        filter: action.session.filter as FilterMode,
+        focusedIndex,
+        phase: action.session.files.length > 0 ? 'ready' : 'idle',
+        importProgress: null,
+        importResult: null,
+        lastSessionId: action.session.id,
+      };
+    }
     default:
       return state;
   }

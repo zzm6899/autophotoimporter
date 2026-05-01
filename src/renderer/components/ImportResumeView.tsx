@@ -3,7 +3,7 @@ import { useAppDispatch, useAppState } from '../context/ImportContext';
 import { useFileScanner } from '../hooks/useFileScanner';
 import { useImport } from '../hooks/useImport';
 import { formatDuration, formatSize } from '../utils/formatters';
-import type { ImportLedger, ImportLedgerItem, ImportLedgerStatus } from '../../shared/types';
+import type { AppSession, ImportLedger, ImportLedgerItem, ImportLedgerStatus } from '../../shared/types';
 
 type ResumeTone = 'panel' | 'settings';
 
@@ -96,6 +96,7 @@ export function ImportResumeView({ tone = 'panel' }: ImportResumeViewProps) {
   const { startScan } = useFileScanner();
   const { startImport } = useImport();
   const [ledger, setLedger] = useState<ImportLedger | null>(null);
+  const [session, setSession] = useState<AppSession | null>(null);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -107,7 +108,12 @@ export function ImportResumeView({ tone = 'panel' }: ImportResumeViewProps) {
   const refreshLedger = async () => {
     setLoading(true);
     try {
-      setLedger(await window.electronAPI.getLatestImportLedger());
+      const [nextLedger, nextSession] = await Promise.all([
+        window.electronAPI.getLatestImportLedger(),
+        window.electronAPI.getLatestSession(),
+      ]);
+      setLedger(nextLedger);
+      setSession(nextSession);
       setMessage(null);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Could not read import history.');
@@ -126,6 +132,12 @@ export function ImportResumeView({ tone = 'panel' }: ImportResumeViewProps) {
     dispatch({ type: 'SET_DESTINATION', path: ledger.destRoot });
     setMessage('Scanning the previous source before retry.');
     await startScan(ledger.sourcePath);
+  };
+
+  const handleRestoreReviewSession = () => {
+    if (!session) return;
+    dispatch({ type: 'RESTORE_SESSION', session });
+    setMessage('Restored the last review session.');
   };
 
   const handleRetry = async () => {
@@ -161,6 +173,11 @@ export function ImportResumeView({ tone = 'panel' }: ImportResumeViewProps) {
           <button onClick={refreshLedger} className="text-[10px] text-text-muted hover:text-text">Refresh</button>
         </div>
         <p className="mt-1 text-[10px] text-text-muted">No import ledger has been written yet.</p>
+        {session && (
+          <button onClick={handleRestoreReviewSession} className="mt-2 rounded bg-surface-raised px-2 py-1 text-[10px] text-text-secondary hover:bg-border">
+            Restore Last Review
+          </button>
+        )}
         {message && <p className="mt-1 text-[10px] text-red-400">{message}</p>}
       </div>
     );
@@ -207,6 +224,15 @@ export function ImportResumeView({ tone = 'panel' }: ImportResumeViewProps) {
       {message && <p className="mt-2 text-[10px] text-text-muted">{message}</p>}
 
       <div className="mt-2 flex flex-wrap gap-1">
+        {session && (
+          <button
+            onClick={handleRestoreReviewSession}
+            className="rounded bg-surface-raised px-2 py-1 text-[10px] text-text-secondary hover:bg-border"
+            title={`${session.stats.picked} picked, ${session.stats.queued} queued, ${session.stats.reviewed}/${session.stats.totalFiles} reviewed.`}
+          >
+            Restore Review
+          </button>
+        )}
         <button
           onClick={handleRestoreSession}
           disabled={phase === 'importing' || phase === 'scanning'}

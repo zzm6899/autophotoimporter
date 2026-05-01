@@ -4,6 +4,7 @@ import { useFileScanner } from '../hooks/useFileScanner';
 import { VolumeItem } from './VolumeItem';
 import { FtpPanel } from './FtpPanel';
 import { formatSize } from '../utils/formatters';
+import type { CatalogStats, WatchFolder } from '../../shared/types';
 
 const isMac = typeof window !== 'undefined' && window.electronAPI?.platform === 'darwin';
 const MOD = isMac ? '\u2318' : 'Ctrl';
@@ -15,12 +16,55 @@ export function SourcePanel() {
 
   const [dragOver, setDragOver] = useState(false);
   const [showQuickHelp, setShowQuickHelp] = useState(false);
+  const [catalogStats, setCatalogStats] = useState<CatalogStats | null>(null);
+  const [watchFolders, setWatchFolders] = useState<WatchFolder[]>([]);
+  const [watchNotice, setWatchNotice] = useState<string | null>(null);
 
   useEffect(() => {
     const openFtpSource = () => dispatch({ type: 'SET_SOURCE_KIND', kind: 'ftp' });
     window.addEventListener('photo-importer:open-ftp-source', openFtpSource);
     return () => window.removeEventListener('photo-importer:open-ftp-source', openFtpSource);
   }, [dispatch]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all([
+      window.electronAPI.getCatalogStats?.().catch(() => null),
+      window.electronAPI.getWatchFolders?.().catch(() => []),
+    ]).then(([stats, folders]) => {
+      if (cancelled) return;
+      setCatalogStats(stats);
+      setWatchFolders(folders);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let noticeTimer: number | null = null;
+    const unsub = window.electronAPI.onWatchFolderTriggered?.((trigger) => {
+      const label = trigger.folder.label ?? trigger.folder.path;
+      const dest = trigger.folder.destination ?? trigger.folder.destRoot ?? '';
+      if (noticeTimer != null) window.clearTimeout(noticeTimer);
+      if (trigger.folder.autoImport) {
+        setWatchNotice(`${label} queued for import`);
+      } else if (trigger.folder.autoScan && phase !== 'scanning' && phase !== 'importing') {
+        dispatch({ type: 'SET_SOURCE_KIND', kind: 'volume' });
+        dispatch({ type: 'SELECT_SOURCE', path: trigger.folder.path });
+        if (dest) dispatch({ type: 'SET_DESTINATION', path: dest });
+        void startScan(trigger.folder.path);
+        setWatchNotice(`${label} scanning`);
+      } else {
+        setWatchNotice(`${label} changed`);
+      }
+      noticeTimer = window.setTimeout(() => setWatchNotice(null), 4000);
+    });
+    return () => {
+      if (noticeTimer != null) window.clearTimeout(noticeTimer);
+      unsub?.();
+    };
+  }, [dispatch, phase, startScan]);
 
   const handleSelectVolume = (volumePath: string) => {
     dispatch({ type: 'SELECT_SOURCE', path: volumePath });
@@ -74,8 +118,10 @@ export function SourcePanel() {
   const pickedCount = files.filter((f) => f.pick === 'selected').length;
   const rejectedCount = files.filter((f) => f.pick === 'rejected').length;
   const duplicateCount = files.filter((f) => f.duplicate).length;
+  const memoryDuplicateCount = files.filter((f) => f.duplicateMemory).length;
   const protectedCount = files.filter((f) => f.isProtected).length;
   const totalSize = files.reduce((sum, f) => sum + f.size, 0);
+  const enabledWatchCount = watchFolders.filter((folder) => folder.enabled).length;
 
   return (
     <div
@@ -170,6 +216,22 @@ export function SourcePanel() {
       )}
 
       {sourceKind === 'ftp' && <FtpPanel />}
+
+      {(catalogStats || enabledWatchCount > 0 || watchNotice) && (
+        <div className="mx-2.5 mb-2 rounded border border-border bg-surface-alt px-2 py-1.5 text-[10px] text-text-muted">
+          <div className="flex items-center justify-between gap-2">
+            <span>Local catalog</span>
+            <span className="font-mono text-text-secondary">
+              {catalogStats ? `${catalogStats.totalFiles} seen` : 'warming'}
+            </span>
+          </div>
+          <div className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5">
+            {catalogStats && <span>{catalogStats.importedFiles} imported memory</span>}
+            {enabledWatchCount > 0 && <span>{enabledWatchCount} watch folder{enabledWatchCount === 1 ? '' : 's'}</span>}
+            {watchNotice && <span className="text-emerald-400">{watchNotice}</span>}
+          </div>
+        </div>
+      )}
 
       {/* Selected source */}
       {selectedSource && (
@@ -266,6 +328,17 @@ export function SourcePanel() {
                   <span className="text-text-secondary">Duplicates</span>
                   <span className="text-text-muted font-mono">{duplicateCount}</span>
                 </div>
+              )}
+              {memoryDuplicateCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => dispatch({ type: 'SET_FILTER', filter: 'catalog-duplicates' })}
+                  className="flex w-full justify-between rounded px-1 py-0.5 text-left transition-colors hover:bg-surface-raised"
+                  title="Show files remembered by the local catalog from previous sessions"
+                >
+                  <span className="text-text-secondary">From catalog</span>
+                  <span className="text-cyan-300 font-mono">{memoryDuplicateCount}</span>
+                </button>
               )}
             </div>
           )}
