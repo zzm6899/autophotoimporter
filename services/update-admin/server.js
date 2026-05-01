@@ -429,7 +429,18 @@ function sanitizeArtifactFilename(name) {
 function normalizeReleasePlatform(platform) {
   const value = String(platform || '').trim().toLowerCase();
   if (value === 'windows' || value === 'macos') return value;
+  if (value === 'win32' || value === 'win') return 'windows';
+  if (value === 'darwin' || value === 'mac' || value === 'osx') return 'macos';
   throw new Error('Platform must be windows or macos.');
+}
+
+function normalizePublicPlatform(platform, fallback = null) {
+  if (!platform) return fallback;
+  try {
+    return normalizeReleasePlatform(platform);
+  } catch {
+    return fallback;
+  }
 }
 
 function isPathInside(root, candidate) {
@@ -481,7 +492,7 @@ function signSession(payload) {
 }
 
 function signDownloadToken(payload) {
-  return jwt.sign(payload, updateSecret, { expiresIn: '15m' });
+  return jwt.sign(payload, updateSecret, { expiresIn: '7d' });
 }
 
 function escapeHtml(value) {
@@ -2902,12 +2913,12 @@ app.get('/api/v1/app/update', async (req, res) => {
   const licenseKey = req.header('x-license-key');
   const deviceId = req.header('x-device-id');
   const deviceName = req.header('x-device-name');
-  const platform = req.query.platform || 'windows';
+  const platform = normalizePublicPlatform(req.query.platform, 'windows');
   const version = req.query.version || '0.0.0';
   const channel = req.query.channel || 'stable';
 
-  // Resolve license if provided — but allow update checks even without one.
-  // Unlicensed installs get update info but no download token.
+  // Resolve license if provided, but allow update checks even without one.
+  // Legacy desktop clients need a downloadUrl in the metadata to update.
   let resolved = null;
   if (!licenseKey && wantsHtml(req)) {
     await logUpdateEvent('update-denied', {
@@ -2971,6 +2982,7 @@ app.get('/api/v1/app/update', async (req, res) => {
     detail: `Offered ${release.version}${resolved ? '' : ' (unlicensed)'}`,
   });
 
+  res.setHeader('Cache-Control', 'no-store');
   return res.json({
     allowed: true,
     currentVersion: version,
@@ -3014,7 +3026,7 @@ app.options('/api/v1/app/releases', (req, res) => {
 // Public endpoint — no license key required. Used by the download page.
 app.get('/api/v1/app/releases', async (req, res) => {
   setPublicCors(req, res);
-  const platform = req.query.platform || null;
+  const platform = normalizePublicPlatform(req.query.platform, null);
   const channel = req.query.channel || 'stable';
   const latestOnly = String(req.query.latest || '').toLowerCase() === 'true';
   const limit = latestOnly ? 1 : Math.min(Number(req.query.limit || 10), 50);
@@ -3028,7 +3040,7 @@ app.get('/api/v1/app/releases', async (req, res) => {
 
 app.get('/api/v1/app/history', async (req, res) => {
   const licenseKey = req.header('x-license-key');
-  const platform = req.query.platform || 'windows';
+  const platform = normalizePublicPlatform(req.query.platform, 'windows');
   const channel = req.query.channel || 'stable';
   const limit = Math.min(Number(req.query.limit || 8), 20);
 
@@ -3086,6 +3098,7 @@ app.get('/api/v1/app/download/:releaseId', async (req, res) => {
     // before following the redirect (path.basename of the token URL is just the release ID).
     const artifactUrl = normalizeArtifactUrl(release.rows[0].artifact_url, release.rows[0].platform);
     const artifactFilename = decodeURIComponent(path.basename(new URL(artifactUrl).pathname));
+    res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Content-Disposition', `attachment; filename="${artifactFilename}"`);
     return res.redirect(artifactUrl);
   } catch {
