@@ -111,6 +111,78 @@
     .platform-strip p { color: var(--text-muted); font-size: 0.8rem; margin-bottom: 1rem; text-transform: uppercase; letter-spacing: .06em; font-weight: 500; }
     .platform-badges { display: flex; justify-content: center; gap: 1.25rem; flex-wrap: wrap; }
     .platform-badge { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 0.875rem; font-weight: 500; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 10px; padding: 0.55rem 1.1rem; }
+    .graphics-section { padding: clamp(3.5rem, 7vw, 5rem) clamp(1.25rem, 4vw, 2rem) 0; max-width: var(--page-width); margin: 0 auto; }
+    .graphics-head { display: flex; justify-content: space-between; align-items: end; gap: 2rem; margin-bottom: 1.5rem; }
+    .graphics-head .section-sub { max-width: 520px; }
+    .graphics-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
+    .graphic-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      min-width: 0;
+      transition: transform 0.15s ease, border-color 0.15s ease;
+    }
+    .graphic-card:hover { transform: translateY(-2px); border-color: rgba(55,182,159,.55); }
+    .graphic-card img { display: block; width: 100%; height: auto; aspect-ratio: 720 / 420; object-fit: cover; border-bottom: 1px solid var(--border); }
+    .graphic-copy { padding: 1rem; }
+    .graphic-copy h3 { font-size: 0.95rem; line-height: 1.3; margin-bottom: 0.35rem; letter-spacing: 0; }
+    .graphic-copy p { color: var(--text-muted); font-size: 0.84rem; line-height: 1.6; }
+    .showcase-section {
+      padding: clamp(3.5rem, 7vw, 5rem) clamp(1.25rem, 4vw, 2rem) 0;
+      max-width: var(--page-width);
+      margin: 0 auto;
+    }
+    .showcase-head {
+      display: grid;
+      grid-template-columns: minmax(0, 0.75fr) minmax(0, 1fr);
+      gap: clamp(1.25rem, 4vw, 3rem);
+      align-items: end;
+      margin-bottom: 2rem;
+    }
+    .showcase-head .section-sub { max-width: 620px; }
+    .showcase-video-frame {
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,.08);
+      overflow: hidden;
+      background: var(--surface);
+      box-shadow: var(--shadow-lg);
+    }
+    .showcase-video {
+      display: block;
+      width: 100%;
+      height: auto;
+      aspect-ratio: 16 / 9;
+      object-fit: cover;
+      background: #0c0f11;
+    }
+    .storyline-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 0.85rem;
+      margin-top: 1rem;
+    }
+    .story-card {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+      padding: 1rem;
+    }
+    .story-step {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 1.75rem;
+      height: 1.75rem;
+      border-radius: 999px;
+      background: var(--accent);
+      color: #041210;
+      font-size: 0.78rem;
+      font-weight: 800;
+      margin-bottom: 0.75rem;
+    }
+    .story-card h3 { font-size: 0.95rem; line-height: 1.3; margin-bottom: 0.35rem; letter-spacing: 0; }
+    .story-card p { color: var(--text-muted); font-size: 0.82rem; line-height: 1.6; }
     .section { padding: clamp(3.5rem, 7vw, 5rem) clamp(1.25rem, 4vw, 2rem); max-width: var(--page-width); margin: 0 auto; }
     .section-label { font-size: 0.75rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); margin-bottom: 0.75rem; }
     .section-title { font-size: clamp(1.6rem, 3vw, 2.4rem); font-weight: 700; letter-spacing: 0; margin-bottom: 0.75rem; }
@@ -234,6 +306,10 @@
       .hero-actions { flex-direction: column; align-items: stretch; }
       .hero-actions a { width: 100%; justify-content: center; }
       .hero-proof-item { flex: 1 1 calc(50% - 0.75rem); }
+      .graphics-head { display: block; }
+      .graphics-grid { grid-template-columns: 1fr; }
+      .showcase-head { grid-template-columns: 1fr; align-items: start; }
+      .storyline-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .gif-row, .gif-row.reverse { grid-template-columns: 1fr; direction: ltr; }
       .pricing-grid { grid-template-columns: 1fr; }
       .section-sub { max-width: none; }
@@ -251,7 +327,9 @@
       .hero-demo { padding: 0 1rem; }
       .demo-frame { border-radius: 14px; }
       .platform-strip { margin-top: 3.5rem; padding-left: 1rem; padding-right: 1rem; }
+      .graphics-section, .showcase-section { padding-left: 1rem; padding-right: 1rem; }
       .features-grid { grid-template-columns: 1fr; }
+      .storyline-grid { grid-template-columns: 1fr; }
       .pricing-card { padding: 1.5rem; }
       .pricing-price { font-size: 2rem; }
       .device-picker-head { align-items: flex-start; flex-direction: column; }
@@ -286,6 +364,7 @@
     Keptra
   </a>
   <div class="nav-links">
+    <a href="#showcase">Showcase</a>
     <a href="#features">Features</a>
     <a href="#workflow">How it works</a>
     <a href="#pricing">Pricing</a>
@@ -299,6 +378,7 @@
   </button>
 </nav>
 <div class="mobile-menu" id="mobileMenu">
+  <a href="#showcase">Showcase <span>→</span></a>
   <a href="#features">Features <span>→</span></a>
   <a href="#workflow">How it works <span>→</span></a>
   <a href="#pricing">Pricing <span>→</span></a>
@@ -363,6 +443,78 @@
     </div>
   </div>
 </div>
+
+<!-- WORKFLOW GRAPHICS -->
+<section class="graphics-section" aria-labelledby="workflow-graphics-title">
+  <div class="graphics-head">
+    <div>
+      <div class="section-label">Visual workflow</div>
+      <h2 class="section-title" id="workflow-graphics-title">From card to clean folders</h2>
+    </div>
+    <p class="section-sub">Keptra keeps the import step focused: decide what stays, let local review surface the risky shots, then copy only verified files to the right places.</p>
+  </div>
+  <div class="graphics-grid">
+    <article class="graphic-card">
+      <img src="assets/graphics/keeper-pipeline.svg" alt="Memory card photos moving through keyboard picks into selected keeper photos" width="720" height="420" loading="lazy">
+      <div class="graphic-copy">
+        <h3>Cull before you copy</h3>
+        <p>Move through the card with single-key picks, rejects, and ratings before anything lands in your library.</p>
+      </div>
+    </article>
+    <article class="graphic-card">
+      <img src="assets/graphics/local-ai-review.svg" alt="Offline face review panel showing sharpness and local processing checks" width="720" height="420" loading="lazy">
+      <div class="graphic-copy">
+        <h3>Review stays local</h3>
+        <p>Face and sharpness checks run on the machine beside your files, giving useful flags without cloud uploads.</p>
+      </div>
+    </article>
+    <article class="graphic-card">
+      <img src="assets/graphics/verified-import.svg" alt="Selected files copied into dated folders with checksum verification and backup mirroring" width="720" height="420" loading="lazy">
+      <div class="graphic-copy">
+        <h3>Verify every transfer</h3>
+        <p>Selected shots copy into organized folders, checksum cleanly, and can mirror to a second destination.</p>
+      </div>
+    </article>
+  </div>
+</section>
+
+<!-- PRODUCT SHOWCASE VIDEO -->
+<section class="showcase-section" id="showcase" aria-labelledby="product-showcase-title">
+  <div class="showcase-head">
+    <div>
+      <div class="section-label">30-second showcase</div>
+      <h2 class="section-title" id="product-showcase-title">A complete card-to-drive story</h2>
+    </div>
+    <p class="section-sub">The new product video follows a real photographer handoff: the card arrives full, Keptra narrows the shoot, local review catches risky frames, and only verified keepers land in clean folders.</p>
+  </div>
+  <div class="showcase-video-frame">
+    <video class="showcase-video" controls muted playsinline preload="metadata" poster="assets/demo/real-app-capture.png">
+      <source src="assets/video/keptra-showcase.mp4" type="video/mp4">
+    </video>
+  </div>
+  <div class="storyline-grid" aria-label="Product showcase storyline">
+    <article class="story-card">
+      <span class="story-step">1</span>
+      <h3>The card is full</h3>
+      <p>Open on the post-shoot moment: lots of files, little time, and a need to get organized.</p>
+    </article>
+    <article class="story-card">
+      <span class="story-step">2</span>
+      <h3>Cull before import</h3>
+      <p>Keyboard picks and rejects turn a full card into a clean shortlist before copying begins.</p>
+    </article>
+    <article class="story-card">
+      <span class="story-step">3</span>
+      <h3>Local AI helps</h3>
+      <p>Sharpness, face review, and burst checks surface the easy misses without uploading photos.</p>
+    </article>
+    <article class="story-card">
+      <span class="story-step">4</span>
+      <h3>Verified keepers land</h3>
+      <p>Selected files copy into dated folders, mirror to backup or FTP, and checksum cleanly.</p>
+    </article>
+  </div>
+</section>
 
 <!-- FEATURES -->
 <section class="section" id="features">

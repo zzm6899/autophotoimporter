@@ -1,0 +1,56 @@
+<svg width="720" height="420" viewBox="0 0 720 420" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Verified import</title>
+  <desc id="desc">Selected photos copy into organized folders with checksum verification and backup mirroring.</desc>
+  <style>
+    .grid { animation: gridRise 7s linear infinite; }
+    .source-folder { transform-box: fill-box; transform-origin: center; animation: folderPulse 3.8s ease-in-out infinite; }
+    .copy-line { stroke-dasharray: 12 16; animation: copyFlow 1.35s linear infinite; }
+    .folder-line { stroke-dasharray: 130; stroke-dashoffset: 130; animation: drawFolder 4.2s ease-in-out infinite; }
+    .checksum-panel { transform-box: fill-box; transform-origin: center; animation: panelGlow 4.2s ease-in-out infinite; }
+    .verify-check { stroke-dasharray: 96; stroke-dashoffset: 96; animation: drawCheck 4.2s ease-in-out infinite; }
+    .mirror-lines { stroke-dasharray: 22 12; animation: copyFlow 1.7s linear infinite; }
+    .top-wave { stroke-dasharray: 18 18; animation: copyFlow 2.6s linear infinite; }
+    @keyframes gridRise { from { transform: translateY(0); } to { transform: translateY(-54px); } }
+    @keyframes folderPulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.035); } }
+    @keyframes copyFlow { to { stroke-dashoffset: -56; } }
+    @keyframes drawFolder { 0%, 22% { stroke-dashoffset: 130; } 44%, 100% { stroke-dashoffset: 0; } }
+    @keyframes panelGlow { 0%, 100% { opacity: .86; } 50% { opacity: 1; } }
+    @keyframes drawCheck { 0%, 48% { stroke-dashoffset: 96; } 68%, 100% { stroke-dashoffset: 0; } }
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; } .folder-line, .verify-check { stroke-dashoffset: 0; } }
+  </style>
+  <defs>
+    <linearGradient id="verify" x1="112" y1="88" x2="612" y2="334" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#59DDB9"/>
+      <stop offset="0.58" stop-color="#37B69F"/>
+      <stop offset="1" stop-color="#2585A1"/>
+    </linearGradient>
+    <filter id="shadow" x="50" y="42" width="620" height="354" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="28" stdDeviation="28" flood-color="#000000" flood-opacity="0.32"/>
+    </filter>
+  </defs>
+  <rect width="720" height="420" rx="18" fill="#0C0F11"/>
+  <g class="grid" opacity="0.72">
+    <path d="M110 330H610" stroke="#1C282B" stroke-width="1"/>
+    <path d="M110 276H610" stroke="#1C282B" stroke-width="1"/>
+    <path d="M110 222H610" stroke="#1C282B" stroke-width="1"/>
+    <path d="M110 168H610" stroke="#1C282B" stroke-width="1"/>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="92" y="78" width="536" height="264" rx="18" fill="#121719" stroke="#2B3337"/>
+    <rect x="124" y="118" width="132" height="154" rx="14" fill="#101719" stroke="#314044"/>
+    <path class="source-folder" d="M150 154H198L214 172H230V238H150V154Z" fill="#1C2124" stroke="#37B69F" stroke-width="4" stroke-linejoin="round"/>
+    <text x="190" y="298" text-anchor="middle" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#9BA9AE">Selected files</text>
+    <path class="copy-line" d="M284 194H356" stroke="url(#verify)" stroke-width="6" stroke-linecap="round"/>
+    <path d="M342 176L360 194L342 212" stroke="#37B69F" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="384" y="106" width="208" height="78" rx="14" fill="#111B1D" stroke="#2B3337"/>
+    <path class="folder-line" d="M410 140H472L488 158H566" stroke="#37B69F" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="410" y="167" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="12" fill="#9BA9AE">2026/05/01/keepers</text>
+    <rect class="checksum-panel" x="384" y="204" width="208" height="44" rx="10" fill="#12332F" stroke="#37B69F"/>
+    <path class="verify-check" d="M410 226L424 240L454 207" stroke="#F6FBFA" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="472" y="233" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" font-weight="700" fill="#DDF9F2">Checksum OK</text>
+    <rect x="384" y="266" width="208" height="44" rx="10" fill="#101719" stroke="#2B3337"/>
+    <path class="mirror-lines" d="M410 288H444M410 300H468" stroke="#52D7B5" stroke-width="5" stroke-linecap="round"/>
+    <text x="486" y="294" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" fill="#9BA9AE">Backup mirror</text>
+  </g>
+  <path class="top-wave" d="M128 92C222 58 302 58 398 92C494 126 562 122 628 94" stroke="url(#verify)" stroke-width="3" stroke-linecap="round" opacity="0.5"/>
+</svg>

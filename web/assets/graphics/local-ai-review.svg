@@ -1,0 +1,66 @@
+<svg width="720" height="420" viewBox="0 0 720 420" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Local AI review</title>
+  <desc id="desc">An offline face and sharpness review panel with private local processing.</desc>
+  <style>
+    .orb-a { animation: orbA 7s ease-in-out infinite; }
+    .orb-b { animation: orbB 8s ease-in-out infinite; }
+    .portrait { transform-box: fill-box; transform-origin: center; animation: portraitPulse 4.4s ease-in-out infinite; }
+    .portrait.two { animation-delay: .7s; }
+    .status-dot { transform-box: fill-box; transform-origin: center; animation: statusPulse 1.35s ease-in-out infinite; }
+    .score-bar { transform-box: fill-box; transform-origin: left center; animation: scoreGrow 3s ease-in-out infinite; }
+    .score-two { animation-delay: .42s; }
+    .scan-line { animation: scan 2.8s ease-in-out infinite; opacity: .85; }
+    .check { stroke-dasharray: 74; stroke-dashoffset: 74; animation: drawCheck 3.2s ease-in-out infinite; }
+    .top-arc { stroke-dasharray: 24 18; animation: dash 2.4s linear infinite; }
+    @keyframes orbA { 0%, 100% { transform: translate(0, 0); } 50% { transform: translate(-16px, 8px); } }
+    @keyframes orbB { 0%, 100% { transform: translate(0, 0); } 50% { transform: translate(18px, -10px); } }
+    @keyframes portraitPulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.025); opacity: .88; } }
+    @keyframes statusPulse { 0%, 100% { transform: scale(1); opacity: .7; } 50% { transform: scale(1.32); opacity: 1; } }
+    @keyframes scoreGrow { 0%, 100% { transform: scaleX(.48); } 48%, 70% { transform: scaleX(1); } }
+    @keyframes scan { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(108px); } }
+    @keyframes drawCheck { 0%, 42% { stroke-dashoffset: 74; } 58%, 100% { stroke-dashoffset: 0; } }
+    @keyframes dash { to { stroke-dashoffset: -42; } }
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; } .check { stroke-dashoffset: 0; } }
+  </style>
+  <defs>
+    <linearGradient id="aiGlow" x1="120" y1="68" x2="580" y2="358" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#59DDB9"/>
+      <stop offset="1" stop-color="#1E6E92"/>
+    </linearGradient>
+    <filter id="softShadow" x="48" y="34" width="624" height="368" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="26" stdDeviation="30" flood-color="#000000" flood-opacity="0.34"/>
+    </filter>
+  </defs>
+  <rect width="720" height="420" rx="18" fill="#0C0F11"/>
+  <circle class="orb-a" cx="578" cy="118" r="92" fill="#12332F" opacity="0.34"/>
+  <circle class="orb-b" cx="164" cy="306" r="104" fill="#1E6E92" opacity="0.18"/>
+  <g filter="url(#softShadow)">
+    <rect x="82" y="72" width="556" height="276" rx="18" fill="#121719" stroke="#2B3337"/>
+    <rect x="112" y="104" width="250" height="212" rx="14" fill="#1C2124" stroke="#314044"/>
+    <g class="portrait"><rect x="132" y="126" width="94" height="116" rx="10" fill="#273236"/>
+    <circle cx="179" cy="168" r="26" fill="#64777D"/>
+    <path d="M142 229C151 202 205 202 216 229" stroke="#9BA9AE" stroke-width="10" stroke-linecap="round"/></g>
+    <g class="portrait two"><rect x="244" y="126" width="94" height="116" rx="10" fill="#25383A"/>
+    <circle cx="291" cy="168" r="26" fill="#71858A"/>
+    <path d="M254 229C263 202 317 202 328 229" stroke="#A8B6BA" stroke-width="10" stroke-linecap="round"/></g>
+    <rect class="scan-line" x="128" y="136" width="214" height="4" rx="2" fill="#5AD69D"/>
+    <path d="M130 262H340" stroke="#2B3337" stroke-width="2"/>
+    <rect x="132" y="280" width="72" height="14" rx="7" fill="#37B69F"/>
+    <rect x="214" y="280" width="48" height="14" rx="7" fill="#2B3337"/>
+    <rect x="272" y="280" width="44" height="14" rx="7" fill="#2B3337"/>
+    <rect x="390" y="104" width="208" height="58" rx="12" fill="#101719" stroke="#2B3337"/>
+    <text x="414" y="138" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="15" font-weight="700" fill="#F2F6F7">Face review</text>
+    <circle class="status-dot" cx="572" cy="133" r="9" fill="#5AD69D"/>
+    <rect x="390" y="180" width="208" height="34" rx="8" fill="#111B1D" stroke="#2B3337"/>
+    <rect class="score-bar" x="406" y="193" width="118" height="8" rx="4" fill="url(#aiGlow)"/>
+    <text x="542" y="202" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="12" fill="#9BA9AE">94%</text>
+    <rect x="390" y="226" width="208" height="34" rx="8" fill="#111B1D" stroke="#2B3337"/>
+    <rect class="score-bar score-two" x="406" y="239" width="86" height="8" rx="4" fill="#52D7B5"/>
+    <text x="542" y="248" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="12" fill="#9BA9AE">Sharp</text>
+    <rect x="390" y="272" width="208" height="34" rx="8" fill="#111B1D" stroke="#2B3337"/>
+    <path class="check" d="M412 290L424 302L448 276" stroke="#5AD69D" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="466" y="294" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="12" fill="#9BA9AE">Processed offline</text>
+  </g>
+  <path d="M360 72V348" stroke="#243034" stroke-width="1"/>
+  <path class="top-arc" d="M176 66C280 28 418 34 530 74" stroke="url(#aiGlow)" stroke-width="3" stroke-linecap="round" opacity="0.45"/>
+</svg>
