@@ -54,6 +54,9 @@ export function LicenseOverlay() {
       setBusy(false);
     }
   };
+  const openManageLicense = async () => {
+    await window.electronAPI.openExternal('https://keptra.z2hs.au/manage-license');
+  };
 
   return (
     <div
@@ -107,7 +110,7 @@ export function LicenseOverlay() {
             value={licenseInput}
             onChange={(e) => setLicenseInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') void activate(); }}
-            placeholder="Paste your activation code (e.g. PI1-ABC123…)"
+            placeholder="Paste your activation code (e.g. PIC-XXXX-XXXX-XXXX)"
             spellCheck={false}
             autoComplete="off"
             className="w-full rounded border border-border bg-surface-raised px-3 py-2.5 font-mono text-xs text-text placeholder-text-muted focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/30"
@@ -131,6 +134,13 @@ export function LicenseOverlay() {
               className="rounded bg-surface-raised px-4 py-2 text-sm text-text-secondary hover:bg-border disabled:cursor-not-allowed disabled:opacity-40"
             >
               Continue Without License
+            </button>
+            <button
+              onClick={() => { void openManageLicense(); }}
+              disabled={busy}
+              className="ml-auto rounded px-3 py-2 text-xs text-text-muted hover:bg-surface-raised hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Manage Online
             </button>
           </div>
           {licenseStatus?.entitlement && (

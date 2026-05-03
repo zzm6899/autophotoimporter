@@ -54,6 +54,7 @@ export function DestinationPanel() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showTransforms, setShowTransforms] = useState(false);
   const [jobPresets, setJobPresets] = useState<JobPreset[]>([]);
+  const [selectedPresetName, setSelectedPresetName] = useState('');
   const [preflight, setPreflight] = useState<ImportPreflight | null>(null);
   const [preflightOpen, setPreflightOpen] = useState(false);
   const [handoffBusy, setHandoffBusy] = useState(false);
@@ -197,12 +198,14 @@ export function DestinationPanel() {
     if (!name) return;
     const next = [...jobPresets.filter((p) => p.name !== name), currentPreset(name)];
     setJobPresets(next);
+    setSelectedPresetName(name);
     window.electronAPI.setSettings({ jobPresets: next });
   };
 
   const applyPreset = (name: string) => {
     const preset = jobPresets.find((p) => p.name === name);
     if (!preset) return;
+    setSelectedPresetName(name);
     if (preset.destRoot) dispatch({ type: 'SET_DESTINATION', path: preset.destRoot });
     dispatch({ type: 'SET_WORKFLOW_STRING', key: 'backupDestRoot', value: preset.backupDestRoot });
     dispatch({ type: 'SET_SAVE_FORMAT', format: preset.saveFormat });
@@ -213,14 +216,19 @@ export function DestinationPanel() {
     dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'separateProtected', value: preset.separateProtected });
     dispatch({ type: 'SET_WORKFLOW_STRING', key: 'protectedFolderName', value: preset.protectedFolderName });
     if (preset.eventMode) dispatch({ type: 'SET_EVENT_MODE', mode: preset.eventMode });
-    window.electronAPI.setSettings({ ...preset, lastDestination: preset.destRoot });
+    window.electronAPI.setSettings({
+      ...preset,
+      ...(preset.destRoot ? { lastDestination: preset.destRoot } : {}),
+    });
   };
 
   const deletePreset = () => {
-    const name = window.prompt('Delete preset name');
+    const name = selectedPresetName || jobPresets[0]?.name;
     if (!name) return;
+    if (!window.confirm(`Delete preset "${name}"?`)) return;
     const next = jobPresets.filter((p) => p.name !== name);
     setJobPresets(next);
+    setSelectedPresetName('');
     window.electronAPI.setSettings({ jobPresets: next });
   };
 
@@ -241,22 +249,25 @@ export function DestinationPanel() {
   const hasPicks = pickedCount > 0;
   const hasClickSelection = selectedPaths.length > 0;
   const hasQueue = queuedPaths.length > 0;
+  const queueActionsDisabled = phase === 'scanning' || phase === 'importing';
   const hasRenderableWatermark = watermarkEnabled && (
     (watermarkMode === 'image' && watermarkImagePath.trim()) ||
     (watermarkMode !== 'image' && watermarkText.trim())
   );
 
   // Selection priority mirrors `useImport.ts`:
-  //   1. Click-selection in the grid (selectedPaths)
-  //   2. Pick flags (if any)
-  //   3. Everything that isn't rejected and (optionally) isn't a duplicate
+  //   1. Explicit import override (used by Import Visible)
+  //   2. Click-selection in the grid (selectedPaths)
+  //   3. Queue
+  //   4. Pick flags (if any)
+  //   5. Everything that isn't rejected and (optionally) isn't a duplicate
   const importFiles = useMemo(() => {
-    if (hasQueue) {
-      const paths = new Set(queuedPaths);
-      return files.filter((f) => paths.has(f.path));
-    }
     if (hasClickSelection) {
       const paths = new Set(selectedPaths);
+      return files.filter((f) => paths.has(f.path));
+    }
+    if (hasQueue) {
+      const paths = new Set(queuedPaths);
       return files.filter((f) => paths.has(f.path));
     }
     if (hasPicks) {
@@ -367,6 +378,13 @@ export function DestinationPanel() {
   const handlePreviewImport = async () => {
     await refreshPreflight(true);
   };
+  const importScopeLabel = hasClickSelection
+    ? 'Selection'
+    : hasQueue
+      ? 'Queue'
+      : hasPicks
+        ? 'Picks'
+        : 'Files';
 
   const secondPassFiles = files.filter(needsSecondPass);
   const secondPassPaths = secondPassFiles.map((file) => file.path);
@@ -409,7 +427,7 @@ export function DestinationPanel() {
 
   const folders = useMemo(() => {
     const map = new Map<string, string[]>();
-    for (const f of files) {
+    for (const f of importFiles) {
       if (!f.dateTaken) continue;
       const date = new Date(f.dateTaken);
       let resolved = resolvePattern(activePattern, date, f.name, f.extension, f.rating);
@@ -426,7 +444,7 @@ export function DestinationPanel() {
       map.get(folder)!.push(fileName);
     }
     return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  }, [files, activePattern, saveFormat, separateProtected, protectedFolderName]);
+  }, [importFiles, activePattern, saveFormat, separateProtected, protectedFolderName]);
 
   return (
     <div className="flex flex-col h-full">
@@ -458,8 +476,14 @@ export function DestinationPanel() {
       <div className="px-2.5 mb-2.5">
         <div className="flex items-center gap-1">
           <select
-            value=""
-            onChange={(e) => applyPreset(e.target.value)}
+            value={selectedPresetName}
+            onChange={(e) => {
+              if (!e.target.value) {
+                setSelectedPresetName('');
+                return;
+              }
+              applyPreset(e.target.value);
+            }}
             className="min-w-0 flex-1 px-1.5 py-1 text-[11px] bg-surface-raised border border-border rounded text-text-secondary"
             title="Apply job preset"
           >
@@ -477,7 +501,7 @@ export function DestinationPanel() {
             <button
               onClick={deletePreset}
               className="px-1.5 py-1 text-[11px] bg-surface-raised hover:bg-border rounded text-text-muted"
-              title="Delete a saved preset by name"
+              title={selectedPresetName ? `Delete preset "${selectedPresetName}"` : `Delete preset "${jobPresets[0]?.name}"`}
             >
               Del
             </button>
@@ -537,15 +561,17 @@ export function DestinationPanel() {
                     type="button"
                     onClick={() => resolveSecondPass('selected')}
                     className="rounded bg-emerald-600/15 px-1.5 py-1 text-[10px] text-emerald-300 transition-colors hover:bg-emerald-600/25"
+                    title={`Mark all ${secondPassFiles.length} second-pass file${secondPassFiles.length === 1 ? '' : 's'} as selected.`}
                   >
-                    Approve
+                    Pick All
                   </button>
                   <button
                     type="button"
                     onClick={() => resolveSecondPass('rejected')}
                     className="rounded bg-red-600/15 px-1.5 py-1 text-[10px] text-red-300 transition-colors hover:bg-red-600/25"
+                    title={`Mark all ${secondPassFiles.length} second-pass file${secondPassFiles.length === 1 ? '' : 's'} as rejected.`}
                   >
-                    Reject
+                    Reject All
                   </button>
                 </div>
               </>
@@ -729,6 +755,11 @@ export function DestinationPanel() {
         {saveFormat !== 'original' && (
           <p className="text-[10px] text-text-muted mt-1">
             Files will be converted ({converterLabel})
+          </p>
+        )}
+        {saveFormat === 'original' && (
+          <p className="text-[10px] text-text-muted mt-1">
+            Fastest and safest: copies source bytes unchanged, even for JPEGs. Pixel edits need JPEG/TIFF/HEIC output.
           </p>
         )}
       </div>
@@ -949,6 +980,12 @@ export function DestinationPanel() {
             </div>
 
             <div className="pt-1 border-t border-border rounded bg-surface-alt px-2 py-2">
+              <div className="mb-2 rounded border border-emerald-500/25 bg-emerald-500/10 px-2 py-1.5">
+                <div className="text-[10px] font-medium text-emerald-300">Fast raw ingest</div>
+                <div className="mt-0.5 text-[10px] text-text-muted">
+                  For maximum copy speed, use Original and leave backup, FTP, checksum verification, conversion, metadata, and duplicate checks off unless this job needs them.
+                </div>
+              </div>
               <div className="flex items-center justify-between gap-2">
                 <div>
                   <div className="text-[11px] text-text">Automation and post-import</div>
@@ -1037,8 +1074,8 @@ export function DestinationPanel() {
         {files.length > 0 && (
           <div className="text-[11px] text-text-secondary mb-2">
             {importFiles.length} file{importFiles.length !== 1 ? 's' : ''} &middot; {formatSize(totalSize)}
-            {hasQueue && <span className="text-emerald-400/80"> &middot; {queuedPaths.length} queued</span>}
-            {!hasQueue && hasClickSelection && <span className="text-blue-400/80"> &middot; {selectedPaths.length} selected</span>}
+            {hasClickSelection && <span className="text-blue-400/80"> &middot; {selectedPaths.length} selected</span>}
+            {!hasClickSelection && hasQueue && <span className="text-emerald-400/80"> &middot; {queuedPaths.length} queued</span>}
             {!hasQueue && !hasClickSelection && hasPicks && <span className="text-yellow-400/70"> &middot; {pickedCount} picked</span>}
             {skipDuplicates && duplicateCount > 0 && (
               <span className="text-yellow-500/70"> &middot; {duplicateCount} already imported</span>
@@ -1132,22 +1169,13 @@ export function DestinationPanel() {
             )}
           </div>
         )}
-        <div className="mb-1 grid grid-cols-3 gap-1">
+        <div className="mb-1 grid grid-cols-2 gap-1">
           <button
             onClick={() => { void handlePreviewImport(); }}
             disabled={!destination || importFiles.length === 0}
             className="py-1 rounded text-[10px] bg-surface-raised hover:bg-border text-text-secondary disabled:text-text-muted disabled:cursor-not-allowed"
             title="Preview the exact import plan without copying files."
             aria-label="Preview the import plan without copying files"
-          >
-            Preview Import
-          </button>
-          <button
-            onClick={() => { void refreshPreflight(false); }}
-            disabled={!destination || importFiles.length === 0}
-            className="py-1 rounded text-[10px] bg-surface-raised hover:bg-border text-text-secondary disabled:text-text-muted disabled:cursor-not-allowed"
-            title="Check destination conflicts, duplicates, and review flags before copying."
-            aria-label="Check destination conflicts, duplicates, and review flags"
           >
             Check Plan
           </button>
@@ -1185,14 +1213,17 @@ export function DestinationPanel() {
         >
           {!destination && files.length > 0
             ? 'Choose Destination First'
-            : `${hasQueue ? 'Import Queue' : 'Import'} ${importFiles.length > 0 ? `${importFiles.length} File${importFiles.length !== 1 ? 's' : ''}` : ''}`
+            : `Import ${importScopeLabel} ${importFiles.length > 0 ? `${importFiles.length} File${importFiles.length !== 1 ? 's' : ''}` : ''}`
           }
         </button>
         {hasQueue && (
           <button
-            onClick={() => dispatch({ type: 'QUEUE_CLEAR' })}
-            className="w-full mt-1 py-1 rounded text-[10px] bg-surface-raised hover:bg-border text-text-secondary transition-colors"
-            title="Clear import queue"
+            onClick={() => {
+              if (!queueActionsDisabled) dispatch({ type: 'QUEUE_CLEAR' });
+            }}
+            disabled={queueActionsDisabled}
+            className="w-full mt-1 py-1 rounded text-[10px] bg-surface-raised hover:bg-border text-text-secondary transition-colors disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-surface-raised"
+            title={queueActionsDisabled ? 'Wait for the current scan/import before changing the queue.' : 'Clear import queue'}
           >
             Clear Queue
           </button>

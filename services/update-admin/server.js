@@ -590,6 +590,10 @@ function generateActivationCode() {
   return `${ACTIVATION_CODE_PREFIX}-${chars.slice(0, 4).join('')}-${chars.slice(4, 8).join('')}-${chars.slice(8, 12).join('')}`;
 }
 
+function normalizeActivationCode(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
 function parseMaxDevices(value, fallback = 1) {
   const parsed = Number.parseInt(String(value ?? fallback), 10);
   if (!Number.isFinite(parsed) || parsed < 1) {
@@ -907,15 +911,23 @@ async function upsertLicenseRecord(validated, notes, plan = null) {
 }
 
 async function getLicenseRecordByActivationCode(activationCode) {
+  const normalizedCode = normalizeActivationCode(activationCode);
+  if (!normalizedCode) return null;
   const result = await pool.query(
     `SELECT lr.id,
             lr.fingerprint,
+            lr.license_key,
             lr.activation_code,
             lr.customer_name,
             lr.customer_email,
+            lr.issued_at,
+            lr.created_at,
             COALESCE(NULLIF(lr.plan, ''), ss.plan) AS plan,
             lr.max_devices,
-            lr.expires_at
+            lr.expires_at,
+            lr.status,
+            lr.notes,
+            lr.last_seen_at
      FROM license_records lr
      LEFT JOIN LATERAL (
        SELECT plan
@@ -927,7 +939,7 @@ async function getLicenseRecordByActivationCode(activationCode) {
        LIMIT 1
      ) ss ON TRUE
      WHERE lr.activation_code = $1`,
-    [activationCode],
+    [normalizedCode],
   );
 
   const row = result.rows[0];
@@ -1979,10 +1991,12 @@ app.get('/admin/licenses', authSession, async (req, res) => {
 app.post('/admin/licenses/generate', authSession, async (req, res) => {
   try {
     const plan = normalizePlanValue(req.body.plan);
+    const requestedExpiry = String(req.body.expiry || '').trim();
+    const expiry = requestedExpiry || formatExpiryForLicense(calculatePlanExpiryDate(plan));
     const licenseKey = createLicenseKey({
       name: req.body.name,
       email: req.body.email,
-      expiry: req.body.expiry,
+      expiry,
       notes: req.body.notes,
       maxDevices: req.body.maxDevices,
     });
@@ -2914,7 +2928,7 @@ app.post('/admin/api/artifacts/upload', requireAdminApiToken, express.raw({ type
 });
 
 app.post('/api/v1/license/resolve', async (req, res) => {
-  const activationCode = String(req.body.activationCode || '').trim().toUpperCase();
+  const activationCode = normalizeActivationCode(req.body.activationCode);
   const deviceId = req.header('x-device-id');
   const deviceName = req.header('x-device-name');
   if (!activationCode) {
@@ -3397,11 +3411,16 @@ async function generateAndStoreLicense({ name, email, expiry, notes, maxDevices,
   const validated = validateLicenseKey(licenseKey, licensePublicKeyPem);
   if (!validated.valid) throw new Error(validated.message || 'Generated key did not validate.');
   const activationCode = await upsertLicenseRecord(validated, notes, plan);
-  const expiresLabel = expiry ? expiry.split('-').reverse().join('/') : null; // DD-MM-YYYY → DD/MM/YYYY
+  const expiresLabel = expiry ? formatLicenseDate(normalizeLicenseDate(expiry)).replace(/-/g, '/') : null;
   return { licenseKey, activationCode, expiresLabel };
 }
 
 function calculatePlanExpiryDate(plan, now = new Date()) {
+  if (plan === 'trial') {
+    const expiry = new Date(now);
+    expiry.setDate(expiry.getDate() + trialDays);
+    return expiry;
+  }
   if (plan === 'monthly') {
     return new Date(now.getFullYear(), now.getMonth() + 1, now.getDate());
   }
@@ -4092,7 +4111,8 @@ async function ensurePricingSchema() {
 app.post('/api/v1/upgrade-devices', async (req, res) => {
   if (!stripeSecretKey) return res.status(503).json({ error: 'Payments not configured.' });
 
-  const { activationCode, newDeviceCount } = req.body || {};
+  const { newDeviceCount } = req.body || {};
+  const activationCode = normalizeActivationCode(req.body?.activationCode);
   const count = Number(newDeviceCount);
 
   if (!activationCode) return res.status(400).json({ error: 'activationCode required.' });
@@ -4103,7 +4123,7 @@ app.post('/api/v1/upgrade-devices', async (req, res) => {
   try {
     // Look up license by activation code
     const licenseResult = await pool.query(
-      'SELECT id, fingerprint, customer_email, customer_name, max_devices FROM license_records WHERE activation_code = $1',
+      'SELECT id, fingerprint, customer_email, customer_name, max_devices, status FROM license_records WHERE activation_code = $1',
       [activationCode]
     );
 
@@ -4112,6 +4132,9 @@ app.post('/api/v1/upgrade-devices', async (req, res) => {
     }
 
     const license = licenseResult.rows[0];
+    if (license.status === 'revoked' || license.status === 'disabled') {
+      return res.status(403).json({ error: `This license is ${license.status} and cannot be upgraded.` });
+    }
     const currentDevices = license.max_devices || 1;
 
     if (count <= currentDevices) {
@@ -4484,24 +4507,15 @@ app.get('/api/v1/license/:sessionId', apiCors, async (req, res) => {
 // Look up a license by activation code
 // ---------------------------------------------------------------------------
 app.get('/api/v1/license-info/:code', apiCors, async (req, res) => {
-  const code = req.params.code?.trim();
+  const code = normalizeActivationCode(req.params.code);
   if (!code) return res.status(400).json({ error: 'Activation code required.' });
 
   try {
     const row = await getLicenseRecordByActivationCode(code);
-    const activations = row
-      ? await pool.query(
-          `SELECT expires_at
-           FROM license_activations
-           WHERE license_fingerprint = $1
-           ORDER BY last_seen_at DESC, id DESC`,
-          [row.fingerprint],
-        )
-      : { rows: [] };
-
     if (!row) {
       return res.status(404).json({ error: 'License not found.' });
     }
+    const summary = await activationSummary(row.fingerprint);
 
     return res.json({
       id: row.id,
@@ -4511,8 +4525,10 @@ app.get('/api/v1/license-info/:code', apiCors, async (req, res) => {
       plan: row.plan,
       status: row.status || 'active',
       maxDevices: row.max_devices,
+      deviceSlotsUsed: summary.count,
+      deviceSlotsTotal: row.max_devices,
       issuedAt: issuedDateForRecord(row),
-      expiresAt: latestDeviceExpiry(activations.rows) || normalizeLicenseDate(row.expires_at),
+      expiresAt: summary.latestExpiry || normalizeLicenseDate(row.expires_at),
     });
   } catch (err) {
     console.error('[license-info] Error:', err.message);
@@ -4526,10 +4542,15 @@ app.get('/api/v1/license-info/:code', apiCors, async (req, res) => {
 // Returns Stripe checkout URL
 // ---------------------------------------------------------------------------
 app.post('/api/v1/extend-license', apiCors, async (req, res) => {
-  const { activationCode, amount, unit } = req.body;
+  const { amount, unit } = req.body;
+  const activationCode = normalizeActivationCode(req.body.activationCode);
+  const amountValue = Number.parseInt(String(amount), 10);
 
-  if (!activationCode || !amount || !unit) {
+  if (!activationCode || !amountValue || !unit) {
     return res.status(400).json({ error: 'Missing required fields.' });
+  }
+  if (!Number.isInteger(amountValue) || amountValue < 1 || amountValue > 120) {
+    return res.status(400).json({ error: 'Extension amount must be a whole number between 1 and 120.' });
   }
 
   if (!['days', 'months', 'years'].includes(unit)) {
@@ -4562,11 +4583,11 @@ app.post('/api/v1/extend-license', apiCors, async (req, res) => {
       return res.status(503).json({ error: `Extension pricing not configured for ${unit}.` });
     }
 
-    const extendCents = unitPriceCents * Number(amount);
+    const extendCents = unitPriceCents * amountValue;
 
     const origin = req.headers.origin || publicUpdatesBaseUrl();
-    const successUrl = `${origin}/manage-license`;
-    const cancelUrl = `${origin}/manage-license`;
+    const successUrl = `${origin}/manage-license?code=${encodeURIComponent(activationCode)}`;
+    const cancelUrl = `${origin}/manage-license?code=${encodeURIComponent(activationCode)}`;
 
     const stripeBody = new URLSearchParams({
       'payment_method_types[]': 'card',
@@ -4576,11 +4597,11 @@ app.post('/api/v1/extend-license', apiCors, async (req, res) => {
       'mode': 'payment',
       'metadata[activation_code]': activationCode,
       'metadata[license_id]': String(license.id),
-      'metadata[extend_amount]': String(amount),
+      'metadata[extend_amount]': String(amountValue),
       'metadata[extend_unit]': unit,
       'line_items[0][price_data][currency]': currency,
       'line_items[0][price_data][unit_amount]': String(extendCents),
-      'line_items[0][price_data][product_data][name]': `Keptra extension — +${amount} ${unit}`,
+      'line_items[0][price_data][product_data][name]': `Keptra extension - +${amountValue} ${unit}`,
       'line_items[0][quantity]': '1',
     });
 
@@ -4596,7 +4617,7 @@ app.post('/api/v1/extend-license', apiCors, async (req, res) => {
     const session = await stripeRes.json();
     if (!stripeRes.ok) return res.status(400).json({ error: session.error?.message || 'Stripe error.' });
 
-    console.log(`[extend] License extension checkout created for ${license.customer_email}: +${amount} ${unit}`);
+    console.log(`[extend] License extension checkout created for ${license.customer_email}: +${amountValue} ${unit}`);
     return res.json({ url: session.url });
   } catch (err) {
     console.error('[extend] error:', err);
@@ -4609,7 +4630,7 @@ app.post('/api/v1/extend-license', apiCors, async (req, res) => {
 // Redirect to device upgrade with activation code pre-filled
 // ---------------------------------------------------------------------------
 app.get('/upgrade-license', (_req, res) => {
-  const code = _req.query.code || '';
+  const code = normalizeActivationCode(_req.query.code);
   return res.send(htmlPage('Add devices to your license', `
     <div class="panel" style="max-width:620px;margin:60px auto">
       <h1 style="text-align:center;margin-bottom:8px">Add devices to your license</h1>
@@ -4626,7 +4647,7 @@ app.get('/upgrade-license', (_req, res) => {
     </div>
 
     <script>
-      const code = '${code.replace(/'/g, "\\'")}';
+      const code = ${JSON.stringify(code)};
       let currentDevices = 1;
       let pricePerDevice = 0;
       let pricingCurrency = 'AUD';
@@ -4643,6 +4664,12 @@ app.get('/upgrade-license', (_req, res) => {
           if (res.ok) {
             currentDevices = data.maxDevices || 1;
             document.getElementById('currentDevices').textContent = currentDevices;
+            document.getElementById('deviceCount').value = String(Math.min(100, currentDevices + 1));
+            if (['revoked', 'disabled'].includes(String(data.status || '').toLowerCase())) {
+              const btn = document.getElementById('upgradeBtn');
+              btn.disabled = true;
+              btn.textContent = 'License cannot be upgraded';
+            }
             updateCost();
           }
         } catch (err) {
@@ -5105,7 +5132,7 @@ app.get('/manage-license', (_req, res) => {
 
       <div class="ml-section">
         <div class="ml-lookup">
-          <input id="activationCodeInput" type="text" placeholder="PI1-XXXXXXXX" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" />
+          <input id="activationCodeInput" type="text" placeholder="PIC-XXXX-XXXX-XXXX" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="characters" />
           <button id="lookupBtn">Look up</button>
         </div>
         <div class="ml-helper">Paste the activation code from your email or Keptra settings. You can renew a timed license, add seats, or check whether a webhook/payment is still pending.</div>
@@ -5223,7 +5250,7 @@ app.get('/manage-license', (_req, res) => {
       }
 
       async function lookupLicense() {
-        const code = codeInput.value.trim();
+        const code = codeInput.value.trim().toUpperCase();
         if (!code) { showError('Enter an activation code first.'); return; }
         showLoading();
         try {
@@ -5255,7 +5282,11 @@ app.get('/manage-license', (_req, res) => {
 
         document.getElementById('customerName').textContent = currentLicense.customerName || '—';
         document.getElementById('planType').textContent = displayPlan(currentLicense.plan, currentLicense.expiresAt);
-        document.getElementById('maxDevices').textContent = (currentLicense.maxDevices || 1) + ' device' + (currentLicense.maxDevices === 1 ? '' : 's');
+        const used = Number(currentLicense.deviceSlotsUsed || 0);
+        const total = Number(currentLicense.deviceSlotsTotal || currentLicense.maxDevices || 1);
+        document.getElementById('maxDevices').textContent = used > 0
+          ? used + '/' + total + ' seat' + (total === 1 ? '' : 's') + ' used'
+          : total + ' device' + (total === 1 ? '' : 's');
         const statusLabel = displayLicenseStatus(currentLicense);
         const statusEl = document.getElementById('statusText');
         statusEl.textContent = statusLabel;
@@ -5309,10 +5340,14 @@ app.get('/manage-license', (_req, res) => {
             body: JSON.stringify({ activationCode: currentLicense.activationCode, amount, unit }),
           });
           const data = await res.json();
-          if (!res.ok) { showError(data.error || 'Could not create extension.'); return; }
+          if (!res.ok) {
+            showError(data.error || 'Could not create extension.');
+            return;
+          }
           window.location.href = data.url;
         } catch (err) {
           showError('Request failed: ' + err.message);
+        } finally {
           btn.disabled = false;
           btn.textContent = 'Pay and extend';
         }

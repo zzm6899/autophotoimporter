@@ -1,4 +1,4 @@
-import { createContext, useContext, useReducer, useRef, useMemo, useCallback, useState, type Dispatch, type ReactNode } from 'react';
+import { createContext, useContext, useReducer, useRef, useMemo, useCallback, useEffect, useState, type Dispatch, type ReactNode } from 'react';
 import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, SourceKind, FtpConfig, FtpSyncSettings, FtpSyncStatus, RatingFilter, SelectionSet, LicenseValidation, WatermarkPosition, WatermarkMode, KeybindMap, MetadataExportFlags, ViewOverlayPreferences, EventMode, CullConfidence, KeeperQuota, SourceProfile, ImportConflictPolicy, AppSession } from '../../shared/types';
 import { FOLDER_PRESETS, DEFAULT_KEYBINDS, DEFAULT_METADATA_EXPORT, DEFAULT_VIEW_OVERLAY_PREFERENCES } from '../../shared/types';
 import { groupBursts } from '../../shared/burst';
@@ -25,6 +25,7 @@ interface State {
   importProgress: ImportProgress | null;
   importResult: ImportResult | null;
   focusedIndex: number;
+  focusedPath: string | null;
   viewMode: ViewMode;
   previousViewMode: Exclude<ViewMode, 'settings'> | null;
   theme: 'light' | 'dark';
@@ -144,7 +145,7 @@ export type Action =
   | { type: 'SET_PICK'; filePath: string; pick: 'selected' | 'rejected' | undefined }
   | { type: 'SET_PICK_BATCH'; filePaths: string[]; pick: 'selected' | 'rejected' | undefined }
   | { type: 'CLEAR_PICKS' }
-  | { type: 'SET_FOCUSED'; index: number }
+  | { type: 'SET_FOCUSED'; index: number; path?: string | null }
   | { type: 'SET_VIEW_MODE'; mode: ViewMode }
   | { type: 'SET_THEME'; theme: 'light' | 'dark' }
   | { type: 'TOGGLE_LEFT_PANEL' }
@@ -161,6 +162,7 @@ export type Action =
   | { type: 'TOGGLE_CULL_MODE' }
   | { type: 'SET_SELECTED_PATHS'; paths: string[] }
   | { type: 'QUEUE_ADD_PATHS'; paths: string[] }
+  | { type: 'QUEUE_SET_PATHS'; paths: string[] }
   | { type: 'QUEUE_REMOVE_PATHS'; paths: string[] }
   | { type: 'QUEUE_CLEAR' }
   | { type: 'SET_SELECTION_SETS'; sets: SelectionSet[] }
@@ -266,6 +268,7 @@ const initialState: State = {
   importProgress: null,
   importResult: null,
   focusedIndex: -1,
+  focusedPath: null,
   viewMode: 'grid' as ViewMode,
   previousViewMode: null,
   theme: systemDark ? 'dark' : 'light',
@@ -430,9 +433,22 @@ export function reducer(state: State, action: Action): State {
     case 'SELECT_SOURCE':
       // Clear exposure anchor — its path belongs to the old source and would
       // resolve to `undefined` in `files.find()` once the new scan lands.
-      return { ...state, selectedSource: action.path, files: [], phase: 'idle', exposureAnchorPath: null, queuedPaths: [], selectedPaths: [] };
+      return { ...state, selectedSource: action.path, files: [], phase: 'idle', exposureAnchorPath: null, queuedPaths: [], selectedPaths: [], focusedPath: null };
     case 'SCAN_START':
-      return { ...state, files: [], phase: 'scanning', scanError: null, focusedIndex: -1, exposureAnchorPath: null, scanPaused: false };
+      return {
+        ...state,
+        files: [],
+        phase: 'scanning',
+        scanError: null,
+        focusedIndex: -1,
+        focusedPath: null,
+        exposureAnchorPath: null,
+        scanPaused: false,
+        queuedPaths: [],
+        selectedPaths: [],
+        filter: 'all',
+        collapsedBursts: [],
+      };
     case 'SCAN_BATCH':
       return { ...state, files: [...state.files, ...action.files] };
     case 'SCAN_COMPLETE': {
@@ -534,7 +550,11 @@ export function reducer(state: State, action: Action): State {
     case 'CLEAR_PICKS':
       return withFileHistory(state, state.files.map((f) => ({ ...f, pick: undefined })));
     case 'SET_FOCUSED':
-      return { ...state, focusedIndex: action.index };
+      return {
+        ...state,
+        focusedIndex: action.index,
+        focusedPath: action.path ?? (action.index >= 0 ? state.files[action.index]?.path ?? null : null),
+      };
     case 'SET_VIEW_MODE':
       if (action.mode === 'settings') {
         return {
@@ -556,7 +576,7 @@ export function reducer(state: State, action: Action): State {
     case 'TOGGLE_RIGHT_PANEL':
       return { ...state, showRightPanel: !state.showRightPanel };
     case 'RESET_FILES':
-      return { ...state, files: [], phase: 'idle', focusedIndex: -1, queuedPaths: [], selectedPaths: [] };
+      return { ...state, files: [], phase: 'idle', focusedIndex: -1, focusedPath: null, queuedPaths: [], selectedPaths: [] };
     case 'SET_RATING':
       return withFileHistory(state, state.files.map((f) =>
         f.path === action.filePath ? { ...f, rating: action.rating } : f,
@@ -590,6 +610,11 @@ export function reducer(state: State, action: Action): State {
       const next = new Set(state.queuedPaths);
       for (const p of action.paths) if (valid.has(p)) next.add(p);
       return { ...state, queuedPaths: [...next], filter: next.size > 0 ? 'queue' : state.filter };
+    }
+    case 'QUEUE_SET_PATHS': {
+      const valid = new Set(state.files.map((f) => f.path));
+      const next = [...new Set(action.paths)].filter((p) => valid.has(p));
+      return { ...state, queuedPaths: next, filter: next.length > 0 ? 'queue' : state.filter === 'queue' ? 'all' : state.filter };
     }
     case 'QUEUE_REMOVE_PATHS': {
       const remove = new Set(action.paths);
@@ -926,7 +951,7 @@ export function reducer(state: State, action: Action): State {
         groupPhotoEveryoneGood: state.groupPhotoEveryoneGood,
         keeperQuota: state.keeperQuota,
       });
-      return { ...state, queuedPaths: next, filter: next.length > 0 ? 'queue' : state.filter };
+      return { ...state, queuedPaths: next, filter: next.length > 0 ? 'queue' : state.filter === 'queue' ? 'all' : state.filter };
     }
     case 'AUTO_CULL_SAFE': {
       const groups = collectReviewGroups(state.files, true);
@@ -1031,6 +1056,7 @@ export function reducer(state: State, action: Action): State {
         importProgress: null,
         fileHistory: [],
         focusedIndex: -1,
+        focusedPath: null,
         filter: 'all',
       };
     }
@@ -1121,7 +1147,7 @@ export function reducer(state: State, action: Action): State {
         },
       };
     case 'RESTORE_SESSION': {
-      const focusedPath = action.session.focusedPath;
+      const focusedPath = action.session.focusedPath ?? null;
       const focusedIndex = focusedPath
         ? action.session.files.findIndex((file) => file.path === focusedPath)
         : -1;
@@ -1134,6 +1160,7 @@ export function reducer(state: State, action: Action): State {
         queuedPaths: action.session.queuedPaths,
         filter: action.session.filter as FilterMode,
         focusedIndex,
+        focusedPath,
         phase: action.session.files.length > 0 ? 'ready' : 'idle',
         importProgress: null,
         importResult: null,
@@ -1168,8 +1195,27 @@ export function ImportProvider({ children }: { children: ReactNode }) {
 
   // Mutable map of review score overlays — never triggers a re-render itself.
   const reviewScoresRef = useRef<Map<string, ReviewPatch>>(new Map());
-  // Version counter: bumped on every SET_REVIEW_SCORES so consumers re-render.
+  // Version counter: batched so per-file review updates do not remap every card.
   const [reviewVersion, setReviewVersion] = useState(0);
+  const reviewVersionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const bumpReviewVersionNow = useCallback(() => {
+    if (reviewVersionTimerRef.current) {
+      clearTimeout(reviewVersionTimerRef.current);
+      reviewVersionTimerRef.current = null;
+    }
+    setReviewVersion((v) => v + 1);
+  }, []);
+  const bumpReviewVersionSoon = useCallback(() => {
+    if (reviewVersionTimerRef.current) return;
+    reviewVersionTimerRef.current = setTimeout(() => {
+      reviewVersionTimerRef.current = null;
+      setReviewVersion((v) => v + 1);
+    }, 50);
+  }, []);
+
+  useEffect(() => () => {
+    if (reviewVersionTimerRef.current) clearTimeout(reviewVersionTimerRef.current);
+  }, []);
 
   // Intercept SET_REVIEW_SCORES before it hits the reducer.
   const dispatch = useCallback<Dispatch<Action>>((action) => {
@@ -1180,7 +1226,7 @@ export function ImportProvider({ children }: { children: ReactNode }) {
       for (const [p, patch] of Object.entries(scores)) {
         if (patch) { reviewScoresRef.current.set(p, patch); dirty = true; }
       }
-      if (dirty) setReviewVersion((v) => v + 1);
+      if (dirty) bumpReviewVersionSoon();
       return;
     }
     // Wipe the overlay on source change or face rescan so stale scores
@@ -1195,10 +1241,10 @@ export function ImportProvider({ children }: { children: ReactNode }) {
       action.type === 'ADVANCE_VOLUME_IMPORT_QUEUE'
     ) {
       reviewScoresRef.current.clear();
-      setReviewVersion((v) => v + 1);
+      bumpReviewVersionNow();
     }
     if (action.type === 'CLEAR_PICKS') {
-      setReviewVersion((v) => v + 1);
+      bumpReviewVersionNow();
     }
     // QUEUE_BEST runs inside the reducer against state.files which has NO
     // overlay data (face scores, review scores are only in the overlay Map).
@@ -1230,12 +1276,12 @@ export function ImportProvider({ children }: { children: ReactNode }) {
         groupPhotoEveryoneGood: current.groupPhotoEveryoneGood,
         keeperQuota: current.keeperQuota,
       });
-      rawDispatch({ type: 'QUEUE_ADD_PATHS', paths: next });
+      rawDispatch({ type: 'QUEUE_SET_PATHS', paths: next });
       if (next.length > 0) rawDispatch({ type: 'SET_FILTER', filter: 'queue' });
       return;
     }
     rawDispatch(action);
-  }, []);
+  }, [bumpReviewVersionNow, bumpReviewVersionSoon]);
 
   return (
     <StateContext.Provider value={state}>

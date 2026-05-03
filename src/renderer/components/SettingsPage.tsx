@@ -101,6 +101,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     openFolderOnComplete,
     verifyChecksums,
     selectedSource,
+    phase,
     destination,
     autoImport,
     autoImportDestRoot,
@@ -387,8 +388,32 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     void window.electronAPI.setSettings({ rawPreviewQuality: quality });
   };
   const handlePerfTier = (tier: 'auto' | 'low' | 'balanced' | 'high') => {
+    const nextPreviewConcurrency =
+      tier === 'low' ? 1 :
+        tier === 'balanced' ? 2 :
+          tier === 'high' ? Math.max(3, previewConcurrency) :
+            previewConcurrency;
+    const nextFaceConcurrency =
+      tier === 'low' ? 1 :
+        tier === 'balanced' ? 1 :
+          tier === 'high' ? Math.max(2, faceConcurrency) :
+            faceConcurrency;
+    const nextCpuOptimization =
+      tier === 'auto' ? cpuOptimization :
+        tier === 'high' ? false : true;
+    const nextRawPreviewQuality =
+      tier === 'low' ? Math.min(rawPreviewQuality, 60) :
+        tier === 'balanced' ? Math.max(65, Math.min(rawPreviewQuality, 75)) :
+          tier === 'high' ? Math.max(rawPreviewQuality, 82) :
+            rawPreviewQuality;
     dispatch({ type: 'SET_PERF_TIER', tier });
-    void window.electronAPI.setSettings({ perfTier: tier });
+    void window.electronAPI.setSettings({
+      perfTier: tier,
+      previewConcurrency: nextPreviewConcurrency,
+      faceConcurrency: nextFaceConcurrency,
+      cpuOptimization: nextCpuOptimization,
+      rawPreviewQuality: nextRawPreviewQuality,
+    });
   };
   const handleFastKeeperMode = (enabled: boolean) => {
     dispatch({ type: 'SET_FAST_KEEPER_MODE', enabled });
@@ -426,8 +451,17 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     e.stopPropagation();
     // Ignore modifier-only presses
     if (['Control', 'Meta', 'Alt', 'Shift'].includes(e.key)) return;
+    const duplicate = Object.entries(keybinds).find(([otherAction, key]) =>
+      otherAction !== action && key === e.key,
+    );
+    if (duplicate) {
+      setDiagResult(`Key "${e.key}" is already assigned. Clear or change that shortcut first.`);
+      setRebindingAction(null);
+      return;
+    }
     dispatch({ type: 'SET_KEYBIND', action, key: e.key });
     void window.electronAPI.setSettings({ keybinds: { ...keybinds, [action]: e.key } });
+    setDiagResult(null);
     setRebindingAction(null);
   };
 
@@ -754,7 +788,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   };
 
   const handleEjectCurrentSource = async () => {
-    if (!selectedSource) return;
+    if (!selectedSource || phase === 'scanning' || phase === 'importing') return;
     setPostImportStatus('Ejecting source...');
     const result = await window.electronAPI.ejectVolume(selectedSource);
     setPostImportStatus(result.ok ? 'Source ejected.' : `Eject failed: ${result.error || 'volume may be busy'}`);
@@ -1028,7 +1062,14 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                     >
                       Manage
                     </button>
-                    <button onClick={handleClearLicense} disabled={licenseBusy} className="text-[10px] text-text-muted hover:text-text">Deactivate</button>
+                    <button
+                      onClick={handleClearLicense}
+                      disabled={licenseBusy}
+                      className="text-[10px] text-text-muted hover:text-text"
+                      title="Remove the saved license from this app. This does not revoke it on the server."
+                    >
+                      Clear local
+                    </button>
                   </div>
                 )}
               </div>
@@ -1048,6 +1089,12 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                       className="px-3 py-1.5 text-xs rounded bg-surface-raised border border-border text-text-secondary hover:text-text"
                     >
                       Try free for 14 days
+                    </button>
+                    <button
+                      onClick={() => { void openLicenseManagement(); }}
+                      className="text-[10px] text-text-muted hover:text-text ml-auto"
+                    >
+                      Manage existing
                     </button>
                   </div>
                 )}
@@ -1285,6 +1332,11 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                 />
               </div>
             )}
+            {saveFormat === 'original' && (
+              <p className="mt-1.5 text-[10px] text-text-muted">
+                Original copies the source bytes unchanged. Even JPEG exposure or white-balance edits require exporting a new JPEG, TIFF, or HEIC.
+              </p>
+            )}
           </section>
 
           {/* Protected files */}
@@ -1458,8 +1510,9 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
               <div className="ml-5">
                 <button
                   onClick={handleEjectCurrentSource}
-                  disabled={!selectedSource}
+                  disabled={!selectedSource || phase === 'scanning' || phase === 'importing'}
                   className="px-2 py-1 text-[10px] bg-surface-raised hover:bg-border rounded text-text-secondary transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  title={phase === 'scanning' || phase === 'importing' ? 'Wait for the current scan/import before ejecting this source.' : 'Safely eject the current source'}
                 >
                   Eject current source
                 </button>
@@ -1523,6 +1576,12 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
               {postImportStatus && (
                 <p className="ml-5 text-[10px] text-text-muted">{postImportStatus}</p>
               )}
+              <div className="rounded border border-emerald-500/25 bg-emerald-500/10 px-2 py-1.5">
+                <div className="text-[10px] font-medium text-emerald-300">Fast raw ingest</div>
+                <p className="mt-0.5 text-[10px] text-text-muted">
+                  For the fastest card copy, use Original and turn off checksum verification, backup/FTP mirroring, conversion, metadata sidecars, and duplicate checks when the job does not need them.
+                </p>
+              </div>
             </div>
           </section>
 
@@ -1794,7 +1853,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
             </label>
             {saveFormat === 'original' && (
               <p className="text-[10px] text-text-muted mt-0.5 ml-5">
-                Requires a non-original save format (JPEG / TIFF / HEIC).
+                Original output is a byte-for-byte copy. Choose JPEG, TIFF, or HEIC to write exposure changes into new files.
               </p>
             )}
             {normalizeExposure && saveFormat !== 'original' && (

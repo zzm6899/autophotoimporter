@@ -1234,13 +1234,16 @@ async function getLicenseStatus() {
     return settings.licenseStatus ?? { valid: false, message: 'No license activated.', status: 'unknown' as const };
   }
 
-  const status = storedActivationCode
+  let status = storedActivationCode
     ? await activateLicenseInput(storedActivationCode)
     : await checkHostedLicenseStatus(storedKey!, settings.licenseStatus ?? undefined);
+  if (!status.valid && status.status === 'unknown' && storedKey) {
+    status = await checkHostedLicenseStatus(storedKey, settings.licenseStatus ?? undefined);
+  }
 
   await saveSettings({
-    licenseKey: status.valid && status.key ? status.key : '',
-    licenseActivationCode: status.valid ? (status.activationCode ?? storedActivationCode ?? '') : '',
+    licenseKey: status.key?.trim() || storedKey || '',
+    licenseActivationCode: status.activationCode?.trim() || storedActivationCode || '',
     licenseStatus: status,
   });
   return status;
@@ -2211,6 +2214,7 @@ export function registerIpcHandlers(): void {
   }, ([folders]) => Array.isArray(folders) ? null : ipcError('VALIDATION_ERROR', 'Invalid watch folders payload.'));
 
   handleIpc(IPC.LICENSE_ACTIVATE, async (_event, key: string) => {
+    const existing = await loadSettings();
     const status = await activateLicenseInput(key);
     if (status.valid && status.key) {
       await saveSettings({
@@ -2221,7 +2225,7 @@ export function registerIpcHandlers(): void {
       const settings = await loadSettings();
       return settings.licenseStatus ?? status;
     }
-    if (!status.valid) {
+    if (!status.valid && !existing.licenseKey?.trim() && !existing.licenseActivationCode?.trim()) {
       await saveSettings({ licenseKey: '', licenseActivationCode: '', licenseStatus: status });
     }
     return status;

@@ -19,6 +19,7 @@ function makeState(overrides: Record<string, unknown> = {}) {
     importProgress: null as ImportProgress | null,
     importResult: null as ImportResult | null,
     focusedIndex: -1,
+    focusedPath: null as string | null,
     viewMode: 'grid' as const,
     previousViewMode: null,
     theme: 'dark' as const,
@@ -145,11 +146,25 @@ describe('ImportContext reducer', () => {
 
   describe('phase transitions', () => {
     it('idle → scanning on SCAN_START', () => {
-      const state = makeState({ phase: 'idle' });
+      const state = makeState({
+        phase: 'idle',
+        files: [makeFile({ path: '/old.jpg' })],
+        queuedPaths: ['/old.jpg'],
+        selectedPaths: ['/old.jpg'],
+        focusedIndex: 0,
+        focusedPath: '/old.jpg',
+        filter: 'queue',
+        collapsedBursts: ['burst-1'],
+      });
       const next = reducer(state, { type: 'SCAN_START' });
       expect(next.phase).toBe('scanning');
       expect(next.files).toEqual([]);
       expect(next.focusedIndex).toBe(-1);
+      expect(next.focusedPath).toBeNull();
+      expect(next.queuedPaths).toEqual([]);
+      expect(next.selectedPaths).toEqual([]);
+      expect(next.filter).toBe('all');
+      expect(next.collapsedBursts).toEqual([]);
     });
 
     it('scanning → ready on SCAN_COMPLETE when files present', () => {
@@ -460,6 +475,26 @@ describe('ImportContext reducer', () => {
       expect(next.queuedPaths).toEqual(['/best.jpg', '/weak.jpg']);
     });
 
+    it('replaces stale queued paths when queueing keepers', () => {
+      const files = [
+        makeFile({ path: '/keeper.jpg', reviewScore: 80 }),
+        makeFile({ path: '/reject.jpg', reviewScore: 95, pick: 'rejected' }),
+      ];
+      const next = reducer(makeState({ files, queuedPaths: ['/stale.jpg'], filter: 'queue' }), { type: 'QUEUE_BEST' });
+      expect(next.queuedPaths).toEqual(['/keeper.jpg']);
+      expect(next.filter).toBe('queue');
+    });
+
+    it('leaves queue view when queueing keepers finds nothing importable', () => {
+      const files = [
+        makeFile({ path: '/reject.jpg', reviewScore: 95, pick: 'rejected' }),
+        makeFile({ path: '/duplicate.jpg', reviewScore: 95, duplicate: true }),
+      ];
+      const next = reducer(makeState({ files, queuedPaths: ['/stale.jpg'], filter: 'queue' }), { type: 'QUEUE_BEST' });
+      expect(next.queuedPaths).toEqual([]);
+      expect(next.filter).toBe('all');
+    });
+
     it('queues one best keeper per burst group', () => {
       const files = [
         makeFile({ path: '/burst-soft.jpg', burstId: 'b1', burstSize: 2, burstIndex: 1, reviewScore: 92, sharpnessScore: 20 }),
@@ -619,8 +654,21 @@ describe('ImportContext reducer', () => {
 
   describe('view and UI actions', () => {
     it('SET_FOCUSED', () => {
-      const next = reducer(makeState(), { type: 'SET_FOCUSED', index: 5 });
-      expect(next.focusedIndex).toBe(5);
+      const next = reducer(makeState({ files: [makeFile({ path: '/a.jpg' })] }), { type: 'SET_FOCUSED', index: 0, path: '/sorted/a.jpg' });
+      expect(next.focusedIndex).toBe(0);
+      expect(next.focusedPath).toBe('/sorted/a.jpg');
+    });
+
+    it('SET_FOCUSED falls back to the raw file path when no sorted path is provided', () => {
+      const next = reducer(makeState({ files: [makeFile({ path: '/a.jpg' })] }), { type: 'SET_FOCUSED', index: 0 });
+      expect(next.focusedIndex).toBe(0);
+      expect(next.focusedPath).toBe('/a.jpg');
+    });
+
+    it('SET_FOCUSED clears the focused path for no focused item', () => {
+      const next = reducer(makeState({ focusedIndex: 0, focusedPath: '/a.jpg' }), { type: 'SET_FOCUSED', index: -1 });
+      expect(next.focusedIndex).toBe(-1);
+      expect(next.focusedPath).toBeNull();
     });
 
     it('SET_VIEW_MODE', () => {

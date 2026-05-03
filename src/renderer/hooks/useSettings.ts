@@ -184,9 +184,10 @@ export function useSettings() {
       if (typeof settings.fastKeeperMode === 'boolean') {
         dispatch({ type: 'SET_FAST_KEEPER_MODE', enabled: settings.fastKeeperMode });
       }
+      const fixedPerfTier = settings.perfTier && settings.perfTier !== 'auto';
       if (typeof settings.previewConcurrency === 'number' && settings.previewConcurrency > 0) {
         dispatch({ type: 'SET_PREVIEW_CONCURRENCY', concurrency: settings.previewConcurrency });
-      } else {
+      } else if (!fixedPerfTier) {
         window.electronAPI.getDeviceTier?.().then((p) => {
           dispatch({ type: 'SET_PREVIEW_CONCURRENCY', concurrency: p.previewConcurrency });
         }).catch(() => undefined);

@@ -12,9 +12,8 @@ const decodedCache = new Set<string>();
 // At 24 the cache evicted photos before analysis could reach them → "stuck at 24".
 const MAX_PREVIEWS = 500;
 const MAX_DECODED = 600;
-// Allow more concurrent preview loads so thumbnails arrive faster and the
-// review loop has a steady supply of candidates. Was 2 → limited to ~2 thumbnails/s.
-const MAX_ACTIVE_REQUESTS = 6;
+// Runtime-tuned from the Preview Workers setting.
+let maxActiveRequests = 6;
 const MAX_QUEUED_REQUESTS = 500;
 let activeRequests = 0;
 let backgroundPaused = false;
@@ -50,6 +49,14 @@ function takeNextQueuedRequest(): (() => void) | undefined {
   return undefined;
 }
 
+function drainQueue(): void {
+  while (activeRequests < maxActiveRequests) {
+    const run = takeNextQueuedRequest();
+    if (!run) return;
+    run();
+  }
+}
+
 function cancelQueuedLowPriorityRequests(): void {
   for (let i = queuedRequests.length - 1; i >= 0; i--) {
     const next = queuedRequests[i];
@@ -79,7 +86,7 @@ function schedule<T>(task: () => Promise<T>, priority: PreviewPriority): Promise
   if (priority === 'low' && backgroundPaused) {
     return Promise.resolve(undefined as T);
   }
-  if (priority === 'low' && activeRequests >= MAX_ACTIVE_REQUESTS && queuedRequests.length >= MAX_QUEUED_REQUESTS) {
+  if (priority === 'low' && activeRequests >= maxActiveRequests && queuedRequests.length >= MAX_QUEUED_REQUESTS) {
     return Promise.resolve(undefined as T);
   }
   return new Promise((resolve, reject) => {
@@ -89,11 +96,11 @@ function schedule<T>(task: () => Promise<T>, priority: PreviewPriority): Promise
         .then(resolve, reject)
         .finally(() => {
           activeRequests--;
-          takeNextQueuedRequest()?.();
+          drainQueue();
         });
     };
     const cancel = () => resolve(undefined as T);
-    if (activeRequests < MAX_ACTIVE_REQUESTS) {
+    if (activeRequests < maxActiveRequests) {
       run();
     } else if (priority === 'high') {
       queuedRequests.unshift({ priority, run, cancel });
@@ -101,6 +108,12 @@ function schedule<T>(task: () => Promise<T>, priority: PreviewPriority): Promise
       queuedRequests.push({ priority, run, cancel });
     }
   });
+}
+
+export function setPreviewConcurrency(concurrency: number): void {
+  const next = Number.isFinite(concurrency) ? Math.round(concurrency) : 6;
+  maxActiveRequests = Math.max(1, Math.min(12, next));
+  drainQueue();
 }
 
 export function getCachedPreview(
@@ -181,6 +194,7 @@ export function getPreviewCacheStats(): {
   inflight: number;
   active: number;
   queued: number;
+  concurrency: number;
   paused: boolean;
 } {
   return {
@@ -189,6 +203,7 @@ export function getPreviewCacheStats(): {
     inflight: previewInflight.size,
     active: activeRequests,
     queued: queuedRequests.length,
+    concurrency: maxActiveRequests,
     paused: backgroundPaused,
   };
 }

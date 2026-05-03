@@ -60,6 +60,21 @@ function formatDisplayDate(value: string | undefined): string | undefined {
   return `${day}-${month}-${year}`;
 }
 
+function compactInput(value: string): string {
+  return value.trim().replace(/\s+/g, '');
+}
+
+function normalizeLicenseKeyInput(value: string): string {
+  const compact = compactInput(value);
+  return compact.slice(0, LICENSE_PREFIX.length).toUpperCase() === LICENSE_PREFIX
+    ? `${LICENSE_PREFIX}${compact.slice(LICENSE_PREFIX.length)}`
+    : compact;
+}
+
+function normalizeActivationCodeInput(value: string): string {
+  return compactInput(value).toUpperCase();
+}
+
 function validateEntitlementShape(entitlement: LicenseEntitlement): string | null {
   if (entitlement.product !== PRODUCT_ID) return 'This key is for a different product.';
   if (!entitlement.name?.trim()) return 'License owner name is missing.';
@@ -144,7 +159,7 @@ function mergeEntitlement(
 }
 
 export function validateLicenseKey(key: string): LicenseValidation {
-  const rawKey = key.trim();
+  const rawKey = normalizeLicenseKeyInput(key);
   if (!rawKey) {
     return { valid: false, message: 'Enter a license key.', status: 'unknown' };
   }
@@ -231,23 +246,25 @@ async function fetchLicenseJson(pathname: string, init?: RequestInit): Promise<R
 }
 
 export async function activateLicenseInput(input: string): Promise<LicenseValidation> {
-  const trimmed = input.trim();
+  const trimmed = compactInput(input);
   if (!trimmed) {
     return { valid: false, message: 'Enter a license key.', status: 'unknown' };
   }
 
-  if (trimmed.startsWith(LICENSE_PREFIX)) {
-    const local = validateLicenseKey(trimmed);
+  const normalizedKey = normalizeLicenseKeyInput(trimmed);
+  if (normalizedKey.startsWith(LICENSE_PREFIX)) {
+    const local = validateLicenseKey(normalizedKey);
     if (!local.valid) return local;
-    return checkHostedLicenseStatus(trimmed, local);
+    return checkHostedLicenseStatus(normalizedKey, local);
   }
 
-  if (trimmed.startsWith(ACTIVATION_PREFIX)) {
+  const activationCode = normalizeActivationCodeInput(trimmed);
+  if (activationCode.startsWith(ACTIVATION_PREFIX)) {
     try {
       const payload = await fetchLicenseJson('/api/v1/license/resolve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({ activationCode: trimmed }),
+        body: JSON.stringify({ activationCode }),
       });
 
       if (!payload.allowed || !payload.licenseKey) {
@@ -255,7 +272,7 @@ export async function activateLicenseInput(input: string): Promise<LicenseValida
           valid: false,
           message: payload.message || 'License no longer active.',
           entitlement: payload.entitlement,
-          activationCode: payload.activationCode ?? trimmed,
+          activationCode: payload.activationCode ?? activationCode,
           status: payload.status ?? 'unknown',
         };
       }
@@ -267,7 +284,7 @@ export async function activateLicenseInput(input: string): Promise<LicenseValida
 
       return normalizeValidation({
         ...local,
-        activationCode: pickActivationCode(payload.activationCode, trimmed),
+        activationCode: pickActivationCode(payload.activationCode, activationCode),
         entitlement: mergeEntitlement(payload.entitlement, local.entitlement),
         activatedAt: normalizeDate(payload.activatedAt) ?? local.activatedAt,
         expiresAt: normalizeDate(payload.expiresAt) ?? local.expiresAt,
@@ -283,7 +300,7 @@ export async function activateLicenseInput(input: string): Promise<LicenseValida
       return {
         valid: false,
         message: 'Could not reach the license service.',
-        activationCode: trimmed,
+        activationCode,
         status: 'unknown',
       };
     }

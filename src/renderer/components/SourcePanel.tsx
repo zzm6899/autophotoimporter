@@ -19,12 +19,18 @@ export function SourcePanel() {
   const [catalogStats, setCatalogStats] = useState<CatalogStats | null>(null);
   const [watchFolders, setWatchFolders] = useState<WatchFolder[]>([]);
   const [watchNotice, setWatchNotice] = useState<string | null>(null);
+  const sourceChangeLocked = phase === 'scanning' || phase === 'importing';
+  const sourceBusyTitle = phase === 'importing'
+    ? 'Import is running. Wait for it to finish before changing source.'
+    : 'Scan is running. Wait for it to finish before changing source.';
 
   useEffect(() => {
-    const openFtpSource = () => dispatch({ type: 'SET_SOURCE_KIND', kind: 'ftp' });
+    const openFtpSource = () => {
+      if (!sourceChangeLocked) dispatch({ type: 'SET_SOURCE_KIND', kind: 'ftp' });
+    };
     window.addEventListener('photo-importer:open-ftp-source', openFtpSource);
     return () => window.removeEventListener('photo-importer:open-ftp-source', openFtpSource);
-  }, [dispatch]);
+  }, [dispatch, sourceChangeLocked]);
 
   useEffect(() => {
     let cancelled = false;
@@ -67,6 +73,7 @@ export function SourcePanel() {
   }, [dispatch, phase, startScan]);
 
   const handleSelectVolume = (volumePath: string) => {
+    if (sourceChangeLocked) return;
     dispatch({ type: 'SELECT_SOURCE', path: volumePath });
     startScan(volumePath);
   };
@@ -75,6 +82,7 @@ export function SourcePanel() {
     e.preventDefault();
     e.stopPropagation();
     setDragOver(false);
+    if (sourceChangeLocked) return;
     const items = Array.from(e.dataTransfer.files);
     if (items.length === 0) return;
     const folderPath = (items[0] as { path?: string }).path;
@@ -82,13 +90,14 @@ export function SourcePanel() {
     dispatch({ type: 'SET_SOURCE_KIND', kind: 'volume' });
     dispatch({ type: 'SELECT_SOURCE', path: folderPath });
     startScan(folderPath);
-  }, [dispatch, startScan]);
+  }, [dispatch, sourceChangeLocked, startScan]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (sourceChangeLocked) return;
     setDragOver(true);
-  }, []);
+  }, [sourceChangeLocked]);
 
   const handleDragLeave = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -96,6 +105,7 @@ export function SourcePanel() {
   }, []);
 
   const handleImportAllCards = () => {
+    if (sourceChangeLocked) return;
     const dcimVolumes = [...volumes]
       .filter((v) => v.hasDcim)
       .sort((a, b) => Number(b.hasDcim ?? false) - Number(a.hasDcim ?? false));
@@ -106,6 +116,7 @@ export function SourcePanel() {
   };
 
   const handleChooseFolder = async () => {
+    if (sourceChangeLocked) return;
     const folder = await window.electronAPI.selectFolder('Select Source Folder');
     if (folder) {
       dispatch({ type: 'SELECT_SOURCE', path: folder });
@@ -135,23 +146,29 @@ export function SourcePanel() {
         <div className="flex items-center gap-px bg-surface border border-border rounded overflow-hidden">
           <button
             onClick={() => dispatch({ type: 'SET_SOURCE_KIND', kind: 'volume' })}
+            disabled={sourceChangeLocked}
             className={`px-1.5 py-0.5 text-[10px] transition-colors ${
-              sourceKind === 'volume'
+              sourceChangeLocked
+                ? 'cursor-not-allowed text-text-muted opacity-50'
+                : sourceKind === 'volume'
                 ? 'bg-surface-raised text-text'
                 : 'text-text-muted hover:text-text'
             }`}
-            title="Import from a local drive / SD card"
+            title={sourceChangeLocked ? sourceBusyTitle : 'Import from a local drive / SD card'}
           >
             Drive
           </button>
           <button
             onClick={() => dispatch({ type: 'SET_SOURCE_KIND', kind: 'ftp' })}
+            disabled={sourceChangeLocked}
             className={`px-1.5 py-0.5 text-[10px] transition-colors ${
-              sourceKind === 'ftp'
+              sourceChangeLocked
+                ? 'cursor-not-allowed text-text-muted opacity-50'
+                : sourceKind === 'ftp'
                 ? 'bg-surface-raised text-text'
                 : 'text-text-muted hover:text-text'
             }`}
-            title="Import from a camera or server via FTP"
+            title={sourceChangeLocked ? sourceBusyTitle : 'Import from a camera or server via FTP'}
           >
             FTP
           </button>
@@ -168,7 +185,7 @@ export function SourcePanel() {
                 {volumes.filter((v) => v.hasDcim).length >= 2 ? (
                   <button
                     onClick={handleImportAllCards}
-                    disabled={phase === 'importing' || (phase === 'scanning' && volumeImportQueue.length > 0)}
+                    disabled={sourceChangeLocked}
                     className="block w-full rounded bg-emerald-600/15 px-2 py-1.5 text-left text-[11px] font-medium text-emerald-300 hover:bg-emerald-600/25 disabled:opacity-40 transition-colors"
                     title={`Import all ${volumes.filter((v) => v.hasDcim).length} cards sequentially, one after another.`}
                   >
@@ -188,6 +205,7 @@ export function SourcePanel() {
                     volume={volume}
                     isSelected={selectedSource === volume.path}
                     onSelect={handleSelectVolume}
+                    disabled={sourceChangeLocked}
                   />
                 ))}
             </div>
@@ -197,7 +215,9 @@ export function SourcePanel() {
           <div className="px-2.5 py-1.5 space-y-1.5">
             <button
               onClick={handleChooseFolder}
-              className="w-full px-2 py-1 text-xs bg-surface-raised hover:bg-border rounded text-text transition-colors text-left cursor-pointer"
+              disabled={sourceChangeLocked}
+              className="w-full px-2 py-1 text-xs bg-surface-raised hover:bg-border rounded text-text transition-colors text-left cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-surface-raised"
+              title={sourceChangeLocked ? sourceBusyTitle : 'Choose a source folder'}
             >
               Choose Folder…
             </button>
@@ -248,14 +268,6 @@ export function SourcePanel() {
                 Rescan
               </button>
             )}
-            {phase === 'scanning' && (
-              <button
-                onClick={() => scanPaused ? resumeScan() : pauseScan()}
-                className="text-[10px] text-text-secondary hover:text-text transition-colors"
-              >
-                {scanPaused ? 'Resume' : 'Pause'}
-              </button>
-            )}
             {/* Eject is best-effort. Only show for removable volumes that
                 are actually in the detected list (Choose Folder... sources
                 can't be ejected) */}
@@ -265,14 +277,16 @@ export function SourcePanel() {
               return (
                 <button
                   onClick={async () => {
+                    if (sourceChangeLocked) return;
                     const res = await window.electronAPI.ejectVolume(selectedSource);
                     if (!res.ok) {
                       // Soft fail: surface the reason but don't crash the UI.
                       alert(`Couldn't eject: ${res.error ?? 'unknown error'}`);
                     }
                   }}
-                  className="text-[10px] text-text-secondary hover:text-text transition-colors"
-                  title="Safely eject this volume"
+                  disabled={sourceChangeLocked}
+                  className="text-[10px] text-text-secondary hover:text-text transition-colors disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-text-secondary"
+                  title={sourceChangeLocked ? 'Wait for the current scan/import before ejecting this volume.' : 'Safely eject this volume'}
                 >
                   Eject
                 </button>

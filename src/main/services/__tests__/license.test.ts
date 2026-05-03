@@ -44,6 +44,18 @@ describe('validateLicenseKey', () => {
     expect(result.entitlement?.tier).toBe('Full access');
   });
 
+  it('accepts copied license keys with lowercase prefix and whitespace', () => {
+    const key = makeLicense({
+      n: 'Copy Paste Customer',
+      i: '24-04-2026',
+      x: '31-12-2027',
+    }).replace('PI1-', 'pi1-\n');
+
+    const result = validateLicenseKey(key);
+    expect(result.valid).toBe(true);
+    expect(result.entitlement?.name).toBe('Copy Paste Customer');
+  });
+
   it('rejects expired licenses', () => {
     const key = makeLicense({
       n: 'Expired Customer',
@@ -100,11 +112,12 @@ describe('validateLicenseKey', () => {
       }),
     })) as unknown as typeof fetch);
 
-    const result = await activateLicenseInput('PIC-TEST-1234-ABCD');
+    const result = await activateLicenseInput(' pic-test-1234-abcd ');
     expect(result.valid).toBe(true);
     expect(result.entitlement?.expiresAt).toBe('2026-05-11');
     expect(result.message).toContain('active');
     expect(String(vi.mocked(fetch).mock.calls[0]?.[0])).toBe('https://keptra.z2hs.au/api/v1/license/resolve');
+    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0]?.[1]?.body)).activationCode).toBe('PIC-TEST-1234-ABCD');
   });
 
   it('preserves an existing activation code when hosted status omits it', async () => {

@@ -53,17 +53,18 @@ export function useImport() {
     }
 
     // Selection priority:
-    //   1. Click-selected files (selectedPaths) — what the user has highlighted
-    //      in the grid. If present, import ONLY these.
-    //   2. Pick/reject flags — if the user has picked any file, import the picks.
-    //   3. Everything that isn't rejected and (when enabled) isn't a duplicate.
+    //   1. Explicit override from a button flow.
+    //   2. Click-selected files (selectedPaths).
+    //   3. Queue.
+    //   4. Pick/reject flags.
+    //   5. Everything that isn't rejected and (when enabled) isn't a duplicate.
     let pathsToImport: string[] | undefined;
     if (options?.selectedPathsOverride?.length) {
       pathsToImport = options.selectedPathsOverride;
-    } else if (queuedPaths.length > 0) {
-      pathsToImport = queuedPaths;
     } else if (selectedPaths.length > 0) {
       pathsToImport = selectedPaths;
+    } else if (queuedPaths.length > 0) {
+      pathsToImport = queuedPaths;
     } else {
       const picked = files.filter((f) => f.pick === 'selected').map((f) => f.path);
       if (picked.length > 0) {

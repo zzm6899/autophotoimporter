@@ -28,6 +28,7 @@ interface SingleViewProps {
   file: MediaFile;
   index: number;
   total: number;
+  aiPaused?: boolean;
 }
 
 const MIN_ZOOM = 1;
@@ -74,7 +75,7 @@ function orientationQuarterTurns(orientation?: number) {
   }
 }
 
-export function SingleView({ file, index, total }: SingleViewProps) {
+export function SingleView({ file, index, total, aiPaused = false }: SingleViewProps) {
   const [preview, setPreview] = useState<string | undefined>(undefined);
   const [detailPreview, setDetailPreview] = useState<string | undefined>(undefined);
   const [loading, setLoading] = useState(false);
@@ -242,6 +243,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
   }, [file.thumbnail]);
 
   useEffect(() => {
+    if (aiPaused) return;
     if (file.type !== 'photo') return;
 
     let cancelled = false;
@@ -325,7 +327,7 @@ export function SingleView({ file, index, total }: SingleViewProps) {
       clearTimeout(timer);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [file.path, file.type]);
+  }, [aiPaused, file.path, file.type]);
 
   /*
     Keep the thumbnail visible while the full preview is being generated and

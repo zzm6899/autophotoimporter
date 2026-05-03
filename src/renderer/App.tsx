@@ -19,6 +19,7 @@ import { TutorialOverlay } from './components/TutorialOverlay';
 import { LicenseOverlay } from './components/LicenseOverlay';
 import { LicenseBanner } from './components/LicenseBanner';
 import { playCompletionSound } from './utils/completionSound';
+import { setPreviewConcurrency } from './utils/previewCache';
 
 function AppInner() {
   useVolumes();
@@ -39,11 +40,15 @@ function AppInner() {
     queuedPaths,
     filter,
     focusedIndex,
+    focusedPath,
+    previewConcurrency,
     importResult,
   } = useAppState();
   const { startScan } = useFileScanner();
   const { startImport } = useImport();
   const lastAutoImportDestRef = useRef<string>('');
+  const sessionIdRef = useRef<string>('');
+  const sessionSourceRef = useRef<string | null>(null);
 
   // Stable refs so queue-orchestration effect doesn't go stale
   const volumeImportQueueRef = useRef(volumeImportQueue);
@@ -60,6 +65,10 @@ function AppInner() {
     });
     return () => { unsub(); };
   }, [dispatch]);
+
+  useEffect(() => {
+    setPreviewConcurrency(previewConcurrency);
+  }, [previewConcurrency]);
 
   // Multi-SD sequential import orchestration
   useEffect(() => {
@@ -112,9 +121,13 @@ function AppInner() {
 
   useEffect(() => {
     if (!selectedSource || files.length === 0 || phase === 'scanning' || phase === 'importing') return;
-    const focusedPath = focusedIndex >= 0 ? files[focusedIndex]?.path : undefined;
+    if (sessionSourceRef.current !== selectedSource || !sessionIdRef.current) {
+      sessionSourceRef.current = selectedSource;
+      sessionIdRef.current = `${Date.now()}-${Math.abs([...selectedSource].reduce((sum, ch) => sum + ch.charCodeAt(0), 0))}`;
+    }
+    const sessionFocusedPath = focusedPath ?? (focusedIndex >= 0 ? files[focusedIndex]?.path : undefined);
     const session = {
-      id: `${Date.now()}-${Math.abs([...selectedSource].reduce((sum, ch) => sum + ch.charCodeAt(0), 0))}`,
+      id: sessionIdRef.current,
       updatedAt: new Date().toISOString(),
       sourcePath: selectedSource,
       destRoot: destination,
@@ -122,7 +135,7 @@ function AppInner() {
       selectedPaths,
       queuedPaths,
       filter,
-      focusedPath,
+      focusedPath: sessionFocusedPath,
       importLedgerId: importResult?.ledgerId,
       stats: {
         totalFiles: files.length,
@@ -136,7 +149,7 @@ function AppInner() {
       void window.electronAPI.saveSession(session).catch(() => undefined);
     }, 1200);
     return () => window.clearTimeout(timer);
-  }, [selectedSource, destination, files, selectedPaths, queuedPaths, filter, focusedIndex, phase, importResult?.ledgerId]);
+  }, [selectedSource, destination, files, selectedPaths, queuedPaths, filter, focusedIndex, focusedPath, phase, importResult?.ledgerId]);
 
   return (
     <>

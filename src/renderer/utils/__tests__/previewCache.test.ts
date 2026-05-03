@@ -95,4 +95,33 @@ describe('previewCache scheduler', () => {
     await expect(highPriority).resolves.toBe('focused-preview');
     expect(lowPriority).not.toBe(highPriority);
   });
+
+  it('uses configured preview concurrency to drain queued requests', async () => {
+    const activeResolvers: Array<(value: string | undefined) => void> = [];
+    const requestedPaths: string[] = [];
+    installPreviewMock((filePath) => {
+      requestedPaths.push(filePath);
+      return new Promise<string | undefined>((resolve) => {
+        activeResolvers.push(resolve);
+      });
+    });
+    const { getCachedPreview, setPreviewConcurrency, getPreviewCacheStats } = await loadPreviewCache();
+
+    setPreviewConcurrency(2);
+    void getCachedPreview('active-a.jpg', 'preview', 'normal');
+    void getCachedPreview('active-b.jpg', 'preview', 'normal');
+    void getCachedPreview('queued-a.jpg', 'preview', 'normal');
+    void getCachedPreview('queued-b.jpg', 'preview', 'normal');
+
+    expect(getPreviewCacheStats().active).toBe(2);
+    expect(requestedPaths).toEqual(['active-a.jpg', 'active-b.jpg']);
+
+    setPreviewConcurrency(4);
+    await Promise.resolve();
+
+    expect(getPreviewCacheStats().active).toBe(4);
+    expect(requestedPaths).toEqual(['active-a.jpg', 'active-b.jpg', 'queued-a.jpg', 'queued-b.jpg']);
+
+    activeResolvers.forEach((resolve, index) => resolve(`done-${index}`));
+  });
 });
