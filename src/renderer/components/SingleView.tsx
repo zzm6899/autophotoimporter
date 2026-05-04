@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import type { MediaFile, ViewOverlayPreferences } from '../../shared/types';
 import { buildExposure, formatFileSize } from '../utils/formatters';
 import { useAppState, useAppDispatch, useMergedFiles } from '../context/ImportContext';
@@ -108,6 +108,24 @@ export function SingleView({ file, index, total, aiPaused = false }: SingleViewP
   const anchor = exposureAnchorPath ? files.find((f) => f.path === exposureAnchorPath) : null;
   const isAnchor = anchor?.path === file.path;
   const anchorHasEV = typeof anchor?.exposureValue === 'number';
+  const currentFaceGroupFiles = useMemo(() => {
+    if (!file.faceGroupId) return [];
+    return files.filter((candidate) => candidate.faceGroupId === file.faceGroupId);
+  }, [file.faceGroupId, files]);
+  const currentFaceGroupStats = useMemo(() => {
+    if (currentFaceGroupFiles.length === 0) return null;
+    return {
+      photos: currentFaceGroupFiles.length,
+      faces: currentFaceGroupFiles.reduce((sum, candidate) => sum + (candidate.faceBoxes?.length ?? candidate.faceCount ?? 0), 0),
+      people: currentFaceGroupFiles.reduce((sum, candidate) => sum + (candidate.personBoxes?.length ?? candidate.personCount ?? 0), 0),
+    };
+  }, [currentFaceGroupFiles]);
+  const filterToCurrentFaceGroup = useCallback(() => {
+    if (!file.faceGroupId) return;
+    dispatch({ type: 'SET_FILTER', filter: `face:${encodeURIComponent(file.faceGroupId)}` });
+    dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' });
+    dispatch({ type: 'SET_FOCUSED', index: 0, path: file.path });
+  }, [dispatch, file.faceGroupId, file.path]);
   const evDelta =
     anchor && typeof anchor.exposureValue === 'number' && typeof file.exposureValue === 'number'
       ? file.exposureValue - anchor.exposureValue
@@ -569,6 +587,16 @@ export function SingleView({ file, index, total, aiPaused = false }: SingleViewP
             Quick preview
           </div>
         )}
+        {currentFaceGroupStats && (
+          <button
+            type="button"
+            onClick={filterToCurrentFaceGroup}
+            className="absolute right-3 top-3 z-20 rounded bg-violet-600/85 px-2 py-1 text-[11px] font-medium text-white shadow hover:bg-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-200"
+            title="Show only photos with this similar face group"
+          >
+            Same face: {currentFaceGroupStats.photos} photo{currentFaceGroupStats.photos === 1 ? '' : 's'} · {currentFaceGroupStats.faces} face{currentFaceGroupStats.faces === 1 ? '' : 's'}{currentFaceGroupStats.people > 0 ? ` · ${currentFaceGroupStats.people} people` : ''}
+          </button>
+        )}
 
         {/* Viewfinder corner ticks */}
         {imageSrc && (
@@ -622,16 +650,17 @@ export function SingleView({ file, index, total, aiPaused = false }: SingleViewP
         )}
         {!isZoomed && showFaceBoxes && imageSrc && (file.faceBoxes?.length ?? 0) > 0 && (
           <div
-            className="absolute inset-0 pointer-events-none z-[15]"
+            className={`absolute inset-0 z-[15] ${file.faceGroupId ? '' : 'pointer-events-none'}`}
             style={{
               transform: displayTransform,
               transformOrigin: 'center center',
             }}
           >
             {file.faceBoxes!.map((box, i) => (
-              <div
+              <button
+                type="button"
                 key={i}
-                className={`absolute rounded-sm shadow-[0_0_0_1px_rgba(0,0,0,0.4)] ${
+                className={`absolute rounded-sm bg-transparent p-0 shadow-[0_0_0_1px_rgba(0,0,0,0.4)] ${
                   file.faceDetection === 'estimated'
                     ? 'border border-dashed border-cyan-300/75'
                     : (box.eyeScore ?? 0) >= 2
@@ -644,9 +673,16 @@ export function SingleView({ file, index, total, aiPaused = false }: SingleViewP
                   width: `${box.width * 100}%`,
                   height: `${box.height * 100}%`,
                 }}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  filterToCurrentFaceGroup();
+                }}
                 title={file.faceDetection === 'estimated'
                   ? 'Estimated face region'
-                  : (box.eyeScore ?? 0) >= 2 ? 'Eyes open' : (box.eyeScore ?? 0) === 1 ? 'One eye visible' : 'Face detected'}
+                  : file.faceGroupId
+                    ? 'Show similar photos of this face'
+                    : (box.eyeScore ?? 0) >= 2 ? 'Eyes open' : (box.eyeScore ?? 0) === 1 ? 'One eye visible' : 'Face detected'}
+                aria-label={file.faceGroupId ? 'Show similar photos of this face' : 'Face detected'}
               />
             ))}
           </div>

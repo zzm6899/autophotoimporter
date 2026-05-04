@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, globalShortcut, shell } from 'electron';
+import { app, BrowserWindow, Menu, globalShortcut, shell, session } from 'electron';
 import path from 'node:path';
 import { existsSync, writeFileSync } from 'node:fs';
 import started from 'electron-squirrel-startup';
@@ -112,6 +112,7 @@ function isSafeExternalUrl(value: string): boolean {
   try {
     const url = new URL(value);
     if (url.protocol !== 'https:') return false;
+    if (url.username || url.password) return false;
     return [
       'keptra.z2hs.au',
       'updates.keptra.z2hs.au',
@@ -121,6 +122,75 @@ function isSafeExternalUrl(value: string): boolean {
     ].includes(url.hostname);
   } catch {
     return false;
+  }
+}
+
+function rendererContentSecurityPolicy(): string {
+  return [
+    "default-src 'self'",
+    "base-uri 'none'",
+    "object-src 'none'",
+    "frame-src 'none'",
+    "form-action 'none'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: file: blob:",
+    "media-src 'self' file: blob:",
+    "font-src 'self' data:",
+    "connect-src 'self' https://keptra.z2hs.au https://updates.keptra.z2hs.au https://admin.keptra.z2hs.au https://checkout.stripe.com",
+  ].join('; ');
+}
+
+const ALLOWED_RENDERER_PERMISSIONS = new Set(['clipboard-write', 'clipboard-sanitized-write']);
+
+function isTrustedRendererUrl(value?: string): boolean {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    if (url.protocol === 'file:') return true;
+    if (rendererDevServerUrl) {
+      return url.origin === new URL(rendererDevServerUrl).origin;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function configureSessionSecurity(): void {
+  const appSession = session.defaultSession;
+
+  appSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    if (
+      ALLOWED_RENDERER_PERMISSIONS.has(permission) &&
+      isTrustedRendererUrl(details.requestingUrl || webContents.getURL())
+    ) {
+      callback(true);
+      return;
+    }
+    log.warn('Blocked renderer permission request', {
+      permission,
+      requestingUrl: details.requestingUrl,
+      frameUrl: webContents.getURL(),
+    });
+    callback(false);
+  });
+  appSession.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
+    return ALLOWED_RENDERER_PERMISSIONS.has(permission) &&
+      isTrustedRendererUrl(requestingOrigin || webContents?.getURL());
+  });
+
+  if (!rendererDevServerUrl) {
+    appSession.webRequest.onHeadersReceived((details, callback) => {
+      callback({
+        responseHeaders: {
+          ...details.responseHeaders,
+          'Content-Security-Policy': [rendererContentSecurityPolicy()],
+          'X-Content-Type-Options': ['nosniff'],
+          'Referrer-Policy': ['no-referrer'],
+        },
+      });
+    });
   }
 }
 
@@ -146,6 +216,8 @@ const createWindow = () => {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
       // Keep packaged builds sandboxed. The Forge/Vite dev server can crash
       // Chromium's sandboxed renderer on some Windows setups before React
       // starts, so local `npm start` runs without the renderer sandbox.
@@ -181,6 +253,10 @@ const createWindow = () => {
     } else {
       log.info(`[renderer] ${message}`, payload);
     }
+  });
+
+  mainWindow.webContents.on('will-attach-webview', (event) => {
+    event.preventDefault();
   });
 
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
@@ -390,6 +466,7 @@ const createWindow = () => {
 
 app.on('ready', () => {
   log.info('App ready');
+  configureSessionSecurity();
   registerIpcHandlers();
   createWindow();
 

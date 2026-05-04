@@ -32,6 +32,7 @@ vi.mock('node:fs/promises', () => ({
   writeFile: vi.fn().mockResolvedValue(undefined),
   mkdir: vi.fn().mockResolvedValue(undefined),
   rename: vi.fn().mockResolvedValue(undefined),
+  chmod: vi.fn().mockResolvedValue(undefined),
   statfs: vi.fn(),
 }));
 
@@ -106,12 +107,13 @@ import { registerIpcHandlers } from '../ipc-handlers';
 import { importFiles } from '../services/import-engine';
 import { scanFiles } from '../services/file-scanner';
 import { checkForUpdate, fetchUpdateHistory } from '../services/update-checker';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, chmod } from 'node:fs/promises';
 
 const mockImportFiles = vi.mocked(importFiles);
 const mockScanFiles = vi.mocked(scanFiles);
 const mockReadFile = vi.mocked(readFile);
 const mockWriteFile = vi.mocked(writeFile);
+const mockChmod = vi.mocked(chmod);
 const mockCheckForUpdate = vi.mocked(checkForUpdate);
 const mockFetchUpdateHistory = vi.mocked(fetchUpdateHistory);
 
@@ -127,9 +129,13 @@ describe('IPC Handlers', () => {
   beforeEach(() => {
     mockHandle.mockClear();
     mockOn.mockClear();
+    mockOpenPath.mockClear();
+    mockOpenExternal.mockClear();
     mockReadFile.mockReset();
     mockReadFile.mockRejectedValue(new Error('ENOENT'));
     mockWriteFile.mockClear();
+    mockChmod.mockReset();
+    mockChmod.mockResolvedValue(undefined);
     mockCheckForUpdate.mockReset();
     mockCheckForUpdate.mockResolvedValue({ status: 'up-to-date', currentVersion: '1.1.0', latestVersion: '1.1.0' });
     mockFetchUpdateHistory.mockReset();
@@ -326,6 +332,37 @@ describe('IPC Handlers', () => {
         message: 'Invalid URL payload.',
       });
       expect(mockOpenExternal).not.toHaveBeenCalled();
+    });
+
+    it('blocks opening executable paths through shell.openPath', async () => {
+      const handler = getHandler('dialog:open-path');
+      const result = await handler({}, 'C:\\Windows\\System32\\calc.exe') as any;
+      expect(result).toEqual({
+        ok: false,
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid path payload.',
+      });
+      expect(mockOpenPath).not.toHaveBeenCalled();
+    });
+
+    it('rejects invalid face analysis paths', async () => {
+      const handler = getHandler('face:analyze');
+      const result = await handler({}, ['C:\\Users\\test\\photo.jpg', 'C:\\Windows\\System32\\calc.exe']) as any;
+      expect(result).toEqual({
+        ok: false,
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid face analysis payload.',
+      });
+    });
+
+    it('rejects invalid face concurrency values', async () => {
+      const handler = getHandler('face:set-concurrency');
+      const result = await handler({}, 1000) as any;
+      expect(result).toEqual({
+        ok: false,
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid face concurrency payload.',
+      });
     });
 
     it('rejects malformed settings patch', async () => {

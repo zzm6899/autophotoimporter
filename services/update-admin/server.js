@@ -93,7 +93,7 @@ const trialCooldownDays = Math.max(1, Number.parseInt(process.env.TRIAL_COOLDOWN
 // CORS origins allowed to call public API endpoints from the Electron renderer
 // and from the website. Legacy Culler hosts stay allowed so old app builds
 // can still check/update while all public URLs are rewritten to Keptra.
-const corsAllowedOrigins = (process.env.CORS_ALLOWED_ORIGINS || 'https://keptra.z2hs.au,https://admin.keptra.z2hs.au,https://updates.keptra.z2hs.au,https://culler.z2hs.au,https://admin.culler.z2hs.au,https://updates.culler.z2hs.au,http://keptra.z2hs.au,http://admin.keptra.z2hs.au,http://updates.keptra.z2hs.au,http://culler.z2hs.au,http://admin.culler.z2hs.au,http://updates.culler.z2hs.au')
+const corsAllowedOrigins = (process.env.CORS_ALLOWED_ORIGINS || 'https://keptra.z2hs.au,https://admin.keptra.z2hs.au,https://updates.keptra.z2hs.au,https://culler.z2hs.au,https://admin.culler.z2hs.au,https://updates.culler.z2hs.au')
   .split(',').map((o) => o.trim()).filter(Boolean);
 
 const KEPTRA_LOGO_SVG = '<svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect width="256" height="256" rx="56" fill="#0D1416"/><rect x="13" y="13" width="230" height="230" rx="46" fill="#142629" stroke="#37B69F" stroke-width="12"/><path d="M128 49L178 136H78L128 49Z" fill="#37B69F"/><path d="M211 116L161 202L112 116H211Z" fill="#52D7B5"/><path d="M55 152L104 67L154 152H55Z" fill="#2585A1"/><path d="M88 139L121 173L190 92" stroke="#F6FBFA" stroke-width="21" stroke-linecap="round" stroke-linejoin="round"/><path d="M67 67H101M67 67V101M188 67H222M222 67V101M67 188V222H101M188 222H222V188" stroke="#F6FBFA" stroke-opacity=".78" stroke-width="11" stroke-linecap="round"/></svg>';
@@ -101,6 +101,107 @@ const KEPTRA_LOGO_SVG = '<svg viewBox="0 0 256 256" fill="none" xmlns="http://ww
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL || 'postgres://photo_importer:photo_importer@db:5432/photo_importer_updates',
 });
+
+function securityHeaders(req, res, next) {
+  const connectSrc = [
+    "'self'",
+    'https://keptra.z2hs.au',
+    'https://admin.keptra.z2hs.au',
+    'https://updates.keptra.z2hs.au',
+    'https://api.stripe.com',
+  ].join(' ');
+  res.setHeader('Content-Security-Policy', [
+    "default-src 'self'",
+    "base-uri 'self'",
+    "object-src 'none'",
+    "frame-ancestors 'none'",
+    "img-src 'self' data: https:",
+    "font-src 'self' data:",
+    "style-src 'self' 'unsafe-inline'",
+    "script-src 'self' 'unsafe-inline'",
+    `connect-src ${connectSrc}`,
+    "form-action 'self' https://checkout.stripe.com",
+    'upgrade-insecure-requests',
+  ].join('; '));
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  return next();
+}
+
+function adminNoStore(_req, res, next) {
+  res.setHeader('Cache-Control', 'no-store');
+  return next();
+}
+
+function clientKey(req) {
+  const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  return forwarded || req.ip || req.socket?.remoteAddress || 'unknown';
+}
+
+const rateLimitBuckets = new Map();
+
+function rateLimit({ name, windowMs, max }) {
+  return (req, res, next) => {
+    const now = Date.now();
+    const key = `${name}:${clientKey(req)}`;
+    const current = rateLimitBuckets.get(key);
+    const bucket = current && current.resetAt > now
+      ? current
+      : { count: 0, resetAt: now + windowMs };
+    bucket.count += 1;
+    rateLimitBuckets.set(key, bucket);
+
+    if (rateLimitBuckets.size > 5000) {
+      for (const [bucketKey, value] of rateLimitBuckets) {
+        if (value.resetAt <= now) rateLimitBuckets.delete(bucketKey);
+      }
+    }
+
+    res.setHeader('RateLimit-Limit', String(max));
+    res.setHeader('RateLimit-Remaining', String(Math.max(0, max - bucket.count)));
+    res.setHeader('RateLimit-Reset', String(Math.ceil(bucket.resetAt / 1000)));
+    if (bucket.count > max) {
+      return res.status(429).json({ error: 'Too many requests. Please wait and try again.' });
+    }
+    return next();
+  };
+}
+
+function sameOriginRequest(req) {
+  const value = req.header('origin') || req.header('referer');
+  if (!value) return true;
+  try {
+    return new URL(value).host === req.get('host');
+  } catch {
+    return false;
+  }
+}
+
+function requireSameOriginPost(req, res, next) {
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) return next();
+  if (sameOriginRequest(req)) return next();
+  if ((req.header('accept') || '').includes('application/json')) {
+    return res.status(403).json({ error: 'Blocked cross-site admin request.' });
+  }
+  return res.status(403).send(htmlPage('Request Blocked', '<div class="panel"><h1>Request blocked</h1><p class="bad">This admin action must be submitted from the Keptra admin page.</p></div>'));
+}
+
+function safeTokenEquals(left, right) {
+  if (!left || !right) return false;
+  const leftBuffer = Buffer.from(String(left));
+  const rightBuffer = Buffer.from(String(right));
+  if (leftBuffer.length !== rightBuffer.length) return false;
+  return crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+const loginRateLimit = rateLimit({ name: 'login', windowMs: 15 * 60 * 1000, max: 8 });
+const licenseResolveRateLimit = rateLimit({ name: 'license-resolve', windowMs: 15 * 60 * 1000, max: 60 });
+const updateCheckRateLimit = rateLimit({ name: 'update-check', windowMs: 15 * 60 * 1000, max: 300 });
+const trialRateLimit = rateLimit({ name: 'trial', windowMs: 60 * 60 * 1000, max: 10 });
+const checkoutRateLimit = rateLimit({ name: 'checkout', windowMs: 15 * 60 * 1000, max: 30 });
 
 // --- Date formatting helpers ---
 function fmtTime(val) {
@@ -210,18 +311,12 @@ function pruneOldArtifacts(keepCount = defaultArtifactKeepCount) {
 
 function getDiskStats(dirPath) {
   try {
-    const { execSync } = require('node:child_process');
-    const out = execSync(`df -k "${dirPath}" 2>/dev/null | tail -1`).toString().trim();
-    const parts = out.split(/\s+/);
-    // df -k: Filesystem, 1K-blocks, Used, Available, Use%, Mounted
-    if (parts.length >= 5) {
-      return {
-        total: parseInt(parts[1]) * 1024,
-        used: parseInt(parts[2]) * 1024,
-        available: parseInt(parts[3]) * 1024,
-        pct: parts[4],
-      };
-    }
+    const stats = fs.statfsSync(dirPath);
+    const total = Number(stats.blocks) * Number(stats.bsize);
+    const available = Number(stats.bavail) * Number(stats.bsize);
+    const used = Math.max(0, total - available);
+    const pct = total > 0 ? `${Math.round((used / total) * 100)}%` : '0%';
+    return { total, used, available, pct };
   } catch {}
   return null;
 }
@@ -235,6 +330,9 @@ app.use((req, res, next) => {
   express.json({ limit: '2mb' })(req, res, next);
 });
 app.use(cookieParser());
+app.use(securityHeaders);
+app.use('/admin', adminNoStore, requireSameOriginPost);
+app.use('/stripe/webhook/test', requireSameOriginPost);
 
 // CORS for public API endpoints called from the Electron renderer + website.
 // Allows localhost:* in development; only listed origins in production.
@@ -260,13 +358,14 @@ app.use('/artifacts', express.static(artifactsRoot));
 app.use(express.static(path.join(__dirname, 'web')));
 
 function htmlPage(title, body) {
+  const safeTitle = escapeHtml(title);
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="dark" />
-  <title>${title} — Keptra Admin</title>
+  <title>${safeTitle} — Keptra Admin</title>
   <script>
     // Convert all <time data-ts="..."> elements to local browser time on load
     document.addEventListener('DOMContentLoaded', () => {
@@ -564,11 +663,11 @@ function normalizeArtifactUrl(value, platform) {
 }
 
 function signSession(payload) {
-  return jwt.sign(payload, sessionSecret, { expiresIn: '12h' });
+  return jwt.sign(payload, sessionSecret, { expiresIn: '12h', algorithm: 'HS256' });
 }
 
 function signDownloadToken(payload) {
-  return jwt.sign(payload, updateSecret, { expiresIn: '7d' });
+  return jwt.sign(payload, updateSecret, { expiresIn: '7d', algorithm: 'HS256' });
 }
 
 function escapeHtml(value) {
@@ -818,7 +917,7 @@ function authSession(req, res, next) {
   const token = req.cookies.admin_session;
   if (!token) return res.redirect(HOME_URL);
   try {
-    req.admin = jwt.verify(token, sessionSecret);
+    req.admin = jwt.verify(token, sessionSecret, { algorithms: ['HS256'] });
     return next();
   } catch {
     return res.redirect(HOME_URL);
@@ -827,7 +926,7 @@ function authSession(req, res, next) {
 
 function requireAdminApiToken(req, res, next) {
   const token = req.header('authorization')?.replace(/^Bearer\s+/i, '');
-  if (!adminApiToken || token !== adminApiToken) {
+  if (!adminApiToken || !safeTokenEquals(token, adminApiToken)) {
     return res.status(401).json({ error: 'Invalid admin API token.' });
   }
   return next();
@@ -1458,7 +1557,7 @@ app.get('/admin/login', (req, res, next) => {
   const token = req.cookies.admin_session;
   if (!token) return next();
   try {
-    jwt.verify(token, sessionSecret);
+    jwt.verify(token, sessionSecret, { algorithms: ['HS256'] });
     return res.redirect('/admin');
   } catch {
     return next();
@@ -1495,7 +1594,7 @@ app.get('/admin/login', (req, res, next) => {
   `));
 });
 
-app.post('/admin/login', async (req, res) => {
+app.post('/admin/login', loginRateLimit, async (req, res) => {
   const { email, password } = req.body;
   const result = await pool.query('SELECT * FROM admin_users WHERE email = $1', [email]);
   const user = result.rows[0];
@@ -3127,6 +3226,9 @@ app.post('/admin/api/artifacts/upload', requireAdminApiToken, express.raw({ type
 
     const platformDir = path.join(artifactsRoot, platform);
     const targetPath = path.join(platformDir, filename);
+    if (!isPathInside(platformDir, targetPath)) {
+      return res.status(400).json({ error: 'Invalid artifact path.' });
+    }
     await fs.promises.mkdir(platformDir, { recursive: true });
     await fs.promises.writeFile(targetPath, body);
 
@@ -3142,7 +3244,7 @@ app.post('/admin/api/artifacts/upload', requireAdminApiToken, express.raw({ type
   }
 });
 
-app.post('/api/v1/license/resolve', async (req, res) => {
+app.post('/api/v1/license/resolve', licenseResolveRateLimit, async (req, res) => {
   const activationCode = normalizeActivationCode(req.body.activationCode);
   const deviceId = req.header('x-device-id');
   const deviceName = req.header('x-device-name');
@@ -3247,7 +3349,7 @@ app.post('/api/v1/license/resolve', async (req, res) => {
   });
 });
 
-app.get('/api/v1/license/status', async (req, res) => {
+app.get('/api/v1/license/status', licenseResolveRateLimit, async (req, res) => {
   const licenseKey = req.header('x-license-key');
   const deviceId = req.header('x-device-id');
   const deviceName = req.header('x-device-name');
@@ -3305,7 +3407,7 @@ app.get('/api/v1/license/status', async (req, res) => {
   });
 });
 
-app.get('/api/v1/app/update', async (req, res) => {
+app.get('/api/v1/app/update', updateCheckRateLimit, async (req, res) => {
   const licenseKey = req.header('x-license-key');
   const deviceId = req.header('x-device-id');
   const deviceName = req.header('x-device-name');
@@ -3401,12 +3503,6 @@ function setPublicCors(req, res) {
     'https://culler.z2hs.au',
     'https://admin.culler.z2hs.au',
     'https://updates.culler.z2hs.au',
-    'http://keptra.z2hs.au',
-    'http://admin.keptra.z2hs.au',
-    'http://updates.keptra.z2hs.au',
-    'http://culler.z2hs.au',
-    'http://admin.culler.z2hs.au',
-    'http://updates.culler.z2hs.au',
   ];
   res.setHeader('Access-Control-Allow-Origin', allowed.includes(origin) ? origin : '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -3473,7 +3569,7 @@ app.get('/api/v1/app/history', async (req, res) => {
 app.get('/api/v1/app/download/:releaseId', async (req, res) => {
   try {
     const token = req.query.token;
-    const payload = jwt.verify(String(token || ''), updateSecret);
+    const payload = jwt.verify(String(token || ''), updateSecret, { algorithms: ['HS256'] });
     const releaseId = Number(req.params.releaseId);
     if (!payload || payload.releaseId !== releaseId) {
       if (wantsHtml(req)) return res.redirect(HOME_URL);
@@ -3657,7 +3753,7 @@ function formatExpiryLabel(expiryDate) {
 // Trial endpoint  POST /api/v1/trial/request
 // Body: { name, email }
 // ---------------------------------------------------------------------------
-app.post('/api/v1/trial/request', async (req, res) => {
+app.post('/api/v1/trial/request', trialRateLimit, async (req, res) => {
   const { name, email } = req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ error: 'name is required.' });
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
@@ -3746,7 +3842,7 @@ app.get('/stripe/webhook/status', authSession, async (_req, res) => {
 });
 
 // Manual test endpoint to simulate a webhook (for debugging)
-app.post('/stripe/webhook/test', authSession, async (req, res) => {
+app.post('/stripe/webhook/test', checkoutRateLimit, authSession, async (req, res) => {
   const { session_id, email, name } = req.query;
 
   if (!session_id || !email) {
@@ -4176,7 +4272,7 @@ app.get('/api/v1/pricing', apiCors, async (_req, res) => {
   }
 });
 
-app.post('/api/v1/checkout/create', async (req, res) => {
+app.post('/api/v1/checkout/create', checkoutRateLimit, async (req, res) => {
   if (!stripeSecretKey) return res.status(503).json({ error: 'Payments not configured.' });
   const { plan, name, email, maxDevices, extensionCode } = req.body || {};
   const customerName = String(name || '').trim();
@@ -4323,7 +4419,7 @@ async function ensurePricingSchema() {
 // Body: { activationCode, newDeviceCount }
 // Creates a Stripe Checkout Session for device upgrade
 // ---------------------------------------------------------------------------
-app.post('/api/v1/upgrade-devices', async (req, res) => {
+app.post('/api/v1/upgrade-devices', checkoutRateLimit, async (req, res) => {
   if (!stripeSecretKey) return res.status(503).json({ error: 'Payments not configured.' });
 
   const { newDeviceCount } = req.body || {};
@@ -4756,7 +4852,7 @@ app.get('/api/v1/license-info/:code', apiCors, async (req, res) => {
 // Body: { activationCode, amount, unit: 'days'|'months'|'years' }
 // Returns Stripe checkout URL
 // ---------------------------------------------------------------------------
-app.post('/api/v1/extend-license', apiCors, async (req, res) => {
+app.post('/api/v1/extend-license', apiCors, checkoutRateLimit, async (req, res) => {
   const { amount, unit } = req.body;
   const activationCode = normalizeActivationCode(req.body.activationCode);
   const amountValue = Number.parseInt(String(amount), 10);

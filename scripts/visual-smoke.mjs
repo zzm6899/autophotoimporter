@@ -109,8 +109,8 @@ const screens = [
     id: 'preflight',
     label: 'Import preflight',
     source: path.join(root, 'src', 'renderer', 'components', 'DestinationPanel.tsx'),
-    sourceTokens: ['Preflight', 'Preview Import', 'Check Plan', 'preflightImport'],
-    bundleTokens: ['Preflight', 'Preview Import', 'Check Plan'],
+    sourceTokens: ['Preflight', 'Check Plan', 'preflightImport'],
+    bundleTokens: ['Preflight', 'Check Plan'],
   },
   {
     id: 'resume-view',

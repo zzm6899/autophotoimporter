@@ -271,6 +271,14 @@ export function buildCommandItems(
       run: handlers['filter.blur'],
     },
     {
+      id: 'filter.face-groups',
+      group: 'Filters',
+      label: 'Show Similar Face Groups',
+      icon: Filter,
+      disabledReason: needsPhoto,
+      run: handlers['filter.face-groups'],
+    },
+    {
       id: 'filter.duplicates',
       group: 'Filters',
       label: 'Show Similar / Duplicate Photos',
@@ -674,6 +682,7 @@ export function CommandPalette() {
     'filter.unmarked': () => setFilter('unmarked'),
     'filter.queue': () => setFilter('queue'),
     'filter.blur': () => setFilter('blur-risk'),
+    'filter.face-groups': () => setFilter('face-groups'),
     'filter.duplicates': () => {
       setFilter('near-duplicates');
       dispatch({ type: 'SET_VIEW_MODE', mode: 'compare' });

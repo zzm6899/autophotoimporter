@@ -1,9 +1,9 @@
 import { ipcMain, dialog, shell, app, BrowserWindow, autoUpdater } from 'electron';
-import { readFile, writeFile, mkdir, open, rm, rename, statfs, readdir, stat, copyFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, open, rm, rename, statfs, readdir, stat, copyFile, chmod } from 'node:fs/promises';
 import { execFile, spawn } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 import path from 'node:path';
-import { DEFAULT_VIEW_OVERLAY_PREFERENCES, IPC } from '../shared/types';
+import { DEFAULT_VIEW_OVERLAY_PREFERENCES, IPC, PHOTO_EXTENSIONS } from '../shared/types';
 import type { ImportConfig, ImportResult, AppSettings, MediaFile, FtpConfig, FtpSyncStatus, Volume, UpdateState, ImportLedger, ImportHealthSummary, MacFirstRunDoctor, AppDiagnosticsSnapshot, UpdateRepairResult, AppSession, WatchFolder, CatalogBrowserQuery } from '../shared/types';
 import { listVolumes, startWatching, stopWatching } from './services/volume-watcher';
 import { scanFiles, cancelScan, pauseScan, resumeScan } from './services/file-scanner';
@@ -96,6 +96,56 @@ function isSafeHttpUrl(value: unknown): value is string {
 
 function isSafePath(value: unknown): value is string {
   return isNonEmptyString(value) && !value.includes('\0');
+}
+
+const BLOCKED_SHELL_OPEN_EXTENSIONS = new Set([
+  '.app',
+  '.bat',
+  '.cmd',
+  '.com',
+  '.cpl',
+  '.exe',
+  '.hta',
+  '.jar',
+  '.js',
+  '.jse',
+  '.lnk',
+  '.msi',
+  '.msp',
+  '.ps1',
+  '.scr',
+  '.sh',
+  '.url',
+  '.vb',
+  '.vbe',
+  '.vbs',
+  '.wsf',
+]);
+
+function isSafeOpenPath(value: unknown): value is string {
+  if (!isSafePath(value)) return false;
+  const normalized = path.normalize(value);
+  if (!path.isAbsolute(normalized)) return false;
+  return !BLOCKED_SHELL_OPEN_EXTENSIONS.has(path.extname(normalized).toLowerCase());
+}
+
+const MAX_FACE_ANALYSIS_BATCH = 256;
+
+function isFaceAnalysisPath(value: unknown): value is string {
+  if (!isSafePath(value)) return false;
+  const normalized = path.normalize(value);
+  return path.isAbsolute(normalized) && PHOTO_EXTENSIONS.has(path.extname(normalized).toLowerCase());
+}
+
+function isFaceAnalysisInput(value: unknown): value is string | string[] {
+  const paths = Array.isArray(value) ? value : [value];
+  return paths.length > 0
+    && paths.length <= MAX_FACE_ANALYSIS_BATCH
+    && paths.every(isFaceAnalysisPath);
+}
+
+function isOptionalBoundedNumber(value: unknown, min: number, max: number): boolean {
+  return value == null || (isNumber(value) && value >= min && value <= max);
 }
 
 function isSettingsPatch(value: unknown): value is Partial<AppSettings> {
@@ -284,6 +334,7 @@ function isAllowlistedUpdateUrl(value?: unknown): boolean {
   if (typeof value !== 'string') return false;
   try {
     const parsed = new URL(value);
+    if (parsed.username || parsed.password) return false;
     if (!UPDATE_ALLOWED_SCHEMES.has(parsed.protocol) || !UPDATE_ALLOWED_HOSTS.has(parsed.hostname)) {
       return false;
     }
@@ -513,8 +564,8 @@ async function persistImportLedger(config: ImportConfig, result: ImportResult): 
   const dir = getLedgersDir();
   await mkdir(dir, { recursive: true });
   const content = JSON.stringify(ledger, null, 2);
-  await writeFile(path.join(dir, `${id}.json`), content, 'utf8');
-  await writeFile(getLatestLedgerPath(), content, 'utf8');
+  await writeFile(path.join(dir, `${id}.json`), content, { encoding: 'utf8', mode: 0o600 });
+  await writeFile(getLatestLedgerPath(), content, { encoding: 'utf8', mode: 0o600 });
   result.ledgerId = id;
   result.recoveryCount = items.filter((item) => item.status === 'failed' || item.status === 'pending').length;
   return ledger;
@@ -720,8 +771,8 @@ async function persistAppSession(session: AppSession): Promise<AppSession> {
   const dir = getSessionsDir();
   await mkdir(dir, { recursive: true });
   const content = JSON.stringify(session, null, 2);
-  await writeFile(path.join(dir, `${session.id}.json`), content, 'utf8');
-  await writeFile(getLatestSessionPath(), content, 'utf8');
+  await writeFile(path.join(dir, `${session.id}.json`), content, { encoding: 'utf8', mode: 0o600 });
+  await writeFile(getLatestSessionPath(), content, { encoding: 'utf8', mode: 0o600 });
   await saveSettings({ lastSessionId: session.id });
   return session;
 }
@@ -1002,8 +1053,9 @@ async function writeSettingsFile(settings: AppSettings): Promise<void> {
   const dir = path.dirname(settingsPath);
   await mkdir(dir, { recursive: true });
   const tempPath = `${settingsPath}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(tempPath, JSON.stringify(settings, null, 2));
+  await writeFile(tempPath, JSON.stringify(settings, null, 2), { encoding: 'utf8', mode: 0o600 });
   await rename(tempPath, settingsPath);
+  await chmod(settingsPath, 0o600).catch(() => undefined);
 }
 
 async function saveSettings(settings: Partial<AppSettings>): Promise<void> {
@@ -1621,6 +1673,7 @@ function isSafeHttpsUrl(value: unknown): value is string {
   try {
     const url = new URL(value);
     if (url.protocol !== 'https:') return false;
+    if (url.username || url.password) return false;
     return [
       'keptra.z2hs.au',
       'updates.keptra.z2hs.au',
@@ -2052,7 +2105,7 @@ export function registerIpcHandlers(): void {
 
   handleIpc(IPC.DIALOG_OPEN_PATH, async (_event, filePath: string) => {
     await shell.openPath(filePath);
-  }, ([filePath]) => isSafePath(filePath) ? null : ipcError('VALIDATION_ERROR', 'Invalid path payload.'));
+  }, ([filePath]) => isSafeOpenPath(filePath) ? null : ipcError('VALIDATION_ERROR', 'Invalid path payload.'));
 
   handleIpc(IPC.BENCHMARK_SMOKE_RUN, async () => {
     return runSmokeBenchmark();
@@ -2586,7 +2639,10 @@ export function registerIpcHandlers(): void {
 
   handleIpc(IPC.FACE_GPU_STRESS_TEST, async (_event, durationMs?: number, streams?: number) => {
     return runFaceGpuStressTest(durationMs, streams);
-  });
+  }, ([durationMs, streams]) =>
+    isOptionalBoundedNumber(durationMs, 2000, 30000) && isOptionalBoundedNumber(streams, 1, 32)
+      ? null
+      : ipcError('VALIDATION_ERROR', 'Invalid face GPU stress-test payload.'));
 
   handleIpc(IPC.GPU_LIST, async () => {
     return listWindowsGpus().catch(() => []);
@@ -2692,12 +2748,12 @@ export function registerIpcHandlers(): void {
     };
 
     return task();
-  });
+  }, ([input]) => isFaceAnalysisInput(input) ? null : ipcError('VALIDATION_ERROR', 'Invalid face analysis payload.'));
 
   // Allow renderer to update face concurrency at runtime
   handleIpc('face:set-concurrency', (_event, n: number) => {
     setFaceConcurrency(n);
-  });
+  }, ([n]) => isNumber(n) && n >= 1 && n <= 32 ? null : ipcError('VALIDATION_ERROR', 'Invalid face concurrency payload.'));
 
   // Clear the on-disk thumbnail/preview cache (temp folder).
   handleIpc(IPC.CACHE_CLEAR, async () => {

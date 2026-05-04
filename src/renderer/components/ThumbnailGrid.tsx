@@ -682,6 +682,7 @@ export function ThumbnailGrid() {
         return !!scene && scene.toLowerCase() !== 'scene' && scene.toLowerCase() !== 'general' && scene === decodeURIComponent(filter.slice(6));
       }
       if (filter.startsWith('burst:')) return f.burstId === decodeURIComponent(filter.slice(6));
+      if (filter.startsWith('face:')) return f.faceGroupId === decodeURIComponent(filter.slice(5));
       switch (filter) {
         case 'protected': return f.isProtected;
         case 'picked': return f.pick === 'selected';
@@ -758,12 +759,20 @@ export function ThumbnailGrid() {
     const dates = new Set<string>();
     const exts = new Set<string>();
     const scenes = new Set<string>();
+    const faceGroups = new Map<string, { id: string; photos: number; faces: number; people: number }>();
     for (const f of files) {
       cameras.add(f.cameraModel || 'Unknown camera');
       if (f.type === 'photo') lenses.add(f.lensModel || 'Unknown lens');
       dates.add(f.dateTaken ? f.dateTaken.slice(0, 10) : 'Undated');
       exts.add(f.extension.toLowerCase());
       if (f.sceneBucket && !['scene', 'general'].includes(f.sceneBucket.trim().toLowerCase())) scenes.add(f.sceneBucket);
+      if (f.faceGroupId && (f.faceGroupSize ?? 0) > 1) {
+        const current = faceGroups.get(f.faceGroupId) ?? { id: f.faceGroupId, photos: 0, faces: 0, people: 0 };
+        current.photos += 1;
+        current.faces += f.faceBoxes?.length ?? f.faceCount ?? 0;
+        current.people += f.personBoxes?.length ?? f.personCount ?? 0;
+        faceGroups.set(f.faceGroupId, current);
+      }
     }
     return {
       cameras: [...cameras].sort(),
@@ -771,8 +780,13 @@ export function ThumbnailGrid() {
       dates: [...dates].sort().reverse(),
       exts: [...exts].sort(),
       scenes: [...scenes].sort(),
+      faceGroups: [...faceGroups.values()].sort((a, b) => b.photos - a.photos || a.id.localeCompare(b.id)),
     };
   }, [files]);
+  const activeFaceGroupId = filter.startsWith('face:') ? decodeURIComponent(filter.slice(5)) : null;
+  const activeFaceGroup = activeFaceGroupId
+    ? metadataFilters.faceGroups.find((group) => group.id === activeFaceGroupId) ?? null
+    : null;
 
   const filePathSet = useMemo(() => new Set(files.map((file) => file.path)), [files]);
 
@@ -1173,8 +1187,8 @@ export function ThumbnailGrid() {
     return getComputedStyle(grid).gridTemplateColumns.split(' ').length;
   }, []);
 
-  const setFocused = useCallback((index: number) => {
-    dispatch({ type: 'SET_FOCUSED', index, path: index >= 0 ? sortedFiles[index]?.path ?? null : null });
+  const setFocused = useCallback((index: number, pathOverride?: string | null) => {
+    dispatch({ type: 'SET_FOCUSED', index, path: pathOverride !== undefined ? pathOverride : index >= 0 ? sortedFiles[index]?.path ?? null : null });
   }, [dispatch, sortedFiles]);
 
   const cyclePick = useCallback((index: number) => {
@@ -1344,6 +1358,13 @@ export function ThumbnailGrid() {
     }
     dispatch({ type: 'TOGGLE_BURST_COLLAPSE', burstId });
   }, [collapsedSet, dispatch, filter, setFocused]);
+
+  const handleFaceGroupFilter = useCallback((faceGroupId: string, filePath?: string) => {
+    dispatch({ type: 'SET_FILTER', filter: `face:${encodeURIComponent(faceGroupId)}` as FilterMode });
+    dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' });
+    setSearchText('');
+    setFocused(0, filePath ?? null);
+  }, [dispatch, setFocused]);
 
   const canGoBack = viewMode !== 'grid' || filter !== 'all' || searchText.trim().length > 0;
   const handleBackToMain = useCallback(() => {
@@ -3271,6 +3292,15 @@ export function ThumbnailGrid() {
                 Burst Review
               </button>
             )}
+            {activeFaceGroup && (
+              <button
+                onClick={handleBackToMain}
+                className="px-1.5 py-0.5 text-[10px] rounded bg-violet-500/10 text-violet-300 hover:bg-violet-500/20 transition-colors"
+                title="Showing only photos from this similar-face group. Click to clear the filter."
+              >
+                Face: {activeFaceGroup.photos} photo{activeFaceGroup.photos === 1 ? '' : 's'} · {activeFaceGroup.faces} face{activeFaceGroup.faces === 1 ? '' : 's'}{activeFaceGroup.people > 0 ? ` · ${activeFaceGroup.people} people` : ''}
+              </button>
+            )}
 
             <select
               value={filter.startsWith('burst:') ? '' : filter}
@@ -3330,6 +3360,15 @@ export function ThumbnailGrid() {
               {metadataFilters.scenes.length > 0 && (
                 <optgroup label="Scene">
                   {metadataFilters.scenes.map((v) => <option key={v} value={`scene:${encodeURIComponent(v)}`}>{v}</option>)}
+                </optgroup>
+              )}
+              {metadataFilters.faceGroups.length > 0 && (
+                <optgroup label="Similar faces">
+                  {metadataFilters.faceGroups.map((group, index) => (
+                    <option key={group.id} value={`face:${encodeURIComponent(group.id)}`}>
+                      Face {index + 1}: {group.photos} photo{group.photos === 1 ? '' : 's'}, {group.faces} face{group.faces === 1 ? '' : 's'}{group.people > 0 ? `, ${group.people} people` : ''}
+                    </option>
+                  ))}
                 </optgroup>
               )}
               {metadataFilters.exts.length > 1 && (
@@ -3558,6 +3597,7 @@ export function ThumbnailGrid() {
                     frameNumber={i + 1}
                     burstCollapsed={!!file.burstId && collapsedSet.has(file.burstId)}
                     onBurstToggle={handleBurstToggle}
+                    onFaceGroupClick={handleFaceGroupFilter}
                     onClickCard={handleCardClick}
                     onDoubleClickCard={setFocused}
                   />
@@ -3666,6 +3706,7 @@ export function ThumbnailGrid() {
                                 isBurstBest={false}
                                 burstCollapsed={!!file.burstId && collapsedSet.has(file.burstId)}
                                 onBurstToggle={handleBurstToggle}
+                                onFaceGroupClick={handleFaceGroupFilter}
                                 onClickCard={handleCardClick}
                                 onDoubleClickCard={handleGridDoubleClick}
                               />
@@ -3713,6 +3754,7 @@ export function ThumbnailGrid() {
                               isBurstBest={false}
                               burstCollapsed={!!file.burstId && collapsedSet.has(file.burstId)}
                               onBurstToggle={handleBurstToggle}
+                              onFaceGroupClick={handleFaceGroupFilter}
                               onClickCard={handleCardClick}
                               onDoubleClickCard={handleGridDoubleClick}
                             />
@@ -3742,6 +3784,7 @@ export function ThumbnailGrid() {
                       isBurstBest={false}
                       burstCollapsed={!!file.burstId && collapsedSet.has(file.burstId)}
                       onBurstToggle={handleBurstToggle}
+                      onFaceGroupClick={handleFaceGroupFilter}
                       onClickCard={handleCardClick}
                       onDoubleClickCard={handleGridDoubleClick}
                     />

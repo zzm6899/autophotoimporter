@@ -44,6 +44,7 @@ interface ThumbnailCardProps {
   onClickCard: (index: number, e: React.MouseEvent) => void;
   onDoubleClickCard: (index: number) => void;
   onBurstToggle: (burstId: string) => void;
+  onFaceGroupClick?: (faceGroupId: string, filePath: string) => void;
 }
 
 function CornerBrackets() {
@@ -97,6 +98,7 @@ function ThumbnailCardInner({
   onClickCard,
   onDoubleClickCard,
   onBurstToggle,
+  onFaceGroupClick,
 }: ThumbnailCardProps) {
   const isVideo = file.type === 'video';
   const isPicked = file.pick === 'selected';
@@ -272,9 +274,17 @@ function ThumbnailCardInner({
                 </span>
               )}
               {file.faceGroupId && (
-                <span className="bg-violet-600/90 text-[9px] text-white px-1 py-0.5 rounded font-medium" title={`Similar face group: ${file.faceGroupSize ?? 0} files`}>
+                <button
+                  type="button"
+                  className="bg-violet-600/90 text-[9px] text-white px-1 py-0.5 rounded font-medium hover:bg-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-200"
+                  title={`Filter to this similar-face group: ${file.faceGroupSize ?? 0} photos`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onFaceGroupClick?.(file.faceGroupId!, file.path);
+                  }}
+                >
                   FACE x{file.faceGroupSize ?? 0}
-                </span>
+                </button>
               )}
             </div>
           )}
@@ -376,6 +386,7 @@ export const ThumbnailCard = memo(ThumbnailCardInner, (prev, next) => {
     prev.onClickCard === next.onClickCard &&
     prev.onDoubleClickCard === next.onDoubleClickCard &&
     prev.onBurstToggle === next.onBurstToggle &&
+    prev.onFaceGroupClick === next.onFaceGroupClick &&
     prev.focused === next.focused &&
     prev.selected === next.selected &&
     prev.queued === next.queued &&
