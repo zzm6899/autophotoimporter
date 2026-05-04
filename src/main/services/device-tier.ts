@@ -25,7 +25,7 @@ export interface DeviceProfile {
   totalMemGB: number;
   /** Concurrency budget for the renderer's thumbnail / preview prefetch */
   previewConcurrency: number;
-  /** Concurrency budget for face analysis batches (always 1 currently — ONNX-node CPU is single-threaded per session) */
+  /** Concurrency budget for face analysis batches. Main-process semaphore still protects the engine. */
   faceConcurrency: number;
   /** Whether to enable cpuOptimizationMode in the face engine */
   cpuOptimization: boolean;
@@ -66,7 +66,7 @@ export function detectDeviceTier(override?: PerfTierSetting): DeviceProfile {
           cpuCores,
           totalMemGB,
           previewConcurrency: Math.min(6, Math.max(3, Math.floor(cpuCores / 3))),
-          faceConcurrency: 1,
+          faceConcurrency: Math.min(8, Math.max(4, Math.floor(cpuCores / 3))),
           cpuOptimization: false,
           rawPreviewQuality: 80,
         };
@@ -77,7 +77,7 @@ export function detectDeviceTier(override?: PerfTierSetting): DeviceProfile {
           cpuCores,
           totalMemGB,
           previewConcurrency: Math.min(3, Math.max(2, Math.floor(cpuCores / 4))),
-          faceConcurrency: 1,
+          faceConcurrency: 2,
           cpuOptimization: false,
           rawPreviewQuality: 70,
         };

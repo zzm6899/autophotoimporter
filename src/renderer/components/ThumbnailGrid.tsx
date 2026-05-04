@@ -614,7 +614,7 @@ export function ThumbnailGrid() {
   const [sessionTags, setSessionTags] = useState<string[]>([]);
   const [showTagSuggestions, setShowTagSuggestions] = useState(false);
   const [faceProviderSummary, setFaceProviderSummary] = useState<string>('Face engine warming');
-  const [showAiReviewStrip, setShowAiReviewStrip] = useState(true);
+  const [showAiReviewStrip, setShowAiReviewStrip] = useState(false);
   const [reviewSprintMode, setReviewSprintMode] = useState(false);
   const [flatGridWidth, setFlatGridWidth] = useState(0);
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -644,10 +644,6 @@ export function ThumbnailGrid() {
     [files],
   );
   const reviewWaitingForThumbnails = totalPhotoCount > 0 && readyThumbnailCount === 0;
-  const aiAnalyzedCount = useMemo(
-    () => files.filter((f) => f.type === 'photo' && (typeof f.sharpnessScore === 'number' || f.faceBoxes !== undefined || f.faceEmbedding)).length,
-    [files],
-  );
   const setsEqual = useCallback((a: Set<number>, b: Set<number>) => {
     if (a.size !== b.size) return false;
     for (const value of a) {
@@ -1004,7 +1000,7 @@ export function ThumbnailGrid() {
       // Canvas work (sharpness, hash, analyzeSubject) runs in the renderer
       // concurrently with the IPC round-trip, overlapping CPU work efficiently.
       void (async () => {
-      const canvasConcurrency = currentFastKeeperMode ? 2 : Math.min(4, Math.max(2, currentFaceConcurrency));
+      const canvasConcurrency = currentFastKeeperMode ? 2 : Math.min(8, Math.max(3, currentFaceConcurrency * 2));
       const entries = await mapWithConcurrency(candidates, canvasConcurrency, async (f): Promise<[string, Partial<MediaFile>]> => {
         if (reviewGeneration !== reviewGenerationRef.current) return [f.path, {}];
         const thumbnail = f.thumbnail as string;
@@ -1261,6 +1257,15 @@ export function ThumbnailGrid() {
     void startImport({ selectedPathsOverride: visiblePaths });
   }, [dispatch, importVisibleDisabled, startImport, visiblePaths]);
 
+  const enterQueueKeepersMode = useCallback(() => {
+    if (queueActionsDisabled) return;
+    dispatch({ type: 'QUEUE_BEST' });
+    dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' });
+    multiClickSelectRef.current = true;
+    setMultiClickSelect(true);
+    setReviewSprintMode(false);
+  }, [dispatch, queueActionsDisabled]);
+
   const handleCardClick = useCallback((index: number, e: React.MouseEvent) => {
     const currentSortedFiles = sortedFilesRef.current;
     const clickedFile = currentSortedFiles[index];
@@ -1319,8 +1324,11 @@ export function ThumbnailGrid() {
     const nextMultiSelect = !multiClickSelect;
     multiClickSelectRef.current = nextMultiSelect;
     setMultiClickSelect(nextMultiSelect);
+    if (nextMultiSelect && viewMode !== 'grid') {
+      dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' });
+    }
     if (!nextMultiSelect) clearSelection();
-  }, [clearSelection, multiClickSelect]);
+  }, [clearSelection, dispatch, multiClickSelect, viewMode]);
 
   const handleGridDoubleClick = useCallback((index: number) => {
     setFocused(index);
@@ -1365,11 +1373,12 @@ export function ThumbnailGrid() {
       .filter((f) => paths.includes(f.path) && f.type === 'photo' && f.faceBoxes === undefined);
     if (unscanned.length === 0) return;
     void (async () => {
-      for (const f of unscanned) {
+      const panelConcurrency = Math.min(8, Math.max(2, faceConcurrencyRef.current));
+      await mapWithConcurrency(unscanned, panelConcurrency, async (f) => {
         try {
           const results = await window.electronAPI.analyzeFaces(f.path);
           const result = results[0];
-          if (!result) continue;
+          if (!result) return;
           dispatch({
             type: 'SET_REVIEW_SCORES',
             scores: {
@@ -1384,7 +1393,7 @@ export function ThumbnailGrid() {
             },
           });
         } catch { /* ignore */ }
-      }
+      });
     })();
   }, [files, dispatch]);
 
@@ -1537,8 +1546,15 @@ export function ThumbnailGrid() {
         case 'selection.clear':
           clearSelection();
           return;
+        case 'queue.keepers':
+          enterQueueKeepersMode();
+          return;
         case 'queue.visible':
           queuePaths(visiblePaths);
+          dispatch({ type: 'SET_FILTER', filter: 'queue' });
+          dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' });
+          multiClickSelectRef.current = true;
+          setMultiClickSelect(true);
           return;
         case 'import.visible':
           importVisible();
@@ -1596,6 +1612,7 @@ export function ThumbnailGrid() {
     bulkPickVisible,
     clearSelection,
     dispatch,
+    enterQueueKeepersMode,
     files,
     focusedIndex,
     handleBackToMain,
@@ -2909,9 +2926,7 @@ export function ThumbnailGrid() {
           <ActionButton
             icon={ClipboardCheck}
             tone="warning"
-            onClick={() => {
-              if (!queueActionsDisabled) dispatch({ type: 'QUEUE_BEST' });
-            }}
+            onClick={enterQueueKeepersMode}
             disabled={queueActionsDisabled}
             title={queueActionsDisabled
               ? 'Wait for the current scan/import to finish before changing the import queue.'
@@ -2985,6 +3000,20 @@ export function ThumbnailGrid() {
         <span className="shrink-0 text-[10px] text-text-faint">
           Ctrl/Cmd+K for all commands
         </span>
+        {totalPhotoCount > 0 && (
+          <button
+            type="button"
+            onClick={() => setShowAiReviewStrip((value) => !value)}
+            className={`shrink-0 rounded border px-2 py-1 text-[10px] transition-colors ${
+              showAiReviewStrip
+                ? 'border-blue-500/35 bg-blue-500/15 text-blue-300'
+                : 'border-border bg-surface-raised text-text-muted hover:border-blue-500/35 hover:text-blue-300'
+            }`}
+            title={`${aiOverview.status}. Click to ${showAiReviewStrip ? 'hide' : 'show'} the detailed AI overview.`}
+          >
+            AI {reviewStats.analyzed}/{reviewStats.total}
+          </button>
+        )}
 
         {showAdvancedTools && (
           <ToolbarGroup className="ml-1">
@@ -3476,18 +3505,6 @@ export function ThumbnailGrid() {
               Hide
             </button>
           </div>
-        </div>
-      )}
-      {totalPhotoCount > 0 && !showAiReviewStrip && (
-        <div className="shrink-0 border-b border-border bg-surface-alt/35 px-3 py-1">
-          <button
-            type="button"
-            onClick={() => setShowAiReviewStrip(true)}
-            className="rounded border border-border bg-surface-raised px-2 py-0.5 text-[10px] text-text-secondary hover:border-accent/50 hover:text-text"
-            title="Show the AI Overview status bar"
-          >
-            Show AI Overview ({aiAnalyzedCount}/{totalPhotoCount})
-          </button>
         </div>
       )}
 

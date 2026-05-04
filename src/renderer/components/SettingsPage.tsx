@@ -421,8 +421,8 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
             previewConcurrency;
     const nextFaceConcurrency =
       tier === 'low' ? 1 :
-        tier === 'balanced' ? 1 :
-          tier === 'high' ? Math.max(2, faceConcurrency) :
+        tier === 'balanced' ? Math.max(2, faceConcurrency) :
+          tier === 'high' ? Math.max(4, faceConcurrency) :
             faceConcurrency;
     const nextCpuOptimization =
       tier === 'auto' ? cpuOptimization :
@@ -440,6 +440,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
       cpuOptimization: nextCpuOptimization,
       rawPreviewQuality: nextRawPreviewQuality,
     });
+    void window.electronAPI.setFaceAnalysisConcurrency?.(nextFaceConcurrency);
   };
   const handleFastKeeperMode = (enabled: boolean) => {
     dispatch({ type: 'SET_FAST_KEEPER_MODE', enabled });

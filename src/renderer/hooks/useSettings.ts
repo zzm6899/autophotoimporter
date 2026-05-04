@@ -193,7 +193,21 @@ export function useSettings() {
         }).catch(() => undefined);
       }
       if (typeof settings.faceConcurrency === 'number' && settings.faceConcurrency > 0) {
-        dispatch({ type: 'SET_FACE_CONCURRENCY', concurrency: settings.faceConcurrency });
+        const savedFaceConcurrency = settings.faceConcurrency;
+        dispatch({ type: 'SET_FACE_CONCURRENCY', concurrency: savedFaceConcurrency });
+        if (!fixedPerfTier && savedFaceConcurrency <= 1) {
+          window.electronAPI.getDeviceTier?.().then((profile) => {
+            if (!profile || profile.faceConcurrency <= savedFaceConcurrency) return;
+            dispatch({ type: 'SET_FACE_CONCURRENCY', concurrency: profile.faceConcurrency });
+            void window.electronAPI.setFaceAnalysisConcurrency?.(profile.faceConcurrency);
+          }).catch(() => undefined);
+        }
+      } else if (!fixedPerfTier) {
+        window.electronAPI.getDeviceTier?.().then((profile) => {
+          if (!profile) return;
+          dispatch({ type: 'SET_FACE_CONCURRENCY', concurrency: profile.faceConcurrency });
+          void window.electronAPI.setFaceAnalysisConcurrency?.(profile.faceConcurrency);
+        }).catch(() => undefined);
       }
 
       // Keybinds

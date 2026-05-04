@@ -368,7 +368,7 @@ const initialState: State = {
   perfTier: 'auto',
   fastKeeperMode: false,
   previewConcurrency: 2,
-  faceConcurrency: 1,
+  faceConcurrency: 2,
   keybinds: { ...DEFAULT_KEYBINDS },
   metadataExport: { ...DEFAULT_METADATA_EXPORT },
   viewOverlayPreferences: { ...DEFAULT_VIEW_OVERLAY_PREFERENCES },
@@ -1109,7 +1109,7 @@ export function reducer(state: State, action: Action): State {
           cpuOptimization: true,
           fastKeeperMode: false,
           previewConcurrency: 2,
-          faceConcurrency: 1,
+          faceConcurrency: Math.max(2, state.faceConcurrency),
           rawPreviewQuality: Math.max(65, Math.min(state.rawPreviewQuality, 75)),
         };
       }
@@ -1119,7 +1119,7 @@ export function reducer(state: State, action: Action): State {
           perfTier: action.tier,
           fastKeeperMode: false,
           previewConcurrency: Math.max(3, state.previewConcurrency),
-          faceConcurrency: Math.max(2, state.faceConcurrency),
+          faceConcurrency: Math.max(4, state.faceConcurrency),
           rawPreviewQuality: Math.max(state.rawPreviewQuality, 82),
         };
       }

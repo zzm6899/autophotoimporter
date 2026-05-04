@@ -2,25 +2,67 @@ import { useEffect, useState } from 'react';
 
 const STORAGE_KEY = 'photo-importer:tutorial-dismissed';
 
-const steps = [
-  { title: '1. Start with any source', body: 'Choose a card, folder, or FTP source on the left. The scan streams in, so you can begin reviewing as soon as thumbnails appear.' },
-  { title: '2. Move into detail view early', body: 'Double-click a thumbnail or press Enter, then use arrows to step through the shoot quickly.' },
-  { title: '3. Make decisions with one hand', body: 'Use P to keep, X to reject, U to clear, 0-5 to rate, and Q to add the current photo or selection to the import queue.' },
-  { title: '4. Let bursts do the heavy lifting', body: 'Press B to grab a burst, Shift+B to rank the best candidates, and G to collapse a burst once you are done with it.' },
-  { title: '5. Match exposure only when needed', body: 'Set a strong frame as the anchor, then use A to normalize the selection to it or [ and ] for manual EV nudges.' },
-  { title: '6. Import from the queue', body: 'The queue is your final shortlist. Once it looks right, import to your main destination plus any backup or FTP target you enabled.' },
+type TutorialStep = {
+  title: string;
+  body: string;
+  targetClass: string;
+  panelClass: string;
+  arrowClass: string;
+};
+
+const steps: TutorialStep[] = [
+  {
+    title: 'Pick a source',
+    body: 'Start from the left panel. Choose a card, folder, or FTP source; scan begins as soon as you import or rescan.',
+    targetClass: 'left-2 top-[76px] h-[120px] w-[188px]',
+    panelClass: 'left-[220px] top-[86px]',
+    arrowClass: 'left-[-9px] top-8 border-y-8 border-r-8 border-y-transparent border-r-surface',
+  },
+  {
+    title: 'Review without hunting',
+    body: 'Use the main toolbar for Review, Queue Keepers, Import, and Best. Everything else is in More or Ctrl/Cmd+K.',
+    targetClass: 'left-[205px] top-[132px] h-8 w-[460px]',
+    panelClass: 'left-[300px] top-[178px]',
+    arrowClass: 'left-12 top-[-9px] border-x-8 border-b-8 border-x-transparent border-b-surface',
+  },
+  {
+    title: 'Queue shows the whole set',
+    body: 'Queue Keepers now switches to grid view and turns Multi on, so you can see and adjust the import set immediately.',
+    targetClass: 'left-[270px] top-[132px] h-8 w-[145px]',
+    panelClass: 'left-[330px] top-[178px]',
+    arrowClass: 'left-12 top-[-9px] border-x-8 border-b-8 border-x-transparent border-b-surface',
+  },
+  {
+    title: 'Choose output last',
+    body: 'The right panel holds destination, format, duplicate checks, backup, FTP, and import readiness. Disabled buttons show why.',
+    targetClass: 'right-2 top-[76px] h-[250px] w-[180px]',
+    panelClass: 'right-[210px] top-[104px]',
+    arrowClass: 'right-[-9px] top-8 border-y-8 border-l-8 border-y-transparent border-l-surface',
+  },
+  {
+    title: 'Use the palette',
+    body: 'Press Ctrl/Cmd+K to run view switches, filters, AI controls, bulk actions, settings, help, and diagnostics from one place.',
+    targetClass: 'right-4 top-1 h-8 w-[150px]',
+    panelClass: 'right-[190px] top-12',
+    arrowClass: 'right-[-9px] top-8 border-y-8 border-l-8 border-y-transparent border-l-surface',
+  },
 ];
 
 export function TutorialOverlay() {
   const [open, setOpen] = useState(() => localStorage.getItem(STORAGE_KEY) !== '1');
+  const [stepIndex, setStepIndex] = useState(0);
+  const step = steps[stepIndex];
 
   useEffect(() => {
-    const handler = () => setOpen(true);
+    const handler = () => {
+      setStepIndex(0);
+      setOpen(true);
+    };
     window.addEventListener('photo-importer:tutorial', handler);
     return () => window.removeEventListener('photo-importer:tutorial', handler);
   }, []);
 
-  const close = () => {
+  const dismiss = () => {
     localStorage.setItem(STORAGE_KEY, '1');
     setOpen(false);
   };
@@ -28,41 +70,59 @@ export function TutorialOverlay() {
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/45 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="w-full max-w-lg bg-surface border border-border rounded shadow-2xl overflow-hidden">
-        <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-          <div>
-            <h2 className="text-sm font-semibold text-text">Quick Start</h2>
-            <p className="text-[11px] text-text-muted mt-0.5">A simple pass: scan, review, queue, import.</p>
+    <div className="fixed inset-0 z-[80] bg-black/45 backdrop-blur-[1px]">
+      <button
+        type="button"
+        className={`absolute rounded-lg border-2 border-accent bg-accent/10 shadow-[0_0_0_9999px_rgba(0,0,0,0.36)] transition-all ${step.targetClass}`}
+        title={step.body}
+        aria-label={step.title}
+        onClick={() => setStepIndex((value) => Math.min(value + 1, steps.length - 1))}
+      />
+      <div className={`absolute w-[min(360px,calc(100vw-32px))] rounded-lg border border-border bg-surface shadow-2xl ${step.panelClass}`}>
+        <div className={`absolute h-0 w-0 ${step.arrowClass}`} />
+        <div className="border-b border-border px-4 py-3">
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-accent">
+            First run guide {stepIndex + 1}/{steps.length}
           </div>
-          <button
-            onClick={close}
-            className="px-2 py-1 rounded bg-surface-raised hover:bg-border text-xs text-text-secondary"
-          >
-            Close
-          </button>
+          <h2 className="mt-1 text-sm font-semibold text-text">{step.title}</h2>
+          <p className="mt-1 text-[11px] leading-relaxed text-text-secondary">{step.body}</p>
         </div>
-        <div className="p-4 grid gap-2">
-          {steps.map((step) => (
-            <div key={step.title} className="border border-border rounded px-3 py-2 bg-surface-alt">
-              <div className="text-xs font-medium text-text">{step.title}</div>
-              <div className="text-[11px] text-text-secondary mt-0.5">{step.body}</div>
-            </div>
-          ))}
-        </div>
-        <div className="px-4 py-3 border-t border-border flex items-center justify-end gap-2">
+        <div className="flex items-center justify-between gap-2 px-4 py-3">
           <button
+            type="button"
             onClick={() => setOpen(false)}
-            className="px-3 py-1.5 rounded bg-surface-raised hover:bg-border text-xs text-text-secondary"
+            className="rounded border border-border bg-surface-raised px-3 py-1.5 text-xs text-text-secondary hover:bg-border hover:text-text"
           >
             Later
           </button>
-          <button
-            onClick={close}
-            className="px-3 py-1.5 rounded bg-accent hover:bg-accent-hover text-xs font-medium text-white"
-          >
-            Got it
-          </button>
+          <div className="flex items-center gap-2">
+            {stepIndex > 0 && (
+              <button
+                type="button"
+                onClick={() => setStepIndex((value) => Math.max(0, value - 1))}
+                className="rounded border border-border bg-surface-raised px-3 py-1.5 text-xs text-text-secondary hover:bg-border hover:text-text"
+              >
+                Back
+              </button>
+            )}
+            {stepIndex < steps.length - 1 ? (
+              <button
+                type="button"
+                onClick={() => setStepIndex((value) => Math.min(value + 1, steps.length - 1))}
+                className="rounded bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover"
+              >
+                Next
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={dismiss}
+                className="rounded bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover"
+              >
+                Got it
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>

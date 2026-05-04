@@ -840,7 +840,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   performancePromptSeenVersion: '',
   fastKeeperMode: false,
   previewConcurrency: 2,
-  faceConcurrency: 1,
+  faceConcurrency: 2,
   viewOverlayPreferences: { ...DEFAULT_VIEW_OVERLAY_PREFERENCES },
 };
 
@@ -965,17 +965,22 @@ async function loadSettings(): Promise<AppSettings> {
         }
       : { valid: false, message: 'No license activated.', status: 'unknown' as const };
     
+    const profile = detectDeviceTier(
+      merged.perfTier && merged.perfTier !== 'auto' ? merged.perfTier : undefined
+    );
+    const resolvedFaceConcurrency =
+      (!merged.perfTier || merged.perfTier === 'auto') && (merged.faceConcurrency ?? 0) <= 1
+        ? profile.faceConcurrency
+        : merged.faceConcurrency ?? profile.faceConcurrency;
+
     // Apply performance settings immediately
     configureGpuAcceleration(merged.gpuFaceAcceleration ?? true);
     configureGpuDevice(merged.gpuDeviceId);
     configureCpuOptimization(merged.cpuOptimization ?? false);
     setRawPreviewQuality(merged.rawPreviewQuality ?? 70);
-    setFaceConcurrency(merged.faceConcurrency ?? 1);
+    setFaceConcurrency(resolvedFaceConcurrency);
 
     // Apply device-tier presets on first load (overridden by explicit user settings)
-    const profile = detectDeviceTier(
-      merged.perfTier && merged.perfTier !== 'auto' ? merged.perfTier : undefined
-    );
     applyDeviceTier(profile, {
       setCpuOptimization: configureCpuOptimization,
       setRawPreviewQuality,
@@ -984,7 +989,7 @@ async function loadSettings(): Promise<AppSettings> {
       rawPreviewQuality: merged.rawPreviewQuality,
     });
 
-    return { ...merged, licenseStatus };
+    return { ...merged, faceConcurrency: resolvedFaceConcurrency, licenseStatus };
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
