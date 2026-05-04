@@ -8,28 +8,26 @@
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
-      --bg: #0b0d11;
-      --surface: rgba(17, 20, 26, 0.95);
-      --surface-raised: rgba(24, 29, 37, 0.96);
+      --bg: #0c0f11;
+      --surface: rgba(18, 23, 25, 0.96);
+      --surface-raised: rgba(24, 31, 34, 0.96);
       --border: rgba(255, 255, 255, 0.08);
       --border-strong: rgba(255, 255, 255, 0.13);
       --text: #f4f6fb;
       --text-muted: #a0abc0;
       --text-faint: #6f7890;
-      --accent: #6c63ff;
-      --accent-hover: #7c74ff;
+      --accent: #37b69f;
+      --accent-hover: #45c6af;
       --green: #34d399;
       --green-soft: rgba(52, 211, 153, 0.12);
-      --radius: 20px;
+      --radius: 12px;
       --mono: "SF Mono", "Fira Code", Consolas, monospace;
       --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
     }
     body {
       font-family: var(--font);
       color: var(--text);
-      background:
-        radial-gradient(circle at top left, rgba(108, 99, 255, 0.15), transparent 30%),
-        linear-gradient(180deg, #0a0c10 0%, #0b0d11 100%);
+      background: linear-gradient(180deg, #0a0d0f 0%, #0c0f11 58%, #101416 100%);
       min-height: 100vh;
       line-height: 1.6;
       -webkit-font-smoothing: antialiased;
@@ -92,7 +90,7 @@
       justify-content: center;
       gap: 8px;
       padding: 10px;
-      border-radius: 14px;
+      border-radius: 8px;
       border: 1px solid var(--border);
       background: rgba(255,255,255,0.03);
       color: var(--text-muted);
@@ -104,16 +102,16 @@
     }
     .platform-tab:hover { color: var(--text); }
     .platform-tab.active {
-      background: rgba(108,99,255,0.18);
-      border-color: rgba(108,99,255,0.38);
+      background: rgba(55,182,159,0.16);
+      border-color: rgba(55,182,159,0.38);
       color: var(--text);
     }
 
     .release-card {
       padding: 18px;
-      border-radius: 16px;
-      border: 1px solid rgba(108, 99, 255, 0.20);
-      background: rgba(108, 99, 255, 0.08);
+      border-radius: 8px;
+      border: 1px solid rgba(55, 182, 159, 0.22);
+      background: rgba(55, 182, 159, 0.08);
     }
     .release-top {
       display: flex;
@@ -162,7 +160,7 @@
       align-items: center;
       gap: 6px;
       padding: 9px 16px;
-      border-radius: 12px;
+      border-radius: 8px;
       border: 1px solid var(--border);
       font-size: 0.88rem;
       font-weight: 700;
@@ -173,17 +171,17 @@
     }
     .btn:hover { transform: translateY(-1px); }
     .btn.primary {
-      background: linear-gradient(135deg, var(--accent), #847cff);
+      background: linear-gradient(135deg, var(--accent), var(--accent-hover));
       border-color: transparent;
-      color: #fff;
+      color: #041210;
     }
-    .btn.primary:hover { background: linear-gradient(135deg, var(--accent-hover), #918aff); }
+    .btn.primary:hover { background: linear-gradient(135deg, var(--accent-hover), #58d7c0); }
     .btn.secondary { background: rgba(255,255,255,0.04); color: var(--text); }
     .btn.secondary:hover { background: rgba(255,255,255,0.07); }
 
     .state-block {
       padding: 36px 20px;
-      border-radius: 16px;
+      border-radius: 8px;
       border: 1px dashed rgba(255,255,255,0.1);
       text-align: center;
       color: var(--text-faint);
@@ -203,7 +201,7 @@
     .req-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     .req-card {
       padding: 14px;
-      border-radius: 14px;
+      border-radius: 8px;
       border: 1px solid var(--border);
       background: rgba(255,255,255,0.03);
     }
@@ -231,7 +229,7 @@
       align-items: flex-start;
       gap: 12px;
       padding: 12px 14px;
-      border-radius: 14px;
+      border-radius: 8px;
       border: 1px solid var(--border);
       background: rgba(255,255,255,0.025);
     }
@@ -241,14 +239,41 @@
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      border-radius: 9px;
-      background: rgba(108,99,255,0.16);
-      color: #dcdfff;
+      border-radius: 8px;
+      background: rgba(55,182,159,0.16);
+      color: #b7f2e7;
       font-size: 0.78rem;
       font-weight: 700;
     }
     .step strong { display: block; font-size: 0.88rem; margin-bottom: 2px; }
     .step span { color: var(--text-muted); font-size: 0.83rem; line-height: 1.5; }
+
+    .assurance-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 16px;
+    }
+    .assurance-card {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: rgba(255,255,255,0.025);
+      padding: 12px;
+    }
+    .assurance-label {
+      font-size: 0.68rem;
+      font-weight: 800;
+      color: var(--text-faint);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+    .assurance-value {
+      color: var(--text);
+      font-size: 0.86rem;
+      font-weight: 700;
+      line-height: 1.35;
+    }
 
     .footer {
       display: flex;
@@ -266,7 +291,7 @@
     @media (max-width: 560px) {
       .shell { width: calc(100% - 24px); padding-top: 20px; }
       .card { padding: 16px; border-radius: 16px; }
-      .req-grid, .platform-tabs { grid-template-columns: 1fr; }
+      .req-grid, .platform-tabs, .assurance-grid { grid-template-columns: 1fr; }
       .release-top, .release-actions { flex-direction: column; align-items: flex-start; }
       .btn { width: 100%; justify-content: center; }
     }
@@ -303,6 +328,20 @@
 
       <div id="release-list">
         <div class="state-block"><div class="spinner"></div>Loading release…</div>
+      </div>
+      <div class="assurance-grid" aria-label="Download assurance">
+        <div class="assurance-card">
+          <div class="assurance-label">Updater</div>
+          <div class="assurance-value">Same feed as the desktop app</div>
+        </div>
+        <div class="assurance-card">
+          <div class="assurance-label">Privacy</div>
+          <div class="assurance-value">Photos stay on your machine</div>
+        </div>
+        <div class="assurance-card">
+          <div class="assurance-label">Support</div>
+          <div class="assurance-value"><a href="mailto:help@z2hs.au">help@z2hs.au</a></div>
+        </div>
       </div>
     </div>
 

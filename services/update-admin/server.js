@@ -151,6 +151,63 @@ function getArtifactFiles(dirPath) {
   } catch { return []; }
 }
 
+const artifactRetentionPlatforms = ['windows', 'macos'];
+const defaultArtifactKeepCount = Math.max(1, Number.parseInt(process.env.ARTIFACT_KEEP_COUNT || '3', 10) || 3);
+
+function getArtifactRetentionSnapshot(keepCount = defaultArtifactKeepCount) {
+  return artifactRetentionPlatforms.map((platform) => {
+    const dirPath = path.join(artifactsRoot, platform);
+    const files = getArtifactFiles(dirPath).map((file) => ({
+      ...file,
+      platform,
+      fullPath: path.join(dirPath, file.name),
+    }));
+    const keep = files.slice(0, keepCount);
+    const candidates = files.slice(keepCount);
+    return {
+      platform,
+      dirPath,
+      totalCount: files.length,
+      totalSize: files.reduce((sum, file) => sum + file.size, 0),
+      keep,
+      candidates,
+      candidateCount: candidates.length,
+      candidateSize: candidates.reduce((sum, file) => sum + file.size, 0),
+    };
+  });
+}
+
+function pruneOldArtifacts(keepCount = defaultArtifactKeepCount) {
+  const snapshot = getArtifactRetentionSnapshot(keepCount);
+  const deleted = [];
+  const errors = [];
+
+  for (const group of snapshot) {
+    for (const file of group.candidates) {
+      const resolved = path.resolve(file.fullPath);
+      if (!isPathInside(artifactsRoot, resolved)) {
+        errors.push(`${file.platform}/${file.name}: refused path outside artifact root`);
+        continue;
+      }
+      try {
+        fs.unlinkSync(resolved);
+        deleted.push(file);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'delete failed';
+        errors.push(`${file.platform}/${file.name}: ${message}`);
+      }
+    }
+  }
+
+  return {
+    keepCount,
+    deleted,
+    errors,
+    deletedCount: deleted.length,
+    deletedSize: deleted.reduce((sum, file) => sum + file.size, 0),
+  };
+}
+
 function getDiskStats(dirPath) {
   try {
     const { execSync } = require('node:child_process');
@@ -220,6 +277,23 @@ function htmlPage(title, body) {
           hour:'2-digit', minute:'2-digit'
         });
       });
+      document.querySelectorAll('[data-table-filter]').forEach(input => {
+        const target = input.dataset.tableFilter;
+        const rows = Array.from(document.querySelectorAll('[data-filter-table="' + target + '"] [data-filter-row]'));
+        const count = document.querySelector('[data-filter-count="' + target + '"]');
+        const apply = () => {
+          const q = input.value.trim().toLowerCase();
+          let visible = 0;
+          rows.forEach(row => {
+            const match = !q || row.dataset.filterRow.toLowerCase().includes(q);
+            row.style.display = match ? '' : 'none';
+            if (match) visible += 1;
+          });
+          if (count) count.textContent = visible + ' shown';
+        };
+        input.addEventListener('input', apply);
+        apply();
+      });
     });
   </script>
   <style>
@@ -266,6 +340,7 @@ function htmlPage(title, body) {
     .toolbar{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end}
     .toolbar .grow{flex:1 1 220px}
     .toolbar .toolbar-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    .filter-input{max-width:360px}
     .actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
     form.inline{display:inline}
     .nav-shell{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end;max-width:100%}
@@ -1270,6 +1345,86 @@ async function fetchLatestGitHubReleaseMeta() {
   };
 }
 
+async function upsertGithubReleaseAsset(latest, asset) {
+  const version = String(latest.tagName || '').replace(/^v/i, '');
+  const releaseName = latest.name || `Keptra ${version}`;
+  const releaseNotes = latest.body || null;
+  const publishedAt = latest.publishedAt || new Date().toISOString();
+  const releaseUrl = publicReleaseUrl(version);
+
+  const existing = await pool.query(
+    `SELECT id FROM releases
+     WHERE version = $1 AND platform = $2 AND channel = 'stable'
+     ORDER BY CASE WHEN rollout_state = 'live' THEN 0 WHEN rollout_state = 'draft' THEN 1 ELSE 2 END, published_at DESC, id DESC
+     LIMIT 1`,
+    [version, asset.platform],
+  );
+
+  if (existing.rowCount) {
+    await pool.query(
+      `UPDATE releases
+       SET release_name = $2,
+           release_notes = $3,
+           release_url = $4,
+           artifact_url = $5,
+           published_at = $6
+       WHERE id = $1`,
+      [existing.rows[0].id, releaseName, releaseNotes, releaseUrl, asset.url, publishedAt],
+    );
+    return existing.rows[0].id;
+  }
+
+  const inserted = await pool.query(
+    `INSERT INTO releases (version, platform, channel, release_name, release_notes, release_url, artifact_url, rollout_state, published_at)
+     VALUES ($1,$2,'stable',$3,$4,$5,$6,'draft',$7)
+     RETURNING id`,
+    [version, asset.platform, releaseName, releaseNotes, releaseUrl, asset.url, publishedAt],
+  );
+  return inserted.rows[0].id;
+}
+
+async function makeReleaseLive(id) {
+  const release = await pool.query('SELECT id, platform, channel FROM releases WHERE id = $1', [id]);
+  if (!release.rowCount) return false;
+  const row = release.rows[0];
+  await pool.query(
+    `UPDATE releases
+     SET rollout_state = 'hidden'
+     WHERE platform = $1 AND channel = $2 AND rollout_state = 'live' AND id <> $3`,
+    [row.platform, row.channel, row.id],
+  );
+  await pool.query(`UPDATE releases SET rollout_state = 'live' WHERE id = $1`, [row.id]);
+  return true;
+}
+
+async function hideOlderLiveReleases() {
+  const rows = await pool.query(
+    `SELECT *
+     FROM releases
+     WHERE rollout_state = 'live'
+     ORDER BY platform, channel, published_at DESC, id DESC`,
+  );
+  const grouped = new Map();
+  for (const row of rows.rows) {
+    const key = `${row.platform}:${row.channel}`;
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(row);
+  }
+
+  const keepIds = [];
+  const hideIds = [];
+  for (const group of grouped.values()) {
+    const sorted = group.sort(compareReleaseRows);
+    if (sorted[0]) keepIds.push(sorted[0].id);
+    hideIds.push(...sorted.slice(1).map((row) => row.id));
+  }
+
+  if (hideIds.length > 0) {
+    await pool.query('UPDATE releases SET rollout_state = $1 WHERE id = ANY($2::int[])', ['hidden', hideIds]);
+  }
+  return { kept: keepIds.length, hidden: hideIds.length };
+}
+
 app.get('/healthz', async (_req, res) => {
   await pool.query('SELECT 1');
   res.json({ ok: true });
@@ -1514,6 +1669,11 @@ app.get('/admin', authSession, async (_req, res) => {
           </div>` : ''}
         </div>
         ${diskBar}
+        <div class="actions" style="margin-top:16px">
+          <a href="/admin/releases"><button class="secondary" type="button">Review releases</button></a>
+          <a href="/admin/health"><button class="secondary" type="button">Run health checks</button></a>
+          <a href="/admin/licenses"><button class="secondary" type="button">Manage licenses</button></a>
+        </div>
       </div>
       <div class="panel">
         <div class="panel-head">
@@ -2382,16 +2542,34 @@ app.get('/admin/releases', authSession, async (req, res) => {
     ? await fetchLatestGitHubReleaseMeta().catch((error) => ({ error: error instanceof Error ? error.message : 'Could not load GitHub release.' }))
     : null;
   const warnMsg = req.query.warn ? String(req.query.warn) : null;
+  const okMsg = req.query.ok ? String(req.query.ok) : null;
   const warnBanner = warnMsg
     ? `<div class="notice danger" style="margin-bottom:18px"><p class="bad">Warning: ${escapeHtml(warnMsg)}</p></div>`
     : '';
+  const okBanner = okMsg
+    ? `<div class="notice" style="margin-bottom:18px"><p class="ok">${escapeHtml(okMsg)}</p></div>`
+    : '';
+  const retentionSnapshot = getArtifactRetentionSnapshot(defaultArtifactKeepCount);
+  const retentionTotals = retentionSnapshot.reduce((acc, group) => {
+    acc.files += group.candidateCount;
+    acc.size += group.candidateSize;
+    acc.totalFiles += group.totalCount;
+    acc.totalSize += group.totalSize;
+    return acc;
+  }, { files: 0, size: 0, totalFiles: 0, totalSize: 0 });
+  const retentionRows = retentionSnapshot.map((group) => `<tr>
+    <td data-label="Platform"><span style="font-weight:700">${escapeHtml(group.platform)}</span></td>
+    <td data-label="Stored">${group.totalCount} files<div class="muted">${formatBytes(group.totalSize)}</div></td>
+    <td data-label="Kept">${group.keep.length} newest<div class="muted">${group.keep.map((file) => escapeHtml(file.name)).join('<br>') || 'None'}</div></td>
+    <td data-label="Can delete">${group.candidateCount} files<div class="muted">${formatBytes(group.candidateSize)}</div></td>
+  </tr>`).join('');
   const releaseSummary = releases.rows.reduce((acc, row) => {
     acc.total += 1;
     acc[row.rollout_state] = (acc[row.rollout_state] || 0) + 1;
     acc[row.platform] = (acc[row.platform] || 0) + 1;
     return acc;
   }, { total: 0, live: 0, draft: 0, hidden: 0, windows: 0, macos: 0 });
-  res.send(htmlPage('Releases', warnBanner + `
+  res.send(htmlPage('Releases', warnBanner + okBanner + `
     <div class="hero">
       <div class="hero-copy">
         <div class="hero-kicker">Hosted Releases</div>
@@ -2492,6 +2670,27 @@ app.get('/admin/releases', authSession, async (req, res) => {
         <div class="notice" style="margin-top:14px">
           <p class="muted">New releases are saved as <strong>Draft</strong> by default, so you can review them before going live.</p>
         </div>
+        <form method="post" action="/admin/releases/hide-older-live" style="margin-top:12px" onsubmit="return confirm('Hide older live releases and keep only the newest live release for each platform/channel?')">
+          <button class="secondary" type="submit">Hide older live releases</button>
+        </form>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Artifact cleanup</h2>
+            <p class="muted">Keep the newest ${defaultArtifactKeepCount} files per platform and remove older hosted installers from disk.</p>
+          </div>
+          <span class="pill">${formatBytes(retentionTotals.size)} removable</span>
+        </div>
+        <div class="table-wrap">
+          <table class="table-stack">
+            <thead><tr><th>Platform</th><th>Stored</th><th>Kept</th><th>Can delete</th></tr></thead>
+            <tbody>${retentionRows || '<tr><td colspan="4" class="muted">No artifact folders found.</td></tr>'}</tbody>
+          </table>
+        </div>
+        <form method="post" action="/admin/releases/artifacts/prune" style="margin-top:14px" onsubmit="return confirm('Delete old hosted artifacts and keep only the newest ${defaultArtifactKeepCount} files per platform?')">
+          <button class="danger" type="submit" ${retentionTotals.files ? '' : 'disabled'}>Delete old artifacts</button>
+        </form>
       </div>
     </div>
     <div class="panel">
@@ -2500,11 +2699,16 @@ app.get('/admin/releases', authSession, async (req, res) => {
           <h2>All releases</h2>
           <p class="muted">Review each release record, then promote or hide it without the table overflowing every time a title gets longer.</p>
         </div>
+        <div class="filter-input">
+          <label style="margin:0 0 6px">Filter releases</label>
+          <input data-table-filter="releases" placeholder="Search version, platform, or state" />
+          <p class="muted" data-filter-count="releases" style="margin-top:6px">0 shown</p>
+        </div>
       </div>
       <div class="table-wrap">
-        <table class="table-stack">
+        <table class="table-stack" data-filter-table="releases">
           <thead><tr><th>Release</th><th>Distribution</th><th>State</th><th>Published</th><th>Actions</th></tr></thead><tbody>
-          ${releases.rows.map((row) => `<tr>
+          ${releases.rows.map((row) => `<tr data-filter-row="${escapeHtml([row.release_name, row.version, row.platform, row.channel, row.rollout_state].join(' '))}">
             <td data-label="Release"><span style="font-weight:700">${escapeHtml(row.release_name)}</span><div class="muted">v${escapeHtml(row.version)}</div></td>
             <td data-label="Distribution" class="muted">${escapeHtml(row.platform)} · ${escapeHtml(row.channel)}${row.release_url ? `<div><a href="${escapeHtml(row.release_url)}" class="muted">Hosted page</a></div>` : ''}${row.artifact_url ? `<div><a href="${escapeHtml(row.artifact_url)}" class="muted">Artifact</a></div>` : ''}</td>
             <td data-label="State">${statusPill(row.rollout_state)}</td>
@@ -2538,23 +2742,12 @@ app.post('/admin/releases/sync-github', authSession, async (_req, res) => {
     }
 
     const assets = latest.assets.filter((asset) => asset.platform && asset.url);
+    let imported = 0;
     for (const asset of assets) {
-      await pool.query(
-        `INSERT INTO releases (version, platform, channel, release_name, release_notes, release_url, artifact_url, rollout_state, published_at)
-         VALUES ($1,$2,'stable',$3,$4,$5,$6,'draft',$7)
-         ON CONFLICT DO NOTHING`,
-        [
-          version,
-          asset.platform,
-          latest.name || `Keptra ${version}`,
-          latest.body || null,
-          publicReleaseUrl(version),
-          asset.url,
-          latest.publishedAt || new Date().toISOString(),
-        ],
-      );
+      await upsertGithubReleaseAsset(latest, asset);
+      imported += 1;
     }
-    return res.redirect('/admin/releases');
+    return res.redirect('/admin/releases?ok=' + encodeURIComponent(`Imported or updated ${imported} GitHub release asset${imported === 1 ? '' : 's'} for ${version}.`));
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Could not sync the latest GitHub release.';
     return res.status(400).send(htmlPage('GitHub Sync Error', `<div class="panel"><h1>GitHub sync failed</h1><p class="bad">${escapeHtml(message)}</p><a href="/admin/releases">Back</a></div>`));
@@ -2591,8 +2784,23 @@ app.post('/admin/releases', authSession, async (req, res) => {
   res.redirect('/admin/releases');
 });
 
+app.post('/admin/releases/artifacts/prune', authSession, async (_req, res) => {
+  const result = pruneOldArtifacts(defaultArtifactKeepCount);
+  const message = `Deleted ${result.deletedCount} old artifact${result.deletedCount === 1 ? '' : 's'} and freed ${formatBytes(result.deletedSize)}.`;
+  if (result.errors.length > 0) {
+    const warn = encodeURIComponent(`${message} ${result.errors.length} file${result.errors.length === 1 ? '' : 's'} could not be deleted: ${result.errors.join('; ')}`);
+    return res.redirect('/admin/releases?warn=' + warn);
+  }
+  return res.redirect('/admin/releases?ok=' + encodeURIComponent(message));
+});
+
+app.post('/admin/releases/hide-older-live', authSession, async (_req, res) => {
+  const result = await hideOlderLiveReleases();
+  return res.redirect('/admin/releases?ok=' + encodeURIComponent(`Kept ${result.kept} latest live release${result.kept === 1 ? '' : 's'} and hid ${result.hidden} older live release${result.hidden === 1 ? '' : 's'}.`));
+});
+
 app.post('/admin/releases/:id/live', authSession, async (req, res) => {
-  await pool.query(`UPDATE releases SET rollout_state = 'live' WHERE id = $1`, [req.params.id]);
+  await makeReleaseLive(req.params.id);
   res.redirect('/admin/releases');
 });
 

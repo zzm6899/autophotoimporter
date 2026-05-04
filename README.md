@@ -151,6 +151,38 @@ Requires **Node 20+**.
 - On **macOS** `npm run make` produces a `.dmg` and a `.zip` under `out/make/`.
 - On **Windows** it produces `Keptra-Setup.exe` (Squirrel), a `.nupkg`, and a portable `.zip` under `out/make/`.
 
+Useful macOS build shortcuts:
+
+```bash
+npm run make:mac       # current Mac architecture
+npm run make:mac:x64   # Intel build
+npm run make:mac:arm64 # Apple Silicon build
+```
+
+The macOS app bundle metadata is set in `forge.config.ts`:
+
+- App name: `Keptra`
+- Bundle ID: `au.z2hs.keptra` by default, or `MAC_APP_BUNDLE_ID`
+- Category: `public.app-category.photography`
+- DMG icon/background: `assets/brand/icon.icns` and `assets/brand/dmg-bg.png`
+
+For signed and notarized GitHub release builds, add these repository secrets:
+
+- `APPLE_CERTIFICATE_BASE64` — base64-encoded `.p12` Developer ID Application certificate
+- `APPLE_CERTIFICATE_PASSWORD` — password for that `.p12`
+- `APPLE_SIGNING_IDENTITY` — usually `Developer ID Application: Your Name (TEAMID)`
+- `APPLE_ID` — Apple developer account email
+- `APPLE_APP_SPECIFIC_PASSWORD` — app-specific Apple ID password
+- `APPLE_TEAM_ID` — Apple Developer Team ID
+
+Optional:
+
+- `APPLE_KEYCHAIN_PASSWORD` — temporary CI keychain password
+- `MAC_APP_BUNDLE_ID` — override for the default `au.z2hs.keptra`
+- `REQUIRE_MAC_SIGNING=true` — fail release builds instead of producing unsigned macOS artifacts
+
+Unsigned macOS DMG/ZIP artifacts can still be built without Apple secrets. They are useful for private testing, but macOS Gatekeeper will warn users until the app is signed and notarized with an Apple Developer ID certificate.
+
 ### Windows one-shot setup
 
 Prefer clicking over typing? Double-click `scripts\setup-windows.cmd` (or run it from a Command Prompt in the repo root). It verifies Node 20+, installs dependencies, and shows a menu for dev / build / install-only. You can also pass the action directly:

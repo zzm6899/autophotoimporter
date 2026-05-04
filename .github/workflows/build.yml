@@ -20,8 +20,14 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            label: windows
+            label: windows-x64
             arch: x64
+          - os: macos-15-intel
+            label: macos-x64
+            arch: x64
+          - os: macos-15
+            label: macos-arm64
+            arch: arm64
 
     runs-on: ${{ matrix.os }}
 
@@ -56,7 +62,7 @@ jobs:
       - name: Download runtime models
         run: npm run models
 
-      - name: Verify macOS signing secrets
+      - name: Check macOS signing configuration
         if: startsWith(matrix.os, 'macos') && startsWith(github.ref, 'refs/tags/')
         shell: bash
         env:
@@ -64,16 +70,63 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          REQUIRE_MAC_SIGNING: ${{ vars.REQUIRE_MAC_SIGNING || secrets.REQUIRE_MAC_SIGNING }}
         run: |
           set -euo pipefail
-          missing=0
-          for name in APPLE_SIGNING_IDENTITY APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+          required=(APPLE_SIGNING_IDENTITY APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID APPLE_CERTIFICATE_BASE64 APPLE_CERTIFICATE_PASSWORD)
+          missing=()
+          present=0
+          for name in "${required[@]}"; do
             if [[ -z "${!name}" ]]; then
-              echo "::error::$name is required for tagged macOS release builds"
-              missing=1
+              missing+=("$name")
+            else
+              present=$((present + 1))
             fi
           done
-          exit "$missing"
+          if [[ "$present" -eq 0 ]]; then
+            if [[ "${REQUIRE_MAC_SIGNING,,}" == "true" || "$REQUIRE_MAC_SIGNING" == "1" ]]; then
+              echo "::error::macOS signing is required, but no Apple signing secrets are configured."
+              exit 1
+            fi
+            echo "::warning::Building unsigned macOS DMG/ZIP artifacts. Gatekeeper will warn users until builds are signed and notarized."
+            exit 0
+          fi
+          if [[ "${#missing[@]}" -gt 0 ]]; then
+            echo "::error::Partial macOS signing config. Missing: ${missing[*]}"
+            echo "::error::Either configure all Apple signing secrets or remove all of them to build unsigned artifacts."
+            exit 1
+          fi
+          echo "macOS signing and notarization secrets are configured."
+
+      - name: Install Apple signing certificate
+        if: startsWith(matrix.os, 'macos')
+        shell: bash
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$APPLE_CERTIFICATE_BASE64" ]]; then
+            echo "No Apple signing certificate configured; building unsigned macOS artifacts."
+            exit 0
+          fi
+
+          CERTIFICATE_PATH="$RUNNER_TEMP/apple-signing-certificate.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          KEYCHAIN_PASSWORD="${APPLE_KEYCHAIN_PASSWORD:-temporary-ci-keychain-password}"
+
+          echo "$APPLE_CERTIFICATE_BASE64" | base64 --decode > "$CERTIFICATE_PATH" || echo "$APPLE_CERTIFICATE_BASE64" | base64 -D > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
       - name: Make package
         run: npm run make -- --arch=${{ matrix.arch }}
@@ -82,6 +135,7 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          MAC_APP_BUNDLE_ID: ${{ vars.MAC_APP_BUNDLE_ID || secrets.MAC_APP_BUNDLE_ID }}
 
       - run: npm run package:smoke
         env:
@@ -126,7 +180,19 @@ jobs:
           set -euo pipefail
           mkdir -p release-assets
           find artifacts -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.exe' -o -name '*.nupkg' -o -name 'RELEASES' \) -print | while read -r file; do
-            cp "$file" release-assets/
+            rel="${file#artifacts/}"
+            artifact_label="${rel%%/*}"
+            base="$(basename "$file")"
+            target="release-assets/$base"
+            if [[ "$artifact_label" == macos-* ]]; then
+              target="release-assets/${artifact_label}-${base}"
+            fi
+            if [[ -e "$target" ]]; then
+              safe="${file#artifacts/}"
+              safe="${safe//\//-}"
+              target="release-assets/$safe"
+            fi
+            cp "$file" "$target"
           done
           ls -la release-assets
 
@@ -152,7 +218,9 @@ jobs:
           WINDOWS_NUPKG="$(find release-assets -maxdepth 1 -type f -name '*.nupkg' | head -n 1 || true)"
           WINDOWS_RELEASES="$(find release-assets -maxdepth 1 -type f -name 'RELEASES' | head -n 1 || true)"
           WINDOWS_ZIP="$(find release-assets -maxdepth 1 -type f -name '*win*.zip' | head -n 1 || true)"
-          MAC_DMG="$(find release-assets -maxdepth 1 -type f -name '*.dmg' | head -n 1 || true)"
+          MAC_DMG_ARM64="$(find release-assets -maxdepth 1 -type f \( -name '*arm64*.dmg' -o -name '*macos-arm64*.dmg' \) | head -n 1 || true)"
+          MAC_DMG_X64="$(find release-assets -maxdepth 1 -type f \( -name '*x64*.dmg' -o -name '*macos-x64*.dmg' \) | head -n 1 || true)"
+          MAC_DMG="${MAC_DMG_ARM64:-$MAC_DMG_X64}"
           MAC_ZIP="$(find release-assets -maxdepth 1 -type f \( -name '*darwin*.zip' -o -name '*mac*.zip' \) | head -n 1 || true)"
 
           if [[ -n "$WINDOWS_NUPKG" ]]; then

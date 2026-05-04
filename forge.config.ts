@@ -27,6 +27,9 @@ function copyDirSync(src: string, dst: string): void {
 }
 
 const windowsIconPath = path.resolve(__dirname, 'assets/brand/icon.ico');
+const productName = 'Keptra';
+const macAppBundleId = process.env.MAC_APP_BUNDLE_ID || 'au.z2hs.keptra';
+const macAppCategoryType = process.env.MAC_APP_CATEGORY_TYPE || 'public.app-category.photography';
 const macSigningIdentity = process.env.APPLE_SIGNING_IDENTITY;
 const macNotarizeEnabled = !!(
   process.env.APPLE_ID &&
@@ -37,7 +40,22 @@ const macNotarizeEnabled = !!(
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
-    name: 'Keptra',
+    name: productName,
+    executableName: productName,
+    appBundleId: macAppBundleId,
+    appCategoryType: macAppCategoryType,
+    appCopyright: `Copyright © ${new Date().getFullYear()} Z2HS. All rights reserved.`,
+    extendInfo: {
+      CFBundleDisplayName: productName,
+      CFBundleName: productName,
+      CFBundleIdentifier: macAppBundleId,
+      LSApplicationCategoryType: macAppCategoryType,
+      NSHighResolutionCapable: true,
+      NSHumanReadableCopyright: `Copyright © ${new Date().getFullYear()} Z2HS. All rights reserved.`,
+      NSPhotoLibraryUsageDescription: 'Keptra only accesses photo libraries and folders you choose for import and review.',
+      NSRemovableVolumesUsageDescription: 'Keptra needs access to memory cards and removable drives you choose for photo import.',
+      NSDownloadsFolderUsageDescription: 'Keptra can save downloads, diagnostics, and exported reports to your Downloads folder when you choose.',
+    },
     icon: path.resolve(__dirname, 'assets/brand/icon'),
     ...(process.platform === 'darwin' && macSigningIdentity ? {
       osxSign: {

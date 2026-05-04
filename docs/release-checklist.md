@@ -11,6 +11,8 @@ Use this checklist before tagging or manually publishing a release.
 3. Build release artifacts:
    `npm run make`
 
+   On GitHub, tagged releases build Windows, macOS Intel, and macOS Apple Silicon artifacts. Without Apple signing secrets, macOS artifacts are unsigned and will trigger Gatekeeper warnings. For signed/notarized macOS artifacts, confirm the Apple signing secrets documented in `README.md` are configured before pushing a `v*` tag.
+
 4. Smoke the packaged app and fixtures:
    `npm run package:smoke`
    `npm run fixtures:smoke`
