@@ -14,7 +14,7 @@ import { generatePreview } from './services/exif-parser';
 import { checkForUpdate, fetchUpdateHistory, readLastKnownGoodUpdateMetadata } from './services/update-checker';
 import { probeFtp, mirrorFtp } from './services/ftp-source';
 import { activateLicenseInput, checkHostedLicenseStatus, validateLicenseKey } from './services/license';
-import { analyzeFaces, faceModelsAvailable, serializeEmbedding, isGpuAvailable, getActualExecutionProvider, getFaceProviderDiagnostics, configureGpuAcceleration, configureGpuDevice, configureCpuOptimization, configureFaceThroughput, clearImageDecodeCache, diagnoseFaceEngine, runFaceGpuStressTest } from './services/face-engine';
+import { analyzeFaces, faceModelsAvailable, serializeEmbedding, isGpuAvailable, getActualExecutionProvider, getFaceFeatureOptions, getFaceProviderDiagnostics, configureGpuAcceleration, configureGpuDevice, configureCpuOptimization, configureFaceFeatureOptions, configureFaceThroughput, clearImageDecodeCache, diagnoseFaceEngine, runFaceGpuStressTest } from './services/face-engine';
 import { getCachedFaceResult, setCachedFaceResult, clearFaceCache } from './services/face-cache';
 import { detectDeviceTier, applyDeviceTier } from './services/device-tier';
 import { setRawPreviewQuality } from './services/exif-parser';
@@ -882,6 +882,10 @@ const DEFAULT_SETTINGS: AppSettings = {
   rawPreviewCache: true,        // Cache RAW previews by default
   cpuOptimization: false,       // Disabled by default (only enable for older CPUs)
   rawPreviewQuality: 70,        // 70% JPEG quality for RAW previews
+  reviewFaceAnalysis: true,
+  reviewFaceMatching: true,
+  reviewPersonDetection: true,
+  reviewVisualDuplicates: true,
   jobPresets: [],
   selectionSets: [],
   licenseKey: '',
@@ -1028,6 +1032,10 @@ async function loadSettings(): Promise<AppSettings> {
     configureGpuAcceleration(merged.gpuFaceAcceleration ?? true);
     configureGpuDevice(merged.gpuDeviceId);
     configureCpuOptimization(merged.cpuOptimization ?? false);
+    configureFaceFeatureOptions({
+      faceMatching: merged.reviewFaceMatching ?? true,
+      personDetection: merged.reviewPersonDetection ?? true,
+    });
     setRawPreviewQuality(merged.rawPreviewQuality ?? 70);
     setFaceConcurrency(resolvedFaceConcurrency);
 
@@ -1073,6 +1081,10 @@ async function saveSettings(settings: Partial<AppSettings>): Promise<void> {
   configureGpuAcceleration(merged.gpuFaceAcceleration ?? true);
   configureGpuDevice(merged.gpuDeviceId);
   configureCpuOptimization(merged.cpuOptimization ?? false);
+  configureFaceFeatureOptions({
+    faceMatching: merged.reviewFaceMatching ?? true,
+    personDetection: merged.reviewPersonDetection ?? true,
+  });
   setRawPreviewQuality(merged.rawPreviewQuality ?? 70);
   setFaceConcurrency(merged.faceConcurrency ?? 1);
   watchFolderManager?.update(merged.watchFolders ?? []);
@@ -2678,16 +2690,20 @@ export function registerIpcHandlers(): void {
 
       const hits: object[] = [];
       const misses: string[] = [];
+      const faceOptions = getFaceFeatureOptions();
       for (const { filePath, cached } of cacheResults) {
         if (cached) {
+          const personBoxes = faceOptions.personDetection ? cached.result.personBoxes : [];
+          const embeddings = faceOptions.faceMatching ? cached.hexEmbeddings : [];
+          const embeddingBoxes = faceOptions.faceMatching ? cached.result.embeddingBoxes ?? [] : [];
           hits.push({
             path: filePath,
             boxes: cached.result.boxes,
-            personBoxes: cached.result.personBoxes,
-            embeddings: cached.hexEmbeddings,
-            embeddingBoxes: cached.result.embeddingBoxes ?? [],
+            personBoxes,
+            embeddings,
+            embeddingBoxes,
             faceCount: cached.result.boxes.length,
-            personCount: cached.result.personBoxes.length,
+            personCount: personBoxes.length,
           });
         } else {
           misses.push(filePath);

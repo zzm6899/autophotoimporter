@@ -108,6 +108,10 @@ interface State {
   rawPreviewCache: boolean;
   cpuOptimization: boolean;
   rawPreviewQuality: number;
+  reviewFaceAnalysis: boolean;
+  reviewFaceMatching: boolean;
+  reviewPersonDetection: boolean;
+  reviewVisualDuplicates: boolean;
   perfTier: 'auto' | 'low' | 'balanced' | 'high';
   fastKeeperMode: boolean;
   previewConcurrency: number;
@@ -238,6 +242,7 @@ export type Action =
   | { type: 'CLOSE_LICENSE_PROMPT' }
   | { type: 'DISMISS_LICENSE_BANNER' }
   | { type: 'SET_PERFORMANCE_OPTION'; key: 'gpuFaceAcceleration' | 'rawPreviewCache' | 'cpuOptimization'; value: boolean }
+  | { type: 'SET_REVIEW_PERFORMANCE_OPTION'; key: 'reviewFaceAnalysis' | 'reviewFaceMatching' | 'reviewPersonDetection' | 'reviewVisualDuplicates'; value: boolean }
   | { type: 'SET_GPU_DEVICE_ID'; deviceId: number }
   | { type: 'SET_RAW_PREVIEW_QUALITY'; quality: number }
   | { type: 'SET_PERF_TIER'; tier: 'auto' | 'low' | 'balanced' | 'high' }
@@ -365,6 +370,10 @@ const initialState: State = {
   rawPreviewCache: true,
   cpuOptimization: true,
   rawPreviewQuality: 70,
+  reviewFaceAnalysis: true,
+  reviewFaceMatching: true,
+  reviewPersonDetection: true,
+  reviewVisualDuplicates: true,
   perfTier: 'auto',
   fastKeeperMode: false,
   previewConcurrency: 2,
@@ -1105,6 +1114,10 @@ export function reducer(state: State, action: Action): State {
           previewConcurrency: 1,
           faceConcurrency: 1,
           rawPreviewQuality: Math.min(state.rawPreviewQuality, 60),
+          reviewFaceAnalysis: false,
+          reviewFaceMatching: false,
+          reviewPersonDetection: false,
+          reviewVisualDuplicates: false,
         };
       }
       if (action.tier === 'balanced') {
@@ -1116,6 +1129,10 @@ export function reducer(state: State, action: Action): State {
           previewConcurrency: 2,
           faceConcurrency: Math.max(2, state.faceConcurrency),
           rawPreviewQuality: Math.max(65, Math.min(state.rawPreviewQuality, 75)),
+          reviewFaceAnalysis: true,
+          reviewFaceMatching: true,
+          reviewPersonDetection: true,
+          reviewVisualDuplicates: true,
         };
       }
       if (action.tier === 'high') {
@@ -1126,11 +1143,17 @@ export function reducer(state: State, action: Action): State {
           previewConcurrency: Math.max(3, state.previewConcurrency),
           faceConcurrency: Math.max(4, state.faceConcurrency),
           rawPreviewQuality: Math.max(state.rawPreviewQuality, 82),
+          reviewFaceAnalysis: true,
+          reviewFaceMatching: true,
+          reviewPersonDetection: true,
+          reviewVisualDuplicates: true,
         };
       }
       return { ...state, perfTier: action.tier };
     case 'SET_FAST_KEEPER_MODE':
       return { ...state, fastKeeperMode: action.enabled };
+    case 'SET_REVIEW_PERFORMANCE_OPTION':
+      return { ...state, [action.key]: action.value };
     case 'SET_PREVIEW_CONCURRENCY':
       return { ...state, previewConcurrency: action.concurrency };
     case 'SET_FACE_CONCURRENCY':

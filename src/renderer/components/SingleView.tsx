@@ -98,6 +98,8 @@ export function SingleView({ file, index, total, aiPaused = false }: SingleViewP
     whiteBalanceTemperature,
     whiteBalanceTint,
     viewOverlayPreferences,
+    fastKeeperMode,
+    reviewFaceAnalysis,
   } = useAppState();
   const files = useMergedFiles();
   const dispatch = useAppDispatch();
@@ -270,6 +272,7 @@ export function SingleView({ file, index, total, aiPaused = false }: SingleViewP
 
   useEffect(() => {
     if (aiPaused) return;
+    if (fastKeeperMode || !reviewFaceAnalysis) return;
     if (file.type !== 'photo') return;
 
     let cancelled = false;
@@ -363,7 +366,7 @@ export function SingleView({ file, index, total, aiPaused = false }: SingleViewP
       clearTimeout(timer);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [aiPaused, file.path, file.type]);
+  }, [aiPaused, fastKeeperMode, file.path, file.type, reviewFaceAnalysis]);
 
   /*
     Keep the thumbnail visible while the full preview is being generated and

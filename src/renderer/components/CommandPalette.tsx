@@ -41,8 +41,20 @@ import { useAppDispatch, useAppState } from '../context/ImportContext';
 import type { FilterMode } from '../context/ImportContext';
 import { useFileScanner } from '../hooks/useFileScanner';
 import { useImport } from '../hooks/useImport';
+import type { MetadataExportFlags } from '../../shared/types';
 
 export const OPEN_COMMAND_PALETTE_EVENT = 'photo-importer:command-palette';
+
+const FAST_RAW_METADATA_EXPORT: MetadataExportFlags = {
+  keywords: false,
+  title: false,
+  caption: false,
+  creator: false,
+  copyright: false,
+  rating: false,
+  pickLabel: false,
+  stripGps: false,
+};
 export const REVIEW_COMMAND_EVENT = 'photo-importer:review-command';
 
 export type CommandDangerLevel = 'safe' | 'bulk' | 'destructive';
@@ -676,6 +688,7 @@ export function CommandPalette() {
       dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'normalizeExposure', value: false });
       dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'autoStraighten', value: false });
       dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'watermarkEnabled', value: false });
+      dispatch({ type: 'SET_METADATA_EXPORT', flags: FAST_RAW_METADATA_EXPORT });
       await window.electronAPI.setSettings({
         saveFormat: 'original',
         skipDuplicates: false,
@@ -685,6 +698,7 @@ export function CommandPalette() {
         normalizeExposure: false,
         autoStraighten: false,
         watermarkEnabled: false,
+        metadataExport: FAST_RAW_METADATA_EXPORT,
       });
     },
     'view.grid': () => dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' }),

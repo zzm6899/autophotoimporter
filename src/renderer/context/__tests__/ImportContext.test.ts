@@ -119,6 +119,10 @@ function makeState(overrides: Record<string, unknown> = {}) {
     rawPreviewCache: true,
     cpuOptimization: true,
     rawPreviewQuality: 70,
+    reviewFaceAnalysis: true,
+    reviewFaceMatching: true,
+    reviewPersonDetection: true,
+    reviewVisualDuplicates: true,
     perfTier: 'auto' as const,
     fastKeeperMode: false,
     previewConcurrency: 2,
@@ -256,6 +260,21 @@ describe('ImportContext reducer', () => {
       expect(next.faceConcurrency).toBe(1);
       expect(next.rawPreviewCache).toBe(true);
       expect(next.rawPreviewQuality).toBeLessThanOrEqual(68);
+    });
+
+    it('turns off expensive review stages in low performance tier', () => {
+      const next = reducer(makeState({ reviewFaceAnalysis: true, reviewFaceMatching: true, reviewPersonDetection: true, reviewVisualDuplicates: true }), {
+        type: 'SET_PERF_TIER',
+        tier: 'low',
+      });
+
+      expect(next.fastKeeperMode).toBe(true);
+      expect(next.previewConcurrency).toBe(1);
+      expect(next.faceConcurrency).toBe(1);
+      expect(next.reviewFaceAnalysis).toBe(false);
+      expect(next.reviewFaceMatching).toBe(false);
+      expect(next.reviewPersonDetection).toBe(false);
+      expect(next.reviewVisualDuplicates).toBe(false);
     });
   });
 

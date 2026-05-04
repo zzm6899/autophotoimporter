@@ -31,8 +31,14 @@ function hashText(value: string): string {
   return Math.abs(hash).toString(36);
 }
 
+function pathBasenameAnyPlatform(folderPath: string): string {
+  const trimmed = folderPath.replace(/[\\/]+$/, '');
+  const isWindowsPath = /^[a-zA-Z]:[\\/]/.test(trimmed) || trimmed.startsWith('\\\\') || trimmed.includes('\\');
+  return isWindowsPath ? path.win32.basename(trimmed) : path.basename(trimmed);
+}
+
 function displayNameForPath(folderPath: string): string {
-  const parsed = path.basename(folderPath.replace(/[\\/]+$/, ''));
+  const parsed = pathBasenameAnyPlatform(folderPath);
   return parsed || folderPath || 'Watch folder';
 }
 

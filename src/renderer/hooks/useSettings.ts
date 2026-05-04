@@ -181,6 +181,18 @@ export function useSettings() {
       if (settings.perfTier) {
         dispatch({ type: 'SET_PERF_TIER', tier: settings.perfTier });
       }
+      if (typeof settings.reviewFaceAnalysis === 'boolean') {
+        dispatch({ type: 'SET_REVIEW_PERFORMANCE_OPTION', key: 'reviewFaceAnalysis', value: settings.reviewFaceAnalysis });
+      }
+      if (typeof settings.reviewFaceMatching === 'boolean') {
+        dispatch({ type: 'SET_REVIEW_PERFORMANCE_OPTION', key: 'reviewFaceMatching', value: settings.reviewFaceMatching });
+      }
+      if (typeof settings.reviewPersonDetection === 'boolean') {
+        dispatch({ type: 'SET_REVIEW_PERFORMANCE_OPTION', key: 'reviewPersonDetection', value: settings.reviewPersonDetection });
+      }
+      if (typeof settings.reviewVisualDuplicates === 'boolean') {
+        dispatch({ type: 'SET_REVIEW_PERFORMANCE_OPTION', key: 'reviewVisualDuplicates', value: settings.reviewVisualDuplicates });
+      }
       if (typeof settings.fastKeeperMode === 'boolean') {
         dispatch({ type: 'SET_FAST_KEEPER_MODE', enabled: settings.fastKeeperMode });
       }

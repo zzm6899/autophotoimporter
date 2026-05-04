@@ -897,6 +897,14 @@ export interface AppSettings {
   rawPreviewCache?: boolean;       // Cache RAW preview extractions (default: true)
   cpuOptimization?: boolean;       // Use lighter models/settings for older CPUs (default: false)
   rawPreviewQuality?: number;      // 0-100 for RAW preview JPEG quality (default: 70)
+  /** Run native ONNX face/person analysis during review. Disable on low-end devices for maximum speed. */
+  reviewFaceAnalysis?: boolean;
+  /** Generate face embeddings for similar-face grouping/gallery. Expensive on crowded images. */
+  reviewFaceMatching?: boolean;
+  /** Run person/body detection in the face engine. Useful for event culling, but CPU/GPU heavy. */
+  reviewPersonDetection?: boolean;
+  /** Generate visual hashes and near-duplicate stacks during review. */
+  reviewVisualDuplicates?: boolean;
   /** DirectML adapter index. Undefined/-1 = system default GPU. */
   gpuDeviceId?: number;
   /** Number of parallel detector/embedder streams used by the diagnostic GPU load test. */

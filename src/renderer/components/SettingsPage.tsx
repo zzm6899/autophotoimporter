@@ -15,7 +15,7 @@ import {
   X,
 } from 'lucide-react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
-import type { AppDiagnosticsSnapshot, CullConfidence, KeeperQuota, SaveFormat, KeybindMap, MacFirstRunDoctor, MetadataExportFlags, WatermarkMode, WatermarkPosition } from '../../shared/types';
+import type { AppDiagnosticsSnapshot, AppSettings, CullConfidence, KeeperQuota, SaveFormat, KeybindMap, MacFirstRunDoctor, MetadataExportFlags, WatermarkMode, WatermarkPosition } from '../../shared/types';
 import { DEFAULT_KEYBINDS, FOLDER_PRESETS } from '../../shared/types';
 import { formatWhiteBalanceKelvin, kelvinToWhiteBalanceTemperature, WHITE_BALANCE_MAX_KELVIN, WHITE_BALANCE_MIN_KELVIN, whiteBalanceTemperatureToKelvin } from '../../shared/exposure';
 import { playCompletionSound } from '../utils/completionSound';
@@ -83,6 +83,17 @@ const SETTINGS_TOPICS = [
   { id: 'account', label: 'Account' },
   { id: 'diagnostics', label: 'Diagnostics' },
 ] as const;
+
+const FAST_RAW_METADATA_EXPORT: MetadataExportFlags = {
+  keywords: false,
+  title: false,
+  caption: false,
+  creator: false,
+  copyright: false,
+  rating: false,
+  pickLabel: false,
+  stripGps: false,
+};
 
 type SettingsTopic = typeof SETTINGS_TOPICS[number]['id'];
 
@@ -157,6 +168,10 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     rawPreviewCache,
     cpuOptimization,
     rawPreviewQuality,
+    reviewFaceAnalysis,
+    reviewFaceMatching,
+    reviewPersonDetection,
+    reviewVisualDuplicates,
     perfTier,
     fastKeeperMode,
     cullConfidence,
@@ -399,6 +414,20 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     dispatch({ type: 'SET_PERFORMANCE_OPTION', key, value });
     void window.electronAPI.setSettings({ [key]: value });
   };
+  const handleReviewPerformanceOption = (
+    key: 'reviewFaceAnalysis' | 'reviewFaceMatching' | 'reviewPersonDetection' | 'reviewVisualDuplicates',
+    value: boolean,
+  ) => {
+    dispatch({ type: 'SET_REVIEW_PERFORMANCE_OPTION', key, value });
+    const patch: Partial<AppSettings> = { [key]: value };
+    if (key === 'reviewFaceAnalysis' && !value) {
+      patch.reviewFaceMatching = false;
+      patch.reviewPersonDetection = false;
+      dispatch({ type: 'SET_REVIEW_PERFORMANCE_OPTION', key: 'reviewFaceMatching', value: false });
+      dispatch({ type: 'SET_REVIEW_PERFORMANCE_OPTION', key: 'reviewPersonDetection', value: false });
+    }
+    void window.electronAPI.setSettings(patch);
+  };
   const handleGpuDevice = async (deviceId: number) => {
     const next = Number.isFinite(deviceId) ? Math.max(-1, Math.round(deviceId)) : -1;
     dispatch({ type: 'SET_GPU_DEVICE_ID', deviceId: next });
@@ -432,6 +461,10 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
         tier === 'balanced' ? Math.max(65, Math.min(rawPreviewQuality, 75)) :
           tier === 'high' ? Math.max(rawPreviewQuality, 82) :
             rawPreviewQuality;
+    const nextReviewFaceAnalysis = tier === 'auto' ? reviewFaceAnalysis : tier !== 'low';
+    const nextReviewFaceMatching = tier === 'auto' ? reviewFaceMatching : tier !== 'low';
+    const nextReviewPersonDetection = tier === 'auto' ? reviewPersonDetection : tier !== 'low';
+    const nextReviewVisualDuplicates = tier === 'auto' ? reviewVisualDuplicates : tier !== 'low';
     dispatch({ type: 'SET_PERF_TIER', tier });
     void window.electronAPI.setSettings({
       perfTier: tier,
@@ -439,6 +472,10 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
       faceConcurrency: nextFaceConcurrency,
       cpuOptimization: nextCpuOptimization,
       rawPreviewQuality: nextRawPreviewQuality,
+      reviewFaceAnalysis: nextReviewFaceAnalysis,
+      reviewFaceMatching: nextReviewFaceMatching,
+      reviewPersonDetection: nextReviewPersonDetection,
+      reviewVisualDuplicates: nextReviewVisualDuplicates,
     });
     void window.electronAPI.setFaceAnalysisConcurrency?.(nextFaceConcurrency);
   };
@@ -503,6 +540,30 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     dispatch({ type: 'SET_METADATA_EXPORT', flags: { [flag]: value } });
     void window.electronAPI.setSettings({ metadataExport: { ...metadataExport, [flag]: value } });
   };
+
+  const handleFastRawIngest = () => {
+    dispatch({ type: 'SET_SAVE_FORMAT', format: 'original' });
+    dispatch({ type: 'SET_SKIP_DUPLICATES', value: false });
+    dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'verifyChecksums', value: false });
+    dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'ftpDestEnabled', value: false });
+    dispatch({ type: 'SET_WORKFLOW_STRING', key: 'backupDestRoot', value: '' });
+    dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'normalizeExposure', value: false });
+    dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'autoStraighten', value: false });
+    dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'watermarkEnabled', value: false });
+    dispatch({ type: 'SET_METADATA_EXPORT', flags: FAST_RAW_METADATA_EXPORT });
+    void window.electronAPI.setSettings({
+      saveFormat: 'original',
+      skipDuplicates: false,
+      verifyChecksums: false,
+      ftpDestEnabled: false,
+      backupDestRoot: '',
+      normalizeExposure: false,
+      autoStraighten: false,
+      watermarkEnabled: false,
+      metadataExport: FAST_RAW_METADATA_EXPORT,
+    });
+  };
+
   const handleFaceConcurrency = (concurrency: number) => {
     const next = Math.max(1, Math.min(32, Math.round(concurrency)));
     dispatch({ type: 'SET_FACE_CONCURRENCY', concurrency: next });
@@ -567,8 +628,12 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
         : 4;
       const cpuOptimizationTarget = !dmlActive && profile.cpuOptimization;
       const fastKeeperTarget = profile.tier === 'low' && !dmlActive;
+      const reviewFaceAnalysisTarget = !fastKeeperTarget;
+      const reviewFaceMatchingTarget = !fastKeeperTarget;
+      const reviewPersonDetectionTarget = !fastKeeperTarget;
+      const reviewVisualDuplicatesTarget = !fastKeeperTarget;
       const spec = `${profile.cpuCores} CPU threads, ${profile.totalMemGB}GB RAM, ${dmlActive ? `DirectML ${avgDmlMs !== undefined ? `${avgDmlMs.toFixed(1)}ms avg` : `(${dmlModels.map((m) => m.model).join('/')})`}` : 'CPU face analysis'}`;
-      const summary = `Recommended for ${spec}: face scans ${faceTarget}, GPU load streams ${gpuStressStreamsTarget}, preview workers ${previewTarget}, RAW quality ${rawQualityTarget}%, ${cpuOptimizationTarget ? 'CPU optimization on' : 'CPU optimization off'}, ${fastKeeperTarget ? 'Fast Keeper on' : 'Fast Keeper off'}.`;
+      const summary = `Recommended for ${spec}: face scans ${faceTarget}, GPU load streams ${gpuStressStreamsTarget}, preview workers ${previewTarget}, RAW quality ${rawQualityTarget}%, ${cpuOptimizationTarget ? 'CPU optimization on' : 'CPU optimization off'}, ${fastKeeperTarget ? 'Fast Keeper on, expensive review stages off' : 'full AI review on'}.`;
       setDiagResult(summary);
 
       if (!window.confirm(`${summary}\n\nApply these settings now?`)) return;
@@ -580,6 +645,10 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
       dispatch({ type: 'SET_FAST_KEEPER_MODE', enabled: fastKeeperTarget });
       dispatch({ type: 'SET_PERFORMANCE_OPTION', key: 'cpuOptimization', value: cpuOptimizationTarget });
       dispatch({ type: 'SET_PERFORMANCE_OPTION', key: 'gpuFaceAcceleration', value: dmlActive || !!diag?.gpuAvailable });
+      dispatch({ type: 'SET_REVIEW_PERFORMANCE_OPTION', key: 'reviewFaceAnalysis', value: reviewFaceAnalysisTarget });
+      dispatch({ type: 'SET_REVIEW_PERFORMANCE_OPTION', key: 'reviewFaceMatching', value: reviewFaceMatchingTarget });
+      dispatch({ type: 'SET_REVIEW_PERFORMANCE_OPTION', key: 'reviewPersonDetection', value: reviewPersonDetectionTarget });
+      dispatch({ type: 'SET_REVIEW_PERFORMANCE_OPTION', key: 'reviewVisualDuplicates', value: reviewVisualDuplicatesTarget });
       setGpuLoadStreams(gpuStressStreamsTarget);
       await window.electronAPI.setSettings({
         perfTier: profile.tier,
@@ -590,6 +659,10 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
         fastKeeperMode: fastKeeperTarget,
         cpuOptimization: cpuOptimizationTarget,
         gpuFaceAcceleration: dmlActive || !!diag?.gpuAvailable,
+        reviewFaceAnalysis: reviewFaceAnalysisTarget,
+        reviewFaceMatching: reviewFaceMatchingTarget,
+        reviewPersonDetection: reviewPersonDetectionTarget,
+        reviewVisualDuplicates: reviewVisualDuplicatesTarget,
       });
       await window.electronAPI.setFaceAnalysisConcurrency?.(faceTarget);
       setDiagResult(`${summary} Applied.`);
@@ -1654,7 +1727,17 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                 <p className="ml-5 text-[10px] text-text-muted">{postImportStatus}</p>
               )}
               <div className="rounded border border-emerald-500/25 bg-emerald-500/10 px-2 py-1.5">
-                <div className="text-[10px] font-medium text-emerald-300">Fast raw ingest</div>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-[10px] font-medium text-emerald-300">Fast raw ingest</div>
+                  <button
+                    type="button"
+                    onClick={handleFastRawIngest}
+                    className="shrink-0 rounded border border-emerald-500/30 bg-emerald-500/15 px-2 py-1 text-[10px] text-emerald-200 hover:bg-emerald-500/25"
+                    title="Copy originals only and disable checksum verification, backup/FTP mirror, conversion, metadata sidecars, duplicate checks, straighten, and watermark."
+                  >
+                    Apply
+                  </button>
+                </div>
                 <p className="mt-0.5 text-[10px] text-text-muted">
                   For the fastest card copy, use Original and turn off checksum verification, backup/FTP mirroring, conversion, metadata sidecars, and duplicate checks when the job does not need them.
                 </p>
@@ -2394,6 +2477,64 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                 Skips face detection — scores photos by sharpness &amp; exposure only. Much faster for large batches.
               </p>
             )}
+
+            <div className="mb-2 rounded border border-border bg-surface-alt px-2 py-2">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-text-secondary">Review workload</p>
+                  <p className="text-[10px] text-text-muted">Turn off expensive analysis stages for slower CPUs, old laptops, and huge cards.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handlePerfTier('low')}
+                  className="shrink-0 rounded border border-yellow-500/30 bg-yellow-500/10 px-2 py-1 text-[10px] text-yellow-300 hover:bg-yellow-500/20"
+                  title="Sets low tier, one worker, Fast Keeper mode, lower RAW preview quality, and disables optional review analysis."
+                >
+                  Low-end speed
+                </button>
+              </div>
+              <label className="mb-1 flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={reviewFaceAnalysis}
+                  onChange={(e) => handleReviewPerformanceOption('reviewFaceAnalysis', e.target.checked)}
+                />
+                <span className="text-xs text-text">Native face scan</span>
+              </label>
+              <p className="mb-2 ml-5 text-[10px] text-text-muted">Runs ONNX face detection for face boxes, face filters, and face quality hints.</p>
+
+              <label className={`mb-1 flex items-center gap-2 ${reviewFaceAnalysis ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
+                <input
+                  type="checkbox"
+                  checked={reviewFaceAnalysis && reviewFaceMatching}
+                  disabled={!reviewFaceAnalysis}
+                  onChange={(e) => handleReviewPerformanceOption('reviewFaceMatching', e.target.checked)}
+                />
+                <span className="text-xs text-text">Similar-face matching and gallery</span>
+              </label>
+              <p className="mb-2 ml-5 text-[10px] text-text-muted">Generates face embeddings for Face groups and Face gallery. Turn off for the biggest speed gain on crowded event photos.</p>
+
+              <label className={`mb-1 flex items-center gap-2 ${reviewFaceAnalysis ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
+                <input
+                  type="checkbox"
+                  checked={reviewFaceAnalysis && reviewPersonDetection}
+                  disabled={!reviewFaceAnalysis}
+                  onChange={(e) => handleReviewPerformanceOption('reviewPersonDetection', e.target.checked)}
+                />
+                <span className="text-xs text-text">Person/body detection</span>
+              </label>
+              <p className="mb-2 ml-5 text-[10px] text-text-muted">Helps event/group-photo scoring, but adds another model pass. Disable for basic keeper picking.</p>
+
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={reviewVisualDuplicates}
+                  onChange={(e) => handleReviewPerformanceOption('reviewVisualDuplicates', e.target.checked)}
+                />
+                <span className="text-xs text-text">Visual duplicate hashing</span>
+              </label>
+              <p className="mt-1 ml-5 text-[10px] text-text-muted">Enables Similar photos / near-duplicate stacks. Disable if you only need fast manual review.</p>
+            </div>
 
             {/* Device tier */}
             <div className="mb-2">

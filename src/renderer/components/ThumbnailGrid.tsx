@@ -745,7 +745,7 @@ async function visualHash(src: string): Promise<string> {
 }
 
 export function ThumbnailGrid() {
-  const { phase, selectedSource, scanError, focusedIndex, focusedPath, viewMode, filter, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, exposureAdjustmentStep, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused, fastKeeperMode, faceConcurrency, gpuFaceAcceleration, keybinds, metadataKeywords, whiteBalanceTemperature, whiteBalanceTint, destination, licenseStatus, ftpDestEnabled, ftpDestConfig } = useAppState();
+  const { phase, selectedSource, scanError, focusedIndex, focusedPath, viewMode, filter, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, exposureAdjustmentStep, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused, fastKeeperMode, faceConcurrency, gpuFaceAcceleration, reviewFaceAnalysis, reviewFaceMatching, reviewPersonDetection, reviewVisualDuplicates, keybinds, metadataKeywords, whiteBalanceTemperature, whiteBalanceTint, destination, licenseStatus, ftpDestEnabled, ftpDestConfig } = useAppState();
   // useMergedFiles() overlays face/review scores without re-running the full
   // reducer map — O(n) only when scores.size > 0, otherwise returns the same array.
   const files = useMergedFiles();
@@ -800,6 +800,9 @@ export function ThumbnailGrid() {
   const fastKeeperModeRef = useRef(fastKeeperMode);
   const faceConcurrencyRef = useRef(faceConcurrency);
   const gpuFaceAccelerationRef = useRef(gpuFaceAcceleration);
+  const reviewFaceAnalysisRef = useRef(reviewFaceAnalysis);
+  const reviewFaceMatchingRef = useRef(reviewFaceMatching);
+  const reviewVisualDuplicatesRef = useRef(reviewVisualDuplicates);
   const collapsedSet = useMemo(() => new Set(collapsedBursts), [collapsedBursts]);
   const queuedSet = useMemo(() => new Set(queuedPaths), [queuedPaths]);
   const totalPhotoCount = useMemo(() => files.filter((f) => f.type === 'photo').length, [files]);
@@ -1083,6 +1086,9 @@ export function ThumbnailGrid() {
   useEffect(() => { fastKeeperModeRef.current = fastKeeperMode; }, [fastKeeperMode]);
   useEffect(() => { faceConcurrencyRef.current = faceConcurrency; }, [faceConcurrency]);
   useEffect(() => { gpuFaceAccelerationRef.current = gpuFaceAcceleration; }, [gpuFaceAcceleration]);
+  useEffect(() => { reviewFaceAnalysisRef.current = reviewFaceAnalysis; }, [reviewFaceAnalysis]);
+  useEffect(() => { reviewFaceMatchingRef.current = reviewFaceMatching; }, [reviewFaceMatching]);
+  useEffect(() => { reviewVisualDuplicatesRef.current = reviewVisualDuplicates; }, [reviewVisualDuplicates]);
   useEffect(() => {
     const element = flatScrollRef.current;
     if (!element) return;
@@ -1146,6 +1152,9 @@ export function ThumbnailGrid() {
     const currentFastKeeperMode = fastKeeperModeRef.current;
     const currentFaceConcurrency = faceConcurrencyRef.current;
     const currentGpuAccel = gpuFaceAccelerationRef.current;
+    const currentReviewFaceAnalysis = reviewFaceAnalysisRef.current && !currentFastKeeperMode;
+    const currentReviewFaceMatching = reviewFaceMatchingRef.current && currentReviewFaceAnalysis;
+    const currentReviewVisualDuplicates = reviewVisualDuplicatesRef.current;
     const selectedPathSet = selectedPathSetRef.current;
     const queuedPathSet = queuedPathSetRef.current;
     const reviewGeneration = reviewGenerationRef.current;
@@ -1186,10 +1195,10 @@ export function ThumbnailGrid() {
       if (f.type !== 'photo' || !f.thumbnail) continue;
       if (
         typeof f.sharpnessScore === 'number' &&
-        f.visualHash &&
-        (currentFastKeeperMode || typeof f.subjectSharpnessScore === 'number') &&
-        (currentFastKeeperMode || f.faceDetection !== 'native' || (f.faceCount ?? 0) <= 0 || hasFaceMatchData(f)) &&
-        (currentFastKeeperMode || f.faceBoxes !== undefined)
+        (!currentReviewVisualDuplicates || f.visualHash) &&
+        (currentFastKeeperMode || !currentReviewFaceAnalysis || typeof f.subjectSharpnessScore === 'number') &&
+        (!currentReviewFaceMatching || f.faceDetection !== 'native' || (f.faceCount ?? 0) <= 0 || hasFaceMatchData(f)) &&
+        (!currentReviewFaceAnalysis || f.faceBoxes !== undefined)
       ) continue;
       offerCandidate(f);
     }
@@ -1226,7 +1235,7 @@ export function ThumbnailGrid() {
           // IPC calls queue there and return one at a time, but we overlap the
           // renderer-side canvas work with whatever is ahead in the queue.
           const [onnxArr, sharpnessScore, hash, subject] = await Promise.all([
-            currentFastKeeperMode
+            !currentReviewFaceAnalysis
               ? Promise.resolve([] as Awaited<ReturnType<typeof window.electronAPI.analyzeFaces>>)
               : window.electronAPI.analyzeFaces(f.path).catch(
                   () => [] as Awaited<ReturnType<typeof window.electronAPI.analyzeFaces>>,
@@ -1234,10 +1243,21 @@ export function ThumbnailGrid() {
             typeof f.sharpnessScore === 'number'
               ? Promise.resolve(f.sharpnessScore)
               : scoreSharpness(thumbnail),
-            f.visualHash
+            !currentReviewVisualDuplicates
+              ? Promise.resolve(f.visualHash)
+              : f.visualHash
               ? Promise.resolve(f.visualHash)
               : visualHash(thumbnail),
-            (typeof f.subjectSharpnessScore === 'number' && f.faceBoxes !== undefined)
+            !currentReviewFaceAnalysis
+              ? Promise.resolve({
+                  subjectSharpnessScore: f.subjectSharpnessScore ?? 0,
+                  faceCount: f.faceCount ?? 0,
+                  faceBoxes: f.faceBoxes ?? [],
+                  faceDetection: f.faceDetection,
+                  faceSignature: f.faceSignature,
+                  subjectReasons: f.subjectReasons ?? [],
+                })
+              : (typeof f.subjectSharpnessScore === 'number' && f.faceBoxes !== undefined)
               ? Promise.resolve({
                   subjectSharpnessScore: f.subjectSharpnessScore,
                   faceCount: f.faceCount ?? 0,
@@ -1315,8 +1335,8 @@ export function ThumbnailGrid() {
         reviewBatchCounterRef.current += 1;
         if (reviewGeneration !== reviewGenerationRef.current) return;
         if (reviewBatchCounterRef.current % 5 === 0 || entries.length < batchSize) {
-          dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10 });
-          dispatch({ type: 'GROUP_VISUAL_DUPLICATES', threshold: 8 });
+          if (reviewFaceMatchingRef.current) dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10 });
+          if (reviewVisualDuplicatesRef.current) dispatch({ type: 'GROUP_VISUAL_DUPLICATES', threshold: 8 });
         }
       })
       .catch((err) => { console.error('[review-loop] batch error:', err); })
@@ -1590,6 +1610,7 @@ export function ThumbnailGrid() {
 
   // Trigger ONNX face scan for any unscanned photos about to appear in a panel.
   const scanUnscannedPanelFiles = useCallback((paths: string[]) => {
+    if (!reviewFaceAnalysisRef.current || fastKeeperModeRef.current) return;
     const unscanned = files
       .filter((f) => paths.includes(f.path) && f.type === 'photo' && f.faceBoxes === undefined);
     if (unscanned.length === 0) return;
@@ -2600,7 +2621,8 @@ export function ThumbnailGrid() {
     reviewStats.faceScanned < reviewStats.total &&
     !reviewWaitingForThumbnails &&
     !reviewPaused &&
-    !fastKeeperMode;
+    !fastKeeperMode &&
+    reviewFaceAnalysis;
   const aiOverview = useMemo(() => {
     const tracker = faceScanEtaRef.current;
     const faceScanEta = (() => {
@@ -2630,7 +2652,17 @@ export function ThumbnailGrid() {
         : ready
           ? `Ready ${reviewStats.analyzed}/${reviewStats.total}`
           : `Analyzing ${reviewStats.analyzed}/${reviewStats.total}${faceScanEta ? ` · face ETA ${faceScanEta.label}` : ''}`;
-    const mode = fastKeeperMode ? 'Fast Keeper mode' : faceProviderSummary;
+    const disabledStages = [
+      !reviewFaceAnalysis ? 'face scan off' : null,
+      reviewFaceAnalysis && !reviewFaceMatching ? 'face matching off' : null,
+      reviewFaceAnalysis && !reviewPersonDetection ? 'person scan off' : null,
+      !reviewVisualDuplicates ? 'similar photos off' : null,
+    ].filter((item): item is string => !!item);
+    const mode = fastKeeperMode
+      ? 'Fast Keeper mode'
+      : disabledStages.length > 0
+        ? `${faceProviderSummary} · ${disabledStages.join(' · ')}`
+        : faceProviderSummary;
     const items = [
       `${reviewStats.faces} face photo${reviewStats.faces === 1 ? '' : 's'}`,
       `${reviewStats.faceBoxes} box${reviewStats.faceBoxes === 1 ? '' : 'es'}`,
@@ -2653,8 +2685,12 @@ export function ThumbnailGrid() {
     faceProviderSummary,
     fastKeeperMode,
     readyThumbnailCount,
+    reviewFaceAnalysis,
+    reviewFaceMatching,
     reviewPaused,
+    reviewPersonDetection,
     reviewStats,
+    reviewVisualDuplicates,
     reviewWaitingForThumbnails,
   ]);
   useEffect(() => {

@@ -169,6 +169,8 @@ const providerDiagnostics: Record<FaceModelKey, FaceProviderDiagnostic> = {
 // Settings-driven configuration
 let gpuFaceAccelerationEnabled = true;  // Can be disabled by user
 let cpuOptimizationMode = false;        // Lighter models for older CPUs
+let faceMatchingEnabled = true;
+let personDetectionEnabled = true;
 let faceEmbeddingLimit = 8;
 let highThroughputFaceMode = false;
 let dmlDeviceId: number | undefined;
@@ -192,6 +194,22 @@ export function configureCpuOptimization(enabled: boolean): void {
   const changed = cpuOptimizationMode !== enabled;
   cpuOptimizationMode = enabled;
   if (changed && sessionLoadPromise) void disposeFaceEngine().catch(() => undefined);
+}
+
+export function configureFaceFeatureOptions(options: { faceMatching?: boolean; personDetection?: boolean }): void {
+  const nextFaceMatching = options.faceMatching ?? faceMatchingEnabled;
+  const nextPersonDetection = options.personDetection ?? personDetectionEnabled;
+  const changed = faceMatchingEnabled !== nextFaceMatching || personDetectionEnabled !== nextPersonDetection;
+  faceMatchingEnabled = nextFaceMatching;
+  personDetectionEnabled = nextPersonDetection;
+  if (changed && sessionLoadPromise) void disposeFaceEngine().catch(() => undefined);
+}
+
+export function getFaceFeatureOptions(): { faceMatching: boolean; personDetection: boolean } {
+  return {
+    faceMatching: faceMatchingEnabled,
+    personDetection: personDetectionEnabled,
+  };
 }
 
 export function configureFaceThroughput(concurrency: number): void {
@@ -391,21 +409,21 @@ async function loadSessions(): Promise<void> {
 
       const [detector, embedder, person] = await Promise.all([
         createBenchmarkedSession(runtime, 'detector', detPath, cpuCount),
-        createBenchmarkedSession(runtime, 'embedder', embPath, cpuCount),
-        createBenchmarkedSession(runtime, 'person', personPath, cpuCount),
+        faceMatchingEnabled ? createBenchmarkedSession(runtime, 'embedder', embPath, cpuCount) : Promise.resolve(null),
+        personDetectionEnabled ? createBenchmarkedSession(runtime, 'person', personPath, cpuCount) : Promise.resolve(null),
       ]);
 
       detectorSession = detector.session;
       detectorInputName = detector.inputName;
       providerDiagnostics.detector = detector.diagnostic;
-      embedderSession = embedder.session;
-      embedderInputName = embedder.inputName;
-      providerDiagnostics.embedder = embedder.diagnostic;
-      personSession = person.session;
-      personInputName = person.inputName;
-      providerDiagnostics.person = person.diagnostic;
+      embedderSession = embedder?.session ?? null;
+      embedderInputName = embedder?.inputName ?? 'input';
+      providerDiagnostics.embedder = embedder?.diagnostic ?? { model: 'embedder', provider: 'disabled', fallbackReason: 'Face matching disabled in settings.' };
+      personSession = person?.session ?? null;
+      personInputName = person?.inputName ?? 'image_tensor:0';
+      providerDiagnostics.person = person?.diagnostic ?? { model: 'person', provider: 'disabled', fallbackReason: 'Person detection disabled in settings.' };
 
-      const providers = [detector.diagnostic.provider, embedder.diagnostic.provider, person.diagnostic.provider];
+      const providers = [detector.diagnostic.provider, embedder?.diagnostic.provider, person?.diagnostic.provider].filter(Boolean) as string[];
       gpuAvailable = providers.includes('dml');
       actualExecutionProvider = new Set(providers).size === 1 ? providers[0] : providers.join('+');
       log.info('[face-engine] Sessions loaded - EP:', actualExecutionProvider, JSON.stringify(providerDiagnostics));
@@ -872,10 +890,11 @@ async function _analyzeFacesInner(imagePath: string): Promise<FaceAnalysisResult
   let personBoxes: FaceBox[] = [];
   const detectStart = Date.now();
   boxes = await detectFaces(imagePath, img).catch(() => [] as FaceBox[]);
-  const shouldRunPerson =
+  const shouldRunPerson = personDetectionEnabled && (
     !highThroughputFaceMode ||
     boxes.length === 0 ||
-    boxes.length === 1 && (boxes[0].width * boxes[0].height) < 0.012;
+    boxes.length === 1 && (boxes[0].width * boxes[0].height) < 0.012
+  );
   personBoxes = shouldRunPerson
     ? await detectPersons(imagePath, img).catch(() => [] as FaceBox[])
     : [];
@@ -898,6 +917,11 @@ async function _analyzeFacesInner(imagePath: string): Promise<FaceAnalysisResult
   };
 
   if (boxes.length === 0) {
+    finishStats(0);
+    return { boxes, personBoxes, embeddings: [], embeddingBoxes: [] };
+  }
+
+  if (!faceMatchingEnabled) {
     finishStats(0);
     return { boxes, personBoxes, embeddings: [], embeddingBoxes: [] };
   }
