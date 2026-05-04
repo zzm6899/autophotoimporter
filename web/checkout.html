@@ -161,6 +161,43 @@
     input::placeholder { color: var(--text-faint); }
     select { appearance: none; cursor: pointer; }
     .field-hint { font-size: 0.78rem; color: var(--text-faint); }
+    .device-stepper {
+      display: grid;
+      grid-template-columns: 44px minmax(0, 1fr) 44px;
+      gap: 8px;
+      align-items: stretch;
+    }
+    .device-stepper button {
+      min-height: 44px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface-raised);
+      color: var(--text);
+      font-size: 1.1rem;
+      font-weight: 800;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s, opacity 0.15s;
+    }
+    .device-stepper button:hover:not(:disabled) {
+      border-color: rgba(55,182,159,0.55);
+      background: rgba(55,182,159,0.10);
+    }
+    .device-stepper button:disabled {
+      opacity: 0.38;
+      cursor: not-allowed;
+    }
+    .device-stepper-value {
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.03);
+      color: var(--text);
+      font-weight: 750;
+      font-size: 0.95rem;
+    }
 
     /* ── Submit ── */
     .submit-btn {
@@ -278,15 +315,20 @@
         </div>
 
         <div class="form-group">
-          <label for="deviceCount">
+          <label id="deviceCountTitle">
             Devices
             <span class="field-note">Seats on this license</span>
           </label>
-          <select id="deviceCount" name="deviceCount"></select>
+          <div class="device-stepper" id="deviceStepper" role="group" aria-labelledby="deviceCountTitle">
+            <button type="button" id="deviceMinus" aria-label="Remove one device" disabled>−</button>
+            <div class="device-stepper-value" id="deviceCountStepValue" aria-live="polite">1 device</div>
+            <button type="button" id="devicePlus" aria-label="Add one device" disabled>+</button>
+          </div>
+          <input type="hidden" id="deviceCountInput" name="deviceCount" value="1" />
           <div class="field-hint" id="deviceHint">1 device included.</div>
         </div>
 
-        <button type="submit" class="submit-btn" id="submitBtn">
+        <button type="submit" class="submit-btn" id="submitBtn" disabled>
           <span>Proceed to payment</span>
           <span aria-hidden="true">→</span>
         </button>
@@ -341,17 +383,21 @@
       document.getElementById('planTag').textContent  = tags[plan]  || 'License';
     }
 
-    function buildDeviceOptions() {
+    function syncDeviceStepper() {
       if (!pricingData) return;
       const included = Math.max(1, Number(pricingData.includedDevices || 1));
       const max = Math.max(included, Number(pricingData.maxCheckoutDevices || included));
       if (selectedDevices < included) selectedDevices = included;
       if (selectedDevices > max)      selectedDevices = max;
-      const sel = document.getElementById('deviceCount');
-      let opts = '';
-      for (let i = included; i <= max; i++) opts += `<option value="${i}">${deviceLabel(i)}</option>`;
-      sel.innerHTML = opts;
-      sel.value = String(selectedDevices);
+
+      document.getElementById('deviceCountStepValue').textContent = deviceLabel(selectedDevices);
+      document.getElementById('deviceCountInput').value = String(selectedDevices);
+      document.getElementById('deviceMinus').disabled = selectedDevices <= included;
+      document.getElementById('devicePlus').disabled = selectedDevices >= max;
+    }
+
+    function buildDeviceOptions() {
+      syncDeviceStepper();
     }
 
     function updateDisplay() {
@@ -368,6 +414,7 @@
       const renewalValue = document.getElementById('planRenewalValue');
 
       displayPlanMeta();
+      syncDeviceStepper();
       document.getElementById('planPrice').textContent       = formatMoney(planData.price, currency, planData.period || '');
       document.getElementById('planBaseValue').textContent   = formatMoney(planData.price, currency, planData.period || '');
       document.getElementById('planDeviceValue').textContent = deviceLabel(selectedDevices);
@@ -387,6 +434,7 @@
       } else {
         hint.textContent = 'Choose how many devices this license covers.';
       }
+      document.getElementById('submitBtn').disabled = false;
     }
 
     async function loadPricing() {
@@ -434,8 +482,13 @@
       document.getElementById('error').classList.remove('show');
     }
 
-    document.getElementById('deviceCount').addEventListener('change', (e) => {
-      selectedDevices = parseInt(e.target.value, 10) || selectedDevices;
+    document.getElementById('deviceMinus').addEventListener('click', () => {
+      selectedDevices -= 1;
+      updateDisplay();
+    });
+
+    document.getElementById('devicePlus').addEventListener('click', () => {
+      selectedDevices += 1;
       updateDisplay();
     });
 

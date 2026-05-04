@@ -315,12 +315,12 @@
       <div class="card-title">Download</div>
       <div class="card-sub">Latest stable build. Same version the in-app updater tracks.</div>
 
-      <div class="platform-tabs">
-        <button class="platform-tab active" id="tab-mac" onclick="switchPlatform('mac')">
+      <div class="platform-tabs" role="tablist" aria-label="Download platform">
+        <button type="button" class="platform-tab active" id="tab-mac" role="tab" aria-selected="true" onclick="switchPlatform('mac')">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg>
           macOS
         </button>
-        <button class="platform-tab" id="tab-win" onclick="switchPlatform('windows')">
+        <button type="button" class="platform-tab" id="tab-win" role="tab" aria-selected="false" onclick="switchPlatform('windows')">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.557l7.357-1.002.003 7.096-7.354.042L3 5.557zm7.354 6.913l.004 7.098L3.003 18.56l-.002-6.14 7.353.05zm.892-8.046L21 2.5v8.402l-9.754.077V4.424zm9.758 8.048l-.002 8.31L11.246 19.44v-7.022l9.758.054z"/></svg>
           Windows
         </button>
@@ -416,8 +416,12 @@
 
     window.switchPlatform = function(platform) {
       currentPlatform = platform;
-      document.getElementById('tab-mac').classList.toggle('active', platform === 'mac');
-      document.getElementById('tab-win').classList.toggle('active', platform === 'windows');
+      const macTab = document.getElementById('tab-mac');
+      const winTab = document.getElementById('tab-win');
+      macTab.classList.toggle('active', platform === 'mac');
+      winTab.classList.toggle('active', platform === 'windows');
+      macTab.setAttribute('aria-selected', platform === 'mac' ? 'true' : 'false');
+      winTab.setAttribute('aria-selected', platform === 'windows' ? 'true' : 'false');
       document.getElementById('req-mac').style.display = platform === 'mac' ? '' : 'none';
       document.getElementById('req-win').style.display = platform === 'windows' ? '' : 'none';
       dataLoaded = false; releases = [];
@@ -497,7 +501,11 @@
     function showError(msg) {
       document.getElementById('release-list').innerHTML = `
         <div class="state-block">Could not load releases<br>
-        <span style="font-size:.78rem;font-family:var(--mono);color:var(--text-faint)">${esc(msg)}</span></div>`;
+        <span style="font-size:.78rem;font-family:var(--mono);color:var(--text-faint)">${esc(msg)}</span>
+        <div class="release-actions" style="justify-content:center;margin-top:14px">
+          <button type="button" class="btn primary" onclick="loadReleases()">Try again</button>
+          <a href="mailto:help@z2hs.au" class="btn secondary">Email support</a>
+        </div></div>`;
     }
 
     (function detectPlatform() {

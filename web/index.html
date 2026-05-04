@@ -253,32 +253,62 @@
       letter-spacing: 0;
       text-transform: none;
     }
-    .device-options {
-      display: flex;
-      gap: 0.55rem;
-      overflow-x: auto;
-      scrollbar-width: none;
-      padding-bottom: 0.1rem;
+    .device-stepper {
+      display: grid;
+      grid-template-columns: 44px minmax(0, 1fr) 44px;
+      align-items: center;
+      gap: 0.75rem;
     }
-    .device-options::-webkit-scrollbar { display: none; }
-    .device-chip {
-      min-width: 56px;
-      padding: 0.65rem 0.85rem;
+    .device-stepper-btn {
+      width: 44px;
+      height: 44px;
       border-radius: 8px;
       border: 1px solid var(--border);
       background: var(--surface-raised);
-      color: var(--text-muted);
-      font-size: 0.86rem;
-      font-weight: 600;
+      color: var(--text);
+      font-size: 1.25rem;
+      font-weight: 700;
       cursor: pointer;
-      transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.1s;
-      flex: 0 0 auto;
+      transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.1s, opacity 0.15s;
     }
-    .device-chip:hover { color: var(--text); transform: translateY(-1px); }
-    .device-chip.active {
+    .device-stepper-btn:hover:not(:disabled) {
+      border-color: rgba(55,182,159,.55);
+      color: var(--accent);
+      transform: translateY(-1px);
+    }
+    .device-stepper-btn:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+    .device-stepper-btn:disabled {
+      cursor: not-allowed;
+      opacity: 0.38;
+    }
+    .device-stepper-value {
+      display: flex;
+      min-height: 44px;
+      align-items: center;
+      justify-content: center;
+      gap: 0.45rem;
+      border-radius: 8px;
+      border: 1px solid rgba(55,182,159,.36);
       background: var(--accent);
-      border-color: transparent;
-      color: #fff;
+      color: #041210;
+      font-weight: 800;
+    }
+    .device-stepper-value strong {
+      font-size: 1.25rem;
+      line-height: 1;
+    }
+    .device-stepper-value span {
+      font-size: 0.88rem;
+      line-height: 1;
+    }
+    .device-stepper-range {
+      margin-top: 0.65rem;
+      color: var(--text-faint);
+      font-size: 0.76rem;
+      line-height: 1.45;
     }
     .device-pricing-copy,
     .pricing-micro {
@@ -662,14 +692,14 @@
     </div>
     <div class="gif-text">
       <h3>GPU diagnostics are plain to see</h3>
-      <p>Hit import when you're done culling — only green-flagged picks go to disk. Every file is checksummed after the copy. If even one byte is off, you find out before the card gets reformatted.</p>
-      <p>Files land in your folder pattern automatically. Add a backup destination and they mirror there too. Auto-eject fires when it's all done.</p>
+      <p>Keptra shows the active AI provider, whether GPU acceleration is available, and when it has fallen back to CPU. You can run a smoke benchmark from settings instead of guessing why a machine feels slow.</p>
+      <p>Support diagnostics collect the app version, update endpoint state, license state, and performance notes in one place, so troubleshooting does not turn into a hunt through hidden folders.</p>
       <div class="tag-list">
-        <span class="tag">Date-based folders</span>
-        <span class="tag">Checksum verify</span>
-        <span class="tag">Backup mirror</span>
-        <span class="tag">Auto eject</span>
-        <span class="tag">FTP output</span>
+        <span class="tag">Provider status</span>
+        <span class="tag">GPU fallback</span>
+        <span class="tag">Smoke bench</span>
+        <span class="tag">Copy diagnostics</span>
+        <span class="tag">Update repair</span>
       </div>
     </div>
   </div>
@@ -758,7 +788,15 @@
           <span>License seats</span>
           <strong id="deviceCountLabel">1 device</strong>
         </div>
-        <div class="device-options" id="deviceOptions"></div>
+        <div class="device-stepper" id="deviceOptions" aria-label="Choose license device count">
+          <button type="button" class="device-stepper-btn" id="deviceMinus" aria-label="Remove one device">-</button>
+          <div class="device-stepper-value" aria-live="polite">
+            <strong id="deviceStepperCount">1</strong>
+            <span id="deviceStepperUnit">device</span>
+          </div>
+          <button type="button" class="device-stepper-btn" id="devicePlus" aria-label="Add one device">+</button>
+        </div>
+        <div class="device-stepper-range" id="deviceStepperRange">Choose 1 to 5 devices.</div>
         <div class="device-pricing-copy" id="devicePricingCopy">1 device is included by default.</div>
       </div>
       <a href="#" class="pricing-btn" id="proBuyBtn">Buy license →</a>
@@ -893,28 +931,42 @@
 
   function renderDeviceOptions() {
     if (!pricingData) return;
-    const list = document.getElementById('deviceOptions');
-    if (!list) return;
+    const minusBtn = document.getElementById('deviceMinus');
+    const plusBtn = document.getElementById('devicePlus');
+    const countEl = document.getElementById('deviceStepperCount');
+    const unitEl = document.getElementById('deviceStepperUnit');
+    const rangeEl = document.getElementById('deviceStepperRange');
+    if (!minusBtn || !plusBtn || !countEl || !unitEl) return;
 
     const includedDevices = Math.max(1, Number(pricingData.includedDevices || 1));
     const maxDevices = Math.max(includedDevices, Number(pricingData.maxCheckoutDevices || includedDevices));
     if (activeDevices < includedDevices) activeDevices = includedDevices;
     if (activeDevices > maxDevices) activeDevices = maxDevices;
 
-    const chips = [];
-    for (let count = includedDevices; count <= maxDevices; count += 1) {
-      chips.push(
-        '<button type="button" class="device-chip' + (count === activeDevices ? ' active' : '') + '" data-device-count="' + count + '">' + count + '</button>'
-      );
+    countEl.textContent = activeDevices;
+    unitEl.textContent = activeDevices === 1 ? 'device' : 'devices';
+    minusBtn.disabled = activeDevices <= includedDevices;
+    plusBtn.disabled = activeDevices >= maxDevices;
+    if (rangeEl) {
+      rangeEl.textContent = maxDevices > includedDevices
+        ? 'Choose ' + deviceLabel(includedDevices) + ' to ' + deviceLabel(maxDevices) + '.'
+        : 'This license includes ' + deviceLabel(includedDevices) + '.';
     }
-    list.innerHTML = chips.join('');
-    list.querySelectorAll('[data-device-count]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        activeDevices = Number(btn.dataset.deviceCount || includedDevices);
+
+    minusBtn.onclick = () => {
+      if (activeDevices > includedDevices) {
+        activeDevices -= 1;
         renderDeviceOptions();
         renderPrice();
-      });
-    });
+      }
+    };
+    plusBtn.onclick = () => {
+      if (activeDevices < maxDevices) {
+        activeDevices += 1;
+        renderDeviceOptions();
+        renderPrice();
+      }
+    };
   }
 
   function renderPrice() {
@@ -950,11 +1002,13 @@
       deviceLabelEl.textContent = deviceLabel(activeDevices);
     }
     if (devicePricingEl) {
-      devicePricingEl.textContent = extraSeatPrice > 0
-        ? (includedDevices === 1
-          ? '1 device is included. Each extra device adds ' + fmt(extraSeatPrice, cur) + ' once at checkout.'
-          : includedDevices + ' devices are included. Each extra device adds ' + fmt(extraSeatPrice, cur) + ' once at checkout.')
-        : 'Choose the device count you want this license to cover from day one.';
+      if (extraSeatPrice > 0 && extraSeats > 0) {
+        devicePricingEl.textContent = deviceLabel(includedDevices) + ' included. ' + extraSeats + ' extra ' + (extraSeats === 1 ? 'device adds ' : 'devices add ') + fmt(extraSeats * extraSeatPrice, cur) + ' once at checkout.';
+      } else if (extraSeatPrice > 0) {
+        devicePricingEl.textContent = deviceLabel(includedDevices) + ' included. Add more devices for ' + fmt(extraSeatPrice, cur) + ' each, paid once at checkout.';
+      } else {
+        devicePricingEl.textContent = 'Choose the device count you want this license to cover from day one.';
+      }
     }
     if (pricingTodayEl) {
       if (extraSeats > 0) {
@@ -969,7 +1023,7 @@
       deviceFeatureEl.textContent = deviceLabel(activeDevices) + ' included at checkout';
     }
     if (btnEl) {
-      btnEl.href = BASE + '/checkout.html?plan=' + activePlan + '&devices=' + activeDevices;
+      btnEl.href = 'checkout.html?plan=' + activePlan + '&devices=' + activeDevices;
       btnEl.textContent = activeDevices > 1 ? 'Buy ' + deviceLicenseLabel(activeDevices) + ' →' : 'Buy license →';
     }
     // Update save badge
