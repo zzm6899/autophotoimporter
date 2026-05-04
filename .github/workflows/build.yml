@@ -78,6 +78,7 @@ jobs:
           set -euo pipefail
           echo "enabled=false" >> "$GITHUB_OUTPUT"
           echo "notarize=false" >> "$GITHUB_OUTPUT"
+          require_mac_signing="$(printf '%s' "$REQUIRE_MAC_SIGNING" | tr '[:upper:]' '[:lower:]')"
 
           sign_required=(APPLE_SIGNING_IDENTITY APPLE_CERTIFICATE_BASE64 APPLE_CERTIFICATE_PASSWORD)
           notarize_required=(APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID)
@@ -103,7 +104,7 @@ jobs:
           done
 
           if [[ "${#sign_missing[@]}" -gt 0 ]]; then
-            if [[ "${REQUIRE_MAC_SIGNING,,}" == "true" || "$REQUIRE_MAC_SIGNING" == "1" ]]; then
+            if [[ "$require_mac_signing" == "true" || "$REQUIRE_MAC_SIGNING" == "1" ]]; then
               echo "::error::macOS signing is required, but signing config is incomplete. Missing: ${sign_missing[*]}"
               exit 1
             fi
@@ -122,7 +123,7 @@ jobs:
           fi
 
           if [[ "${#notarize_missing[@]}" -gt 0 ]]; then
-            if [[ "${REQUIRE_MAC_SIGNING,,}" == "true" || "$REQUIRE_MAC_SIGNING" == "1" ]]; then
+            if [[ "$require_mac_signing" == "true" || "$REQUIRE_MAC_SIGNING" == "1" ]]; then
               echo "::error::macOS notarization is required, but config is incomplete. Missing: ${notarize_missing[*]}"
               exit 1
             fi

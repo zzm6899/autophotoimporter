@@ -16,7 +16,7 @@ import { ShortcutsOverlay } from './ShortcutsOverlay';
 import { BestOfSelectionPanel, rankBestOfSelection } from './BestOfSelectionPanel';
 import { REVIEW_COMMAND_EVENT } from './CommandPalette';
 import { ActionButton, ToolbarGroup } from './ui';
-import { getPreviewCacheStats, setBackgroundPreviewPaused, warmPreview } from '../utils/previewCache';
+import { getCachedPreview, getPreviewCacheStats, setBackgroundPreviewPaused, warmPreview } from '../utils/previewCache';
 import { clampStops, getEffectiveExposureStops, getNormalizedExposureStops, normalizeExposureStops } from '../../shared/exposure';
 import { buildFaceIdentityGroups, FACE_GROUP_EMBEDDING_THRESHOLD, faceSignalConfidence, type FaceIdentityGroup } from '../../shared/review';
 import { needsSecondPass } from '../../shared/review-lane';
@@ -95,7 +95,42 @@ function sampleFaceBox(file: MediaFile, group: FaceIdentityGroup): MediaFaceBox 
 }
 
 function FaceCrop({ file, box }: { file: MediaFile; box?: MediaFaceBox }) {
-  const source = file.thumbnail || file.path;
+  const cropRef = useRef<HTMLDivElement>(null);
+  const [shouldLoadDetail, setShouldLoadDetail] = useState(false);
+  const [detailPreview, setDetailPreview] = useState<string | undefined>();
+  const boxKey = box ? `${box.x}:${box.y}:${box.width}:${box.height}` : 'none';
+
+  useEffect(() => {
+    const node = cropRef.current;
+    if (!node || typeof IntersectionObserver === 'undefined') {
+      setShouldLoadDetail(true);
+      return undefined;
+    }
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        setShouldLoadDetail(true);
+        observer.disconnect();
+      }
+    }, { rootMargin: '360px' });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setDetailPreview(undefined);
+    if (!box || file.type !== 'photo' || !shouldLoadDetail) return () => { cancelled = true; };
+    void getCachedPreview(file.path, 'detail', 'normal')
+      .then((preview) => {
+        if (!cancelled) setDetailPreview(preview);
+      })
+      .catch(() => {
+        if (!cancelled) setDetailPreview(undefined);
+      });
+    return () => { cancelled = true; };
+  }, [box, boxKey, file.path, file.type, shouldLoadDetail]);
+
+  const source = detailPreview || file.thumbnail || file.path;
   if (!source) {
     return (
       <div className="flex h-full w-full items-center justify-center bg-surface-raised text-[10px] text-text-muted">
@@ -105,7 +140,11 @@ function FaceCrop({ file, box }: { file: MediaFile; box?: MediaFaceBox }) {
   }
 
   if (!box) {
-    return <img src={source} alt="" className="h-full w-full object-cover" draggable={false} />;
+    return (
+      <div ref={cropRef} className="h-full w-full overflow-hidden bg-black">
+        <img src={source} alt="" className="h-full w-full object-cover" draggable={false} decoding="async" />
+      </div>
+    );
   }
 
   const centerX = clampUnit(box.x + box.width / 2);
@@ -116,11 +155,12 @@ function FaceCrop({ file, box }: { file: MediaFile; box?: MediaFaceBox }) {
   const cropY = Math.max(0, Math.min(1 - cropH, centerY - cropH / 2));
 
   return (
-    <div className="h-full w-full overflow-hidden bg-black">
+    <div ref={cropRef} className="h-full w-full overflow-hidden bg-black">
       <img
         src={source}
         alt=""
         draggable={false}
+        decoding="async"
         className="max-w-none select-none"
         style={{
           width: `${100 / cropW}%`,
