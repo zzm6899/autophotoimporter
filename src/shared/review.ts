@@ -541,6 +541,8 @@ type FaceEmbeddingEntry = {
   order: number;
 };
 
+const FACE_CLUSTER_REPRESENTATIVE_LIMIT = 8;
+
 export interface FaceIdentityGroup {
   id: string;
   paths: string[];
@@ -587,6 +589,10 @@ function getFaceEmbeddingEntries(files: MediaFile[]): FaceEmbeddingEntry[] {
   return entries.sort((a, b) => b.confidence - a.confidence || a.order - b.order || a.embeddingIndex - b.embeddingIndex);
 }
 
+function faceClusterThreshold(baseThreshold: number, aConfidence: number, bConfidence: number): number {
+  return baseThreshold + Math.max(0, 0.74 - Math.min(aConfidence, bConfidence)) * 0.08;
+}
+
 export function buildFaceIdentityGroups(files: MediaFile[], threshold = 0.67, includeSingletons = false): FaceIdentityGroup[] {
   const order = new Map(files.map((file, index) => [file.path, index]));
   const faceEntries = getFaceEmbeddingEntries(files);
@@ -598,6 +604,7 @@ export function buildFaceIdentityGroups(files: MediaFile[], threshold = 0.67, in
     confidence: number;
     embeddingCount: number;
     sampleEntry: FaceEmbeddingEntry;
+    representatives: FaceEmbeddingEntry[];
   };
 
   const clusters: Cluster[] = [];
@@ -605,9 +612,25 @@ export function buildFaceIdentityGroups(files: MediaFile[], threshold = 0.67, in
     let bestCluster: Cluster | null = null;
     let bestSimilarity = 0;
     for (const cluster of clusters) {
-      const similarity = cosineSimilarity(entry.embedding, cluster.centroid);
-      const adaptiveThreshold = threshold + Math.max(0, 0.74 - Math.min(entry.confidence, cluster.confidence)) * 0.08;
-      if (similarity >= adaptiveThreshold && similarity > bestSimilarity) {
+      const centroidSimilarity = cosineSimilarity(entry.embedding, cluster.centroid);
+      let representativeSimilarity = centroidSimilarity;
+      for (const representative of cluster.representatives) {
+        representativeSimilarity = Math.max(representativeSimilarity, cosineSimilarity(entry.embedding, representative.embedding));
+      }
+      const adaptiveThreshold = faceClusterThreshold(threshold, entry.confidence, cluster.confidence);
+      const representativeThreshold = adaptiveThreshold + (Math.min(entry.confidence, cluster.confidence) >= 0.56 ? 0.04 : 0.065);
+      const representativeCentroidFloor = adaptiveThreshold - (threshold <= 0.56 ? 0.07 : 0.1);
+      const representativeMatch =
+        representativeSimilarity >= representativeThreshold &&
+        centroidSimilarity >= representativeCentroidFloor;
+      const similarity = Math.max(
+        centroidSimilarity,
+        representativeMatch ? representativeSimilarity - 0.025 : 0,
+      );
+      if (
+        (centroidSimilarity >= adaptiveThreshold || representativeMatch) &&
+        similarity > bestSimilarity
+      ) {
         bestCluster = cluster;
         bestSimilarity = similarity;
       }
@@ -621,6 +644,7 @@ export function buildFaceIdentityGroups(files: MediaFile[], threshold = 0.67, in
         confidence: entry.confidence,
         embeddingCount: 1,
         sampleEntry: entry,
+        representatives: [entry],
       });
       continue;
     }
@@ -642,6 +666,19 @@ export function buildFaceIdentityGroups(files: MediaFile[], threshold = 0.67, in
     bestCluster.centroid = normalizeEmbedding(nextCentroid) ?? bestCluster.centroid;
     bestCluster.weight = totalWeight;
     bestCluster.confidence = Math.max(bestCluster.confidence, entry.confidence);
+    if (bestCluster.representatives.length < FACE_CLUSTER_REPRESENTATIVE_LIMIT) {
+      bestCluster.representatives.push(entry);
+    } else {
+      let weakestIndex = 0;
+      for (let i = 1; i < bestCluster.representatives.length; i++) {
+        if (bestCluster.representatives[i].confidence < bestCluster.representatives[weakestIndex].confidence) {
+          weakestIndex = i;
+        }
+      }
+      if (entry.confidence > bestCluster.representatives[weakestIndex].confidence) {
+        bestCluster.representatives[weakestIndex] = entry;
+      }
+    }
   }
 
   return clusters

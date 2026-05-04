@@ -90,6 +90,25 @@ describe('review utilities', () => {
     });
   });
 
+  it('keeps similar face variants stacked when the cluster centroid drifts', () => {
+    const groups = buildFaceIdentityGroups([
+      file('/front.jpg', undefined, {
+        faceCount: 1,
+        faceEmbedding: embeddingHex([1, 0, 0, 0]),
+      }),
+      file('/turned.jpg', undefined, {
+        faceCount: 1,
+        faceEmbedding: embeddingHex([0.72, 0.694, 0, 0]),
+      }),
+      file('/profile.jpg', undefined, {
+        faceCount: 1,
+        faceEmbedding: embeddingHex([0.3, 0.954, 0, 0]),
+      }),
+    ], 0.67);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].paths).toEqual(['/front.jpg', '/turned.jpg', '/profile.jpg']);
+  });
+
   it('can include one-photo face identities for the gallery', () => {
     const groups = buildFaceIdentityGroups([
       file('/solo.jpg', undefined, {

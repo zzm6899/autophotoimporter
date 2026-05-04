@@ -184,23 +184,40 @@ function FaceIdentityGallery({
   onOpenGroup: (group: FaceIdentityGroup) => void;
   onBuildGroups: () => void;
 }) {
-  const cards = groups
+  const [showSingletonFaces, setShowSingletonFaces] = useState(true);
+  const allCards = groups
     .map((group) => {
       const sample = filesByPath.get(group.samplePath) ?? group.paths.map((path) => filesByPath.get(path)).find((file): file is MediaFile => !!file);
       return sample ? { group, sample } : null;
     })
     .filter((item): item is { group: FaceIdentityGroup; sample: MediaFile } => !!item);
+  const singletonCount = allCards.filter(({ group }) => group.size <= 1 && group.embeddingCount <= 1).length;
+  const cards = showSingletonFaces
+    ? allCards
+    : allCards.filter(({ group }) => group.size > 1 || group.embeddingCount > 1);
 
   return (
     <div className="flex flex-col gap-3">
       <div className="sticky top-0 z-20 flex items-center gap-2 border-b border-border bg-surface/95 py-2">
         <Users size={15} className="text-violet-300" />
         <span className="text-xs font-medium text-text-secondary">Face gallery</span>
-        <span className="text-[11px] text-text-muted">{cards.length} people/groups</span>
+        <span className="text-[11px] text-text-muted">
+          {cards.length} people/groups{!showSingletonFaces && singletonCount > 0 ? ` · ${singletonCount} hidden` : ''}
+        </span>
+        {singletonCount > 0 && (
+          <button
+            type="button"
+            onClick={() => setShowSingletonFaces((value) => !value)}
+            className="ml-auto rounded border border-border bg-surface-raised px-2 py-1 text-[10px] text-text-muted hover:border-violet-500/35 hover:text-violet-200"
+            title={showSingletonFaces ? 'Hide one-photo face crops so stacked people are easier to scan.' : 'Show one-photo face crops too.'}
+          >
+            {showSingletonFaces ? 'Hide singles' : 'Show singles'}
+          </button>
+        )}
         <button
           type="button"
           onClick={onBuildGroups}
-          className="ml-auto rounded border border-violet-500/25 bg-violet-500/10 px-2 py-1 text-[10px] text-violet-300 hover:bg-violet-500/20"
+          className={`${singletonCount > 0 ? '' : 'ml-auto'} rounded border border-violet-500/25 bg-violet-500/10 px-2 py-1 text-[10px] text-violet-300 hover:bg-violet-500/20`}
         >
           Rebuild groups
         </button>
