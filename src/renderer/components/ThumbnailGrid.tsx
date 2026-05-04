@@ -48,6 +48,26 @@ function formatFaceProviderSummary(models: Array<{ model: string; provider: stri
     .join(' · ');
 }
 
+function formatEtaDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return 'under 1s';
+  const rounded = Math.max(1, Math.round(seconds));
+  if (rounded < 60) return `${rounded}s`;
+  if (rounded < 3600) {
+    const minutes = Math.floor(rounded / 60);
+    const remainder = rounded % 60;
+    return remainder > 0 ? `${minutes}m ${remainder}s` : `${minutes}m`;
+  }
+  const hours = Math.floor(rounded / 3600);
+  const minutes = Math.round((rounded % 3600) / 60);
+  return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+}
+
+function formatFaceScanRate(ratePerSecond: number): string {
+  if (!Number.isFinite(ratePerSecond) || ratePerSecond <= 0) return 'estimating speed';
+  const perMinute = ratePerSecond * 60;
+  return `${perMinute >= 10 ? Math.round(perMinute) : perMinute.toFixed(1)}/min`;
+}
+
 /**
  * Detect subject regions by finding the sharpest (in-focus) areas of the image.
  * Algorithm:
@@ -609,6 +629,7 @@ export function ThumbnailGrid() {
   const [toolbarPos, setToolbarPos] = useState<{ x: number; y: number } | null>(null);
   const [reviewLoopTick, setReviewLoopTick] = useState(0);
   const [multiClickSelect, setMultiClickSelect] = useState(false);
+  const [faceScanEtaTick, setFaceScanEtaTick] = useState(0);
   // Multi-select tag bar
   const [tagInput, setTagInput] = useState('');
   const [sessionTags, setSessionTags] = useState<string[]>([]);
@@ -624,6 +645,7 @@ export function ThumbnailGrid() {
   const sharpnessInFlightRef = useRef(false);
   const reviewBatchCounterRef = useRef(0);
   const reviewGenerationRef = useRef(0);
+  const faceScanEtaRef = useRef<{ source: string | null; total: number; startedAt: number; startedScanned: number } | null>(null);
   // Stable refs so the review loop effect doesn't need files/sortedFiles as deps.
   // Without these, every SET_REVIEW_SCORES dispatch (one per analyzed image) triggers
   // a new files reference → effect cleanup + re-run mid-flight → concurrent ONNX batches
@@ -2354,6 +2376,7 @@ export function ThumbnailGrid() {
     const faces = faceFiles.length;
     const faceBoxes = faceFiles.reduce((sum, file) => sum + (file.faceBoxes?.length ?? file.faceCount ?? 0), 0);
     const faceGroups = new Set(faceFiles.map((f) => f.faceGroupId).filter(Boolean)).size;
+    const faceScanned = photoFiles.filter((f) => f.faceBoxes !== undefined).length;
     const embeddings = photoFiles.filter((f) => !!f.faceEmbedding).length;
     const lowConfidenceFaces = faceFiles.filter((f) => faceSignalConfidence(f) < 0.55).length;
     const nativeFaces = faceFiles.filter((f) => f.faceDetection === 'native').length;
@@ -2375,6 +2398,7 @@ export function ThumbnailGrid() {
       faces,
       faceBoxes,
       faceGroups,
+      faceScanned,
       embeddings,
       lowConfidenceFaces,
       nativeFaces,
@@ -2388,7 +2412,33 @@ export function ThumbnailGrid() {
       duplicates,
     };
   }, [files, queuedPaths.length]);
+  const faceScanEtaActive =
+    reviewStats.total > 0 &&
+    reviewStats.faceScanned < reviewStats.total &&
+    !reviewWaitingForThumbnails &&
+    !reviewPaused &&
+    !fastKeeperMode;
   const aiOverview = useMemo(() => {
+    const tracker = faceScanEtaRef.current;
+    const faceScanEta = (() => {
+      if (!faceScanEtaActive || !tracker) return null;
+      const processed = Math.max(0, reviewStats.faceScanned - tracker.startedScanned);
+      const elapsedSeconds = Math.max(0, (Date.now() - tracker.startedAt) / 1000);
+      const remaining = Math.max(0, reviewStats.total - reviewStats.faceScanned);
+      if (remaining <= 0) return null;
+      if (processed < 2 || elapsedSeconds < 3) {
+        return {
+          label: 'estimating',
+          detail: `ETA estimating · ${remaining} left`,
+        };
+      }
+      const rate = processed / elapsedSeconds;
+      const remainingSeconds = remaining / Math.max(rate, 0.001);
+      return {
+        label: formatEtaDuration(remainingSeconds),
+        detail: `ETA ${formatEtaDuration(remainingSeconds)} · ${remaining} left · ${formatFaceScanRate(rate)}`,
+      };
+    })();
     const ready = reviewStats.total > 0 && reviewStats.analyzed >= reviewStats.total;
     const status = reviewWaitingForThumbnails
       ? `Waiting for thumbnails ${readyThumbnailCount}/${reviewStats.total}`
@@ -2396,12 +2446,13 @@ export function ThumbnailGrid() {
         ? `Paused at ${reviewStats.analyzed}/${reviewStats.total}`
         : ready
           ? `Ready ${reviewStats.analyzed}/${reviewStats.total}`
-          : `Analyzing ${reviewStats.analyzed}/${reviewStats.total}`;
+          : `Analyzing ${reviewStats.analyzed}/${reviewStats.total}${faceScanEta ? ` · face ETA ${faceScanEta.label}` : ''}`;
     const mode = fastKeeperMode ? 'Fast Keeper mode' : faceProviderSummary;
     const items = [
       `${reviewStats.faces} face photo${reviewStats.faces === 1 ? '' : 's'}`,
       `${reviewStats.faceBoxes} box${reviewStats.faceBoxes === 1 ? '' : 'es'}`,
       `${reviewStats.faceGroups} face group${reviewStats.faceGroups === 1 ? '' : 's'}`,
+      `${reviewStats.faceScanned} face-scanned`,
       `${reviewStats.embeddings} match-ready`,
       `${reviewStats.nativeFaces} model-scanned`,
       `${reviewStats.strongCandidates} strong candidate${reviewStats.strongCandidates === 1 ? '' : 's'}`,
@@ -2412,8 +2463,10 @@ export function ThumbnailGrid() {
       reviewStats.blur > 0 ? `${reviewStats.blur} blur risk${reviewStats.highBlur > 0 ? ` (${reviewStats.highBlur} high)` : ''}` : null,
       reviewStats.duplicates > 0 ? `${reviewStats.duplicates} duplicate${reviewStats.duplicates === 1 ? '' : 's'}` : null,
     ].filter((item): item is string => !!item);
-    return { status, mode, items, attention, ready };
+    return { status, mode, items, attention, ready, faceScanEta };
   }, [
+    faceScanEtaTick,
+    faceScanEtaActive,
     faceProviderSummary,
     fastKeeperMode,
     readyThumbnailCount,
@@ -2421,6 +2474,32 @@ export function ThumbnailGrid() {
     reviewStats,
     reviewWaitingForThumbnails,
   ]);
+  useEffect(() => {
+    if (!faceScanEtaActive) {
+      faceScanEtaRef.current = null;
+      return;
+    }
+    const current = faceScanEtaRef.current;
+    const shouldReset =
+      !current ||
+      current.source !== selectedSource ||
+      current.total !== reviewStats.total ||
+      reviewStats.faceScanned < current.startedScanned;
+    if (shouldReset) {
+      faceScanEtaRef.current = {
+        source: selectedSource,
+        total: reviewStats.total,
+        startedAt: Date.now(),
+        startedScanned: reviewStats.faceScanned,
+      };
+      setFaceScanEtaTick((value) => value + 1);
+    }
+  }, [faceScanEtaActive, reviewStats.faceScanned, reviewStats.total, selectedSource]);
+  useEffect(() => {
+    if (!faceScanEtaActive) return undefined;
+    const timer = window.setInterval(() => setFaceScanEtaTick((value) => value + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [faceScanEtaActive]);
   const sprintRemaining = useMemo(() => (
     sortedFiles.filter((file) =>
       file.type === 'photo' &&
@@ -3030,9 +3109,9 @@ export function ThumbnailGrid() {
                 ? 'border-blue-500/35 bg-blue-500/15 text-blue-300'
                 : 'border-border bg-surface-raised text-text-muted hover:border-blue-500/35 hover:text-blue-300'
             }`}
-            title={`${aiOverview.status}. Click to ${showAiReviewStrip ? 'hide' : 'show'} the detailed AI overview.`}
+            title={`${aiOverview.status}${aiOverview.faceScanEta ? `. ${aiOverview.faceScanEta.detail}` : ''}. Click to ${showAiReviewStrip ? 'hide' : 'show'} the detailed AI overview.`}
           >
-            AI {reviewStats.analyzed}/{reviewStats.total}
+            AI {reviewStats.analyzed}/{reviewStats.total}{aiOverview.faceScanEta ? ` ETA ${aiOverview.faceScanEta.label}` : ''}
           </button>
         )}
 
@@ -3519,6 +3598,11 @@ export function ThumbnailGrid() {
             <span className={aiOverview.ready ? 'text-emerald-300' : reviewPaused ? 'text-yellow-300' : 'text-blue-300'}>
               {aiOverview.status}
             </span>
+            {aiOverview.faceScanEta && (
+              <span className="rounded bg-blue-500/10 px-1.5 py-0.5 text-blue-300" title="Estimated time until face analysis finishes for the current scan.">
+                {aiOverview.faceScanEta.detail}
+              </span>
+            )}
             {aiOverview.items.map((item) => (
               <span key={item} className="rounded bg-surface-raised px-1.5 py-0.5 text-text-secondary">
                 {item}
