@@ -3,7 +3,7 @@ import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, Sourc
 import { FOLDER_PRESETS, DEFAULT_KEYBINDS, DEFAULT_METADATA_EXPORT, DEFAULT_VIEW_OVERLAY_PREFERENCES } from '../../shared/types';
 import { groupBursts } from '../../shared/burst';
 import { clampStops, normalizeExposureStops } from '../../shared/exposure';
-import { assignSceneBuckets, autoCullGroup, bestInGroup, groupByFaceSimilarity, groupByVisualHash, scoreReview } from '../../shared/review';
+import { FACE_GROUP_EMBEDDING_THRESHOLD, assignSceneBuckets, autoCullGroup, bestInGroup, groupByFaceSimilarity, groupByVisualHash, scoreReview } from '../../shared/review';
 
 export type AppPhase = 'idle' | 'scanning' | 'ready' | 'importing' | 'complete';
 export type ViewMode = 'grid' | 'single' | 'split' | 'compare' | 'settings';
@@ -911,7 +911,7 @@ export function reducer(state: State, action: Action): State {
       };
     }
     case 'GROUP_FACE_SIMILAR': {
-      const groups = groupByFaceSimilarity(action.files ?? state.files, 0.69, action.threshold ?? 10);
+      const groups = groupByFaceSimilarity(action.files ?? state.files, FACE_GROUP_EMBEDDING_THRESHOLD, action.threshold ?? 10);
       const groupByPath = new Map<string, { id: string; size: number }>();
       for (const [id, paths] of Object.entries(groups)) {
         for (const p of paths) groupByPath.set(p, { id, size: paths.length });

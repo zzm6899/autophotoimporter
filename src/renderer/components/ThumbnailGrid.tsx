@@ -3616,6 +3616,16 @@ export function ThumbnailGrid() {
                 {item}
               </span>
             ))}
+            {reviewStats.embeddings > 1 && (
+              <button
+                type="button"
+                onClick={() => dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10 })}
+                className="rounded border border-violet-500/25 bg-violet-500/10 px-1.5 py-0.5 text-violet-300 hover:bg-violet-500/20 hover:text-violet-200"
+                title="Rebuild similar-face groups from match-ready faces."
+              >
+                {reviewStats.faceGroups > 0 ? 'Regroup faces' : 'Group faces'}
+              </button>
+            )}
             {reviewSprintMode && (
               <span className="rounded bg-blue-500/10 px-1.5 py-0.5 text-blue-300">
                 focus {reviewStats.picked} kept / {reviewStats.rejected} rejected / {reviewStats.pending} open
