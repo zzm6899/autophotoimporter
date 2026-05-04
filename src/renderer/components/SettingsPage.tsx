@@ -1285,7 +1285,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                   Last checked: <span className="text-text-secondary">{formatVersionDate(updateState.lastCheckedAt)}</span>
                 </div>
                 <div className="bg-surface-alt border border-border rounded px-2 py-1">
-                  Latest: <span className="text-text-secondary">{updateState.latestVersion || 'Checking…'}</span>
+                  Latest: <span className="text-text-secondary">{updateState.status === 'checking' ? 'Checking...' : updateState.latestVersion || 'Unknown'}</span>
                 </div>
                 <div className="bg-surface-alt border border-border rounded px-2 py-1">
                   Status: <span className="text-text-secondary">{updateState.status}</span>

@@ -148,4 +148,21 @@ describe('update-checker', () => {
     expect(history).toHaveLength(1);
     expect(history[0]?.version).toBe('1.2.2');
   });
+
+  it('uses the public releases endpoint when fetching history without a license', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ releases: [{ version: '1.2.3' }] }));
+    await fetchUpdateHistory();
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/api/v1/app/releases');
+    expect(String(fetchMock.mock.calls[0]?.[0])).not.toContain('/api/v1/app/history');
+  });
+
+  it('falls back to public release history when licensed history is forbidden', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ error: 'Forbidden' }, { ok: false, status: 403 }))
+      .mockResolvedValueOnce(jsonResponse({ releases: [{ version: '1.2.4' }] }));
+    const history = await fetchUpdateHistory('bad-license');
+    expect(history[0]?.version).toBe('1.2.4');
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/api/v1/app/history');
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain('/api/v1/app/releases');
+  });
 });

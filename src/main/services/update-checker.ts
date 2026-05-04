@@ -347,11 +347,26 @@ export async function fetchUpdateHistory(licenseKey?: string): Promise<UpdateRel
   let lastError: unknown;
   for (const baseUrl of UPDATE_BASE_URLS) {
     try {
-      const url = `${baseUrl}/api/v1/app/history?platform=${encodeURIComponent(platform)}&channel=stable&limit=8`;
+      const endpoint = licenseKey ? 'history' : 'releases';
+      const url = `${baseUrl}/api/v1/app/${endpoint}?platform=${encodeURIComponent(platform)}&channel=stable&limit=8`;
       data = await fetchJson<HistoryResponse>(url, licenseKey);
       break;
     } catch (err) {
       lastError = err;
+      if (licenseKey && err instanceof Error && err.message.includes('403')) {
+        try {
+          const publicUrl = `${baseUrl}/api/v1/app/releases?platform=${encodeURIComponent(platform)}&channel=stable&limit=8`;
+          data = await fetchJson<HistoryResponse>(publicUrl);
+          break;
+        } catch (publicErr) {
+          lastError = publicErr;
+          logUpdateDiagnostic('history-public-failed', {
+            baseUrl,
+            message: publicErr instanceof Error ? publicErr.message : 'unknown-error',
+          });
+          continue;
+        }
+      }
       logUpdateDiagnostic('history-failed', {
         baseUrl,
         message: err instanceof Error ? err.message : 'unknown-error',
