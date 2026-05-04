@@ -62,7 +62,8 @@ jobs:
       - name: Download runtime models
         run: npm run models
 
-      - name: Check macOS signing configuration
+      - name: Resolve macOS signing mode
+        id: mac-signing
         if: startsWith(matrix.os, 'macos') && startsWith(github.ref, 'refs/tags/')
         shell: bash
         env:
@@ -75,33 +76,65 @@ jobs:
           REQUIRE_MAC_SIGNING: ${{ vars.REQUIRE_MAC_SIGNING || secrets.REQUIRE_MAC_SIGNING }}
         run: |
           set -euo pipefail
-          required=(APPLE_SIGNING_IDENTITY APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID APPLE_CERTIFICATE_BASE64 APPLE_CERTIFICATE_PASSWORD)
-          missing=()
-          present=0
-          for name in "${required[@]}"; do
+          echo "enabled=false" >> "$GITHUB_OUTPUT"
+          echo "notarize=false" >> "$GITHUB_OUTPUT"
+
+          sign_required=(APPLE_SIGNING_IDENTITY APPLE_CERTIFICATE_BASE64 APPLE_CERTIFICATE_PASSWORD)
+          notarize_required=(APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID)
+          sign_missing=()
+          sign_present=0
+          notarize_missing=()
+          notarize_present=0
+
+          for name in "${sign_required[@]}"; do
             if [[ -z "${!name}" ]]; then
-              missing+=("$name")
+              sign_missing+=("$name")
             else
-              present=$((present + 1))
+              sign_present=$((sign_present + 1))
             fi
           done
-          if [[ "$present" -eq 0 ]]; then
+
+          for name in "${notarize_required[@]}"; do
+            if [[ -z "${!name}" ]]; then
+              notarize_missing+=("$name")
+            else
+              notarize_present=$((notarize_present + 1))
+            fi
+          done
+
+          if [[ "${#sign_missing[@]}" -gt 0 ]]; then
             if [[ "${REQUIRE_MAC_SIGNING,,}" == "true" || "$REQUIRE_MAC_SIGNING" == "1" ]]; then
-              echo "::error::macOS signing is required, but no Apple signing secrets are configured."
+              echo "::error::macOS signing is required, but signing config is incomplete. Missing: ${sign_missing[*]}"
               exit 1
             fi
-            echo "::warning::Building unsigned macOS DMG/ZIP artifacts. Gatekeeper will warn users until builds are signed and notarized."
+            if [[ "$sign_present" -gt 0 || "$notarize_present" -gt 0 ]]; then
+              echo "::warning::Partial macOS signing/notarization secrets are configured. Building unsigned macOS DMG/ZIP artifacts until certificate secrets are complete."
+            else
+              echo "::warning::Building unsigned macOS DMG/ZIP artifacts. Gatekeeper will warn users until builds are signed and notarized."
+            fi
             exit 0
           fi
-          if [[ "${#missing[@]}" -gt 0 ]]; then
-            echo "::error::Partial macOS signing config. Missing: ${missing[*]}"
-            echo "::error::Either configure all Apple signing secrets or remove all of them to build unsigned artifacts."
-            exit 1
+
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+          if [[ "$notarize_present" -eq 0 ]]; then
+            echo "::warning::macOS signing certificate is configured, but notarization secrets are not. Building signed, unnotarized artifacts."
+            exit 0
           fi
+
+          if [[ "${#notarize_missing[@]}" -gt 0 ]]; then
+            if [[ "${REQUIRE_MAC_SIGNING,,}" == "true" || "$REQUIRE_MAC_SIGNING" == "1" ]]; then
+              echo "::error::macOS notarization is required, but config is incomplete. Missing: ${notarize_missing[*]}"
+              exit 1
+            fi
+            echo "::warning::Partial macOS notarization secrets are configured. Building signed, unnotarized artifacts until notarization secrets are complete."
+            exit 0
+          fi
+
+          echo "notarize=true" >> "$GITHUB_OUTPUT"
           echo "macOS signing and notarization secrets are configured."
 
       - name: Install Apple signing certificate
-        if: startsWith(matrix.os, 'macos')
+        if: startsWith(matrix.os, 'macos') && steps.mac-signing.outputs.enabled == 'true'
         shell: bash
         env:
           APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
@@ -131,10 +164,10 @@ jobs:
       - name: Make package
         run: npm run make -- --arch=${{ matrix.arch }}
         env:
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ steps.mac-signing.outputs.enabled == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ steps.mac-signing.outputs.notarize == 'true' && secrets.APPLE_ID || '' }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ steps.mac-signing.outputs.notarize == 'true' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ steps.mac-signing.outputs.notarize == 'true' && secrets.APPLE_TEAM_ID || '' }}
           MAC_APP_BUNDLE_ID: ${{ vars.MAC_APP_BUNDLE_ID || secrets.MAC_APP_BUNDLE_ID }}
 
       - run: npm run package:smoke
