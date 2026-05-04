@@ -7,15 +7,15 @@
  *   1. UltraFace-slim-640  → bounding boxes for each detected face
  *   2. MobileFaceNet        → L2-normalised embedding per face crop
  *
- * The embedding can be stored on MediaFile.faceEmbedding and used to cluster
- * similar faces across a session via cosine similarity (see cosineSimilarity
- * below). This replaces the old pixel-hash faceSignature with real identity
- * matching that is robust to lighting/angle/JPEG compression changes.
+ * The strongest embeddings can be stored on MediaFile.faceEmbeddings and used
+ * to cluster similar faces across a session via cosine similarity. This
+ * replaces the old pixel-hash faceSignature with real identity matching that
+ * is robust to lighting/angle/JPEG compression changes.
  *
  * Usage:
  *   const result = await analyzeFaces('/path/to/photo.jpg');
  *   // result.boxes   — face bounding boxes normalised 0..1
- *   // result.embeddings — 128-d Float32Array per detected face
+ *   // result.embeddings — 128-d Float32Array per embedded face
  *
  * Session management:
  *   Sessions are loaded lazily on first call and reused for the process
@@ -91,10 +91,12 @@ export interface FaceAnalysisResult {
   /** Detected person/body bounding boxes (may be empty if no people found) */
   personBoxes: FaceBox[];
   /**
-   * L2-normalised embedding for each detected face, in the same order
-   * as boxes. Use cosineSimilarity() to compare embeddings across images.
+   * L2-normalised embeddings for the strongest usable detected faces.
+   * Use embeddingBoxes to map each embedding back to its detected crop.
    */
   embeddings: Float32Array[];
+  /** Face boxes corresponding 1:1 with embeddings. */
+  embeddingBoxes?: FaceBox[];
 }
 
 // ---------------------------------------------------------------------------
@@ -897,7 +899,7 @@ async function _analyzeFacesInner(imagePath: string): Promise<FaceAnalysisResult
 
   if (boxes.length === 0) {
     finishStats(0);
-    return { boxes, personBoxes, embeddings: [] };
+    return { boxes, personBoxes, embeddings: [], embeddingBoxes: [] };
   }
 
   // Embed detected faces with a cap that scales up on fast GPU/concurrency
@@ -907,18 +909,21 @@ async function _analyzeFacesInner(imagePath: string): Promise<FaceAnalysisResult
   const facesToEmbed = (reliableFaces.length > 0 ? reliableFaces : rankedFaces.slice(0, 1))
     .slice(0, faceEmbeddingLimit);
   const embedStart = Date.now();
-  const embeddings = (await Promise.all(
-    facesToEmbed.map((box) =>
-      embedFace(imagePath, box, img).catch(() => null),
-    ),
-  )).filter((embedding): embedding is Float32Array => !!embedding);
+  const embeddedFaces = (await Promise.all(
+    facesToEmbed.map(async (box) => {
+      const embedding = await embedFace(imagePath, box, img).catch(() => null);
+      return embedding ? { box, embedding } : null;
+    }),
+  )).filter((entry): entry is { box: FaceBox; embedding: Float32Array } => !!entry);
+  const embeddings = embeddedFaces.map((entry) => entry.embedding);
+  const embeddingBoxes = embeddedFaces.map((entry) => entry.box);
   const embedMs = Date.now() - embedStart;
 
   finishStats(embedMs);
 
   // Return ALL detected boxes so every face is visible in the UI. Embeddings
   // may be shorter when the per-image cap is hit.
-  return { boxes, personBoxes, embeddings };
+  return { boxes, personBoxes, embeddings, embeddingBoxes };
 }
 
 /**
@@ -1045,7 +1050,7 @@ export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
 
 /**
  * Serialise a Float32Array embedding to a compact hex string for storage
- * on MediaFile.faceEmbedding.
+ * on MediaFile.faceEmbedding/faceEmbeddings.
  * Use deserializeEmbedding() to recover the Float32Array.
  */
 export function serializeEmbedding(embedding: Float32Array): string {

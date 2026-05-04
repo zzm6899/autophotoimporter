@@ -31,6 +31,7 @@ import {
   Tag,
   Trash2,
   UploadCloud,
+  Users,
   Wand2,
   XCircle,
   Zap,
@@ -277,6 +278,15 @@ export function buildCommandItems(
       icon: Filter,
       disabledReason: needsPhoto,
       run: handlers['filter.face-groups'],
+    },
+    {
+      id: 'filter.face-gallery',
+      group: 'Filters',
+      label: 'Show Face Gallery',
+      description: 'One thumbnail per similar face/person with the photo count.',
+      icon: Users,
+      disabledReason: needsPhoto,
+      run: handlers['filter.face-gallery'],
     },
     {
       id: 'filter.duplicates',
@@ -630,7 +640,7 @@ export function CommandPalette() {
 
   const runReview = (id: string) => reviewEvent(id)();
   const setFilter = (next: FilterMode) => {
-    if (next === 'face-groups') dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10 });
+    if (next === 'face-groups' || next === 'face-gallery') dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10 });
     if (next === 'near-duplicates') dispatch({ type: 'GROUP_VISUAL_DUPLICATES', threshold: 8 });
     dispatch({ type: 'SET_FILTER', filter: next });
   };
@@ -687,6 +697,7 @@ export function CommandPalette() {
     'filter.queue': () => setFilter('queue'),
     'filter.blur': () => setFilter('blur-risk'),
     'filter.face-groups': () => setFilter('face-groups'),
+    'filter.face-gallery': () => setFilter('face-gallery'),
     'filter.duplicates': () => {
       setFilter('near-duplicates');
       dispatch({ type: 'SET_VIEW_MODE', mode: 'compare' });

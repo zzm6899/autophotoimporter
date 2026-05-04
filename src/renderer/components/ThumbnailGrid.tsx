@@ -1,6 +1,6 @@
 import { useMemo, useEffect, useCallback, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { AlertTriangle, ClipboardCheck, Copy, Download, Eye, ListChecks, MoreHorizontal, Pause, Play, ShieldCheck, Sparkles, Trash2, Wand2 } from 'lucide-react';
+import { AlertTriangle, ClipboardCheck, Copy, Download, Eye, ListChecks, MoreHorizontal, Pause, Play, ShieldCheck, Sparkles, Trash2, Users, Wand2 } from 'lucide-react';
 // Main grid / single / split view orchestrator.
 import { useAppState, useAppDispatch, useMergedFiles } from '../context/ImportContext';
 import type { FilterMode } from '../context/ImportContext';
@@ -18,7 +18,7 @@ import { REVIEW_COMMAND_EVENT } from './CommandPalette';
 import { ActionButton, ToolbarGroup } from './ui';
 import { getPreviewCacheStats, setBackgroundPreviewPaused, warmPreview } from '../utils/previewCache';
 import { clampStops, getEffectiveExposureStops, getNormalizedExposureStops, normalizeExposureStops } from '../../shared/exposure';
-import { faceSignalConfidence } from '../../shared/review';
+import { buildFaceIdentityGroups, FACE_GROUP_EMBEDDING_THRESHOLD, faceSignalConfidence, type FaceIdentityGroup } from '../../shared/review';
 import { needsSecondPass } from '../../shared/review-lane';
 
 // ── Laplacian sharpness-based subject detector ────────────────────────────
@@ -66,6 +66,148 @@ function formatFaceScanRate(ratePerSecond: number): string {
   if (!Number.isFinite(ratePerSecond) || ratePerSecond <= 0) return 'estimating speed';
   const perMinute = ratePerSecond * 60;
   return `${perMinute >= 10 ? Math.round(perMinute) : perMinute.toFixed(1)}/min`;
+}
+
+type MediaFaceBox = NonNullable<MediaFile['faceBoxes']>[number];
+
+function hasFaceMatchData(file: MediaFile): boolean {
+  return !!file.faceEmbedding || (file.faceEmbeddings?.length ?? 0) > 0;
+}
+
+function normalizeFaceEngineBoxes(boxes: Array<{ x: number; y: number; width: number; height: number; score?: number }> | undefined): MediaFaceBox[] {
+  return (boxes ?? [])
+    .filter((box) => box.width > 0 && box.height > 0)
+    .map((box) => ({ x: box.x, y: box.y, width: box.width, height: box.height, score: box.score }));
+}
+
+function clampUnit(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function largestFaceBox(boxes: MediaFaceBox[] | undefined): MediaFaceBox | undefined {
+  return boxes?.slice().sort((a, b) => (b.width * b.height) - (a.width * a.height))[0];
+}
+
+function sampleFaceBox(file: MediaFile, group: FaceIdentityGroup): MediaFaceBox | undefined {
+  return file.faceEmbeddingBoxes?.[group.sampleEmbeddingIndex] ??
+    file.faceBoxes?.[group.sampleEmbeddingIndex] ??
+    largestFaceBox(file.faceBoxes);
+}
+
+function FaceCrop({ file, box }: { file: MediaFile; box?: MediaFaceBox }) {
+  const source = file.thumbnail || file.path;
+  if (!source) {
+    return (
+      <div className="flex h-full w-full items-center justify-center bg-surface-raised text-[10px] text-text-muted">
+        No preview
+      </div>
+    );
+  }
+
+  if (!box) {
+    return <img src={source} alt="" className="h-full w-full object-cover" draggable={false} />;
+  }
+
+  const centerX = clampUnit(box.x + box.width / 2);
+  const centerY = clampUnit(box.y + box.height / 2);
+  const cropW = Math.min(1, Math.max(0.16, box.width * 2.35));
+  const cropH = Math.min(1, Math.max(0.16, box.height * 2.7));
+  const cropX = Math.max(0, Math.min(1 - cropW, centerX - cropW / 2));
+  const cropY = Math.max(0, Math.min(1 - cropH, centerY - cropH / 2));
+
+  return (
+    <div className="h-full w-full overflow-hidden bg-black">
+      <img
+        src={source}
+        alt=""
+        draggable={false}
+        className="max-w-none select-none"
+        style={{
+          width: `${100 / cropW}%`,
+          height: `${100 / cropH}%`,
+          transform: `translate(${-cropX * 100}%, ${-cropY * 100}%)`,
+          transformOrigin: 'top left',
+        }}
+      />
+    </div>
+  );
+}
+
+function FaceIdentityGallery({
+  groups,
+  filesByPath,
+  onOpenGroup,
+  onBuildGroups,
+}: {
+  groups: FaceIdentityGroup[];
+  filesByPath: Map<string, MediaFile>;
+  onOpenGroup: (group: FaceIdentityGroup) => void;
+  onBuildGroups: () => void;
+}) {
+  const cards = groups
+    .map((group) => {
+      const sample = filesByPath.get(group.samplePath) ?? group.paths.map((path) => filesByPath.get(path)).find((file): file is MediaFile => !!file);
+      return sample ? { group, sample } : null;
+    })
+    .filter((item): item is { group: FaceIdentityGroup; sample: MediaFile } => !!item);
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="sticky top-0 z-20 flex items-center gap-2 border-b border-border bg-surface/95 py-2">
+        <Users size={15} className="text-violet-300" />
+        <span className="text-xs font-medium text-text-secondary">Face gallery</span>
+        <span className="text-[11px] text-text-muted">{cards.length} people/groups</span>
+        <button
+          type="button"
+          onClick={onBuildGroups}
+          className="ml-auto rounded border border-violet-500/25 bg-violet-500/10 px-2 py-1 text-[10px] text-violet-300 hover:bg-violet-500/20"
+        >
+          Rebuild groups
+        </button>
+      </div>
+
+      {cards.length === 0 ? (
+        <div className="flex min-h-[240px] flex-col items-center justify-center gap-2 rounded border border-border bg-surface-alt/30 text-center">
+          <p className="text-sm text-text-secondary">No similar-face groups yet.</p>
+          <p className="max-w-md text-xs text-text-muted">
+            Keep AI face scanning running until photos show as match-ready, then rebuild groups.
+          </p>
+          <button
+            type="button"
+            onClick={onBuildGroups}
+            className="rounded border border-violet-500/25 bg-violet-500/10 px-3 py-1 text-xs text-violet-300 hover:bg-violet-500/20"
+          >
+            Group faces
+          </button>
+        </div>
+      ) : (
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(116px,1fr))] gap-3">
+          {cards.map(({ group, sample }, index) => (
+            <button
+              key={group.id}
+              type="button"
+              onClick={() => onOpenGroup(group)}
+              className="group overflow-hidden rounded border border-border bg-surface-alt text-left transition-colors hover:border-violet-400/60 hover:bg-violet-500/10 focus:outline-none focus:ring-2 focus:ring-violet-400/50"
+              title={`Show ${group.size} photo${group.size === 1 ? '' : 's'} containing this similar face`}
+            >
+              <div className="aspect-square w-full">
+                <FaceCrop file={sample} box={sampleFaceBox(sample, group)} />
+              </div>
+              <div className="space-y-1 p-2">
+                <div className="flex items-center justify-between gap-1">
+                  <span className="truncate text-[11px] font-medium text-text-secondary">Face {index + 1}</span>
+                  <span className="rounded bg-violet-500/20 px-1.5 py-0.5 text-[10px] text-violet-200">{group.size}</span>
+                </div>
+                <div className="truncate text-[10px] text-text-muted" title={sample.name}>
+                  {group.size} photo{group.size === 1 ? '' : 's'} · {group.embeddingCount} match{group.embeddingCount === 1 ? '' : 'es'}
+                </div>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /**
@@ -679,6 +821,27 @@ export function ThumbnailGrid() {
     return a.every((value, index) => value === b[index]);
   }, []);
 
+  const shouldBuildFaceIdentityGroups = filter === 'face-gallery' || filter === 'face-groups' || filter.startsWith('face:');
+  const includeFaceIdentitySingletons = filter === 'face-gallery' || filter.startsWith('face:');
+  const faceIdentityGroups = useMemo(
+    () => shouldBuildFaceIdentityGroups ? buildFaceIdentityGroups(files, FACE_GROUP_EMBEDDING_THRESHOLD, includeFaceIdentitySingletons) : [],
+    [files, includeFaceIdentitySingletons, shouldBuildFaceIdentityGroups],
+  );
+  const faceIdentityPathMap = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    for (const group of faceIdentityGroups) {
+      map.set(group.id, new Set(group.paths));
+    }
+    return map;
+  }, [faceIdentityGroups]);
+  const faceIdentityGroupedPaths = useMemo(() => {
+    const paths = new Set<string>();
+    for (const group of faceIdentityGroups) {
+      for (const path of group.paths) paths.add(path);
+    }
+    return paths;
+  }, [faceIdentityGroups]);
+
   // Sort order (top → bottom):
   //   1. Protected / in-camera-locked / read-only files (fast-import priority)
   //   2. Highest rating first (5★ before 1★)
@@ -704,7 +867,10 @@ export function ThumbnailGrid() {
         return !!scene && scene.toLowerCase() !== 'scene' && scene.toLowerCase() !== 'general' && scene === decodeURIComponent(filter.slice(6));
       }
       if (filter.startsWith('burst:')) return f.burstId === decodeURIComponent(filter.slice(6));
-      if (filter.startsWith('face:')) return f.faceGroupId === decodeURIComponent(filter.slice(5));
+      if (filter.startsWith('face:')) {
+        const faceGroupId = decodeURIComponent(filter.slice(5));
+        return faceIdentityPathMap.get(faceGroupId)?.has(f.path) ?? f.faceGroupId === faceGroupId;
+      }
       switch (filter) {
         case 'protected': return f.isProtected;
         case 'picked': return f.pick === 'selected';
@@ -716,7 +882,8 @@ export function ThumbnailGrid() {
         case 'unmarked': return !f.pick;
         case 'best': return (f.reviewScore ?? 0) >= 70;
         case 'faces': return (f.faceCount ?? 0) > 0;
-        case 'face-groups': return !!f.faceGroupId;
+        case 'face-groups': return !!f.faceGroupId || faceIdentityGroupedPaths.has(f.path);
+        case 'face-gallery': return hasFaceMatchData(f);
         case 'blur-risk': return f.blurRisk === 'high' || f.blurRisk === 'medium';
         case 'near-duplicates': return !!f.visualGroupId;
         case 'review-needed': return needsSecondPass(f);
@@ -763,10 +930,10 @@ export function ThumbnailGrid() {
       seenCollapsedLeader.add(f.burstId);
       return true;
     });
-  }, [files, filter, collapsedSet, exposureAnchorPath, searchText, queuedSet]);
+  }, [files, filter, collapsedSet, exposureAnchorPath, searchText, queuedSet, faceIdentityPathMap, faceIdentityGroupedPaths]);
   const flatGridContentWidth = Math.max(0, flatGridWidth - 32);
   const virtualGridColumns = Math.max(1, Math.floor((flatGridContentWidth + 12) / (160 + 12)));
-  const virtualGridEnabled = viewMode === 'grid' && !groupByFolder && sortedFiles.length > 300;
+  const virtualGridEnabled = viewMode === 'grid' && filter !== 'face-gallery' && !groupByFolder && sortedFiles.length > 300;
   const virtualRowCount = Math.ceil(sortedFiles.length / virtualGridColumns);
   const rowVirtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: virtualGridEnabled ? virtualRowCount : 0,
@@ -796,20 +963,32 @@ export function ThumbnailGrid() {
         faceGroups.set(f.faceGroupId, current);
       }
     }
+    const filesByPath = new Map(files.map((file) => [file.path, file]));
+    const identityFaceGroups = faceIdentityGroups.map((group) => {
+      const groupFiles = group.paths.map((path) => filesByPath.get(path)).filter((file): file is MediaFile => !!file);
+      return {
+        id: group.id,
+        photos: group.paths.length,
+        faces: groupFiles.reduce((sum, file) => sum + (file.faceBoxes?.length ?? file.faceCount ?? 0), 0),
+        people: groupFiles.reduce((sum, file) => sum + (file.personBoxes?.length ?? file.personCount ?? 0), 0),
+      };
+    });
+    const faceGroupValues = identityFaceGroups.length > 0 ? identityFaceGroups : [...faceGroups.values()];
     return {
       cameras: [...cameras].sort(),
       lenses: [...lenses].sort(),
       dates: [...dates].sort().reverse(),
       exts: [...exts].sort(),
       scenes: [...scenes].sort(),
-      faceGroups: [...faceGroups.values()].sort((a, b) => b.photos - a.photos || a.id.localeCompare(b.id)),
+      faceGroups: faceGroupValues.sort((a, b) => b.photos - a.photos || a.id.localeCompare(b.id)),
     };
-  }, [files]);
+  }, [files, faceIdentityGroups]);
   const activeFaceGroupId = filter.startsWith('face:') ? decodeURIComponent(filter.slice(5)) : null;
   const activeFaceGroup = activeFaceGroupId
     ? metadataFilters.faceGroups.find((group) => group.id === activeFaceGroupId) ?? null
     : null;
 
+  const filesByPath = useMemo(() => new Map(files.map((file) => [file.path, file])), [files]);
   const filePathSet = useMemo(() => new Set(files.map((file) => file.path)), [files]);
 
   const selectedIndices = useMemo(() => {
@@ -1009,7 +1188,7 @@ export function ThumbnailGrid() {
         typeof f.sharpnessScore === 'number' &&
         f.visualHash &&
         (currentFastKeeperMode || typeof f.subjectSharpnessScore === 'number') &&
-        (currentFastKeeperMode || f.faceDetection !== 'native' || (f.faceCount ?? 0) <= 0 || !!f.faceEmbedding) &&
+        (currentFastKeeperMode || f.faceDetection !== 'native' || (f.faceCount ?? 0) <= 0 || hasFaceMatchData(f)) &&
         (currentFastKeeperMode || f.faceBoxes !== undefined)
       ) continue;
       offerCandidate(f);
@@ -1071,12 +1250,9 @@ export function ThumbnailGrid() {
           ]);
 
           const onnx = onnxArr[0]; // single-path call always returns 1 result
-          const onnxFaceBoxes = (onnx?.boxes ?? [])
-            .filter((box) => box.width > 0 && box.height > 0)
-            .map((box) => ({ x: box.x, y: box.y, width: box.width, height: box.height, score: box.score }));
-          const onnxPersonBoxes = (onnx?.personBoxes ?? [])
-            .filter((box) => box.width > 0 && box.height > 0)
-            .map((box) => ({ x: box.x, y: box.y, width: box.width, height: box.height, score: box.score }));
+          const onnxFaceBoxes = normalizeFaceEngineBoxes(onnx?.boxes);
+          const onnxEmbeddingBoxes = normalizeFaceEngineBoxes(onnx?.embeddingBoxes);
+          const onnxPersonBoxes = normalizeFaceEngineBoxes(onnx?.personBoxes);
           const mergedReasons = [
             ...(subject.subjectReasons ?? []),
             ...(onnxFaceBoxes.length > 0 ? ['onnx faces'] : []),
@@ -1097,6 +1273,8 @@ export function ThumbnailGrid() {
             faceBoxes: resolvedFaceBoxes,
             faceDetection: onnxFaceBoxes.length > 0 ? 'native' : subject.faceDetection,
             faceEmbedding: onnx?.embeddings?.[0] || f.faceEmbedding,
+            faceEmbeddings: onnx?.embeddings?.length ? onnx.embeddings : f.faceEmbeddings,
+            faceEmbeddingBoxes: onnxEmbeddingBoxes.length > 0 ? onnxEmbeddingBoxes : f.faceEmbeddingBoxes,
             personCount: onnxPersonBoxes.length,
             personBoxes: onnxPersonBoxes,
             subjectReasons: [...new Set(mergedReasons)],
@@ -1422,16 +1600,21 @@ export function ThumbnailGrid() {
           const results = await window.electronAPI.analyzeFaces(f.path);
           const result = results[0];
           if (!result) return;
+          const faceBoxes = normalizeFaceEngineBoxes(result.boxes);
+          const embeddingBoxes = normalizeFaceEngineBoxes(result.embeddingBoxes);
+          const personBoxes = normalizeFaceEngineBoxes(result.personBoxes);
           dispatch({
             type: 'SET_REVIEW_SCORES',
             scores: {
               [f.path]: {
                 faceCount: result.boxes.length,
-                faceBoxes: result.boxes.map((b) => ({ x: b.x, y: b.y, width: b.width, height: b.height, score: b.score })),
+                faceBoxes,
                 faceDetection: result.boxes.length > 0 ? 'native' : undefined,
                 faceEmbedding: result.embeddings?.[0] || f.faceEmbedding,
+                faceEmbeddings: result.embeddings?.length ? result.embeddings : f.faceEmbeddings,
+                faceEmbeddingBoxes: embeddingBoxes.length > 0 ? embeddingBoxes : f.faceEmbeddingBoxes,
                 personCount: result.personBoxes.length,
-                personBoxes: result.personBoxes.map((b) => ({ x: b.x, y: b.y, width: b.width, height: b.height, score: b.score })),
+                personBoxes,
               },
             },
           });
@@ -2370,14 +2553,14 @@ export function ThumbnailGrid() {
       typeof f.subjectSharpnessScore === 'number' ||
       typeof f.reviewScore === 'number' ||
       f.faceBoxes !== undefined ||
-      !!f.faceEmbedding
+      hasFaceMatchData(f)
     ).length;
     const faceFiles = photoFiles.filter((f) => (f.faceCount ?? f.faceBoxes?.length ?? 0) > 0);
     const faces = faceFiles.length;
     const faceBoxes = faceFiles.reduce((sum, file) => sum + (file.faceBoxes?.length ?? file.faceCount ?? 0), 0);
-    const faceGroups = new Set(faceFiles.map((f) => f.faceGroupId).filter(Boolean)).size;
+    const faceGroups = faceIdentityGroups.length || new Set(faceFiles.map((f) => f.faceGroupId).filter(Boolean)).size;
     const faceScanned = photoFiles.filter((f) => f.faceBoxes !== undefined).length;
-    const embeddings = photoFiles.filter((f) => !!f.faceEmbedding).length;
+    const embeddings = photoFiles.filter(hasFaceMatchData).length;
     const lowConfidenceFaces = faceFiles.filter((f) => faceSignalConfidence(f) < 0.55).length;
     const nativeFaces = faceFiles.filter((f) => f.faceDetection === 'native').length;
     const blur = photoFiles.filter((f) => f.blurRisk === 'high' || f.blurRisk === 'medium').length;
@@ -2411,7 +2594,7 @@ export function ThumbnailGrid() {
       strongCandidates,
       duplicates,
     };
-  }, [files, queuedPaths.length]);
+  }, [faceIdentityGroups.length, files, queuedPaths.length]);
   const faceScanEtaActive =
     reviewStats.total > 0 &&
     reviewStats.faceScanned < reviewStats.total &&
@@ -3380,13 +3563,22 @@ export function ThumbnailGrid() {
                 Face: {activeFaceGroup.photos} photo{activeFaceGroup.photos === 1 ? '' : 's'} · {activeFaceGroup.faces} face{activeFaceGroup.faces === 1 ? '' : 's'}{activeFaceGroup.people > 0 ? ` · ${activeFaceGroup.people} people` : ''}
               </button>
             )}
+            {filter === 'face-gallery' && (
+              <button
+                onClick={handleBackToMain}
+                className="px-1.5 py-0.5 text-[10px] rounded bg-violet-500/10 text-violet-300 hover:bg-violet-500/20 transition-colors"
+                title="Showing one tile per similar face/person group. Click to clear the filter."
+              >
+                Face gallery: {faceIdentityGroups.length} group{faceIdentityGroups.length === 1 ? '' : 's'}
+              </button>
+            )}
 
             <select
               value={filter.startsWith('burst:') ? '' : filter}
               onChange={(e) => {
                 if (!e.target.value) return;
                 const nextFilter = e.target.value as typeof filter;
-                if (nextFilter === 'face-groups') dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10 });
+                if (nextFilter === 'face-groups' || nextFilter === 'face-gallery') dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10 });
                 if (nextFilter === 'near-duplicates') dispatch({ type: 'GROUP_VISUAL_DUPLICATES', threshold: 8 });
                 dispatch({ type: 'SET_FILTER', filter: nextFilter });
               }}
@@ -3408,6 +3600,7 @@ export function ThumbnailGrid() {
                 <option value="best">Best shots</option>
                 <option value="faces">Faces detected</option>
                 <option value="face-groups">Face groups</option>
+                <option value="face-gallery">Face gallery</option>
                 <option value="blur-risk">Blur risk</option>
                 <option value="near-duplicates">Similar photos</option>
                 <option value="review-needed">Second pass</option>
@@ -3720,7 +3913,14 @@ export function ThumbnailGrid() {
         ) : (
           <div className="h-full relative">
             <div ref={flatScrollRef} className="h-full overflow-y-auto px-4 pt-3 pb-16">
-              {folderGroups ? (
+              {filter === 'face-gallery' ? (
+                <FaceIdentityGallery
+                  groups={faceIdentityGroups}
+                  filesByPath={filesByPath}
+                  onOpenGroup={(group) => handleFaceGroupFilter(group.id, group.samplePath)}
+                  onBuildGroups={() => dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10 })}
+                />
+              ) : folderGroups ? (
                 /* Folder view: one section per sub-directory, ranked by star */
                 <div className="flex flex-col gap-8">
                   {folderGroups.length > 1 && (

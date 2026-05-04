@@ -95,11 +95,14 @@ export interface MediaFile {
   faceSignature?: string;
   /**
    * Hex-serialised L2-normalised face embedding from MobileFaceNet
-   * (via onnxruntime-node). Use deserializeEmbedding() to
-   * recover the Float32Array, then cosineSimilarity() to compare.
-   * Only populated when the ONNX face models are present on disk.
+   * (via onnxruntime-node). This is the primary/best face and is kept for
+   * backwards compatibility with older sessions.
    */
   faceEmbedding?: string;
+  /** All usable face embeddings found in the photo, ordered by matching quality. */
+  faceEmbeddings?: string[];
+  /** Face boxes that correspond to faceEmbeddings, when returned by the native face engine. */
+  faceEmbeddingBoxes?: Array<{ x: number; y: number; width: number; height: number; score?: number }>;
   /** Local cluster id for similar detected faces. This is not biometric identity; it is a culling aid. */
   faceGroupId?: string;
   faceGroupSize?: number;

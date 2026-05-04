@@ -8,7 +8,7 @@ import { FACE_GROUP_EMBEDDING_THRESHOLD, assignSceneBuckets, autoCullGroup, best
 export type AppPhase = 'idle' | 'scanning' | 'ready' | 'importing' | 'complete';
 export type ViewMode = 'grid' | 'single' | 'split' | 'compare' | 'settings';
 
-export type FilterMode = 'all' | 'protected' | 'picked' | 'rejected' | 'unrated' | 'duplicates' | 'catalog-duplicates' | 'unmarked' | 'queue' | 'best' | 'faces' | 'face-groups' | 'blur-risk' | 'near-duplicates' | 'review-needed' | 'needs-exposure' | 'normalized' | 'adjusted' | 'photos' | 'videos' | 'raw' | RatingFilter | `camera:${string}` | `lens:${string}` | `date:${string}` | `ext:${string}` | `scene:${string}` | `burst:${string}` | `face:${string}`;
+export type FilterMode = 'all' | 'protected' | 'picked' | 'rejected' | 'unrated' | 'duplicates' | 'catalog-duplicates' | 'unmarked' | 'queue' | 'best' | 'faces' | 'face-groups' | 'face-gallery' | 'blur-risk' | 'near-duplicates' | 'review-needed' | 'needs-exposure' | 'normalized' | 'adjusted' | 'photos' | 'videos' | 'raw' | RatingFilter | `camera:${string}` | `lens:${string}` | `date:${string}` | `ext:${string}` | `scene:${string}` | `burst:${string}` | `face:${string}`;
 
 interface State {
   volumes: Volume[];
@@ -883,6 +883,8 @@ export function reducer(state: State, action: Action): State {
             faceCount: undefined,
             faceDetection: undefined,
             faceEmbedding: undefined,
+            faceEmbeddings: undefined,
+            faceEmbeddingBoxes: undefined,
             faceSignature: undefined,
             faceGroupId: undefined,
             faceGroupSize: undefined,
@@ -914,7 +916,10 @@ export function reducer(state: State, action: Action): State {
       const groups = groupByFaceSimilarity(action.files ?? state.files, FACE_GROUP_EMBEDDING_THRESHOLD, action.threshold ?? 10);
       const groupByPath = new Map<string, { id: string; size: number }>();
       for (const [id, paths] of Object.entries(groups)) {
-        for (const p of paths) groupByPath.set(p, { id, size: paths.length });
+        for (const p of paths) {
+          const current = groupByPath.get(p);
+          if (!current || paths.length > current.size) groupByPath.set(p, { id, size: paths.length });
+        }
       }
       return {
         ...state,

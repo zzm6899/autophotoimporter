@@ -10,7 +10,7 @@
  *  2. If available, queues files for analysis in small batches so the main
  *     process isn't flooded with simultaneous ONNX inference calls.
  *  3. Returns per-path results that callers can merge back onto MediaFile
- *     objects (faceCount, faceBoxes, faceEmbedding).
+ *     objects (faceCount, faceBoxes, faceEmbedding/faceEmbeddings).
  *
  * Usage:
  *   const { modelsAvailable, results, analyzing, analyze } = useFaceAnalysis();

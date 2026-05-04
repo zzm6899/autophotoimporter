@@ -39,6 +39,7 @@ interface CachedEntry {
   boxes: FaceBox[];
   personBoxes: FaceBox[];
   embeddings: string[];  // hex-serialised, matches the IPC wire format
+  embeddingBoxes?: FaceBox[];
 }
 
 let cacheDirPromise: Promise<string> | null = null;
@@ -131,6 +132,7 @@ function rehydrate(entry: CachedEntry): { result: FaceAnalysisResult; hexEmbeddi
       boxes: entry.boxes,
       personBoxes: entry.personBoxes,
       embeddings,
+      embeddingBoxes: entry.embeddingBoxes ?? [],
     },
     hexEmbeddings: entry.embeddings,
   };
@@ -164,6 +166,7 @@ export async function setCachedFaceResult(
     boxes: result.boxes,
     personBoxes: result.personBoxes,
     embeddings: hexEmbeddings,
+    embeddingBoxes: result.embeddingBoxes,
   };
   rememberInMemory(key, entry);
   try {

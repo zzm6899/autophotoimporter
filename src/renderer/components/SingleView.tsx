@@ -42,6 +42,14 @@ const WB_PRESETS = [
   { label: 'Warm', kelvin: 6500, tint: 5 },
 ] as const;
 
+type MediaFaceBox = NonNullable<MediaFile['faceBoxes']>[number];
+
+function normalizeFaceEngineBoxes(boxes: Array<{ x: number; y: number; width: number; height: number; score?: number }> | undefined): MediaFaceBox[] {
+  return (boxes ?? [])
+    .filter((box) => box.width > 0 && box.height > 0)
+    .map((box) => ({ x: box.x, y: box.y, width: box.width, height: box.height, score: box.score }));
+}
+
 function isRawPhoto(file: MediaFile) {
   return file.type === 'photo' && RAW_EXT_RE.test(file.name || file.extension);
 }
@@ -287,16 +295,21 @@ export function SingleView({ file, index, total, aiPaused = false }: SingleViewP
           if (cancelled) return;
           const result = results[0];
           if (result && result.path === file.path) {
+            const faceBoxes = normalizeFaceEngineBoxes(result.boxes);
+            const embeddingBoxes = normalizeFaceEngineBoxes(result.embeddingBoxes);
+            const personBoxes = normalizeFaceEngineBoxes(result.personBoxes);
             dispatch({
               type: 'SET_REVIEW_SCORES',
               scores: {
                 [file.path]: {
                   faceCount: result.boxes.length,
-                  faceBoxes: result.boxes.map((box) => ({ x: box.x, y: box.y, width: box.width, height: box.height, score: box.score })),
+                  faceBoxes,
                   faceDetection: result.boxes.length > 0 ? 'native' : undefined,
                   faceEmbedding: result.embeddings?.[0] || file.faceEmbedding,
+                  faceEmbeddings: result.embeddings?.length ? result.embeddings : file.faceEmbeddings,
+                  faceEmbeddingBoxes: embeddingBoxes.length > 0 ? embeddingBoxes : file.faceEmbeddingBoxes,
                   personCount: result.personBoxes.length,
-                  personBoxes: result.personBoxes.map((box) => ({ x: box.x, y: box.y, width: box.width, height: box.height, score: box.score })),
+                  personBoxes,
                   subjectReasons: [
                     ...(file.subjectReasons ?? []),
                     ...(result.boxes.length > 0 ? ['single-photo face scan'] : []),
@@ -317,16 +330,21 @@ export function SingleView({ file, index, total, aiPaused = false }: SingleViewP
           if (cancelled) break;
           const result = results[0];
           if (result && result.path === mate.path) {
+            const faceBoxes = normalizeFaceEngineBoxes(result.boxes);
+            const embeddingBoxes = normalizeFaceEngineBoxes(result.embeddingBoxes);
+            const personBoxes = normalizeFaceEngineBoxes(result.personBoxes);
             dispatch({
               type: 'SET_REVIEW_SCORES',
               scores: {
                 [mate.path]: {
                   faceCount: result.boxes.length,
-                  faceBoxes: result.boxes.map((box) => ({ x: box.x, y: box.y, width: box.width, height: box.height, score: box.score })),
+                  faceBoxes,
                   faceDetection: result.boxes.length > 0 ? 'native' : undefined,
                   faceEmbedding: result.embeddings?.[0] || mate.faceEmbedding,
+                  faceEmbeddings: result.embeddings?.length ? result.embeddings : mate.faceEmbeddings,
+                  faceEmbeddingBoxes: embeddingBoxes.length > 0 ? embeddingBoxes : mate.faceEmbeddingBoxes,
                   personCount: result.personBoxes.length,
-                  personBoxes: result.personBoxes.map((box) => ({ x: box.x, y: box.y, width: box.width, height: box.height, score: box.score })),
+                  personBoxes,
                   subjectReasons: [
                     ...(mate.subjectReasons ?? []),
                     ...(result.boxes.length > 0 ? ['burst face scan'] : []),

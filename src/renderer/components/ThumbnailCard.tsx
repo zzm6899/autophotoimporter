@@ -378,6 +378,9 @@ export const ThumbnailCard = memo(ThumbnailCardInner, (prev, next) => {
     a.faceCount === b.faceCount &&
     a.faceDetection === b.faceDetection &&
     a.faceSignature === b.faceSignature &&
+    a.faceEmbedding === b.faceEmbedding &&
+    a.faceEmbeddings === b.faceEmbeddings &&
+    a.faceEmbeddingBoxes === b.faceEmbeddingBoxes &&
     a.faceGroupId === b.faceGroupId &&
     a.faceGroupSize === b.faceGroupSize &&
     a.blurRisk === b.blurRisk &&

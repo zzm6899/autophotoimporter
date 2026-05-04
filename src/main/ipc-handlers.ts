@@ -2685,6 +2685,7 @@ export function registerIpcHandlers(): void {
             boxes: cached.result.boxes,
             personBoxes: cached.result.personBoxes,
             embeddings: cached.hexEmbeddings,
+            embeddingBoxes: cached.result.embeddingBoxes ?? [],
             faceCount: cached.result.boxes.length,
             personCount: cached.result.personBoxes.length,
           });
@@ -2704,20 +2705,21 @@ export function registerIpcHandlers(): void {
         } catch (err: unknown) {
           // Stale job (scan source changed) — return empty result silently.
           if ((err as Error).message === STALE_FACE_JOB) {
-            return { path: filePath, boxes: [], personBoxes: [], embeddings: [], faceCount: 0, personCount: 0 };
+            return { path: filePath, boxes: [], personBoxes: [], embeddings: [], embeddingBoxes: [], faceCount: 0, personCount: 0 };
           }
           throw err;
         }
         try {
-          const { boxes, personBoxes, embeddings } = await analyzeFaces(filePath);
+          const { boxes, personBoxes, embeddings, embeddingBoxes } = await analyzeFaces(filePath);
           const hexEmbeddings = embeddings.map(serializeEmbedding);
-          await setCachedFaceResult(filePath, { boxes, personBoxes, embeddings }, hexEmbeddings).catch(() => undefined);
+          await setCachedFaceResult(filePath, { boxes, personBoxes, embeddings, embeddingBoxes }, hexEmbeddings).catch(() => undefined);
           await new Promise<void>((resolve) => setImmediate(resolve));
           return {
             path: filePath,
             boxes,
             personBoxes,
             embeddings: hexEmbeddings,
+            embeddingBoxes: embeddingBoxes ?? [],
             faceCount: boxes.length,
             personCount: personBoxes.length,
           };
@@ -2727,6 +2729,7 @@ export function registerIpcHandlers(): void {
             boxes: [] as object[],
             personBoxes: [] as object[],
             embeddings: [] as string[],
+            embeddingBoxes: [] as object[],
             faceCount: 0,
             personCount: 0,
             error: (err as Error).message,
@@ -2742,7 +2745,7 @@ export function registerIpcHandlers(): void {
         allByPath.set((r as { path: string }).path, r);
       }
       return paths.map((p) => allByPath.get(p) ?? {
-        path: p, boxes: [], personBoxes: [], embeddings: [], faceCount: 0, personCount: 0,
+        path: p, boxes: [], personBoxes: [], embeddings: [], embeddingBoxes: [], faceCount: 0, personCount: 0,
         error: 'result missing',
       });
     };

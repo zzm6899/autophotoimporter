@@ -533,28 +533,75 @@ export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
   return Math.max(0, Math.min(1, dot / denom));
 }
 
-export function groupByFaceEmbedding(files: MediaFile[], threshold = 0.67): Record<string, string[]> {
+type FaceEmbeddingEntry = {
+  path: string;
+  embedding: Float32Array;
+  embeddingIndex: number;
+  confidence: number;
+  order: number;
+};
+
+export interface FaceIdentityGroup {
+  id: string;
+  paths: string[];
+  size: number;
+  embeddingCount: number;
+  samplePath: string;
+  sampleEmbeddingIndex: number;
+  confidence: number;
+}
+
+function getSerializedFaceEmbeddings(file: MediaFile): string[] {
+  if (file.faceEmbeddings?.length) return file.faceEmbeddings;
+  return file.faceEmbedding ? [file.faceEmbedding] : [];
+}
+
+function getFaceEmbeddingEntries(files: MediaFile[]): FaceEmbeddingEntry[] {
   const order = new Map(files.map((file, index) => [file.path, index]));
-  const faceFiles = files
-    .map((file) => ({
-      file,
-      embedding: normalizeEmbedding(file.faceEmbedding ? deserializeEmbedding(file.faceEmbedding) : null),
-      confidence: faceSignalConfidence(file),
-    }))
-    .filter((entry): entry is { file: MediaFile; embedding: Float32Array; confidence: number } =>
-      !!entry.embedding && (entry.file.faceCount ?? 0) > 0 && entry.confidence >= 0.34,
-    )
-    .sort((a, b) => b.confidence - a.confidence || (order.get(a.file.path) ?? 0) - (order.get(b.file.path) ?? 0));
+  const entries: FaceEmbeddingEntry[] = [];
+  for (const file of files) {
+    const faceCount = file.faceCount ?? file.faceBoxes?.length ?? 0;
+    if (faceCount <= 0) continue;
+    const serialized = getSerializedFaceEmbeddings(file);
+    if (serialized.length === 0) continue;
+    const baseConfidence = faceSignalConfidence(file);
+    serialized.forEach((hex, embeddingIndex) => {
+      const embedding = normalizeEmbedding(deserializeEmbedding(hex));
+      if (!embedding) return;
+      const box = file.faceEmbeddingBoxes?.[embeddingIndex] ?? file.faceBoxes?.[embeddingIndex];
+      const boxConfidence = typeof box?.score === 'number' && Number.isFinite(box.score)
+        ? Math.max(0, Math.min(1, box.score))
+        : 0;
+      const boxSignal = file.faceDetection === 'native' || boxConfidence >= 0.72 ? boxConfidence * 0.92 : 0;
+      const confidence = Math.max(baseConfidence, boxSignal);
+      if (confidence < 0.34) return;
+      entries.push({
+        path: file.path,
+        embedding,
+        embeddingIndex,
+        confidence,
+        order: order.get(file.path) ?? 0,
+      });
+    });
+  }
+  return entries.sort((a, b) => b.confidence - a.confidence || a.order - b.order || a.embeddingIndex - b.embeddingIndex);
+}
+
+export function buildFaceIdentityGroups(files: MediaFile[], threshold = 0.67, includeSingletons = false): FaceIdentityGroup[] {
+  const order = new Map(files.map((file, index) => [file.path, index]));
+  const faceEntries = getFaceEmbeddingEntries(files);
 
   type Cluster = {
-    paths: string[];
+    pathSet: Set<string>;
     centroid: Float32Array;
     weight: number;
     confidence: number;
+    embeddingCount: number;
+    sampleEntry: FaceEmbeddingEntry;
   };
 
   const clusters: Cluster[] = [];
-  for (const entry of faceFiles) {
+  for (const entry of faceEntries) {
     let bestCluster: Cluster | null = null;
     let bestSimilarity = 0;
     for (const cluster of clusters) {
@@ -568,15 +615,24 @@ export function groupByFaceEmbedding(files: MediaFile[], threshold = 0.67): Reco
 
     if (!bestCluster) {
       clusters.push({
-        paths: [entry.file.path],
+        pathSet: new Set([entry.path]),
         centroid: entry.embedding,
         weight: Math.max(0.35, entry.confidence),
         confidence: entry.confidence,
+        embeddingCount: 1,
+        sampleEntry: entry,
       });
       continue;
     }
 
-    bestCluster.paths.push(entry.file.path);
+    bestCluster.pathSet.add(entry.path);
+    bestCluster.embeddingCount += 1;
+    if (
+      entry.confidence > bestCluster.sampleEntry.confidence ||
+      (entry.confidence === bestCluster.sampleEntry.confidence && entry.order < bestCluster.sampleEntry.order)
+    ) {
+      bestCluster.sampleEntry = entry;
+    }
     const nextWeight = Math.max(0.35, entry.confidence);
     const totalWeight = bestCluster.weight + nextWeight;
     const nextCentroid = new Float32Array(bestCluster.centroid.length);
@@ -588,15 +644,33 @@ export function groupByFaceEmbedding(files: MediaFile[], threshold = 0.67): Reco
     bestCluster.confidence = Math.max(bestCluster.confidence, entry.confidence);
   }
 
-  const groups: Record<string, string[]> = {};
-  let groupIndex = 1;
-  for (const cluster of clusters) {
-    if (cluster.paths.length <= 1) continue;
-    groups[`face-${groupIndex++}`] = cluster.paths
-      .slice()
-      .sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
-  }
+  return clusters
+    .map((cluster) => ({
+      cluster,
+      paths: [...cluster.pathSet].sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0)),
+    }))
+    .filter((entry) => includeSingletons ? entry.cluster.embeddingCount > 0 : entry.paths.length > 1)
+    .sort((a, b) =>
+      b.paths.length - a.paths.length ||
+      b.cluster.embeddingCount - a.cluster.embeddingCount ||
+      a.cluster.sampleEntry.order - b.cluster.sampleEntry.order,
+    )
+    .map((entry, index) => ({
+      id: `face-${index + 1}`,
+      paths: entry.paths,
+      size: entry.paths.length,
+      embeddingCount: entry.cluster.embeddingCount,
+      samplePath: entry.cluster.sampleEntry.path,
+      sampleEmbeddingIndex: entry.cluster.sampleEntry.embeddingIndex,
+      confidence: entry.cluster.confidence,
+    }));
+}
 
+export function groupByFaceEmbedding(files: MediaFile[], threshold = 0.67): Record<string, string[]> {
+  const groups: Record<string, string[]> = {};
+  for (const group of buildFaceIdentityGroups(files, threshold)) {
+    groups[group.id] = group.paths;
+  }
   return groups;
 }
 

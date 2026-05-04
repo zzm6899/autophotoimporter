@@ -510,6 +510,25 @@ describe('ImportContext reducer', () => {
       expect(next.files[2].faceGroupId).toBeUndefined();
     });
 
+    it('groups faces when the match is a secondary face in a group photo', () => {
+      const files = [
+        makeFile({ path: '/group.jpg' }),
+        makeFile({ path: '/solo.jpg' }),
+      ];
+      const mergedFiles = [
+        {
+          ...files[0],
+          faceCount: 2,
+          faceEmbeddings: [embeddingHex([0, 1, 0, 0]), embeddingHex([1, 0, 0, 0])],
+        },
+        { ...files[1], faceCount: 1, faceEmbedding: embeddingHex([0.99, 0.01, 0, 0]) },
+      ];
+      const next = reducer(makeState({ files }), { type: 'GROUP_FACE_SIMILAR', threshold: 10, files: mergedFiles });
+      expect(next.files[0].faceGroupId).toBeTruthy();
+      expect(next.files[1].faceGroupId).toBe(next.files[0].faceGroupId);
+      expect(next.files[0].faceGroupSize).toBe(2);
+    });
+
     it('picks best in visual groups and records undo history', () => {
       const files = [
         makeFile({ path: '/a.jpg', visualGroupId: 'g1', visualGroupSize: 2, reviewScore: 20, sharpnessScore: 20 }),

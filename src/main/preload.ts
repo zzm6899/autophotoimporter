@@ -230,13 +230,14 @@ const api = {
   /**
    * Analyse faces in one or more images.
    * Returns one result object per input path:
-   *   { path, boxes, embeddings (hex strings), faceCount, error? }
+   *   { path, boxes, embeddings (hex strings), embeddingBoxes, faceCount, error? }
    */
   analyzeFaces: (paths: string | string[]): Promise<Array<{
     path: string;
     boxes: FaceBox[];
     personBoxes: FaceBox[];
     embeddings: string[];
+    embeddingBoxes: FaceBox[];
     faceCount: number;
     personCount: number;
     error?: string;

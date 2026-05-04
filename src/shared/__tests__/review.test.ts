@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { autoCullGroup, bestInGroup, faceSignalConfidence, groupByFaceEmbedding, groupByFaceSimilarity, groupByVisualHash, hammingDistanceHex, humanMomentQuality, rankBestShots, scoreReview, subjectPresenceQuality } from '../review';
+import { autoCullGroup, bestInGroup, buildFaceIdentityGroups, faceSignalConfidence, groupByFaceEmbedding, groupByFaceSimilarity, groupByVisualHash, hammingDistanceHex, humanMomentQuality, rankBestShots, scoreReview, subjectPresenceQuality } from '../review';
 import type { MediaFile } from '../types';
 
 function file(path: string, hash?: string, overrides: Partial<MediaFile> = {}): MediaFile {
@@ -48,6 +48,57 @@ describe('review utilities', () => {
       file('/c.jpg', undefined, { faceCount: 1, faceEmbedding: embeddingHex([0, 1, 0, 0]) }),
     ], 0.9);
     expect(Object.values(groups)).toEqual([['/a.jpg', '/b.jpg']]);
+  });
+
+  it('groups photos by any stored face embedding, not just the primary face', () => {
+    const groups = groupByFaceEmbedding([
+      file('/group-shot.jpg', undefined, {
+        faceCount: 2,
+        faceEmbeddings: [
+          embeddingHex([0, 1, 0, 0]),
+          embeddingHex([1, 0, 0, 0]),
+        ],
+      }),
+      file('/solo.jpg', undefined, {
+        faceCount: 1,
+        faceEmbedding: embeddingHex([0.99, 0.01, 0, 0]),
+      }),
+    ], 0.9);
+    expect(Object.values(groups)).toEqual([['/group-shot.jpg', '/solo.jpg']]);
+  });
+
+  it('builds face identity groups with sample metadata for the gallery', () => {
+    const groups = buildFaceIdentityGroups([
+      file('/group-shot.jpg', undefined, {
+        faceCount: 2,
+        faceEmbeddings: [
+          embeddingHex([0, 1, 0, 0]),
+          embeddingHex([1, 0, 0, 0]),
+        ],
+      }),
+      file('/solo.jpg', undefined, {
+        faceCount: 1,
+        faceEmbedding: embeddingHex([0.99, 0.01, 0, 0]),
+      }),
+    ], 0.9);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({
+      paths: ['/group-shot.jpg', '/solo.jpg'],
+      size: 2,
+      samplePath: '/group-shot.jpg',
+      sampleEmbeddingIndex: 1,
+    });
+  });
+
+  it('can include one-photo face identities for the gallery', () => {
+    const groups = buildFaceIdentityGroups([
+      file('/solo.jpg', undefined, {
+        faceCount: 1,
+        faceEmbedding: embeddingHex([1, 0, 0, 0]),
+      }),
+    ], 0.9, true);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({ paths: ['/solo.jpg'], size: 1 });
   });
 
   it('keeps weak face embeddings from joining loose identity groups', () => {
