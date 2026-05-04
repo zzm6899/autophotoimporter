@@ -210,8 +210,8 @@ export type Action =
   | { type: 'SET_SHARPNESS_BATCH'; scores: Record<string, number> }
   | { type: 'SET_REVIEW_SCORES'; scores: Record<string, Partial<MediaFile>> }
   | { type: 'RESOLVE_SECOND_PASS'; filePaths: string[]; pick: 'selected' | 'rejected' }
-  | { type: 'GROUP_VISUAL_DUPLICATES'; threshold?: number }
-  | { type: 'GROUP_FACE_SIMILAR'; threshold?: number }
+  | { type: 'GROUP_VISUAL_DUPLICATES'; threshold?: number; files?: MediaFile[] }
+  | { type: 'GROUP_FACE_SIMILAR'; threshold?: number; files?: MediaFile[] }
   | { type: 'GROUP_SCENE_BUCKETS' }
   | { type: 'PICK_BEST_IN_GROUPS' }
   | { type: 'QUEUE_BEST' }
@@ -893,7 +893,7 @@ export function reducer(state: State, action: Action): State {
         ),
       };
     case 'GROUP_VISUAL_DUPLICATES': {
-      const groups = groupByVisualHash(state.files, action.threshold ?? 8);
+      const groups = groupByVisualHash(action.files ?? state.files, action.threshold ?? 8);
       const groupByPath = new Map<string, { id: string; size: number }>();
       for (const [id, paths] of Object.entries(groups)) {
         for (const p of paths) groupByPath.set(p, { id, size: paths.length });
@@ -911,7 +911,7 @@ export function reducer(state: State, action: Action): State {
       };
     }
     case 'GROUP_FACE_SIMILAR': {
-      const groups = groupByFaceSimilarity(state.files, 0.69, action.threshold ?? 10);
+      const groups = groupByFaceSimilarity(action.files ?? state.files, 0.69, action.threshold ?? 10);
       const groupByPath = new Map<string, { id: string; size: number }>();
       for (const [id, paths] of Object.entries(groups)) {
         for (const p of paths) groupByPath.set(p, { id, size: paths.length });
@@ -1185,6 +1185,22 @@ type ReviewPatch = Partial<MediaFile> & { reviewScore?: number; blurRisk?: Media
 const ReviewScoresContext = createContext<Map<string, ReviewPatch>>(new Map());
 const ReviewScoresVersionContext = createContext<number>(0);
 
+function mergeReviewScoreOverlay(files: MediaFile[], overlay: Map<string, ReviewPatch>): MediaFile[] {
+  if (overlay.size === 0) return files;
+  return files.map((f) => {
+    const patch = overlay.get(f.path);
+    if (!patch) return f;
+    const merged = { ...f, ...patch };
+    if (patch.reviewScore === undefined) {
+      const review = scoreReview(merged);
+      merged.blurRisk = patch.blurRisk ?? review.blurRisk;
+      merged.reviewScore = review.score;
+      merged.reviewReasons = review.reasons;
+    }
+    return merged;
+  });
+}
+
 export function ImportProvider({ children }: { children: ReactNode }) {
   const [state, rawDispatch] = useReducer(reducer, initialState);
 
@@ -1258,18 +1274,7 @@ export function ImportProvider({ children }: { children: ReactNode }) {
       // we need stateRef to avoid stale closure. stateRef is set below.
       const overlay = reviewScoresRef.current;
       const rawFiles = stateRef.current.files;
-      const mergedFiles: MediaFile[] = rawFiles.map((f) => {
-        const patch = overlay.get(f.path);
-        if (!patch) return f;
-        const merged = { ...f, ...patch };
-        if (patch.reviewScore === undefined) {
-          const review = scoreReview(merged);
-          merged.blurRisk = patch.blurRisk ?? review.blurRisk;
-          merged.reviewScore = review.score;
-          merged.reviewReasons = review.reasons;
-        }
-        return merged;
-      });
+      const mergedFiles = mergeReviewScoreOverlay(rawFiles, overlay);
       const current = stateRef.current;
       const next = queueBestPaths(mergedFiles, {
         cullConfidence: current.cullConfidence,
@@ -1278,6 +1283,16 @@ export function ImportProvider({ children }: { children: ReactNode }) {
       });
       rawDispatch({ type: 'QUEUE_SET_PATHS', paths: next });
       if (next.length > 0) rawDispatch({ type: 'SET_FILTER', filter: 'queue' });
+      return;
+    }
+    // Face and visual grouping also depend on AI data held in the overlay.
+    // Compute groups from merged files, then let the reducer write stable group
+    // ids back into state.files so filters, badges, and bulk actions all agree.
+    if (action.type === 'GROUP_FACE_SIMILAR' || action.type === 'GROUP_VISUAL_DUPLICATES') {
+      rawDispatch({
+        ...action,
+        files: mergeReviewScoreOverlay(stateRef.current.files, reviewScoresRef.current),
+      });
       return;
     }
     rawDispatch(action);
@@ -1315,20 +1330,7 @@ export function useMergedFiles(): MediaFile[] {
   const version = useContext(ReviewScoresVersionContext);
 
   return useMemo(() => {
-    if (scores.size === 0) return files;
-    return files.map((f) => {
-      const patch = scores.get(f.path);
-      if (!patch) return f;
-      const merged = { ...f, ...patch };
-      // Only recompute review score if not already provided in the patch
-      if (patch.reviewScore === undefined) {
-        const review = scoreReview(merged);
-        merged.blurRisk = patch.blurRisk ?? review.blurRisk;
-        merged.reviewScore = review.score;
-        merged.reviewReasons = review.reasons;
-      }
-      return merged;
-    });
+    return mergeReviewScoreOverlay(files, scores);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [files, version]);
 }

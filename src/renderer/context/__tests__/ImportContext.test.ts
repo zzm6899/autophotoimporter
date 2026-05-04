@@ -141,6 +141,11 @@ function makeFile(overrides: Partial<MediaFile> = {}): MediaFile {
   };
 }
 
+function embeddingHex(values: number[]): string {
+  const array = new Float32Array(values);
+  return Buffer.from(array.buffer).toString('hex');
+}
+
 describe('ImportContext reducer', () => {
   // --- Phase transitions ---
 
@@ -451,6 +456,41 @@ describe('ImportContext reducer', () => {
       expect(next.files[0].visualGroupId).toBeTruthy();
       expect(next.files[1].visualGroupId).toBe(next.files[0].visualGroupId);
       expect(next.files[2].visualGroupId).toBeUndefined();
+    });
+
+    it('groups visual duplicates from supplied merged review files', () => {
+      const files = [
+        makeFile({ path: '/a.jpg' }),
+        makeFile({ path: '/b.jpg' }),
+        makeFile({ path: '/c.jpg' }),
+      ];
+      const mergedFiles = [
+        { ...files[0], visualHash: '0000000000000000' },
+        { ...files[1], visualHash: '0000000000000001' },
+        { ...files[2], visualHash: 'ffffffffffffffff' },
+      ];
+      const next = reducer(makeState({ files }), { type: 'GROUP_VISUAL_DUPLICATES', threshold: 2, files: mergedFiles });
+      expect(next.files[0].visualGroupId).toBeTruthy();
+      expect(next.files[1].visualGroupId).toBe(next.files[0].visualGroupId);
+      expect(next.files[2].visualGroupId).toBeUndefined();
+    });
+
+    it('groups similar faces from supplied merged review files', () => {
+      const files = [
+        makeFile({ path: '/a.jpg' }),
+        makeFile({ path: '/b.jpg' }),
+        makeFile({ path: '/c.jpg' }),
+      ];
+      const mergedFiles = [
+        { ...files[0], faceCount: 1, faceEmbedding: embeddingHex([1, 0, 0, 0]) },
+        { ...files[1], faceCount: 1, faceEmbedding: embeddingHex([0.99, 0.01, 0, 0]) },
+        { ...files[2], faceCount: 1, faceEmbedding: embeddingHex([0, 1, 0, 0]) },
+      ];
+      const next = reducer(makeState({ files }), { type: 'GROUP_FACE_SIMILAR', threshold: 10, files: mergedFiles });
+      expect(next.files[0].faceGroupId).toBeTruthy();
+      expect(next.files[1].faceGroupId).toBe(next.files[0].faceGroupId);
+      expect(next.files[0].faceGroupSize).toBe(2);
+      expect(next.files[2].faceGroupId).toBeUndefined();
     });
 
     it('picks best in visual groups and records undo history', () => {

@@ -629,7 +629,11 @@ export function CommandPalette() {
   }, [open]);
 
   const runReview = (id: string) => reviewEvent(id)();
-  const setFilter = (next: FilterMode) => dispatch({ type: 'SET_FILTER', filter: next });
+  const setFilter = (next: FilterMode) => {
+    if (next === 'face-groups') dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10 });
+    if (next === 'near-duplicates') dispatch({ type: 'GROUP_VISUAL_DUPLICATES', threshold: 8 });
+    dispatch({ type: 'SET_FILTER', filter: next });
+  };
 
   const handlers = useMemo<Partial<Record<string, () => void | Promise<void>>>>(() => ({
     'source.choose-folder': async () => {

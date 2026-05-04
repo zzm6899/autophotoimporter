@@ -3385,7 +3385,10 @@ export function ThumbnailGrid() {
               value={filter.startsWith('burst:') ? '' : filter}
               onChange={(e) => {
                 if (!e.target.value) return;
-                dispatch({ type: 'SET_FILTER', filter: e.target.value as typeof filter });
+                const nextFilter = e.target.value as typeof filter;
+                if (nextFilter === 'face-groups') dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10 });
+                if (nextFilter === 'near-duplicates') dispatch({ type: 'GROUP_VISUAL_DUPLICATES', threshold: 8 });
+                dispatch({ type: 'SET_FILTER', filter: nextFilter });
               }}
               className="px-1 py-0.5 text-[10px] bg-surface border border-border rounded text-text-muted hover:text-text focus:outline-none focus:border-text cursor-pointer"
               title={filter === 'all' ? 'Filter photos' : `Active filter: ${filter}`}
