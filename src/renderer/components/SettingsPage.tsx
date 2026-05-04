@@ -1,4 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
+import type { LucideIcon } from 'lucide-react';
+import {
+  Activity,
+  ArrowLeft,
+  CreditCard,
+  Database,
+  FolderClock,
+  HeartPulse,
+  KeyRound,
+  SlidersHorizontal,
+  Stethoscope,
+  SunMoon,
+  Wand2,
+  X,
+} from 'lucide-react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import type { AppDiagnosticsSnapshot, CullConfidence, KeeperQuota, SaveFormat, KeybindMap, MacFirstRunDoctor, MetadataExportFlags, WatermarkMode, WatermarkPosition } from '../../shared/types';
 import { DEFAULT_KEYBINDS, FOLDER_PRESETS } from '../../shared/types';
@@ -10,6 +25,7 @@ import { ImportResumeView } from './ImportResumeView';
 import { WatchFoldersPanel } from './WatchFoldersPanel';
 import { CatalogPanel } from './CatalogPanel';
 import { ImportHealthDashboard } from './ImportHealthDashboard';
+import { ActionButton, IconButton, SectionHeader, StatusPill } from './ui';
 
 interface SettingsPageProps {
   onClose: () => void;
@@ -69,6 +85,16 @@ const SETTINGS_TOPICS = [
 ] as const;
 
 type SettingsTopic = typeof SETTINGS_TOPICS[number]['id'];
+
+const SETTINGS_TOPIC_ICONS: Record<SettingsTopic, LucideIcon> = {
+  health: HeartPulse,
+  general: SlidersHorizontal,
+  workflow: FolderClock,
+  catalog: Database,
+  editing: Wand2,
+  account: KeyRound,
+  diagnostics: Stethoscope,
+};
 
 function isSafeCheckoutUrl(value?: string): boolean {
   if (!value) return false;
@@ -850,6 +876,37 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const expiryDaysRemaining = getDaysUntilExpiry(effectiveExpiresAt);
   const isTimedLicense = Boolean(effectiveExpiresAt);
   const showExpiryWarning = isTimedLicense && expiryDaysRemaining != null && expiryDaysRemaining <= 14;
+  const activeTopicMeta = SETTINGS_TOPICS.find((topic) => topic.id === activeTopic) ?? SETTINGS_TOPICS[0];
+  const settingsSummary = [
+    {
+      label: 'Account',
+      value: licenseStatus?.valid ? 'Active' : 'Needs activation',
+      tone: licenseStatus?.valid ? 'success' : 'warning',
+    },
+    {
+      label: 'Destination',
+      value: destination ? 'Ready' : 'Not set',
+      tone: destination ? 'success' : 'warning',
+    },
+    {
+      label: 'Updates',
+      value: updateState.status === 'available' ? 'Available' : updateState.status === 'ready' ? 'Ready' : updateState.currentVersion,
+      tone: updateState.status === 'error' || updateState.status === 'denied'
+        ? 'danger'
+        : updateState.status === 'available' || updateState.status === 'ready'
+          ? 'warning'
+          : 'neutral',
+    },
+    {
+      label: 'Ingest',
+      value: verifyChecksums || backupDestRoot || ftpDestEnabled || normalizeExposure || saveFormat !== 'original'
+        ? 'Quality checks'
+        : 'Fast raw',
+      tone: verifyChecksums || backupDestRoot || ftpDestEnabled || normalizeExposure || saveFormat !== 'original'
+        ? 'primary'
+        : 'success',
+    },
+  ] as const;
 
   const handleRequestTrial = async () => {
     const name = trialNameInput.trim();
@@ -932,48 +989,63 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const inner = (
     <div className={`bg-surface border border-border ${inline ? 'flex flex-col h-full' : 'rounded-xl shadow-2xl w-[520px] max-h-[80vh] flex flex-col overflow-hidden'}`}>
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
-        <h2 className="text-sm font-semibold text-text">Settings</h2>
-        <button
-          onClick={onClose}
-          className={`rounded text-text-muted hover:text-text hover:bg-surface-raised transition-colors ${inline ? 'flex items-center gap-1.5 px-2 py-1' : 'p-1'}`}
-          title={inline ? 'Back to review (Esc)' : 'Close (Esc)'}
-        >
-          {inline ? (
-            <>
-              <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-                <path fillRule="evenodd" d="M17 10a.75.75 0 01-.75.75H5.612l4.158 3.96a.75.75 0 11-1.04 1.08l-5.5-5.25a.75.75 0 010-1.08l5.5-5.25a.75.75 0 111.04 1.08L5.612 9.25H16.25A.75.75 0 0117 10z" clipRule="evenodd" />
-              </svg>
-              <span className="text-[11px]">Back</span>
-            </>
-          ) : (
-            <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-              <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
-            </svg>
+      <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-border shrink-0">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <SunMoon className="h-4 w-4 text-accent" aria-hidden="true" />
+            <h2 className="text-sm font-semibold text-text">Settings</h2>
+          </div>
+          <p className="mt-0.5 truncate text-[10px] text-text-muted">
+            {activeTopicMeta.label} controls
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {inline && (
+            <span className="hidden rounded border border-border bg-surface-alt px-2 py-1 text-[10px] text-text-muted sm:inline">
+              Ctrl/Cmd+K opens every command
+            </span>
           )}
-        </button>
+          <IconButton
+            icon={inline ? ArrowLeft : X}
+            label={inline ? 'Back to review (Esc)' : 'Close settings (Esc)'}
+            onClick={onClose}
+          />
+        </div>
       </div>
 
       {/* Scrollable body */}
       <div ref={settingsBodyRef} className={`overflow-y-auto flex-1 space-y-4 ${inline ? 'px-5 py-3' : 'px-4 py-3'}`}>
           <div className="sticky top-0 z-10 -mx-1 border-b border-border bg-surface/95 px-1 pb-3 backdrop-blur">
             <div className="flex gap-1 overflow-x-auto">
-              {SETTINGS_TOPICS.map((topic) => (
-                <button
-                  key={topic.id}
-                  type="button"
-                  onClick={() => setActiveTopic(topic.id)}
-                  className={`rounded-full px-3 py-1.5 text-[11px] transition-colors ${
-                    activeTopic === topic.id
-                      ? 'bg-accent text-white'
-                      : 'bg-surface-raised text-text-secondary hover:text-text'
-                  }`}
-                >
-                  {topic.label}
-                </button>
-              ))}
+              {SETTINGS_TOPICS.map((topic) => {
+                const TopicIcon = SETTINGS_TOPIC_ICONS[topic.id];
+                return (
+                  <button
+                    key={topic.id}
+                    type="button"
+                    onClick={() => setActiveTopic(topic.id)}
+                    className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] transition-colors ${
+                      activeTopic === topic.id
+                        ? 'bg-accent text-white shadow-sm'
+                        : 'bg-surface-raised text-text-secondary hover:text-text'
+                    }`}
+                  >
+                    <TopicIcon className="h-3.5 w-3.5" aria-hidden="true" />
+                    {topic.label}
+                  </button>
+                );
+              })}
             </div>
           </div>
+
+          <section className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            {settingsSummary.map((item) => (
+              <div key={item.label} className="rounded border border-border bg-surface-alt px-3 py-2">
+                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-text-muted">{item.label}</div>
+                <StatusPill tone={item.tone}>{item.value}</StatusPill>
+              </div>
+            ))}
+          </section>
 
           {activeTopic === 'health' && (
             <ImportHealthDashboard />
@@ -982,7 +1054,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
           {/* Appearance */}
           {activeTopic === 'general' && (
           <section>
-            <h3 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-2">Appearance</h3>
+            <SectionHeader icon={SlidersHorizontal} title="Appearance" />
             <div className="flex gap-2">
               {(['light', 'dark'] as const).map((t) => (
                 <button
@@ -1020,7 +1092,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
           {/* License — compact */}
           {activeTopic === 'account' && (
           <section>
-            <h3 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-2">License</h3>
+            <SectionHeader icon={CreditCard} title="License" />
             {licenseStatus?.valid ? (
               <div className="space-y-1.5">
                 <div className="flex items-center gap-2">
@@ -1395,7 +1467,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
           {activeTopic === 'diagnostics' && (
           <>
           <section>
-            <h3 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-2">Diagnostics</h3>
+            <SectionHeader icon={Activity} title="Diagnostics" description="Runtime state, update repair, and support bundles." />
             <div className="space-y-2">
               <div className="grid grid-cols-2 gap-1 text-[10px] text-text-muted">
                 <div className="rounded border border-border bg-surface-alt px-2 py-1">
@@ -1432,32 +1504,36 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                 </div>
               )}
               <div className="flex flex-wrap items-center gap-2">
-                <button
+                <ActionButton
+                  icon={Stethoscope}
                   onClick={() => { void refreshDiagnosticsSnapshot(); }}
-                  className="px-3 py-1 text-xs rounded bg-surface-raised text-text-secondary hover:bg-border"
+                  tone="ghost"
                 >
                   Refresh
-                </button>
-                <button
+                </ActionButton>
+                <ActionButton
+                  icon={Database}
                   onClick={handleCopyDiagnostics}
-                  className="px-3 py-1 text-xs rounded bg-surface-raised text-text-secondary hover:bg-border"
+                  tone="ghost"
                 >
                   Copy diagnostics
-                </button>
-                <button
+                </ActionButton>
+                <ActionButton
+                  icon={HeartPulse}
                   onClick={handleRepairUpdates}
                   disabled={updateRepairBusy}
-                  className="px-3 py-1 text-xs rounded bg-accent text-white hover:bg-accent-hover disabled:opacity-50"
+                  tone="primary"
                 >
                   {updateRepairBusy ? 'Repairing...' : 'Repair updates'}
-                </button>
-                <button
+                </ActionButton>
+                <ActionButton
+                  icon={FolderClock}
                   onClick={handleExportDiagnostics}
                   disabled={diagnosing}
-                  className="px-3 py-1 text-xs rounded bg-surface-raised text-text-secondary hover:bg-border disabled:opacity-50"
+                  tone="ghost"
                 >
                   Export bundle
-                </button>
+                </ActionButton>
               </div>
               {diagResult && <p className="text-[10px] text-text-muted">{diagResult}</p>}
             </div>

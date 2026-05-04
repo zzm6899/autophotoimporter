@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { useAppDispatch, useAppState, useMergedFiles } from '../context/ImportContext';
-import { useFileScanner } from '../hooks/useFileScanner';
 
 const isMac = typeof window !== 'undefined' && window.electronAPI?.platform === 'darwin';
 const MOD = isMac ? 'Cmd' : 'Ctrl';
@@ -21,7 +20,6 @@ export function HelpBar() {
   } = useAppState();
   const files = useMergedFiles();
   const dispatch = useAppDispatch();
-  const { pauseScan, resumeScan } = useFileScanner();
   const [showAiStats, setShowAiStats] = useState(true);
 
   const picked = files.filter((f) => f.pick === 'selected').length;
@@ -112,12 +110,7 @@ export function HelpBar() {
             <>
               <span className={`h-2 w-2 shrink-0 rounded-full ${scanPaused ? 'bg-yellow-500' : 'animate-pulse bg-blue-500'}`} />
               <span className="font-medium text-text-secondary">{scanPaused ? 'Paused' : 'Scanning...'}</span>
-              <button
-                onClick={() => (scanPaused ? resumeScan() : pauseScan())}
-                className="rounded bg-surface-raised px-1.5 py-0.5 text-text-secondary transition-colors hover:bg-border"
-              >
-                {scanPaused ? 'Resume' : 'Pause'}
-              </button>
+              <span className="text-text-faint">Source panel controls scan pause/resume</span>
             </>
           ) : (
             <>

@@ -1,5 +1,6 @@
 import { useMemo, useEffect, useCallback, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
+import { AlertTriangle, ClipboardCheck, Copy, Download, Eye, ListChecks, MoreHorizontal, Pause, Play, ShieldCheck, Sparkles, Trash2, Wand2 } from 'lucide-react';
 // Main grid / single / split view orchestrator.
 import { useAppState, useAppDispatch, useMergedFiles } from '../context/ImportContext';
 import type { FilterMode } from '../context/ImportContext';
@@ -13,6 +14,8 @@ import { EmptyState } from './EmptyState';
 import { SettingsPage } from './SettingsPage';
 import { ShortcutsOverlay } from './ShortcutsOverlay';
 import { BestOfSelectionPanel, rankBestOfSelection } from './BestOfSelectionPanel';
+import { REVIEW_COMMAND_EVENT } from './CommandPalette';
+import { ActionButton, ToolbarGroup } from './ui';
 import { getPreviewCacheStats, setBackgroundPreviewPaused, warmPreview } from '../utils/previewCache';
 import { clampStops, getEffectiveExposureStops, getNormalizedExposureStops, normalizeExposureStops } from '../../shared/exposure';
 import { faceSignalConfidence } from '../../shared/review';
@@ -584,7 +587,7 @@ export function ThumbnailGrid() {
   // useMergedFiles() overlays face/review scores without re-running the full
   // reducer map — O(n) only when scores.size > 0, otherwise returns the same array.
   const files = useMergedFiles();
-  const { startScan, pauseScan, resumeScan } = useFileScanner();
+  const { startScan } = useFileScanner();
   const { startImport } = useImport();
   const dispatch = useAppDispatch();
   const queueActionsDisabled = phase === 'scanning' || phase === 'importing';
@@ -1481,6 +1484,136 @@ export function ThumbnailGrid() {
     scanUnscannedPanelFiles(burstPathList);
     setShowBestOfSelection(true);
   }, [bestScope?.paths, files, focusedIndex, setFocused, sortedFiles, scanUnscannedPanelFiles]);
+
+  useEffect(() => {
+    const onCommand = (event: Event) => {
+      const id = (event as CustomEvent<{ id?: string }>).detail?.id;
+      if (!id) return;
+      switch (id) {
+        case 'view.single':
+          dispatch({ type: 'SET_VIEW_MODE', mode: 'single' });
+          if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0);
+          return;
+        case 'view.split':
+          dispatch({ type: 'SET_VIEW_MODE', mode: 'split' });
+          if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0);
+          return;
+        case 'view.compare':
+          dispatch({ type: 'SET_VIEW_MODE', mode: 'compare' });
+          if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0);
+          return;
+        case 'view.back':
+          handleBackToMain();
+          return;
+        case 'filter.clear-search':
+          setSearchText('');
+          dispatch({ type: 'SET_FILTER', filter: 'all' });
+          setFocused(0);
+          return;
+        case 'review.start':
+          setReviewSprintMode(true);
+          dispatch({ type: 'SET_FILTER', filter: 'unmarked' });
+          dispatch({ type: 'SET_VIEW_MODE', mode: 'single' });
+          if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0);
+          return;
+        case 'review.pick':
+          pickFile('selected', false);
+          return;
+        case 'review.reject':
+          pickFile('rejected', false);
+          return;
+        case 'review.clear':
+          pickFile(undefined, false);
+          return;
+        case 'review.sync-edits':
+          dispatch({
+            type: 'SYNC_EDITS_FROM_FOCUSED',
+            filePath: focusedIndex >= 0 && focusedIndex < sortedFiles.length ? sortedFiles[focusedIndex].path : undefined,
+          });
+          return;
+        case 'selection.select-visible':
+          selectAllVisible();
+          return;
+        case 'selection.clear':
+          clearSelection();
+          return;
+        case 'queue.visible':
+          queuePaths(visiblePaths);
+          return;
+        case 'import.visible':
+          importVisible();
+          return;
+        case 'ai.toggle':
+          if (reviewPaused) resumeAiReview();
+          else pauseAiReview();
+          return;
+        case 'ai.overview':
+          setShowAiReviewStrip(true);
+          return;
+        case 'best.burst':
+          openBestOfSelection();
+          return;
+        case 'best.batch':
+          openBestOfBatch(0);
+          return;
+        case 'bulk.safe-cull':
+          dispatch({ type: 'AUTO_CULL_SAFE' });
+          return;
+        case 'bulk.pick-burst-best':
+          dispatch({ type: 'PICK_BEST_IN_GROUPS' });
+          return;
+        case 'bulk.pick-visible':
+          bulkPickVisible('selected');
+          return;
+        case 'bulk.reject-visible':
+          bulkPickVisible('rejected');
+          return;
+        case 'bulk.clear-visible':
+          bulkPickVisible(undefined);
+          return;
+        case 'bulk.reject-blur': {
+          const blurPaths = files.filter((f) => f.blurRisk === 'high' && f.pick !== 'selected').map((f) => f.path);
+          if (blurPaths.length > 0) {
+            dispatch({ type: 'SET_PICK_BATCH', filePaths: blurPaths, pick: 'rejected' });
+          }
+          return;
+        }
+        default:
+          if (id.startsWith('review.rating-')) {
+            const rating = Number(id.replace('review.rating-', ''));
+            const targets = selectedPaths.length > 0
+              ? selectedPaths
+              : focusedIndex >= 0 && focusedIndex < sortedFiles.length
+                ? [sortedFiles[focusedIndex].path]
+                : [];
+            targets.forEach((path) => dispatch({ type: 'SET_RATING', filePath: path, rating }));
+          }
+      }
+    };
+    window.addEventListener(REVIEW_COMMAND_EVENT, onCommand);
+    return () => window.removeEventListener(REVIEW_COMMAND_EVENT, onCommand);
+  }, [
+    bulkPickVisible,
+    clearSelection,
+    dispatch,
+    files,
+    focusedIndex,
+    handleBackToMain,
+    importVisible,
+    openBestOfBatch,
+    openBestOfSelection,
+    pauseAiReview,
+    pickFile,
+    queuePaths,
+    resumeAiReview,
+    reviewPaused,
+    selectAllVisible,
+    selectedPaths,
+    setFocused,
+    setSearchText,
+    sortedFiles,
+    visiblePaths,
+  ]);
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
@@ -2507,12 +2640,7 @@ export function ThumbnailGrid() {
         <div className="h-full flex flex-col items-center justify-center gap-3">
           <div className={`w-8 h-8 border-2 border-text-muted border-t-text rounded-full ${scanPaused ? '' : 'animate-spin'}`} />
           <p className="text-sm text-text-secondary">{scanPaused ? 'Scan paused' : 'Scanning files...'}</p>
-          <button
-            onClick={() => scanPaused ? resumeScan() : pauseScan()}
-            className="px-3 py-1 text-xs bg-surface-raised hover:bg-border rounded text-text-secondary transition-colors"
-          >
-            {scanPaused ? 'Resume Scan' : 'Pause Scan'}
-          </button>
+          <p className="text-[11px] text-text-muted">Use the Source panel or command palette to pause or resume.</p>
         </div>
       </div>
     );
@@ -2763,272 +2891,221 @@ export function ThumbnailGrid() {
   ) : null;
 
   const nextActionToolbar = files.length > 0 ? (
-    <div className="shrink-0 px-3 py-1.5 flex items-center gap-1.5 border-b border-border bg-surface-alt/60 overflow-x-auto">
-
-      {/* ── Review ── */}
-      <button
-        onClick={() => {
-          setReviewSprintMode(true);
-          dispatch({ type: 'SET_FILTER', filter: 'unmarked' });
-          dispatch({ type: 'SET_VIEW_MODE', mode: 'single' });
-          if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0);
-        }}
-        className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-surface-raised text-text-secondary hover:text-text hover:bg-border transition-colors shrink-0"
-        title="Open single-photo view filtered to unmarked files. Use P to pick, X to reject, ← → to navigate."
-      >
-        Review
-      </button>
-
-      {/* ── Queue best keepers for this batch ── */}
-      <button
-        onClick={() => {
-          if (!queueActionsDisabled) dispatch({ type: 'QUEUE_BEST' });
-        }}
-        disabled={queueActionsDisabled}
-        className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-surface-raised text-text-secondary hover:text-yellow-300 hover:bg-yellow-500/10 transition-colors shrink-0 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-surface-raised disabled:hover:text-text-secondary"
-        title={queueActionsDisabled
-          ? 'Wait for the current scan/import to finish before changing the import queue.'
-          : `Queue the best keeper from each burst/similar group, plus standalone keepable photos. Skips rejected photos and duplicates. AI done: ${reviewStats.analyzed}/${reviewStats.total}.`}
-      >
-        Queue Keepers
-      </button>
-
-      {/* ── Import or queue all ── */}
-      {queuedPaths.length > 0 ? (
-        <button
-          onClick={() => {
-            if (!toolbarImportDisabled) void startImport({ selectedPathsOverride: queuedPaths });
-          }}
-          disabled={toolbarImportDisabled}
-          className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 transition-colors shrink-0 disabled:cursor-not-allowed disabled:bg-surface-raised disabled:text-text-muted disabled:hover:bg-surface-raised"
-          title={toolbarImportTitle}
-        >
-          Import ({queuedPaths.length})
-        </button>
-      ) : (
-        showAdvancedTools && (
-          <button
-            onClick={() => queuePaths(sortedFiles.map((f) => f.path))}
+    <div className="shrink-0 border-b border-border bg-surface-alt/70 px-3 py-1.5">
+      <div className="flex items-center gap-2 overflow-x-auto">
+        <ToolbarGroup>
+          <ActionButton
+            icon={ListChecks}
+            onClick={() => {
+              setReviewSprintMode(true);
+              dispatch({ type: 'SET_FILTER', filter: 'unmarked' });
+              dispatch({ type: 'SET_VIEW_MODE', mode: 'single' });
+              if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0);
+            }}
+            title="Open single-photo view filtered to unmarked files. Use P to pick, X to reject, arrows to navigate."
+          >
+            Review
+          </ActionButton>
+          <ActionButton
+            icon={ClipboardCheck}
+            tone="warning"
+            onClick={() => {
+              if (!queueActionsDisabled) dispatch({ type: 'QUEUE_BEST' });
+            }}
             disabled={queueActionsDisabled}
-            className="px-2.5 py-1 text-[10px] font-medium rounded-md bg-surface-raised text-text-secondary hover:text-emerald-300 hover:bg-emerald-500/10 transition-colors shrink-0 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-surface-raised disabled:hover:text-text-secondary"
             title={queueActionsDisabled
               ? 'Wait for the current scan/import to finish before changing the import queue.'
-              : `Queue every visible file for import. Thumbnails ready: ${visibleThumbStats.ready}/${visibleThumbStats.total}.`}
+              : `Queue the best keeper from each burst/similar group, plus standalone keepable photos. AI done: ${reviewStats.analyzed}/${reviewStats.total}.`}
           >
-            Queue Visible
-          </button>
-        )
-      )}
-
-      <div className="w-px h-4 bg-border shrink-0 mx-0.5" />
-
-      {/* ── Best of Burst ── visible, deeper batch tools are tucked under More ── */}
-      <button
-        onClick={openBestOfSelection}
-        className="px-2 py-1 text-[10px] rounded-md bg-yellow-500/10 text-yellow-300 hover:bg-yellow-500/20 transition-colors shrink-0"
-        title="Compare shots in the focused burst side-by-side and pick the best one. Shortcut: Shift+B."
-      >
-        Best of Burst
-      </button>
-
-      <div className="w-px h-4 bg-border shrink-0 mx-0.5" />
-
-      <button
-        onClick={() => setShowAdvancedTools((v) => !v)}
-        className={`px-2 py-1 text-[10px] rounded-md transition-colors shrink-0 ${
-          showAdvancedTools ? 'bg-blue-500/15 text-blue-300' : 'bg-surface-raised text-text-muted hover:text-text'
-        }`}
-        title="Show extra tools: blur filter, auto-cull, duplicates, safe cull, cache stats."
-      >
-        {showAdvancedTools ? '− Less' : '+ More'}
-      </button>
-
-      {queuedPaths.length > 0 && (
-        <button
-          onClick={() => {
-            if (!queueActionsDisabled) dispatch({ type: 'QUEUE_CLEAR' });
-          }}
-          disabled={queueActionsDisabled}
-          className="px-2 py-1 text-[10px] rounded-md text-text-faint hover:text-red-300 transition-colors shrink-0 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-text-faint"
-          title={queueActionsDisabled
-            ? 'Wait for the current scan/import to finish before changing the import queue.'
-            : `Remove all ${queuedPaths.length} queued files from the queue. Does not clear pick/reject flags.`}
-        >
-          Clear Queue
-        </button>
-      )}
-
-      {showAdvancedTools && (
-        <>
-          <div className="w-px h-4 bg-border shrink-0 mx-0.5" />
-          <button
-            onClick={() => {
-              const next = !reviewSprintMode;
-              setReviewSprintMode(next);
-              dispatch({ type: 'SET_FILTER', filter: next ? 'review-needed' : 'all' });
-              dispatch({ type: 'SET_VIEW_MODE', mode: next ? 'split' : 'grid' });
-              if (next && focusedIndex < 0 && sortedFiles.length > 0) setFocused(0);
-            }}
-            className={`px-2 py-1 text-[10px] rounded-md transition-colors shrink-0 ${
-              reviewSprintMode
-                ? 'bg-blue-500/20 text-blue-300 hover:bg-blue-500/30'
-                : 'bg-surface-raised text-text-muted hover:text-blue-300'
-            }`}
-            title="Focus Review opens a faster review lane for photos that still need a decision."
-          >
-            {reviewSprintMode ? `Focus Review · ${sprintRemaining} left` : 'Focus Review'}
-          </button>
-          <button
-            onClick={() => openBestOfBatch(0)}
-            className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-yellow-300 transition-colors shrink-0"
-            title={`Rank all visible photos together and show the top candidates. AI: ${reviewStats.analyzed}/${reviewStats.total}, faces: ${reviewStats.faces}.`}
-          >
-            Best of Batch
-          </button>
-          <button
-            onClick={() => {
-              dispatch({ type: 'GROUP_SCENE_BUCKETS' });
-              dispatch({ type: 'SET_FILTER', filter: 'review-needed' });
-            }}
-            className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-blue-300 transition-colors shrink-0"
-            title="Rebuild scene buckets, then show low-confidence and unreviewed decisions."
-          >
-            Review Needed
-          </button>
-          <button
-            onClick={() => handleBulkPickVisible('selected')}
-            disabled={sortedFiles.length === 0}
-            className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-yellow-300 transition-colors shrink-0 disabled:opacity-40"
-            title={`Pick all ${sortedFiles.length} currently visible files.`}
-          >
-            Pick Visible
-          </button>
-          <button
-            onClick={() => handleBulkPickVisible('rejected')}
-            disabled={sortedFiles.length === 0}
-            className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-red-300 transition-colors shrink-0 disabled:opacity-40"
-            title={`Reject all ${sortedFiles.length} currently visible files.`}
-          >
-            Reject Visible
-          </button>
-          <button
-            onClick={() => handleBulkPickVisible(undefined)}
-            disabled={sortedFiles.length === 0}
-            className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-text transition-colors shrink-0 disabled:opacity-40"
-            title={`Clear pick/reject flags on all ${sortedFiles.length} visible files.`}
-          >
-            Clear Visible
-          </button>
-          <button
-            onClick={importVisible}
-            disabled={importVisibleDisabled}
-            className="px-2 py-1 text-[10px] rounded-md bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 transition-colors shrink-0 disabled:cursor-not-allowed disabled:opacity-40"
-            title="Queue the current filtered set and immediately start import when the output panel is ready."
-          >
-            Import Visible
-          </button>
-          <button
-            onClick={() => {
-              if (reviewWaitingForThumbnails) return;
-              if (reviewPaused) resumeAiReview();
-              else pauseAiReview();
-            }}
-            className={`px-2 py-1 text-[10px] rounded-md transition-colors shrink-0 ${
-              reviewWaitingForThumbnails
-                ? 'bg-blue-500/10 text-blue-300'
-                : reviewPaused
-                  ? 'bg-yellow-500/15 text-yellow-300 hover:bg-yellow-500/25'
-                  : 'bg-surface-raised text-text-muted hover:text-text'
-            }`}
-            title={reviewWaitingForThumbnails
-              ? `AI review starts once the first thumbnails are ready. Ready: ${readyThumbnailCount}/${totalPhotoCount}.`
-              : reviewPaused
-                ? `Resume AI analysis and preview loading. Done ${reviewStats.analyzed}/${reviewStats.total}.`
-                : `Pause AI analysis and preview loading. Done ${reviewStats.analyzed}/${reviewStats.total}.`}
-          >
-            {reviewWaitingForThumbnails
-              ? `AI waiting ${readyThumbnailCount}/${totalPhotoCount}`
-              : reviewPaused
-                ? `Resume AI ${reviewStats.analyzed}/${reviewStats.total}`
-                : `Pause AI ${reviewStats.analyzed}/${reviewStats.total}`}
-          </button>
-          {/* Blur filter */}
-          <button
-            onClick={() => dispatch({ type: 'SET_FILTER', filter: 'blur-risk' })}
-            className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-red-300 transition-colors shrink-0"
-            title={`Filter to photos with medium/high blur risk. ${reviewStats.blur} found.`}
-          >
-            Blur {reviewStats.blur > 0 ? reviewStats.blur : ''}
-          </button>
-          {highBlurRejectPaths.length > 0 && (
-            <button
+            Queue Keepers
+          </ActionButton>
+          {queuedPaths.length > 0 ? (
+            <ActionButton
+              icon={Download}
+              tone="success"
               onClick={() => {
-                if (!confirmBulkAction('Reject high-blur', highBlurRejectPaths.length)) return;
-                dispatch({
-                  type: 'SET_PICK_BATCH',
-                  filePaths: highBlurRejectPaths,
-                  pick: 'rejected',
-                });
+                if (!toolbarImportDisabled) void startImport({ selectedPathsOverride: queuedPaths });
               }}
-              className="px-2 py-1 text-[10px] rounded-md bg-red-500/10 text-red-300 hover:bg-red-500/20 transition-colors shrink-0"
-              title={`Reject all high blur-risk photos that aren't already picked. ${reviewStats.blur} at risk.`}
+              disabled={toolbarImportDisabled}
+              title={toolbarImportTitle}
             >
-              Reject Blur
-            </button>
+              Import ({queuedPaths.length})
+            </ActionButton>
+          ) : (
+            showAdvancedTools && (
+              <ActionButton
+                icon={ClipboardCheck}
+                tone="success"
+                onClick={() => queuePaths(sortedFiles.map((f) => f.path))}
+                disabled={queueActionsDisabled}
+                title={queueActionsDisabled
+                  ? 'Wait for the current scan/import to finish before changing the import queue.'
+                  : `Queue every visible file for import. Thumbnails ready: ${visibleThumbStats.ready}/${visibleThumbStats.total}.`}
+              >
+                Queue Visible
+              </ActionButton>
+            )
           )}
-          {files.some((f) => (f.burstId && f.burstSize && f.burstSize > 1) || (f.visualGroupId && f.visualGroupSize && f.visualGroupSize > 1)) && (
-            <button
+          <ActionButton
+            icon={Wand2}
+            tone="warning"
+            onClick={openBestOfSelection}
+            title="Compare shots in the focused burst side-by-side and pick the best one. Shortcut: Shift+B."
+          >
+            Best
+          </ActionButton>
+        </ToolbarGroup>
+
+        <ToolbarGroup>
+          <ActionButton
+            icon={MoreHorizontal}
+            tone={showAdvancedTools ? 'primary' : 'neutral'}
+            onClick={() => setShowAdvancedTools((v) => !v)}
+            title="Show extra tools. Use Ctrl/Cmd+K for the full command palette."
+          >
+            {showAdvancedTools ? 'Less' : 'More'}
+          </ActionButton>
+          {queuedPaths.length > 0 && (
+            <ActionButton
+              icon={Trash2}
+              tone="danger"
+              onClick={() => {
+                if (!queueActionsDisabled) dispatch({ type: 'QUEUE_CLEAR' });
+              }}
+              disabled={queueActionsDisabled}
+              title={queueActionsDisabled
+                ? 'Wait for the current scan/import to finish before changing the import queue.'
+                : `Remove all ${queuedPaths.length} queued files from the queue. Does not clear pick/reject flags.`}
+            >
+              Clear Queue
+            </ActionButton>
+          )}
+        </ToolbarGroup>
+
+        <span className="shrink-0 text-[10px] text-text-faint">
+          Ctrl/Cmd+K for all commands
+        </span>
+
+        {showAdvancedTools && (
+          <ToolbarGroup className="ml-1">
+            <ActionButton
+              icon={Eye}
+              tone={reviewSprintMode ? 'primary' : 'neutral'}
+              onClick={() => {
+                const next = !reviewSprintMode;
+                setReviewSprintMode(next);
+                dispatch({ type: 'SET_FILTER', filter: next ? 'review-needed' : 'all' });
+                dispatch({ type: 'SET_VIEW_MODE', mode: next ? 'split' : 'grid' });
+                if (next && focusedIndex < 0 && sortedFiles.length > 0) setFocused(0);
+              }}
+              title="Focus Review opens a faster review lane for photos that still need a decision."
+            >
+              {reviewSprintMode ? `Focus ${sprintRemaining}` : 'Focus'}
+            </ActionButton>
+            <ActionButton
+              icon={Wand2}
+              onClick={() => openBestOfBatch(0)}
+              title={`Rank all visible photos together and show the top candidates. AI: ${reviewStats.analyzed}/${reviewStats.total}, faces: ${reviewStats.faces}.`}
+            >
+              Batch
+            </ActionButton>
+            <ActionButton
+              icon={ListChecks}
+              onClick={() => {
+                dispatch({ type: 'GROUP_SCENE_BUCKETS' });
+                dispatch({ type: 'SET_FILTER', filter: 'review-needed' });
+              }}
+              title="Rebuild scene buckets, then show low-confidence and unreviewed decisions."
+            >
+              Needs Review
+            </ActionButton>
+            <ActionButton
+              icon={reviewPaused ? Play : Pause}
+              tone={reviewPaused ? 'warning' : 'neutral'}
+              onClick={() => {
+                if (reviewWaitingForThumbnails) return;
+                if (reviewPaused) resumeAiReview();
+                else pauseAiReview();
+              }}
+              title={reviewWaitingForThumbnails
+                ? `AI review starts once the first thumbnails are ready. Ready: ${readyThumbnailCount}/${totalPhotoCount}.`
+                : reviewPaused
+                  ? `Resume AI analysis and preview loading. Done ${reviewStats.analyzed}/${reviewStats.total}.`
+                  : `Pause AI analysis and preview loading. Done ${reviewStats.analyzed}/${reviewStats.total}.`}
+            >
+              {reviewWaitingForThumbnails
+                ? `AI waiting ${readyThumbnailCount}/${totalPhotoCount}`
+                : reviewPaused
+                  ? `Resume AI ${reviewStats.analyzed}/${reviewStats.total}`
+                  : `Pause AI ${reviewStats.analyzed}/${reviewStats.total}`}
+            </ActionButton>
+            <ActionButton
+              icon={AlertTriangle}
+              onClick={() => dispatch({ type: 'SET_FILTER', filter: 'blur-risk' })}
+              title={`Filter to photos with medium/high blur risk. ${reviewStats.blur} found.`}
+            >
+              Blur {reviewStats.blur > 0 ? reviewStats.blur : ''}
+            </ActionButton>
+            {duplicateCount > 0 && (
+              <ActionButton
+                icon={Copy}
+                onClick={() => {
+                  dispatch({ type: 'SET_FILTER', filter: 'near-duplicates' });
+                  dispatch({ type: 'SET_VIEW_MODE', mode: 'compare' });
+                }}
+                title="Compare near-duplicate photos side-by-side to keep one and reject the rest."
+              >
+                Dupes ({duplicateCount})
+              </ActionButton>
+            )}
+          </ToolbarGroup>
+        )}
+
+        {showAdvancedTools && (
+          <ToolbarGroup className="ml-1">
+            <ActionButton
+              icon={ShieldCheck}
+              tone="danger"
               onClick={() => {
                 if (!confirmBulkAction('Auto-cull grouped', groupedDecisionCount)) return;
                 dispatch({ type: 'AUTO_CULL_SAFE' });
               }}
-              className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-red-300 transition-colors shrink-0"
+              disabled={!files.some((f) => (f.burstId && f.burstSize && f.burstSize > 1) || (f.visualGroupId && f.visualGroupSize && f.visualGroupSize > 1))}
               title="Auto-reject clearly worse shots in bursts/similar groups when a strong keeper exists. Never touches protected, starred, or already-picked files. Undo: Ctrl+Z."
             >
               Safe Cull
-            </button>
-          )}
-          {burstGrouping && burstIds.size > 0 && (
-            <button
-              onClick={() => {
-                if (!confirmBulkAction('Pick best and reject alternates in', groupedDecisionCount)) return;
-                dispatch({ type: 'PICK_BEST_IN_GROUPS' });
-              }}
-              className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-yellow-300 transition-colors shrink-0"
-              title="Pick the top-scored shot in each burst/group and reject the rest."
+            </ActionButton>
+            {burstGrouping && burstIds.size > 0 && (
+              <ActionButton
+                icon={Sparkles}
+                tone="warning"
+                onClick={() => {
+                  if (!confirmBulkAction('Pick best and reject alternates in', groupedDecisionCount)) return;
+                  dispatch({ type: 'PICK_BEST_IN_GROUPS' });
+                }}
+                title="Pick the top-scored shot in each burst/group and reject the rest."
+              >
+                Pick Best
+              </ActionButton>
+            )}
+            <ActionButton
+              icon={Download}
+              tone="success"
+              onClick={importVisible}
+              disabled={importVisibleDisabled}
+              title="Queue the current filtered set and immediately start import when the output panel is ready."
             >
-              Pick Burst Best
-            </button>
-          )}
-          {focusedFile && (
-            <button
-              onClick={() => dispatch({ type: 'SYNC_EDITS_FROM_FOCUSED', filePath: focusedFile.path })}
-              className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-cyan-300 transition-colors shrink-0"
-              title="Sync the focused photo's exposure and white-balance recipe to the selected photos, or to its burst/scene if nothing is selected."
+              Import Visible
+            </ActionButton>
+            <span
+              className="inline-flex shrink-0 items-center rounded-md border border-border bg-surface-raised px-2 py-1 text-[10px] text-text-faint"
+              title={`Preview cache: ${cacheStats.cached} cached, ${cacheStats.decoded} decoded, ${cacheStats.inflight} in-flight, ${cacheStats.queued} queued.`}
             >
-              Sync Edits
-            </button>
-          )}
-          {duplicateCount > 0 && (
-            <button
-              onClick={() => {
-                dispatch({ type: 'SET_FILTER', filter: 'near-duplicates' });
-                dispatch({ type: 'SET_VIEW_MODE', mode: 'compare' });
-              }}
-              className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-muted hover:text-blue-300 transition-colors shrink-0"
-              title="Compare near-duplicate photos side-by-side to keep one and reject the rest."
-            >
-              Dupes ({duplicateCount})
-            </button>
-          )}
-          <span
-            className="px-2 py-1 text-[10px] rounded-md bg-surface-raised text-text-faint shrink-0 cursor-default"
-            title={`Preview cache: ${cacheStats.cached} cached, ${cacheStats.decoded} decoded, ${cacheStats.inflight} in-flight, ${cacheStats.queued} queued.`}
-          >
-            Cache {cacheStats.cached}
-          </span>
-        </>
-      )}
+              Cache {cacheStats.cached}
+            </span>
+          </ToolbarGroup>
+        )}
+      </div>
     </div>
   ) : null;
 

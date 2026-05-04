@@ -18,6 +18,7 @@ import { HelpBar } from './components/HelpBar';
 import { TutorialOverlay } from './components/TutorialOverlay';
 import { LicenseOverlay } from './components/LicenseOverlay';
 import { LicenseBanner } from './components/LicenseBanner';
+import { CommandPalette } from './components/CommandPalette';
 import { playCompletionSound } from './utils/completionSound';
 import { setPreviewConcurrency } from './utils/previewCache';
 
@@ -167,6 +168,7 @@ function AppInner() {
       <HelpBar />
       <TutorialOverlay />
       <LicenseOverlay />
+      <CommandPalette />
     </>
   );
 }

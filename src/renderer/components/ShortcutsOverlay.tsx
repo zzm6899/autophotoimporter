@@ -7,6 +7,7 @@ interface ShortcutsOverlayProps {
 }
 
 const fixedShortcuts = [
+  ['Ctrl/Cmd+K', 'Open command palette for views, imports, AI review, bulk actions, settings, and diagnostics'],
   ['Enter', 'Open focused photo in detail view'],
   ['Ctrl+A', 'Select all visible results'],
   ['Shift+◀▶', 'Previous / next burst'],
@@ -22,6 +23,7 @@ const fixedShortcuts = [
 ];
 
 const tools = [
+  ['Fast Raw Ingest', 'For fastest raw ingest, turn off checksum verification, backup/FTP mirror, conversion, metadata sidecars, and duplicate checks where you do not need them.'],
   ['Best of Burst', 'Ranks the focused burst first: protected/rating, faces, subject sharpness, blur risk, whole-image sharpness, then smart score.'],
   ['Blur Check', 'Filters to photos with medium/high blur risk from local thumbnail analysis.'],
   ['Pause Review', 'Stops background smart scoring so culling and navigation stay responsive.'],

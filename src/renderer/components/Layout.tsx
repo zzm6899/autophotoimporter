@@ -1,9 +1,11 @@
 import { useEffect, useState, type ReactNode } from 'react';
+import { CircleHelp, Moon, PanelLeftOpen, PanelRightOpen, Search, Settings, Sun } from 'lucide-react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import { formatSize } from '../utils/formatters';
-import { LicenseBanner } from './LicenseBanner';
 import { BrandMark } from './BrandMark';
 import type { ModelDownloadProgress } from '../../main/preload';
+import { OPEN_COMMAND_PALETTE_EVENT } from './CommandPalette';
+import { IconButton } from './ui';
 
 interface LayoutProps {
   left: ReactNode;
@@ -81,55 +83,49 @@ export function Layout({ left, center, right }: LayoutProps) {
         {(!showLeftPanel || !showRightPanel) && (
           <div className="absolute left-2 flex items-center gap-1 [-webkit-app-region:no-drag]">
             {!showLeftPanel && (
-              <button
+              <IconButton
+                icon={PanelLeftOpen}
+                label="Show source panel"
                 onClick={() => dispatch({ type: 'TOGGLE_LEFT_PANEL' })}
-                className="px-1.5 py-0.5 rounded text-[10px] text-text-secondary hover:text-text hover:bg-surface-raised transition-colors"
-                title="Show source panel"
-              >
-                Show Source
-              </button>
+                size="xs"
+              />
             )}
             {!showRightPanel && (
-              <button
+              <IconButton
+                icon={PanelRightOpen}
+                label="Show output panel"
                 onClick={() => dispatch({ type: 'TOGGLE_RIGHT_PANEL' })}
-                className="px-1.5 py-0.5 rounded text-[10px] text-text-secondary hover:text-text hover:bg-surface-raised transition-colors"
-                title="Show output panel"
-              >
-                Show Output
-              </button>
+                size="xs"
+              />
             )}
           </div>
         )}
         <div className="absolute right-2 flex items-center gap-1 [-webkit-app-region:no-drag]">
-        <button
-          onClick={() => dispatch({ type: 'SET_VIEW_MODE', mode: 'settings' })}
-          className="px-1.5 py-0.5 rounded text-[10px] text-text-secondary hover:text-text hover:bg-surface-raised transition-colors"
-          title="Open settings"
-        >
-          Settings
-        </button>
-        <button
-          onClick={() => window.dispatchEvent(new Event('photo-importer:shortcuts'))}
-          className="px-1.5 py-0.5 rounded text-[10px] text-text-secondary hover:text-text hover:bg-surface-raised transition-colors"
-          title="Open help and shortcuts"
-        >
-          Help
-        </button>
-        <button
-          onClick={toggleTheme}
-          className="p-1 rounded text-text-secondary hover:text-text transition-colors"
-          title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
-        >
-          {theme === 'dark' ? (
-            <svg className="w-3 h-3" viewBox="0 0 20 20" fill="currentColor">
-              <path d="M10 2a.75.75 0 01.75.75v1.5a.75.75 0 01-1.5 0v-1.5A.75.75 0 0110 2zM10 15a.75.75 0 01.75.75v1.5a.75.75 0 01-1.5 0v-1.5A.75.75 0 0110 15zM10 7a3 3 0 100 6 3 3 0 000-6zM15.657 5.404a.75.75 0 10-1.06-1.06l-1.061 1.06a.75.75 0 001.06 1.06l1.06-1.06zM6.464 14.596a.75.75 0 10-1.06-1.06l-1.06 1.06a.75.75 0 001.06 1.06l1.06-1.06zM18 10a.75.75 0 01-.75.75h-1.5a.75.75 0 010-1.5h1.5A.75.75 0 0118 10zM5 10a.75.75 0 01-.75.75h-1.5a.75.75 0 010-1.5h1.5A.75.75 0 015 10zM14.596 15.657a.75.75 0 001.06-1.06l-1.06-1.061a.75.75 0 10-1.06 1.06l1.06 1.06zM5.404 6.464a.75.75 0 001.06-1.06l-1.06-1.06a.75.75 0 10-1.06 1.06l1.06 1.06z" />
-            </svg>
-          ) : (
-            <svg className="w-3 h-3" viewBox="0 0 20 20" fill="currentColor">
-              <path fillRule="evenodd" d="M7.455 2.004a.75.75 0 01.26.77 7 7 0 009.958 7.967.75.75 0 011.067.853A8.5 8.5 0 116.647 1.921a.75.75 0 01.808.083z" clipRule="evenodd" />
-            </svg>
-          )}
-        </button>
+          <IconButton
+            icon={Search}
+            label="Open command palette (Ctrl/Cmd+K)"
+            onClick={() => window.dispatchEvent(new Event(OPEN_COMMAND_PALETTE_EVENT))}
+            size="xs"
+          />
+          <IconButton
+            icon={Settings}
+            label="Open settings"
+            onClick={() => dispatch({ type: 'SET_VIEW_MODE', mode: 'settings' })}
+            active={false}
+            size="xs"
+          />
+          <IconButton
+            icon={CircleHelp}
+            label="Open help and shortcuts"
+            onClick={() => window.dispatchEvent(new Event('photo-importer:shortcuts'))}
+            size="xs"
+          />
+          <IconButton
+            icon={theme === 'dark' ? Sun : Moon}
+            label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+            onClick={toggleTheme}
+            size="xs"
+          />
         </div>
       </div>
 

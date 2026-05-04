@@ -1975,9 +1975,6 @@ app.get('/admin/licenses', authSession, async (req, res) => {
             <td data-label="Actions" class="cell-actions">
               <div class="actions">
                 <a href="/admin/licenses/${row.id}"><button class="secondary sm" type="button">View</button></a>
-                ${row.status !== 'revoked' ? `<form class="inline" method="post" action="/admin/licenses/${row.id}/revoke"><button class="secondary sm" type="submit">Revoke</button></form>` : ''}
-                ${row.status !== 'active' ? `<form class="inline" method="post" action="/admin/licenses/${row.id}/activate"><button class="secondary sm" type="submit">Activate</button></form>` : ''}
-                <form class="inline" method="post" action="/admin/licenses/${row.id}/delete" onsubmit="return confirm('Delete this license and all stored device activations? This cannot be undone.')"><button class="danger sm" type="submit">Delete</button></form>
               </div>
             </td>
           </tr>`).join('')}
@@ -2069,6 +2066,10 @@ app.get('/admin/licenses/:id', authSession, async (req, res) => {
   const editablePlan = record.plan || (detailsExpiry ? '' : 'lifetime');
   const editableExpiry = detailsExpiry || '';
   const hasActivations = activations.rowCount > 0;
+  const activationCodeJson = JSON.stringify(record.activation_code || '');
+  const manageLicenseHref = record.activation_code
+    ? `/manage-license?code=${encodeURIComponent(record.activation_code)}`
+    : '';
   return res.send(htmlPage(`License ${record.customer_name}`, `
     <div class="hero">
       <div class="hero-copy">
@@ -2126,6 +2127,12 @@ app.get('/admin/licenses/:id', authSession, async (req, res) => {
             <div class="detail-value">${record.last_seen_at ? fmtTime(record.last_seen_at) : 'Never'}</div>
           </div>
         </div>
+        <div class="actions" style="margin-top:14px">
+          ${record.activation_code
+            ? `<button class="secondary sm" type="button" onclick="navigator.clipboard && navigator.clipboard.writeText(${activationCodeJson})">Copy activation code</button>
+               <a href="${manageLicenseHref}" target="_blank" rel="noreferrer"><button class="secondary sm" type="button">Open customer view</button></a>`
+            : '<span class="muted">No activation code has been assigned to this record.</span>'}
+        </div>
         <form method="post" action="/admin/licenses/${record.id}/entitlement" style="margin-top:18px">
           <div class="panel-head" style="margin-bottom:10px">
             <div>
@@ -2171,10 +2178,6 @@ app.get('/admin/licenses/:id', authSession, async (req, res) => {
             <button type="submit">Save license details</button>
           </div>
         </form>
-        <div style="margin-top:18px" class="actions">
-          ${record.status !== 'revoked' ? `<form class="inline" method="post" action="/admin/licenses/${record.id}/revoke"><button class="secondary sm" type="submit">Revoke</button></form>` : ''}
-          ${record.status !== 'active' ? `<form class="inline" method="post" action="/admin/licenses/${record.id}/activate"><button class="secondary sm" type="submit">Re-activate</button></form>` : ''}
-        </div>
       </div>
       <div class="stack">
         <div class="panel">
@@ -2217,8 +2220,12 @@ app.get('/admin/licenses/:id', authSession, async (req, res) => {
           <div class="panel-head">
             <div>
               <h2>Danger zone</h2>
-              <p class="muted">Delete this record only when you want to remove it entirely, including registered devices.</p>
+              <p class="muted">Use these only when the customer should lose access or the record should be removed entirely.</p>
             </div>
+          </div>
+          <div class="actions" style="margin-bottom:14px">
+            ${record.status !== 'revoked' ? `<form class="inline" method="post" action="/admin/licenses/${record.id}/revoke" onsubmit="return confirm('Revoke this license now? The customer will no longer be able to activate or validate it.')"><button class="secondary sm" type="submit">Revoke license</button></form>` : ''}
+            ${record.status !== 'active' ? `<form class="inline" method="post" action="/admin/licenses/${record.id}/activate"><button class="secondary sm" type="submit">Re-activate license</button></form>` : ''}
           </div>
           <form method="post" action="/admin/licenses/${record.id}/delete" onsubmit="return confirm('Delete this license and all device activations? This cannot be undone.')">
             <button class="danger" type="submit">Delete this license</button>
@@ -2263,12 +2270,12 @@ app.get('/admin/licenses/:id', authSession, async (req, res) => {
 
 app.post('/admin/licenses/:id/revoke', authSession, async (req, res) => {
   await pool.query(`UPDATE license_records SET status = 'revoked', updated_at = NOW() WHERE id = $1`, [req.params.id]);
-  res.redirect('/admin/licenses');
+  res.redirect(`/admin/licenses/${req.params.id}`);
 });
 
 app.post('/admin/licenses/:id/activate', authSession, async (req, res) => {
   await pool.query(`UPDATE license_records SET status = 'active', updated_at = NOW() WHERE id = $1`, [req.params.id]);
-  res.redirect('/admin/licenses');
+  res.redirect(`/admin/licenses/${req.params.id}`);
 });
 
 app.post('/admin/licenses/:id/delete', authSession, async (req, res) => {
@@ -4643,6 +4650,7 @@ app.get('/upgrade-license', (_req, res) => {
       </div>
 
       <button id="upgradeBtn" style="width:100%;background:var(--accent);color:#fff;border:none;border-radius:6px;padding:12px;font-weight:500;cursor:pointer;font-size:1rem;margin-bottom:12px">Proceed to payment</button>
+      <p id="upgradeReason" class="muted" style="display:none;text-align:center;margin:-2px 0 12px;font-size:.85rem"></p>
       <a href="/manage-license" style="display:block;text-align:center;color:var(--text-muted);text-decoration:none;padding:8px">← Back</a>
     </div>
 
@@ -4655,6 +4663,9 @@ app.get('/upgrade-license', (_req, res) => {
       async function loadLicense() {
         if (!code) {
           document.getElementById('upgradeBtn').disabled = true;
+          const reason = document.getElementById('upgradeReason');
+          reason.textContent = 'Enter your activation code in the license manager before adding devices.';
+          reason.style.display = 'block';
           return;
         }
 
@@ -4665,10 +4676,16 @@ app.get('/upgrade-license', (_req, res) => {
             currentDevices = data.maxDevices || 1;
             document.getElementById('currentDevices').textContent = currentDevices;
             document.getElementById('deviceCount').value = String(Math.min(100, currentDevices + 1));
-            if (['revoked', 'disabled'].includes(String(data.status || '').toLowerCase())) {
+            const licenseState = String(data.status || '').toLowerCase();
+            if (['revoked', 'disabled'].includes(licenseState)) {
               const btn = document.getElementById('upgradeBtn');
               btn.disabled = true;
               btn.textContent = 'License cannot be upgraded';
+              const reason = document.getElementById('upgradeReason');
+              reason.textContent = licenseState === 'revoked'
+                ? 'This license is revoked. Device upgrades are blocked until support reviews it.'
+                : 'This license is disabled. Device upgrades are blocked until support re-enables it.';
+              reason.style.display = 'block';
             }
             updateCost();
           }
@@ -5101,6 +5118,17 @@ app.get('/manage-license', (_req, res) => {
       .ml-field.span2 { grid-column: 1 / -1; }
       .ml-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px; }
       .ml-actions button { border-radius: 8px; padding: 12px 16px; font-size: .88rem; }
+      .ml-action-reason {
+        display: none;
+        margin: -8px 0 18px;
+        padding: 10px 12px;
+        border: 1px solid rgba(255,207,92,.22);
+        border-radius: 8px;
+        background: rgba(255,207,92,.08);
+        color: var(--warning);
+        font-size: .82rem;
+      }
+      .ml-action-reason.show { display: block; }
       .ml-extend {
         display: none;
         padding: 20px;
@@ -5175,6 +5203,7 @@ app.get('/manage-license', (_req, res) => {
           <button id="extendBtn" class="secondary">Extend validity</button>
           <button id="upgradeBtn" class="secondary">Add devices</button>
         </div>
+        <div id="actionReason" class="ml-action-reason"></div>
       </div>
 
       <div class="ml-extend" id="extendForm">
@@ -5294,16 +5323,26 @@ app.get('/manage-license', (_req, res) => {
         if (statusLabel === 'Expired') statusEl.classList.add('warn');
         if (statusLabel === 'Revoked' || statusLabel === 'Disabled') statusEl.classList.add('bad');
         const modifiable = canModifyLicense(currentLicense);
+        const actionReasonEl = document.getElementById('actionReason');
+        let actionReason = '';
+        if (!modifiable) {
+          actionReason = statusLabel === 'Revoked'
+            ? 'This license is revoked, so renewal and device upgrades are blocked. Contact support if this was unexpected.'
+            : 'This license is disabled, so renewal and device upgrades are blocked until support re-enables it.';
+        }
 
         if (currentLicense.expiresAt) {
           document.getElementById('expiryDate').textContent = new Date(currentLicense.expiresAt).toLocaleDateString('en-AU', { year: 'numeric', month: 'short', day: 'numeric' });
           document.getElementById('extendBtn').style.display = modifiable ? '' : 'none';
+          document.getElementById('extendBtn').disabled = !modifiable;
         } else {
           document.getElementById('expiryDate').textContent = 'Does not expire';
           document.getElementById('extendBtn').style.display = 'none';
         }
         document.getElementById('upgradeBtn').disabled = !modifiable;
         document.getElementById('upgradeBtn').textContent = modifiable ? 'Add devices' : 'License cannot be changed';
+        actionReasonEl.textContent = actionReason;
+        actionReasonEl.classList.toggle('show', !!actionReason);
 
         document.getElementById('licenseDetails').classList.add('show');
       }
@@ -5312,6 +5351,7 @@ app.get('/manage-license', (_req, res) => {
       codeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') void lookupLicense(); });
 
       document.getElementById('extendBtn').onclick = () => {
+        if (!currentLicense || !canModifyLicense(currentLicense)) return;
         document.getElementById('extendForm').classList.add('show');
         document.getElementById('licenseDetails').classList.remove('show');
         updateExtendSummary();
@@ -5355,6 +5395,7 @@ app.get('/manage-license', (_req, res) => {
 
       document.getElementById('upgradeBtn').onclick = () => {
         if (!currentLicense) return;
+        if (!canModifyLicense(currentLicense)) return;
         window.location.href = '/upgrade-license?code=' + encodeURIComponent(currentLicense.activationCode);
       };
 
