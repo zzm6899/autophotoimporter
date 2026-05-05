@@ -10,9 +10,18 @@ export type ViewMode = 'grid' | 'single' | 'split' | 'compare' | 'settings';
 
 export type FilterMode = 'all' | 'protected' | 'picked' | 'rejected' | 'unrated' | 'duplicates' | 'catalog-duplicates' | 'unmarked' | 'queue' | 'best' | 'faces' | 'face-groups' | 'face-gallery' | 'group-photos' | 'blur-risk' | 'near-duplicates' | 'review-needed' | 'needs-exposure' | 'normalized' | 'adjusted' | 'photos' | 'videos' | 'raw' | RatingFilter | `camera:${string}` | `lens:${string}` | `date:${string}` | `ext:${string}` | `scene:${string}` | `burst:${string}` | `face:${string}`;
 const MAX_FACE_CONCURRENCY = 8;
+const REVIEW_OVERLAY_SMALL_DELAY_MS = 80;
+const REVIEW_OVERLAY_MEDIUM_DELAY_MS = 140;
+const REVIEW_OVERLAY_LARGE_DELAY_MS = 240;
 
 function isExpensiveImportFilter(filter: FilterMode): boolean {
   return filter === 'face-gallery' || filter === 'face-groups' || filter.startsWith('face:');
+}
+
+function reviewOverlayDelayMs(fileCount: number): number {
+  if (fileCount >= 2500) return REVIEW_OVERLAY_LARGE_DELAY_MS;
+  if (fileCount >= 800) return REVIEW_OVERLAY_MEDIUM_DELAY_MS;
+  return REVIEW_OVERLAY_SMALL_DELAY_MS;
 }
 
 interface State {
@@ -1274,10 +1283,11 @@ export function ImportProvider({ children }: { children: ReactNode }) {
   }, []);
   const bumpReviewVersionSoon = useCallback(() => {
     if (reviewVersionTimerRef.current) return;
+    const delay = reviewOverlayDelayMs(stateRef.current.files.length);
     reviewVersionTimerRef.current = setTimeout(() => {
       reviewVersionTimerRef.current = null;
       setReviewVersion((v) => v + 1);
-    }, 50);
+    }, delay);
   }, []);
 
   useEffect(() => () => {
@@ -1381,6 +1391,7 @@ export function useMergedFiles(): MediaFile[] {
   const version = useContext(ReviewScoresVersionContext);
 
   return useMemo(() => {
+    if (scores.size === 0) return files;
     return mergeReviewScoreOverlay(files, scores);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [files, version]);

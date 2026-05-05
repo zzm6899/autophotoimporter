@@ -100,6 +100,11 @@ type FaceSampleQuality = {
   title: string;
 };
 
+const FACE_GALLERY_INITIAL_CARD_LIMIT = 180;
+const FACE_GALLERY_CARD_PAGE_SIZE = 180;
+const FACE_CROP_THUMB_SIZE = 224;
+const FACE_CROP_DETAIL_SIZE = 320;
+
 function stablePathId(value: string): string {
   let hash = 0;
   for (let i = 0; i < value.length; i++) {
@@ -252,12 +257,20 @@ function maxFaceSimilarityToSample(file: MediaFile | undefined, sampleEmbedding:
 
 const faceCropPreviewCache = new Map<string, string>();
 
+function releaseFaceCrop(value: string | undefined): void {
+  if (value?.startsWith('blob:')) URL.revokeObjectURL(value);
+}
+
 function rememberFaceCrop(key: string, value: string): void {
-  if (faceCropPreviewCache.has(key)) faceCropPreviewCache.delete(key);
+  if (faceCropPreviewCache.has(key)) {
+    releaseFaceCrop(faceCropPreviewCache.get(key));
+    faceCropPreviewCache.delete(key);
+  }
   faceCropPreviewCache.set(key, value);
   while (faceCropPreviewCache.size > 420) {
     const oldest = faceCropPreviewCache.keys().next().value as string | undefined;
     if (!oldest) break;
+    releaseFaceCrop(faceCropPreviewCache.get(oldest));
     faceCropPreviewCache.delete(oldest);
   }
 }
@@ -267,6 +280,17 @@ function faceCropKey(filePath: string, box: MediaFaceBox | undefined, source: st
     ? `${box.x.toFixed(4)}:${box.y.toFixed(4)}:${box.width.toFixed(4)}:${box.height.toFixed(4)}`
     : 'full';
   return `${filePath}|${boxKey}|${source.length}|${size}`;
+}
+
+function canvasToPreviewUrl(canvas: HTMLCanvasElement, quality: number): Promise<string> {
+  if (typeof canvas.toBlob !== 'function') {
+    return Promise.resolve(canvas.toDataURL('image/jpeg', quality));
+  }
+  return new Promise((resolve) => {
+    canvas.toBlob((blob) => {
+      resolve(blob ? URL.createObjectURL(blob) : canvas.toDataURL('image/jpeg', quality));
+    }, 'image/jpeg', quality);
+  });
 }
 
 async function buildFaceCropImage(source: string, box: MediaFaceBox | undefined, size = 360): Promise<string> {
@@ -287,7 +311,7 @@ async function buildFaceCropImage(source: string, box: MediaFaceBox | undefined,
   ctx.imageSmoothingQuality = 'high';
   if (!box) {
     ctx.drawImage(img, 0, 0, size, size);
-    return canvas.toDataURL('image/jpeg', 0.88);
+    return canvasToPreviewUrl(canvas, 0.84);
   }
   const cropW = Math.min(1, Math.max(0.12, box.width * 2.35));
   const cropH = Math.min(1, Math.max(0.12, box.height * 2.7));
@@ -306,12 +330,13 @@ async function buildFaceCropImage(source: string, box: MediaFaceBox | undefined,
     size,
     size,
   );
-  return canvas.toDataURL('image/jpeg', 0.9);
+  return canvasToPreviewUrl(canvas, 0.86);
 }
 
 function FaceCrop({ file, box }: { file: MediaFile; box?: MediaFaceBox }) {
   const cropRef = useRef<HTMLDivElement>(null);
   const [shouldLoadDetail, setShouldLoadDetail] = useState(false);
+  const [detailRequested, setDetailRequested] = useState(false);
   const [detailPreview, setDetailPreview] = useState<string | undefined>();
   const [cropPreview, setCropPreview] = useState<string | undefined>();
   const boxKey = box ? `${box.x}:${box.y}:${box.width}:${box.height}` : 'none';
@@ -335,8 +360,8 @@ function FaceCrop({ file, box }: { file: MediaFile; box?: MediaFaceBox }) {
   useEffect(() => {
     let cancelled = false;
     setDetailPreview(undefined);
-    if (!box || file.type !== 'photo' || !shouldLoadDetail) return () => { cancelled = true; };
-    void getCachedPreview(file.path, 'detail', 'high')
+    if (!box || file.type !== 'photo' || !shouldLoadDetail || !detailRequested) return () => { cancelled = true; };
+    void getCachedPreview(file.path, 'detail', 'normal')
       .then((preview) => {
         if (!cancelled) setDetailPreview(preview);
       })
@@ -344,20 +369,21 @@ function FaceCrop({ file, box }: { file: MediaFile; box?: MediaFaceBox }) {
         if (!cancelled) setDetailPreview(undefined);
       });
     return () => { cancelled = true; };
-  }, [box, boxKey, file.path, file.type, shouldLoadDetail]);
+  }, [box, boxKey, detailRequested, file.path, file.type, shouldLoadDetail]);
 
   useEffect(() => {
     let cancelled = false;
     setCropPreview(undefined);
     const source = detailPreview || file.thumbnail;
     if (!source || !shouldLoadDetail) return () => { cancelled = true; };
-    const key = faceCropKey(file.path, box, source, 360);
+    const cropSize = detailPreview ? FACE_CROP_DETAIL_SIZE : FACE_CROP_THUMB_SIZE;
+    const key = faceCropKey(file.path, box, source, cropSize);
     const cached = faceCropPreviewCache.get(key);
     if (cached) {
       setCropPreview(cached);
       return () => { cancelled = true; };
     }
-    void buildFaceCropImage(source, box, 360)
+    void buildFaceCropImage(source, box, cropSize)
       .then((preview) => {
         rememberFaceCrop(key, preview);
         if (!cancelled) setCropPreview(preview);
@@ -370,7 +396,12 @@ function FaceCrop({ file, box }: { file: MediaFile; box?: MediaFaceBox }) {
 
   if (cropPreview) {
     return (
-      <div ref={cropRef} className="h-full w-full overflow-hidden bg-black">
+      <div
+        ref={cropRef}
+        className="h-full w-full overflow-hidden bg-black"
+        onPointerEnter={() => setDetailRequested(true)}
+        onFocusCapture={() => setDetailRequested(true)}
+      >
         <img src={cropPreview} alt="" className="h-full w-full object-cover" draggable={false} decoding="async" />
       </div>
     );
@@ -387,7 +418,12 @@ function FaceCrop({ file, box }: { file: MediaFile; box?: MediaFaceBox }) {
 
   if (!box) {
     return (
-      <div ref={cropRef} className="h-full w-full overflow-hidden bg-black">
+      <div
+        ref={cropRef}
+        className="h-full w-full overflow-hidden bg-black"
+        onPointerEnter={() => setDetailRequested(true)}
+        onFocusCapture={() => setDetailRequested(true)}
+      >
         <img src={source} alt="" className="h-full w-full object-cover" draggable={false} decoding="async" />
       </div>
     );
@@ -401,7 +437,12 @@ function FaceCrop({ file, box }: { file: MediaFile; box?: MediaFaceBox }) {
   const cropY = Math.max(0, Math.min(1 - cropH, centerY - cropH / 2));
 
   return (
-    <div ref={cropRef} className="h-full w-full overflow-hidden bg-black">
+    <div
+      ref={cropRef}
+      className="h-full w-full overflow-hidden bg-black"
+      onPointerEnter={() => setDetailRequested(true)}
+      onFocusCapture={() => setDetailRequested(true)}
+    >
       <img
         src={source}
         alt=""
@@ -467,6 +508,7 @@ function FaceIdentityGallery({
   onBuildGroups: () => void;
 }) {
   const [showSingletonFaces, setShowSingletonFaces] = useState(true);
+  const [visibleCardLimit, setVisibleCardLimit] = useState(FACE_GALLERY_INITIAL_CARD_LIMIT);
   const allCards = groups
     .map((group) => {
       const override = coverOverrides[group.id];
@@ -482,6 +524,12 @@ function FaceIdentityGallery({
   const cards = showSingletonFaces
     ? allCards
     : allCards.filter(({ group }) => group.size > 1 || group.embeddingCount > 1);
+  const cardFingerprint = `${showSingletonFaces ? 1 : 0}:${cards.length}:${cards[0]?.group.id ?? ''}:${cards[cards.length - 1]?.group.id ?? ''}`;
+  useEffect(() => {
+    setVisibleCardLimit(FACE_GALLERY_INITIAL_CARD_LIMIT);
+  }, [cardFingerprint]);
+  const visibleCards = cards.slice(0, visibleCardLimit);
+  const hiddenCardCount = Math.max(0, cards.length - visibleCards.length);
   const selectedCount = selectedGroupIds.size;
 
   return (
@@ -490,7 +538,7 @@ function FaceIdentityGallery({
         <Users size={15} className="text-violet-300" />
         <span className="text-xs font-medium text-text-secondary">Face gallery</span>
         <span className="text-[11px] text-text-muted">
-          {cards.length} people/groups{!showSingletonFaces && singletonCount > 0 ? ` · ${singletonCount} hidden` : ''}
+          {cards.length} people/groups{hiddenCardCount > 0 ? ` · showing ${visibleCards.length}` : ''}{!showSingletonFaces && singletonCount > 0 ? ` · ${singletonCount} singles hidden` : ''}
         </span>
         <div className="flex items-center gap-1">
           <button
@@ -633,7 +681,7 @@ function FaceIdentityGallery({
         </div>
       ) : (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(154px,1fr))] gap-3">
-          {cards.map(({ group, sample }, index) => {
+          {visibleCards.map(({ group, sample }, index) => {
             const label = `${'manual' in group ? 'Person' : 'Face'} ${index + 1}`;
             const selected = selectedGroupIds.has(group.id);
             const box = sampleFaceBox(sample, group);
@@ -736,6 +784,20 @@ function FaceIdentityGallery({
               </div>
             );
           })}
+          {hiddenCardCount > 0 && (
+            <div className="col-span-full flex items-center justify-center gap-2 border-t border-border/70 py-4">
+              <span className="text-[11px] text-text-muted">
+                Showing {visibleCards.length} of {cards.length}
+              </span>
+              <button
+                type="button"
+                onClick={() => setVisibleCardLimit((value) => Math.min(cards.length, value + FACE_GALLERY_CARD_PAGE_SIZE))}
+                className="rounded border border-violet-500/25 bg-violet-500/10 px-3 py-1 text-[11px] text-violet-200 hover:bg-violet-500/20"
+              >
+                Load more faces
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -3446,38 +3508,70 @@ export function ThumbnailGrid() {
   }, [selectedSource, groupByFolder]);
 
   const reviewStats = useMemo(() => {
-    const photoFiles = files.filter((f) => f.type === 'photo');
-    const analyzed = photoFiles.filter((f) =>
-      typeof f.sharpnessScore === 'number' ||
-      typeof f.subjectSharpnessScore === 'number' ||
-      typeof f.reviewScore === 'number' ||
-      f.faceBoxes !== undefined ||
-      hasFaceMatchData(f)
-    ).length;
-    const faceFiles = photoFiles.filter((f) => (f.faceCount ?? f.faceBoxes?.length ?? 0) > 0);
-    const faces = faceFiles.length;
-    const faceBoxes = faceFiles.reduce((sum, file) => sum + (file.faceBoxes?.length ?? file.faceCount ?? 0), 0);
-    const faceGroups = displayFaceIdentityGroups.length || new Set(faceFiles.map((f) => f.faceGroupId).filter(Boolean)).size;
-    const faceScanned = photoFiles.filter((f) => f.faceBoxes !== undefined).length;
-    const embeddings = photoFiles.filter(hasFaceMatchData).length;
-    const groupPhotos = photoFiles.filter(isGroupPhotoCandidate).length;
-    const groupPhotosStrong = photoFiles.filter((f) => isGroupPhotoCandidate(f) && groupPhotoReviewScore(f) >= 72).length;
-    const lowConfidenceFaces = faceFiles.filter((f) => faceSignalConfidence(f) < 0.55).length;
-    const nativeFaces = faceFiles.filter((f) => f.faceDetection === 'native').length;
-    const blur = photoFiles.filter((f) => f.blurRisk === 'high' || f.blurRisk === 'medium').length;
-    const highBlur = photoFiles.filter((f) => f.blurRisk === 'high').length;
-    const picked = photoFiles.filter((f) => f.pick === 'selected').length;
-    const rejected = photoFiles.filter((f) => f.pick === 'rejected').length;
-    const pending = photoFiles.filter((f) => !f.pick).length;
-    const strongCandidates = photoFiles.filter((f) =>
-      (f.reviewScore ?? 0) >= 70 &&
-      f.blurRisk !== 'high' &&
-      f.pick !== 'rejected' &&
-      !f.duplicate,
-    ).length;
-    const duplicates = photoFiles.filter((f) => f.duplicate).length;
+    let total = 0;
+    let analyzed = 0;
+    let faces = 0;
+    let faceBoxes = 0;
+    let faceScanned = 0;
+    let embeddings = 0;
+    let groupPhotos = 0;
+    let groupPhotosStrong = 0;
+    let lowConfidenceFaces = 0;
+    let nativeFaces = 0;
+    let blur = 0;
+    let highBlur = 0;
+    let picked = 0;
+    let rejected = 0;
+    let pending = 0;
+    let strongCandidates = 0;
+    let duplicates = 0;
+    const faceGroupIds = new Set<string>();
+
+    for (const file of files) {
+      if (file.type !== 'photo') continue;
+      total++;
+      const hasEmbeddings = hasFaceMatchData(file);
+      if (
+        typeof file.sharpnessScore === 'number' ||
+        typeof file.subjectSharpnessScore === 'number' ||
+        typeof file.reviewScore === 'number' ||
+        file.faceBoxes !== undefined ||
+        hasEmbeddings
+      ) {
+        analyzed++;
+      }
+      const fileFaceCount = file.faceBoxes?.length ?? file.faceCount ?? 0;
+      if (fileFaceCount > 0) {
+        faces++;
+        faceBoxes += fileFaceCount;
+        if (file.faceGroupId) faceGroupIds.add(file.faceGroupId);
+        if (faceSignalConfidence(file) < 0.55) lowConfidenceFaces++;
+        if (file.faceDetection === 'native') nativeFaces++;
+      }
+      if (file.faceBoxes !== undefined) faceScanned++;
+      if (hasEmbeddings) embeddings++;
+      if (isGroupPhotoCandidate(file)) {
+        groupPhotos++;
+        if (groupPhotoReviewScore(file) >= 72) groupPhotosStrong++;
+      }
+      if (file.blurRisk === 'high' || file.blurRisk === 'medium') blur++;
+      if (file.blurRisk === 'high') highBlur++;
+      if (file.pick === 'selected') picked++;
+      else if (file.pick === 'rejected') rejected++;
+      else pending++;
+      if (
+        (file.reviewScore ?? 0) >= 70 &&
+        file.blurRisk !== 'high' &&
+        file.pick !== 'rejected' &&
+        !file.duplicate
+      ) {
+        strongCandidates++;
+      }
+      if (file.duplicate) duplicates++;
+    }
+    const faceGroups = displayFaceIdentityGroups.length || faceGroupIds.size;
     return {
-      total: photoFiles.length,
+      total,
       analyzed,
       faces,
       faceBoxes,
