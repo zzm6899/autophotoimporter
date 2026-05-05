@@ -4,7 +4,7 @@ import { execFile, spawn } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 import path from 'node:path';
 import { DEFAULT_VIEW_OVERLAY_PREFERENCES, IPC, PHOTO_EXTENSIONS } from '../shared/types';
-import type { ImportConfig, ImportResult, AppSettings, MediaFile, FtpConfig, FtpSyncStatus, Volume, UpdateState, ImportLedger, ImportHealthSummary, MacFirstRunDoctor, AppDiagnosticsSnapshot, UpdateRepairResult, AppSession, WatchFolder, CatalogBrowserQuery, CatalogFaceSearchQuery } from '../shared/types';
+import type { ImportConfig, ImportResult, ImportBenchmarkQuery, ImportBenchmarkResult, AppSettings, MediaFile, FtpConfig, FtpSyncStatus, Volume, UpdateState, ImportLedger, ImportHealthSummary, MacFirstRunDoctor, AppDiagnosticsSnapshot, UpdateRepairResult, AppSession, WatchFolder, CatalogBrowserQuery, CatalogFaceSearchQuery } from '../shared/types';
 import { listVolumes, startWatching, stopWatching } from './services/volume-watcher';
 import { scanFiles, cancelScan, pauseScan, resumeScan } from './services/file-scanner';
 import { importFiles, cancelImport, planImportFiles } from './services/import-engine';
@@ -82,6 +82,19 @@ function isImportConfig(value: unknown): value is ImportConfig {
     && (value.conflictFolderName == null || typeof value.conflictFolderName === 'string')
     && (value.saveFormat === 'original' || value.saveFormat === 'jpeg' || value.saveFormat === 'tiff' || value.saveFormat === 'heic')
     && isNumber(value.jpegQuality);
+}
+
+function isImportBenchmarkQuery(value: unknown): value is ImportBenchmarkQuery {
+  if (!isRecord(value)) return false;
+  if (!isSafePath(value.destRoot)) return false;
+  const normalized = path.normalize(value.destRoot);
+  return path.isAbsolute(normalized)
+    && isNumber(value.totalBytes)
+    && value.totalBytes >= 0
+    && value.totalBytes <= 20 * 1024 * 1024 * 1024
+    && isNumber(value.fileCount)
+    && value.fileCount >= 0
+    && value.fileCount <= 1_000_000;
 }
 
 function isSafeHttpUrl(value: unknown): value is string {
@@ -509,6 +522,78 @@ async function runSmokeBenchmark(): Promise<{ ok: boolean; outPath: string; file
     mark('run', 'failed', { error: message, wallMs: roundMs(performance.now() - start) });
     await writeFile(outPath, records.map((record) => JSON.stringify(record)).join('\n') + '\n', { encoding: 'utf8', flag: 'a' });
     return { ok: false, outPath, files: 0, bytes: 0, records: records.length, error: message };
+  }
+}
+
+async function runImportDiskBenchmark(query: ImportBenchmarkQuery): Promise<ImportBenchmarkResult> {
+  const destRoot = path.resolve(path.normalize(query.destRoot));
+  const minimumSampleBytes = 4 * 1024 * 1024;
+  const maximumSampleBytes = 64 * 1024 * 1024;
+  const sampleBytes = Math.round(Math.max(
+    minimumSampleBytes,
+    Math.min(maximumSampleBytes, Math.max(query.totalBytes * 0.02, 16 * 1024 * 1024)),
+  ));
+  const tempDir = path.join(app.getPath('temp'), 'keptra-import-benchmark');
+  const sourcePath = path.join(tempDir, `sample-${process.pid}-${Date.now()}.bin`);
+  const destPath = path.join(destRoot, `.keptra-benchmark-${process.pid}-${Date.now()}.bin`);
+  const chunk = Buffer.alloc(1024 * 1024, 0xa5);
+  if (!destPath.startsWith(destRoot.endsWith(path.sep) ? destRoot : `${destRoot}${path.sep}`)) {
+    return {
+      ok: false,
+      destRoot,
+      sampleBytes,
+      wallMs: 0,
+      measuredMbps: 0,
+      rawCopyEtaSeconds: 0,
+      error: 'Benchmark destination resolved outside the selected folder.',
+    };
+  }
+
+  try {
+    await mkdir(tempDir, { recursive: true });
+    await mkdir(destRoot, { recursive: true });
+    const handle = await open(sourcePath, 'w');
+    try {
+      let remaining = sampleBytes;
+      while (remaining > 0) {
+        const writeSize = Math.min(chunk.length, remaining);
+        await handle.write(chunk, 0, writeSize);
+        remaining -= writeSize;
+      }
+    } finally {
+      await handle.close();
+    }
+
+    const start = performance.now();
+    await copyFile(sourcePath, destPath);
+    const wallMs = Math.max(0.01, roundMs(performance.now() - start));
+    const info = await stat(destPath);
+    const measuredMbps = roundMs((info.size / (1024 * 1024)) / (wallMs / 1000));
+    const rawCopyEtaSeconds = measuredMbps > 0
+      ? roundMs(query.totalBytes / (measuredMbps * 1024 * 1024))
+      : 0;
+
+    return {
+      ok: true,
+      destRoot,
+      sampleBytes: info.size,
+      wallMs,
+      measuredMbps,
+      rawCopyEtaSeconds,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      destRoot,
+      sampleBytes,
+      wallMs: 0,
+      measuredMbps: 0,
+      rawCopyEtaSeconds: 0,
+      error: error instanceof Error ? error.message : 'Import benchmark failed.',
+    };
+  } finally {
+    await rm(destPath, { force: true }).catch(() => undefined);
+    await rm(sourcePath, { force: true }).catch(() => undefined);
   }
 }
 
@@ -1954,6 +2039,10 @@ export function registerIpcHandlers(): void {
       ],
     };
   }, ([config]) => isImportConfig(config) ? null : ipcError('VALIDATION_ERROR', 'Invalid import config payload.'));
+
+  handleIpc(IPC.IMPORT_BENCHMARK, async (_event, query: ImportBenchmarkQuery) => {
+    return runImportDiskBenchmark(query);
+  }, ([query]) => isImportBenchmarkQuery(query) ? null : ipcError('VALIDATION_ERROR', 'Invalid import benchmark payload.'));
 
   handleIpc(IPC.IMPORT_LEDGER_LATEST, async () => {
     return readLatestImportLedger();

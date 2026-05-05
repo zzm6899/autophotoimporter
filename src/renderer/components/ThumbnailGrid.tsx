@@ -18,7 +18,7 @@ import { REVIEW_COMMAND_EVENT } from './CommandPalette';
 import { ActionButton, ToolbarGroup } from './ui';
 import { getCachedPreview, getPreviewCacheStats, setBackgroundPreviewPaused, warmPreviews } from '../utils/previewCache';
 import { clampStops, getEffectiveExposureStops, getNormalizedExposureStops, normalizeExposureStops } from '../../shared/exposure';
-import { buildFaceIdentityGroups, FACE_GROUP_EMBEDDING_THRESHOLD, faceSignalConfidence, type FaceIdentityGroup } from '../../shared/review';
+import { buildFaceIdentityGroups, cosineSimilarity, deserializeEmbedding, FACE_GROUP_EMBEDDING_THRESHOLD, faceSignalConfidence, type FaceIdentityGroup } from '../../shared/review';
 import { needsSecondPass } from '../../shared/review-lane';
 
 // ── Laplacian sharpness-based subject detector ────────────────────────────
@@ -88,6 +88,18 @@ type FaceCatalogSearchState = {
   message?: string;
 };
 
+type FaceCoverOverride = { path: string; embeddingIndex: number };
+
+type FaceSampleQuality = {
+  score: number;
+  label: string;
+  tone: string;
+  sizeLabel: string;
+  sharpnessLabel: string;
+  matchLabel: string;
+  title: string;
+};
+
 function stablePathId(value: string): string {
   let hash = 0;
   for (let i = 0; i < value.length; i++) {
@@ -124,10 +136,126 @@ function sampleFaceBox(file: MediaFile, group: FaceIdentityGroup): MediaFaceBox 
     largestFaceBox(file.faceBoxes);
 }
 
+function faceBoxArea(box?: MediaFaceBox): number {
+  return box ? Math.max(0, box.width) * Math.max(0, box.height) : 0;
+}
+
+function faceSharpnessSignal(file: MediaFile): number {
+  if (file.blurRisk === 'high') return 0.12;
+  if (file.blurRisk === 'medium') return 0.42;
+  if (file.blurRisk === 'low') return 0.78;
+  const score = file.subjectSharpnessScore ?? file.sharpnessScore;
+  if (typeof score !== 'number' || !Number.isFinite(score)) return 0.5;
+  return Math.max(0.15, Math.min(1, score / 900));
+}
+
+function faceSampleQuality(file: MediaFile, group: FaceIdentityGroup, box?: MediaFaceBox): FaceSampleQuality {
+  const area = faceBoxArea(box);
+  const cropSignal = Math.min(1, area / 0.035);
+  const confidence = Math.max(faceSignalConfidence(file), group.confidence, box?.score ?? 0);
+  const sharpness = faceSharpnessSignal(file);
+  const score = Math.round((confidence * 0.42 + cropSignal * 0.34 + sharpness * 0.24) * 100);
+  const sizeLabel = area >= 0.028 ? 'large face' : area >= 0.012 ? 'usable face' : area > 0 ? 'tiny face' : 'no box';
+  const sharpnessLabel = sharpness >= 0.68 ? 'sharp' : sharpness >= 0.38 ? 'check sharpness' : 'soft';
+  const matchLabel = confidence >= 0.72 ? 'strong match' : confidence >= 0.52 ? 'check match' : 'weak match';
+  const label = score >= 76 ? 'good cover' : score >= 52 ? 'usable cover' : 'weak cover';
+  const tone = score >= 76 ? 'text-emerald-300' : score >= 52 ? 'text-yellow-300' : 'text-orange-300';
+  return {
+    score,
+    label,
+    tone,
+    sizeLabel,
+    sharpnessLabel,
+    matchLabel,
+    title: `${label}: ${matchLabel}, ${sizeLabel}, ${sharpnessLabel}.`,
+  };
+}
+
+function serializedFaceEmbeddings(file: MediaFile): string[] {
+  if (file.faceEmbeddings?.length) return file.faceEmbeddings;
+  return file.faceEmbedding ? [file.faceEmbedding] : [];
+}
+
+function faceEmbeddingAt(file: MediaFile | undefined, index = 0): Float32Array | null {
+  if (!file) return null;
+  const serialized = serializedFaceEmbeddings(file)[index] ?? serializedFaceEmbeddings(file)[0];
+  return serialized ? deserializeEmbedding(serialized) : null;
+}
+
+function maxFaceSimilarityToSample(file: MediaFile | undefined, sampleEmbedding: Float32Array | null): number {
+  if (!file || !sampleEmbedding) return 0;
+  let best = 0;
+  for (const serialized of serializedFaceEmbeddings(file)) {
+    const embedding = deserializeEmbedding(serialized);
+    if (embedding) best = Math.max(best, cosineSimilarity(sampleEmbedding, embedding));
+  }
+  return best;
+}
+
+const faceCropPreviewCache = new Map<string, string>();
+
+function rememberFaceCrop(key: string, value: string): void {
+  if (faceCropPreviewCache.has(key)) faceCropPreviewCache.delete(key);
+  faceCropPreviewCache.set(key, value);
+  while (faceCropPreviewCache.size > 420) {
+    const oldest = faceCropPreviewCache.keys().next().value as string | undefined;
+    if (!oldest) break;
+    faceCropPreviewCache.delete(oldest);
+  }
+}
+
+function faceCropKey(filePath: string, box: MediaFaceBox | undefined, source: string, size: number): string {
+  const boxKey = box
+    ? `${box.x.toFixed(4)}:${box.y.toFixed(4)}:${box.width.toFixed(4)}:${box.height.toFixed(4)}`
+    : 'full';
+  return `${filePath}|${boxKey}|${source.length}|${size}`;
+}
+
+async function buildFaceCropImage(source: string, box: MediaFaceBox | undefined, size = 360): Promise<string> {
+  const img = new Image();
+  img.decoding = 'async';
+  const loaded = new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error('face crop image load failed'));
+  });
+  img.src = source;
+  await loaded;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d', { alpha: false });
+  if (!ctx) return source;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  if (!box) {
+    ctx.drawImage(img, 0, 0, size, size);
+    return canvas.toDataURL('image/jpeg', 0.88);
+  }
+  const cropW = Math.min(1, Math.max(0.12, box.width * 2.35));
+  const cropH = Math.min(1, Math.max(0.12, box.height * 2.7));
+  const centerX = clampUnit(box.x + box.width / 2);
+  const centerY = clampUnit(box.y + box.height / 2);
+  const cropX = Math.max(0, Math.min(1 - cropW, centerX - cropW / 2));
+  const cropY = Math.max(0, Math.min(1 - cropH, centerY - cropH / 2));
+  ctx.drawImage(
+    img,
+    cropX * img.naturalWidth,
+    cropY * img.naturalHeight,
+    cropW * img.naturalWidth,
+    cropH * img.naturalHeight,
+    0,
+    0,
+    size,
+    size,
+  );
+  return canvas.toDataURL('image/jpeg', 0.9);
+}
+
 function FaceCrop({ file, box }: { file: MediaFile; box?: MediaFaceBox }) {
   const cropRef = useRef<HTMLDivElement>(null);
   const [shouldLoadDetail, setShouldLoadDetail] = useState(false);
   const [detailPreview, setDetailPreview] = useState<string | undefined>();
+  const [cropPreview, setCropPreview] = useState<string | undefined>();
   const boxKey = box ? `${box.x}:${box.y}:${box.width}:${box.height}` : 'none';
 
   useEffect(() => {
@@ -150,7 +278,7 @@ function FaceCrop({ file, box }: { file: MediaFile; box?: MediaFaceBox }) {
     let cancelled = false;
     setDetailPreview(undefined);
     if (!box || file.type !== 'photo' || !shouldLoadDetail) return () => { cancelled = true; };
-    void getCachedPreview(file.path, 'detail', 'normal')
+    void getCachedPreview(file.path, 'detail', 'high')
       .then((preview) => {
         if (!cancelled) setDetailPreview(preview);
       })
@@ -159,6 +287,36 @@ function FaceCrop({ file, box }: { file: MediaFile; box?: MediaFaceBox }) {
       });
     return () => { cancelled = true; };
   }, [box, boxKey, file.path, file.type, shouldLoadDetail]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setCropPreview(undefined);
+    const source = detailPreview || file.thumbnail;
+    if (!source || !shouldLoadDetail) return () => { cancelled = true; };
+    const key = faceCropKey(file.path, box, source, 360);
+    const cached = faceCropPreviewCache.get(key);
+    if (cached) {
+      setCropPreview(cached);
+      return () => { cancelled = true; };
+    }
+    void buildFaceCropImage(source, box, 360)
+      .then((preview) => {
+        rememberFaceCrop(key, preview);
+        if (!cancelled) setCropPreview(preview);
+      })
+      .catch(() => {
+        if (!cancelled) setCropPreview(undefined);
+      });
+    return () => { cancelled = true; };
+  }, [box, boxKey, detailPreview, file.path, file.thumbnail, shouldLoadDetail]);
+
+  if (cropPreview) {
+    return (
+      <div ref={cropRef} className="h-full w-full overflow-hidden bg-black">
+        <img src={cropPreview} alt="" className="h-full w-full object-cover" draggable={false} decoding="async" />
+      </div>
+    );
+  }
 
   const source = detailPreview || file.thumbnail || file.path;
   if (!source) {
@@ -210,6 +368,10 @@ function FaceIdentityGallery({
   selectedGroupIds,
   manualCorrectionCount,
   catalogSearch,
+  faceGroupThreshold,
+  thresholdOverrides,
+  coverOverrides,
+  tuningCount,
   onSensitivityChange,
   onOpenGroup,
   onToggleGroupSelection,
@@ -218,6 +380,9 @@ function FaceIdentityGallery({
   onNotSameFace,
   onResetManualCorrections,
   onFindInCatalog,
+  onGroupThresholdChange,
+  onChooseBestCover,
+  onResetFaceTuning,
   onBuildGroups,
 }: {
   groups: FaceIdentityGroup[];
@@ -226,6 +391,10 @@ function FaceIdentityGallery({
   selectedGroupIds: Set<string>;
   manualCorrectionCount: number;
   catalogSearch: FaceCatalogSearchState | null;
+  faceGroupThreshold: number;
+  thresholdOverrides: Record<string, number>;
+  coverOverrides: Record<string, FaceCoverOverride>;
+  tuningCount: number;
   onSensitivityChange: (sensitivity: FaceGroupSensitivity) => void;
   onOpenGroup: (group: FaceIdentityGroup) => void;
   onToggleGroupSelection: (group: FaceIdentityGroup) => void;
@@ -234,13 +403,21 @@ function FaceIdentityGallery({
   onNotSameFace: () => void;
   onResetManualCorrections: () => void;
   onFindInCatalog: (group: FaceIdentityGroup, label: string) => void;
+  onGroupThresholdChange: (group: FaceIdentityGroup, threshold: number) => void;
+  onChooseBestCover: (group: FaceIdentityGroup) => void;
+  onResetFaceTuning: () => void;
   onBuildGroups: () => void;
 }) {
   const [showSingletonFaces, setShowSingletonFaces] = useState(true);
   const allCards = groups
     .map((group) => {
-      const sample = filesByPath.get(group.samplePath) ?? group.paths.map((path) => filesByPath.get(path)).find((file): file is MediaFile => !!file);
-      return sample ? { group, sample } : null;
+      const override = coverOverrides[group.id];
+      const samplePath = override?.path && group.paths.includes(override.path) ? override.path : group.samplePath;
+      const sample = filesByPath.get(samplePath) ?? group.paths.map((path) => filesByPath.get(path)).find((file): file is MediaFile => !!file);
+      const sampleGroup = override?.path && sample
+        ? { ...group, samplePath: sample.path, sampleEmbeddingIndex: override.embeddingIndex }
+        : group;
+      return sample ? { group: sampleGroup, sample } : null;
     })
     .filter((item): item is { group: FaceIdentityGroup; sample: MediaFile } => !!item);
   const singletonCount = allCards.filter(({ group }) => group.size <= 1 && group.embeddingCount <= 1).length;
@@ -293,6 +470,16 @@ function FaceIdentityGallery({
               title="Clear manual face merge/split corrections for this session."
             >
               Reset manual
+            </button>
+          )}
+          {tuningCount > 0 && (
+            <button
+              type="button"
+              onClick={onResetFaceTuning}
+              className="rounded border border-border bg-surface-raised px-2 py-1 text-[10px] text-text-muted hover:border-violet-500/35 hover:text-violet-200"
+              title="Clear per-person strictness sliders and chosen face thumbnails for this session."
+            >
+              Reset tuning {tuningCount}
             </button>
           )}
         </div>
@@ -387,10 +574,17 @@ function FaceIdentityGallery({
           </button>
         </div>
       ) : (
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(116px,1fr))] gap-3">
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(154px,1fr))] gap-3">
           {cards.map(({ group, sample }, index) => {
             const label = `${'manual' in group ? 'Person' : 'Face'} ${index + 1}`;
             const selected = selectedGroupIds.has(group.id);
+            const box = sampleFaceBox(sample, group);
+            const quality = faceSampleQuality(sample, group, box);
+            const groupThreshold = thresholdOverrides[group.id] ?? faceGroupThreshold;
+            const faceAreaPct = Math.round(faceBoxArea(box) * 10000) / 100;
+            const thresholdPercent = Math.round(groupThreshold * 100);
+            const manualGroup = 'manual' in group;
+            const hasCoverOverride = !!coverOverrides[group.id];
             return (
               <div
                 key={group.id}
@@ -406,7 +600,7 @@ function FaceIdentityGallery({
                   className="block aspect-square w-full focus:outline-none focus:ring-2 focus:ring-violet-400/50"
                   title={`Show ${group.size} photo${group.size === 1 ? '' : 's'} containing this similar face`}
                 >
-                  <FaceCrop file={sample} box={sampleFaceBox(sample, group)} />
+                  <FaceCrop file={sample} box={box} />
                 </button>
                 <div className="space-y-1 p-2">
                   <div className="flex items-center justify-between gap-1">
@@ -416,9 +610,38 @@ function FaceIdentityGallery({
                   <div className="truncate text-[10px] text-text-muted" title={sample.name}>
                     {group.size} photo{group.size === 1 ? '' : 's'} · {group.embeddingCount} match{group.embeddingCount === 1 ? '' : 'es'}
                   </div>
-                  <div className={`text-[9px] ${group.confidence >= 0.7 ? 'text-emerald-300' : group.confidence >= 0.52 ? 'text-yellow-300' : 'text-orange-300'}`}>
-                    {'manual' in group ? 'manual group' : group.confidence >= 0.7 ? 'strong match' : group.confidence >= 0.52 ? 'check match' : 'weak crop'}
+                  <div className={`text-[9px] ${quality.tone}`} title={quality.title}>
+                    {quality.label} · {quality.score}/100
                   </div>
+                  <div className="flex flex-wrap gap-1">
+                    {[quality.matchLabel, quality.sizeLabel, quality.sharpnessLabel].map((badge) => (
+                      <span key={badge} className="rounded bg-surface-raised px-1 py-0.5 text-[9px] text-text-muted" title={quality.title}>
+                        {badge}
+                      </span>
+                    ))}
+                  </div>
+                  {!manualGroup ? (
+                    <div className="space-y-1 rounded border border-border/80 bg-surface/45 px-1.5 py-1">
+                      <div className="flex items-center justify-between gap-2 text-[9px] text-text-muted">
+                        <span title="Minimum similarity used for this person's card. Lower can pull in more faces; higher splits uncertain faces out.">match {thresholdPercent}%</span>
+                        <span title={box ? `Face box covers ${faceAreaPct}% of the image.` : 'No face box was available.'}>{box ? `${faceAreaPct}% face` : 'no box'}</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0.42}
+                        max={0.72}
+                        step={0.01}
+                        value={groupThreshold}
+                        onChange={(event) => onGroupThresholdChange(group, Number(event.target.value))}
+                        className="w-full h-1 bg-surface-raised rounded appearance-none cursor-pointer accent-violet-400"
+                        title="Per-person grouping strictness. Move right to split questionable matches; left to pull in more possible matches."
+                      />
+                    </div>
+                  ) : (
+                    <div className="rounded border border-border/80 bg-surface/45 px-1.5 py-1 text-[9px] text-text-muted">
+                      Manual group · {box ? `${faceAreaPct}% face` : 'no box'}
+                    </div>
+                  )}
                   <div className="grid grid-cols-2 gap-1 pt-1">
                     <button
                       type="button"
@@ -441,6 +664,16 @@ function FaceIdentityGallery({
                       Find older
                     </button>
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => onChooseBestCover(group)}
+                    className={`w-full rounded px-1.5 py-0.5 text-[10px] hover:bg-emerald-500/15 hover:text-emerald-200 ${
+                      hasCoverOverride ? 'bg-emerald-500/10 text-emerald-300' : 'bg-surface-raised text-text-muted'
+                    }`}
+                    title="Pick the sharpest/largest face crop in this group as the thumbnail cover."
+                  >
+                    {hasCoverOverride ? 'Best thumbnail set' : 'Choose best thumbnail'}
+                  </button>
                 </div>
               </div>
             );
@@ -1024,6 +1257,8 @@ export function ThumbnailGrid() {
   const [manualFaceGroups, setManualFaceGroups] = useState<ManualFaceGroup[]>([]);
   const [manualFaceSplitPaths, setManualFaceSplitPaths] = useState<Set<string>>(new Set());
   const [catalogFaceSearch, setCatalogFaceSearch] = useState<FaceCatalogSearchState | null>(null);
+  const [faceCoverOverrides, setFaceCoverOverrides] = useState<Record<string, FaceCoverOverride>>({});
+  const [faceThresholdOverrides, setFaceThresholdOverrides] = useState<Record<string, number>>({});
   const [reviewSprintMode, setReviewSprintMode] = useState(false);
   const [flatGridWidth, setFlatGridWidth] = useState(0);
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -1081,8 +1316,38 @@ export function ThumbnailGrid() {
     () => shouldBuildFaceIdentityGroups ? buildFaceIdentityGroups(files, faceGroupEmbeddingThreshold, includeFaceIdentitySingletons) : [],
     [faceGroupEmbeddingThreshold, files, includeFaceIdentitySingletons, shouldBuildFaceIdentityGroups],
   );
+  const filesByPath = useMemo(() => new Map(files.map((file) => [file.path, file])), [files]);
   const displayFaceIdentityGroups = useMemo(() => {
     if (faceIdentityGroups.length === 0 && manualFaceGroups.length === 0) return [];
+    const order = new Map(files.map((file, index) => [file.path, index]));
+    const matchCandidateFiles = files.filter((file) => file.type === 'photo' && hasFaceMatchData(file));
+    const thresholdAdjustedGroups = faceIdentityGroups.map((group) => {
+      const override = faceThresholdOverrides[group.id];
+      if (typeof override !== 'number' || !Number.isFinite(override)) return group;
+      const sampleEmbedding = faceEmbeddingAt(filesByPath.get(group.samplePath), group.sampleEmbeddingIndex);
+      if (!sampleEmbedding) return group;
+      const candidateFiles = override < faceGroupEmbeddingThreshold
+        ? matchCandidateFiles
+        : group.paths.map((path) => filesByPath.get(path)).filter((file): file is MediaFile => !!file);
+      const paths = candidateFiles
+        .filter((file) => file.path === group.samplePath || maxFaceSimilarityToSample(file, sampleEmbedding) >= override)
+        .map((file) => file.path);
+      const uniquePaths = [...new Set(paths)].sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
+      if (uniquePaths.length === 0) return group;
+      const samplePath = uniquePaths.includes(group.samplePath) ? group.samplePath : uniquePaths[0];
+      const embeddingCount = uniquePaths.reduce((sum, path) => {
+        const file = filesByPath.get(path);
+        return sum + (file?.faceEmbeddings?.length ?? (file?.faceEmbedding ? 1 : 0));
+      }, 0);
+      return {
+        ...group,
+        paths: uniquePaths,
+        size: uniquePaths.length,
+        embeddingCount: Math.max(1, embeddingCount),
+        samplePath,
+        sampleEmbeddingIndex: samplePath === group.samplePath ? group.sampleEmbeddingIndex : 0,
+      };
+    });
     const splitPaths = manualFaceSplitPaths;
     const retainedManual = manualFaceGroups.filter((group) => !group.paths.some((path) => splitPaths.has(path)));
     const manualPaths = new Set<string>();
@@ -1091,7 +1356,7 @@ export function ThumbnailGrid() {
     }
     const next: FaceIdentityGroup[] = [...retainedManual];
     let splitIndex = 1;
-    for (const group of faceIdentityGroups) {
+    for (const group of thresholdAdjustedGroups) {
       const remainingPaths = group.paths.filter((path) => !manualPaths.has(path));
       if (remainingPaths.length === 0) continue;
       const shouldSplit = remainingPaths.some((path) => splitPaths.has(path));
@@ -1128,7 +1393,7 @@ export function ThumbnailGrid() {
       b.confidence - a.confidence ||
       a.samplePath.localeCompare(b.samplePath),
     );
-  }, [faceIdentityGroups, manualFaceGroups, manualFaceSplitPaths]);
+  }, [faceGroupEmbeddingThreshold, faceIdentityGroups, faceThresholdOverrides, files, filesByPath, manualFaceGroups, manualFaceSplitPaths]);
   const faceIdentityPathMap = useMemo(() => {
     const map = new Map<string, Set<string>>();
     for (const group of displayFaceIdentityGroups) {
@@ -1301,7 +1566,6 @@ export function ThumbnailGrid() {
     ? metadataFilters.faceGroups.find((group) => group.id === activeFaceGroupId) ?? null
     : null;
 
-  const filesByPath = useMemo(() => new Map(files.map((file) => [file.path, file])), [files]);
   const filePathSet = useMemo(() => new Set(files.map((file) => file.path)), [files]);
   const selectedFaceGroups = useMemo(
     () => displayFaceIdentityGroups.filter((group) => selectedFaceGroupIds.has(group.id)),
@@ -1412,6 +1676,42 @@ export function ThumbnailGrid() {
       });
     });
   }, [faceGroupEmbeddingThreshold, sampleEmbeddingForGroup]);
+  const chooseBestFaceCover = useCallback((group: FaceIdentityGroup) => {
+    let best: { path: string; embeddingIndex: number; score: number } | null = null;
+    for (const path of group.paths) {
+      const file = filesByPath.get(path);
+      if (!file) continue;
+      const embeddings = serializedFaceEmbeddings(file);
+      const count = Math.max(1, embeddings.length, file.faceEmbeddingBoxes?.length ?? 0, file.faceBoxes?.length ?? 0);
+      for (let embeddingIndex = 0; embeddingIndex < count; embeddingIndex++) {
+        const candidateGroup = { ...group, samplePath: path, sampleEmbeddingIndex: embeddingIndex };
+        const box = sampleFaceBox(file, candidateGroup);
+        const quality = faceSampleQuality(file, candidateGroup, box);
+        if (!best || quality.score > best.score) {
+          best = { path, embeddingIndex, score: quality.score };
+        }
+      }
+    }
+    if (!best) return;
+    setFaceCoverOverrides((previous) => ({
+      ...previous,
+      [group.id]: { path: best.path, embeddingIndex: best.embeddingIndex },
+    }));
+  }, [filesByPath]);
+  const changeFaceGroupThreshold = useCallback((group: FaceIdentityGroup, threshold: number) => {
+    const rounded = Math.max(0.42, Math.min(0.72, Math.round(threshold * 100) / 100));
+    setFaceThresholdOverrides((previous) => {
+      const next = { ...previous };
+      if (Math.abs(rounded - faceGroupEmbeddingThreshold) < 0.005) delete next[group.id];
+      else next[group.id] = rounded;
+      return next;
+    });
+  }, [faceGroupEmbeddingThreshold]);
+  const resetFaceTuning = useCallback(() => {
+    setFaceCoverOverrides({});
+    setFaceThresholdOverrides({});
+  }, []);
+  const faceTuningCount = Object.keys(faceCoverOverrides).length + Object.keys(faceThresholdOverrides).length;
 
   const selectedIndices = useMemo(() => {
     if (selectedPaths.length === 0) return new Set<number>();
@@ -1524,6 +1824,8 @@ export function ThumbnailGrid() {
     setManualFaceGroups([]);
     setManualFaceSplitPaths(new Set());
     setCatalogFaceSearch(null);
+    setFaceCoverOverrides({});
+    setFaceThresholdOverrides({});
   }, [selectedSource]);
   useEffect(() => {
     let cancelled = false;
@@ -4546,6 +4848,10 @@ export function ThumbnailGrid() {
                   selectedGroupIds={selectedFaceGroupIds}
                   manualCorrectionCount={manualFaceCorrectionCount}
                   catalogSearch={catalogFaceSearch}
+                  faceGroupThreshold={faceGroupEmbeddingThreshold}
+                  thresholdOverrides={faceThresholdOverrides}
+                  coverOverrides={faceCoverOverrides}
+                  tuningCount={faceTuningCount}
                   onSensitivityChange={setFaceGroupSensitivity}
                   onOpenGroup={(group) => handleFaceGroupFilter(group.id, group.samplePath)}
                   onToggleGroupSelection={toggleFaceGroupSelection}
@@ -4554,6 +4860,9 @@ export function ThumbnailGrid() {
                   onNotSameFace={splitSelectedFaceGroups}
                   onResetManualCorrections={resetManualFaceCorrections}
                   onFindInCatalog={findFaceInCatalog}
+                  onGroupThresholdChange={changeFaceGroupThreshold}
+                  onChooseBestCover={chooseBestFaceCover}
+                  onResetFaceTuning={resetFaceTuning}
                   onBuildGroups={() => dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10, embeddingThreshold: faceGroupEmbeddingThreshold })}
                 />
               ) : folderGroups ? (

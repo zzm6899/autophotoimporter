@@ -479,6 +479,22 @@ export interface ImportPreflight {
   items: ImportPlanItem[];
 }
 
+export interface ImportBenchmarkQuery {
+  destRoot: string;
+  totalBytes: number;
+  fileCount: number;
+}
+
+export interface ImportBenchmarkResult {
+  ok: boolean;
+  destRoot: string;
+  sampleBytes: number;
+  wallMs: number;
+  measuredMbps: number;
+  rawCopyEtaSeconds: number;
+  error?: string;
+}
+
 export type ImportLedgerStatus = 'planned' | 'imported' | 'skipped' | 'failed' | 'verified' | 'pending';
 
 export interface ImportLedgerItem {
@@ -1167,6 +1183,7 @@ export const IPC = {
   // Import
   IMPORT_START: 'import:start',
   IMPORT_PREFLIGHT: 'import:preflight',
+  IMPORT_BENCHMARK: 'import:benchmark',
   IMPORT_RETRY_FAILED: 'import:retry-failed',
   IMPORT_LEDGER_LATEST: 'import:ledger-latest',
   IMPORT_HEALTH_SUMMARY: 'import:health-summary',

@@ -2,8 +2,8 @@ import { useMemo, useEffect, useState } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import { useImport } from '../hooks/useImport';
 import { ImportResumeView } from './ImportResumeView';
-import type { EventMode, SaveFormat, JobPreset, ImportConfig, ImportPreflight, ImportConflictPolicy, SourceProfile } from '../../shared/types';
-import { EVENT_MODE_PRESETS, FOLDER_PRESETS, eventModeKeywords, resolvePattern } from '../../shared/types';
+import type { AppSettings, EventMode, SaveFormat, JobPreset, ImportConfig, ImportPreflight, ImportBenchmarkResult, ImportConflictPolicy, MetadataExportFlags, SourceProfile } from '../../shared/types';
+import { DEFAULT_METADATA_EXPORT, EVENT_MODE_PRESETS, FOLDER_PRESETS, eventModeKeywords, resolvePattern } from '../../shared/types';
 import { formatSize } from '../utils/formatters';
 import { formatWhiteBalanceKelvin, kelvinToWhiteBalanceTemperature, WHITE_BALANCE_MAX_KELVIN, WHITE_BALANCE_MIN_KELVIN, whiteBalanceTemperatureToKelvin } from '../../shared/exposure';
 import { getSecondPassReasons, needsSecondPass } from '../../shared/review-lane';
@@ -53,6 +53,105 @@ function sourceSpeedMbps(profile: SourceProfile): number {
   return 120;
 }
 
+const FAST_RAW_METADATA_EXPORT: MetadataExportFlags = {
+  keywords: false,
+  title: false,
+  caption: false,
+  creator: false,
+  copyright: false,
+  rating: false,
+  pickLabel: false,
+  stripGps: false,
+};
+
+type SpeedProfileId = 'fast-ingest' | 'balanced-review' | 'deep-ai';
+
+const SPEED_PROFILES: Array<{
+  id: SpeedProfileId;
+  label: string;
+  description: string;
+  settings: Partial<AppSettings>;
+}> = [
+  {
+    id: 'fast-ingest',
+    label: 'Fast ingest',
+    description: 'Original copy, no checksums, no duplicate checks, no sidecars, no backup/FTP, low preview load, AI review off.',
+    settings: {
+      sourceProfile: 'usb',
+      saveFormat: 'original',
+      skipDuplicates: false,
+      verifyChecksums: false,
+      backupDestRoot: '',
+      ftpDestEnabled: false,
+      normalizeExposure: false,
+      autoStraighten: false,
+      watermarkEnabled: false,
+      metadataExport: FAST_RAW_METADATA_EXPORT,
+      fastKeeperMode: true,
+      autoSpeedMode: true,
+      perfTier: 'low',
+      cpuOptimization: true,
+      previewConcurrency: 1,
+      faceConcurrency: 1,
+      rawPreviewQuality: 55,
+      reviewFaceAnalysis: false,
+      reviewFaceMatching: false,
+      reviewPersonDetection: false,
+      reviewVisualDuplicates: false,
+    },
+  },
+  {
+    id: 'balanced-review',
+    label: 'Balanced review',
+    description: 'Keeps face/group review on with moderate preview load, duplicate checks on, and heavy import mirrors off.',
+    settings: {
+      sourceProfile: 'auto',
+      saveFormat: 'original',
+      skipDuplicates: true,
+      verifyChecksums: false,
+      backupDestRoot: '',
+      ftpDestEnabled: false,
+      metadataExport: DEFAULT_METADATA_EXPORT,
+      fastKeeperMode: false,
+      autoSpeedMode: true,
+      perfTier: 'balanced',
+      cpuOptimization: true,
+      previewConcurrency: 2,
+      faceConcurrency: 2,
+      rawPreviewQuality: 70,
+      reviewFaceAnalysis: true,
+      reviewFaceMatching: true,
+      reviewPersonDetection: true,
+      reviewVisualDuplicates: true,
+    },
+  },
+  {
+    id: 'deep-ai',
+    label: 'Deep AI scan',
+    description: 'Full face/person/duplicate analysis, sharper previews, duplicate checks and checksum verification on.',
+    settings: {
+      sourceProfile: 'ssd',
+      saveFormat: 'original',
+      skipDuplicates: true,
+      verifyChecksums: true,
+      backupDestRoot: '',
+      ftpDestEnabled: false,
+      metadataExport: DEFAULT_METADATA_EXPORT,
+      fastKeeperMode: false,
+      autoSpeedMode: false,
+      perfTier: 'high',
+      cpuOptimization: false,
+      previewConcurrency: 4,
+      faceConcurrency: 4,
+      rawPreviewQuality: 84,
+      reviewFaceAnalysis: true,
+      reviewFaceMatching: true,
+      reviewPersonDetection: true,
+      reviewVisualDuplicates: true,
+    },
+  },
+];
+
 export function DestinationPanel() {
   const {
     destination, skipDuplicates, saveFormat, jpegQuality, folderPreset, customPattern,
@@ -65,6 +164,8 @@ export function DestinationPanel() {
     verifyChecksums,
     sourceProfile, conflictPolicy, conflictFolderName,
     previewConcurrency, faceConcurrency, rawPreviewQuality,
+    reviewFaceAnalysis, reviewFaceMatching, reviewPersonDetection, reviewVisualDuplicates,
+    fastKeeperMode, autoSpeedMode,
     licenseStatus,
   } = useAppState();
   const dispatch = useAppDispatch();
@@ -78,6 +179,8 @@ export function DestinationPanel() {
   const [preflightOpen, setPreflightOpen] = useState(false);
   const [handoffBusy, setHandoffBusy] = useState(false);
   const [benchmarkOpen, setBenchmarkOpen] = useState(false);
+  const [benchmarkBusy, setBenchmarkBusy] = useState(false);
+  const [realBenchmark, setRealBenchmark] = useState<ImportBenchmarkResult | null>(null);
 
   useEffect(() => {
     void window.electronAPI.getSettings().then((s) => setJobPresets(s.jobPresets ?? []));
@@ -166,6 +269,40 @@ export function DestinationPanel() {
     window.electronAPI.setSettings({ sourceProfile: profile, ...profileSettings });
     if ('faceConcurrency' in profileSettings && typeof profileSettings.faceConcurrency === 'number') {
       void window.electronAPI.setFaceAnalysisConcurrency(profileSettings.faceConcurrency);
+    }
+  };
+
+  const applySpeedProfile = (profileId: SpeedProfileId) => {
+    const profile = SPEED_PROFILES.find((item) => item.id === profileId);
+    if (!profile) return;
+    const settings = profile.settings;
+
+    if (settings.perfTier) dispatch({ type: 'SET_PERF_TIER', tier: settings.perfTier });
+    if (settings.sourceProfile) dispatch({ type: 'SET_SOURCE_PROFILE', profile: settings.sourceProfile });
+    if (settings.saveFormat) dispatch({ type: 'SET_SAVE_FORMAT', format: settings.saveFormat });
+    if (typeof settings.skipDuplicates === 'boolean') dispatch({ type: 'SET_SKIP_DUPLICATES', value: settings.skipDuplicates });
+    if (typeof settings.verifyChecksums === 'boolean') dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'verifyChecksums', value: settings.verifyChecksums });
+    if (typeof settings.ftpDestEnabled === 'boolean') dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'ftpDestEnabled', value: settings.ftpDestEnabled });
+    if (typeof settings.backupDestRoot === 'string') dispatch({ type: 'SET_WORKFLOW_STRING', key: 'backupDestRoot', value: settings.backupDestRoot });
+    if (typeof settings.normalizeExposure === 'boolean') dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'normalizeExposure', value: settings.normalizeExposure });
+    if (typeof settings.autoStraighten === 'boolean') dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'autoStraighten', value: settings.autoStraighten });
+    if (typeof settings.watermarkEnabled === 'boolean') dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'watermarkEnabled', value: settings.watermarkEnabled });
+    if (settings.metadataExport) dispatch({ type: 'SET_METADATA_EXPORT', flags: settings.metadataExport });
+    if (typeof settings.fastKeeperMode === 'boolean') dispatch({ type: 'SET_FAST_KEEPER_MODE', enabled: settings.fastKeeperMode });
+    if (typeof settings.autoSpeedMode === 'boolean') dispatch({ type: 'SET_AUTO_SPEED_MODE', enabled: settings.autoSpeedMode });
+    if (typeof settings.cpuOptimization === 'boolean') dispatch({ type: 'SET_PERFORMANCE_OPTION', key: 'cpuOptimization', value: settings.cpuOptimization });
+    if (typeof settings.previewConcurrency === 'number') dispatch({ type: 'SET_PREVIEW_CONCURRENCY', concurrency: settings.previewConcurrency });
+    if (typeof settings.faceConcurrency === 'number') dispatch({ type: 'SET_FACE_CONCURRENCY', concurrency: settings.faceConcurrency });
+    if (typeof settings.rawPreviewQuality === 'number') dispatch({ type: 'SET_RAW_PREVIEW_QUALITY', quality: settings.rawPreviewQuality });
+    if (typeof settings.reviewFaceAnalysis === 'boolean') dispatch({ type: 'SET_REVIEW_PERFORMANCE_OPTION', key: 'reviewFaceAnalysis', value: settings.reviewFaceAnalysis });
+    if (typeof settings.reviewFaceMatching === 'boolean') dispatch({ type: 'SET_REVIEW_PERFORMANCE_OPTION', key: 'reviewFaceMatching', value: settings.reviewFaceMatching });
+    if (typeof settings.reviewPersonDetection === 'boolean') dispatch({ type: 'SET_REVIEW_PERFORMANCE_OPTION', key: 'reviewPersonDetection', value: settings.reviewPersonDetection });
+    if (typeof settings.reviewVisualDuplicates === 'boolean') dispatch({ type: 'SET_REVIEW_PERFORMANCE_OPTION', key: 'reviewVisualDuplicates', value: settings.reviewVisualDuplicates });
+
+    setRealBenchmark(null);
+    void window.electronAPI.setSettings(settings);
+    if (typeof settings.faceConcurrency === 'number') {
+      void window.electronAPI.setFaceAnalysisConcurrency?.(settings.faceConcurrency);
     }
   };
 
@@ -429,6 +566,57 @@ export function DestinationPanel() {
     totalSize,
     verifyChecksums,
   ]);
+
+  const activeSpeedProfileId: SpeedProfileId = fastKeeperMode || !reviewFaceAnalysis
+    ? 'fast-ingest'
+    : verifyChecksums && reviewFaceMatching && reviewPersonDetection && reviewVisualDuplicates && faceConcurrency >= 4
+      ? 'deep-ai'
+      : 'balanced-review';
+  const activeReviewSummary = [
+    reviewFaceAnalysis ? 'face AI on' : 'face AI off',
+    reviewFaceMatching ? 'matching on' : 'matching off',
+    reviewPersonDetection ? 'people on' : 'people off',
+    reviewVisualDuplicates ? 'dupes on' : 'dupes off',
+    fastKeeperMode ? 'fast keeper' : 'AI keeper',
+    autoSpeedMode ? 'auto speed' : 'fixed speed',
+  ].join(' · ');
+  const measuredBenchmarkRatio = realBenchmark?.ok && realBenchmark.rawCopyEtaSeconds > 0 && importBenchmark.keptraSeconds > 0
+    ? importBenchmark.keptraSeconds / realBenchmark.rawCopyEtaSeconds
+    : null;
+  const measuredBenchmarkDeltaSeconds = realBenchmark?.ok && measuredBenchmarkRatio !== null
+    ? Math.max(0, importBenchmark.keptraSeconds - realBenchmark.rawCopyEtaSeconds)
+    : 0;
+
+  const handleRunImportBenchmark = async () => {
+    if (!destination || importFiles.length === 0 || benchmarkBusy) {
+      setBenchmarkOpen(true);
+      return;
+    }
+    setBenchmarkOpen(true);
+    setBenchmarkBusy(true);
+    setRealBenchmark(null);
+    try {
+      const result = await window.electronAPI.runImportBenchmark({
+        destRoot: destination,
+        totalBytes: totalSize,
+        fileCount: importFiles.length,
+      });
+      setRealBenchmark(result);
+    } catch (error) {
+      setRealBenchmark({
+        ok: false,
+        destRoot: destination,
+        sampleBytes: 0,
+        wallMs: 0,
+        measuredMbps: 0,
+        rawCopyEtaSeconds: 0,
+        error: error instanceof Error ? error.message : 'Import benchmark failed.',
+      });
+    } finally {
+      setBenchmarkBusy(false);
+    }
+  };
+
   const refreshPreflight = async (dryRun = false) => {
     const config = buildImportConfig(dryRun);
     if (!config) return;
@@ -698,6 +886,40 @@ export function DestinationPanel() {
       {showAdvanced && (
         <div className="px-2.5 mb-2.5">
           <ImportResumeView />
+        </div>
+      )}
+
+      {showAdvanced && (
+        <div className="px-2.5 mb-2.5">
+          <div className="rounded border border-border bg-surface-alt px-2 py-2">
+            <div className="mb-1.5 flex items-center justify-between gap-2">
+              <h3 className="text-[10px] text-text-secondary uppercase tracking-wider">Speed profile</h3>
+              <span className="text-[9px] text-text-muted">{previewConcurrency} preview · {faceConcurrency} face</span>
+            </div>
+            <div className="grid grid-cols-3 gap-1">
+              {SPEED_PROFILES.map((profile) => {
+                const active = activeSpeedProfileId === profile.id;
+                return (
+                  <button
+                    key={profile.id}
+                    type="button"
+                    onClick={() => applySpeedProfile(profile.id)}
+                    className={`rounded px-1.5 py-1 text-[10px] transition-colors ${
+                      active
+                        ? 'bg-accent text-white'
+                        : 'bg-surface-raised text-text-secondary hover:bg-accent/10 hover:text-text'
+                    }`}
+                    title={profile.description}
+                  >
+                    {profile.label}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="mt-1.5 text-[10px] text-text-muted">
+              {activeReviewSummary}
+            </p>
+          </div>
         </div>
       )}
 
@@ -1197,11 +1419,39 @@ export function DestinationPanel() {
                 Last import measured about {Math.round(importBenchmark.actualSpeed)} MB/s on this machine.
               </div>
             )}
+            {benchmarkBusy && (
+              <div className="mt-1 text-[10px] text-blue-200">
+                Copying a small sample to the destination...
+              </div>
+            )}
+            {realBenchmark && (
+              <div className={`mt-1 text-[10px] ${realBenchmark.ok ? 'text-emerald-300' : 'text-red-400'}`}>
+                {realBenchmark.ok
+                  ? `Measured destination copy: ${Math.round(realBenchmark.measuredMbps)} MB/s using ${formatSize(realBenchmark.sampleBytes)} in ${formatDuration(realBenchmark.wallMs / 1000)}. Raw ETA ${formatDuration(realBenchmark.rawCopyEtaSeconds)}.`
+                  : `Measured copy failed: ${realBenchmark.error || 'Could not write benchmark sample.'}`}
+              </div>
+            )}
+            {measuredBenchmarkRatio !== null && (
+              <div className={`mt-1 text-[10px] ${measuredBenchmarkRatio <= 1.25 ? 'text-emerald-300' : measuredBenchmarkRatio <= 2 ? 'text-yellow-300' : 'text-orange-300'}`}>
+                Current settings are about {measuredBenchmarkRatio.toFixed(1)}x raw-copy time
+                {measuredBenchmarkDeltaSeconds > 0 ? ` (+${formatDuration(measuredBenchmarkDeltaSeconds)})` : ''}.
+              </div>
+            )}
             <div className="mt-1 text-[10px] text-text-muted">
               {importBenchmark.activeSlowdowns.length > 0
                 ? `Active slowdowns: ${importBenchmark.activeSlowdowns.map((item) => item.label).join(', ')}.`
                 : 'Fast raw ingest path: checksum, duplicate checks, sidecars, conversion, FTP, and backup are off.'}
             </div>
+            {importBenchmark.activeSlowdowns.length > 0 && (
+              <button
+                type="button"
+                onClick={() => applySpeedProfile('fast-ingest')}
+                className="mt-1 rounded border border-emerald-500/25 bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-300 hover:bg-emerald-500/20"
+                title="Switch to Original, disable checksum/duplicates/sidecars/backup/FTP/conversion, and lower review processing load."
+              >
+                Apply Fast ingest profile
+              </button>
+            )}
           </div>
         )}
         {preflightOpen && preflight && (
@@ -1271,13 +1521,13 @@ export function DestinationPanel() {
             Check Plan
           </button>
           <button
-            onClick={() => setBenchmarkOpen((value) => !value)}
-            disabled={importFiles.length === 0}
+            onClick={() => { void handleRunImportBenchmark(); }}
+            disabled={!destination || importFiles.length === 0 || benchmarkBusy}
             className="py-1 rounded text-[10px] bg-surface-raised hover:bg-blue-500/10 text-blue-300 disabled:text-text-muted disabled:cursor-not-allowed"
-            title="Compare a raw copy estimate with Keptra's current import settings."
-            aria-label="Show import speed benchmark"
+            title="Copy a small temporary sample into the destination to measure real raw disk speed, then compare it with current Keptra settings."
+            aria-label="Run import speed benchmark"
           >
-            Benchmark
+            {benchmarkBusy ? 'Measuring' : 'Benchmark'}
           </button>
           <button
             onClick={() => { void handleExportLightroomHandoff(); }}

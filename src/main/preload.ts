@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC } from '../shared/types';
-import type { ImportConfig, AppSettings, MediaFile, Volume, ImportProgress, ImportResult, UpdateInfo, UpdateReleaseSummary, UpdateState, FtpConfig, FtpSyncStatus, ImportError, LicenseValidation, ImportPreflight, ImportLedger, ImportHealthSummary, MacFirstRunDoctor, AppDiagnosticsSnapshot, UpdateRepairResult, AppSession, WatchFolder, CatalogStats, CatalogBrowserQuery, CatalogBrowserResult, CatalogFaceSearchQuery, CatalogFaceSearchResult, CatalogFaceMetadataWriteResult, CatalogMaintenanceResult, CatalogPruneResult, CatalogBackupResult, LightroomHandoffResult } from '../shared/types';
+import type { ImportConfig, AppSettings, MediaFile, Volume, ImportProgress, ImportResult, UpdateInfo, UpdateReleaseSummary, UpdateState, FtpConfig, FtpSyncStatus, ImportError, LicenseValidation, ImportPreflight, ImportBenchmarkQuery, ImportBenchmarkResult, ImportLedger, ImportHealthSummary, MacFirstRunDoctor, AppDiagnosticsSnapshot, UpdateRepairResult, AppSession, WatchFolder, CatalogStats, CatalogBrowserQuery, CatalogBrowserResult, CatalogFaceSearchQuery, CatalogFaceSearchResult, CatalogFaceMetadataWriteResult, CatalogMaintenanceResult, CatalogPruneResult, CatalogBackupResult, LightroomHandoffResult } from '../shared/types';
 import type { FaceBox } from './services/face-engine';
 import type { ModelDownloadProgress } from './services/model-downloader';
 
@@ -72,6 +72,8 @@ const api = {
     ipcRenderer.invoke(IPC.IMPORT_START, config),
   preflightImport: (config: ImportConfig): Promise<ImportPreflight> =>
     ipcRenderer.invoke(IPC.IMPORT_PREFLIGHT, config),
+  runImportBenchmark: (query: ImportBenchmarkQuery): Promise<ImportBenchmarkResult> =>
+    ipcRenderer.invoke(IPC.IMPORT_BENCHMARK, query),
   retryFailedImport: (config: ImportConfig): Promise<ImportResult> =>
     ipcRenderer.invoke(IPC.IMPORT_RETRY_FAILED, config),
   getLatestImportLedger: (): Promise<ImportLedger | null> =>
