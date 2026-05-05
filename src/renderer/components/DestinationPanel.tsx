@@ -65,6 +65,7 @@ const FAST_RAW_METADATA_EXPORT: MetadataExportFlags = {
 };
 
 type SpeedProfileId = 'fast-ingest' | 'balanced-review' | 'deep-ai';
+type OutputPanelMode = 'import' | 'speed' | 'rules';
 
 const SPEED_PROFILES: Array<{
   id: SpeedProfileId;
@@ -173,6 +174,7 @@ export function DestinationPanel() {
   const [freeBytes, setFreeBytes] = useState<number | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showTransforms, setShowTransforms] = useState(false);
+  const [outputMode, setOutputMode] = useState<OutputPanelMode>('import');
   const [jobPresets, setJobPresets] = useState<JobPreset[]>([]);
   const [selectedPresetName, setSelectedPresetName] = useState('');
   const [preflight, setPreflight] = useState<ImportPreflight | null>(null);
@@ -699,7 +701,10 @@ export function DestinationPanel() {
   return (
     <div className="flex flex-col h-full">
       <div className="px-2.5 py-2">
-        <h2 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider">Output</h2>
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider">Output Inspector</h2>
+          <span className="rounded border border-border bg-surface px-1.5 py-0.5 text-[9px] font-medium text-text-muted">V2</span>
+        </div>
         {destination && (
           <div className="text-[10px] text-text-muted truncate mt-0.5" title={destination}>
             {destination}
@@ -722,7 +727,37 @@ export function DestinationPanel() {
         </button>
       </div>
 
-      {showAdvanced && (
+      <div className="px-2.5 mb-2.5">
+        <div className="grid grid-cols-3 gap-1 rounded-md border border-border bg-surface p-1">
+          {([
+            ['import', 'Import'],
+            ['speed', 'Speed'],
+            ['rules', 'Rules'],
+          ] as const).map(([mode, label]) => (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => setOutputMode(mode)}
+              className={`rounded px-2 py-1 text-[10px] font-medium transition-colors ${
+                outputMode === mode
+                  ? 'bg-accent text-white'
+                  : 'text-text-muted hover:bg-surface-raised hover:text-text-secondary'
+              }`}
+              title={
+                mode === 'import'
+                  ? 'Destination, import set, format, and final import checks.'
+                  : mode === 'speed'
+                    ? 'Performance profiles, benchmark, and active speed slowdowns.'
+                    : 'Naming, conflict, backup, FTP, metadata, and advanced workflow rules.'
+              }
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {outputMode === 'rules' && (
       <div className="px-2.5 mb-2.5">
         <div className="flex items-center gap-1">
           <select
@@ -760,7 +795,7 @@ export function DestinationPanel() {
       </div>
       )}
 
-      {files.length > 0 && (
+      {outputMode === 'import' && files.length > 0 && (
         <div className="px-2.5 mb-2.5 grid grid-cols-2 gap-1 text-[10px] text-text-muted">
           <div className="bg-surface-raised rounded px-1.5 py-1">Picked <span className="text-yellow-400">{pickedCount}</span></div>
           <div className="bg-surface-raised rounded px-1.5 py-1">Rejected <span className="text-red-400">{rejectedCount}</span></div>
@@ -769,7 +804,7 @@ export function DestinationPanel() {
         </div>
       )}
 
-      {files.length > 0 && (
+      {outputMode === 'import' && files.length > 0 && (
         <div className="px-2.5 mb-2.5">
           <div className={`rounded border px-2 py-2 ${
             secondPassFiles.length > 0
@@ -832,6 +867,7 @@ export function DestinationPanel() {
         </div>
       )}
 
+      {outputMode === 'import' && (
       <div className="px-2.5 mb-2.5">
         <div className="rounded border border-border bg-surface-alt px-2 py-2">
           <div className="flex items-center justify-between gap-2 mb-1">
@@ -858,6 +894,7 @@ export function DestinationPanel() {
           </div>
         </div>
       </div>
+      )}
 
       {phase === 'importing' && (
         <div className="mx-2.5 mb-2.5 rounded border border-accent/30 bg-accent/10 px-2 py-1.5">
@@ -883,13 +920,13 @@ export function DestinationPanel() {
         </div>
       )}
 
-      {showAdvanced && (
+      {outputMode === 'rules' && (
         <div className="px-2.5 mb-2.5">
           <ImportResumeView />
         </div>
       )}
 
-      {showAdvanced && (
+      {outputMode === 'speed' && (
         <div className="px-2.5 mb-2.5">
           <div className="rounded border border-border bg-surface-alt px-2 py-2">
             <div className="mb-1.5 flex items-center justify-between gap-2">
@@ -919,11 +956,40 @@ export function DestinationPanel() {
             <p className="mt-1.5 text-[10px] text-text-muted">
               {activeReviewSummary}
             </p>
+            <div className="mt-2 rounded border border-border bg-surface px-2 py-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[10px] font-medium text-text-secondary">Import health</div>
+                <button
+                  type="button"
+                  onClick={() => { void handleRunImportBenchmark(); }}
+                  disabled={!destination || importFiles.length === 0 || benchmarkBusy}
+                  className="rounded bg-surface-raised px-2 py-0.5 text-[10px] text-blue-300 hover:bg-blue-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+                  title="Measure real copy speed to this destination."
+                >
+                  {benchmarkBusy ? 'Measuring' : 'Measure'}
+                </button>
+              </div>
+              <div className="mt-1 text-[10px] text-text-muted">
+                {importBenchmark.activeSlowdowns.length > 0
+                  ? `Slowdowns on: ${importBenchmark.activeSlowdowns.map((item) => item.label).join(', ')}.`
+                  : 'Fast path active: raw copy, no checksum, no sidecars, no conversion, no backup or FTP.'}
+              </div>
+              {importBenchmark.activeSlowdowns.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => applySpeedProfile('fast-ingest')}
+                  className="mt-1 rounded border border-emerald-500/25 bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-300 hover:bg-emerald-500/20"
+                >
+                  Make fastest
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}
 
       {/* Settings */}
+      {outputMode === 'import' && (
       <div className="px-2.5 mb-2.5">
         <label className="flex items-center gap-1.5 cursor-pointer">
           <input
@@ -937,9 +1003,10 @@ export function DestinationPanel() {
           Files matching name + size
         </p>
       </div>
+      )}
 
       {/* Protected folder split */}
-      {showAdvanced && (
+      {outputMode === 'rules' && (
       <div className="px-2.5 mb-2.5">
         <label className="flex items-center gap-1.5 cursor-pointer">
           <input
@@ -967,7 +1034,7 @@ export function DestinationPanel() {
       )}
 
       {/* Folder structure */}
-      {showAdvanced && (
+      {outputMode === 'rules' && (
       <div className="px-2.5 mb-2.5">
         <h3 className="text-[10px] text-text-secondary mb-1 uppercase tracking-wider">Folder Structure</h3>
         <select
@@ -998,6 +1065,7 @@ export function DestinationPanel() {
       )}
 
       {/* Save format */}
+      {outputMode === 'import' && (
       <div className="px-2.5 mb-2.5">
         <h3 className="text-[10px] text-text-secondary mb-1 uppercase tracking-wider">Save Format</h3>
         <div className="grid grid-cols-2 gap-1">
@@ -1047,8 +1115,10 @@ export function DestinationPanel() {
           </p>
         )}
       </div>
+      )}
 
       {/* Output edits */}
+      {outputMode === 'import' && (
       <div className="px-2.5 mb-2.5">
         <button
           type="button"
@@ -1123,9 +1193,11 @@ export function DestinationPanel() {
           </div>
         )}
       </div>
+      )}
 
       {/* Advanced workflow options — collapsed by default so the panel
           stays calm for casual users */}
+      {outputMode === 'rules' && (
       <div className="px-2.5 mb-2.5">
         <button
           onClick={() => setShowAdvanced((v) => !v)}
@@ -1286,9 +1358,10 @@ export function DestinationPanel() {
           </>
         )}
       </div>
+      )}
 
       {/* Folder structure preview */}
-      {showAdvanced && folders.length > 0 && destination && (
+      {outputMode === 'rules' && folders.length > 0 && destination && (
         <div className="px-2.5 mb-2.5 flex-1 min-h-0 overflow-y-auto">
           <h3 className="text-[10px] text-text-secondary mb-1 uppercase tracking-wider">Folder Preview</h3>
           <div className="space-y-1.5">
