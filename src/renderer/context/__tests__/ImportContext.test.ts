@@ -197,6 +197,14 @@ describe('ImportContext reducer', () => {
       expect(next.importResult).toBeNull();
     });
 
+    it('returns to grid view when import starts from detail view', () => {
+      const state = makeState({ phase: 'ready', viewMode: 'single', previousViewMode: 'split' });
+      const next = reducer(state, { type: 'IMPORT_START' });
+      expect(next.phase).toBe('importing');
+      expect(next.viewMode).toBe('grid');
+      expect(next.previousViewMode).toBeNull();
+    });
+
     it('importing → complete on IMPORT_COMPLETE', () => {
       const result: ImportResult = { imported: 5, skipped: 0, errors: [], totalBytes: 1000, durationMs: 500 };
       const state = makeState({ phase: 'importing' });

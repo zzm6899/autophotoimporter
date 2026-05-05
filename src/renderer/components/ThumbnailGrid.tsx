@@ -1838,6 +1838,14 @@ export function ThumbnailGrid() {
     }
   }, [dispatch, focusedIndex, focusedPath, sortedFiles]);
   useEffect(() => { multiClickSelectRef.current = multiClickSelect; }, [multiClickSelect]);
+  useEffect(() => {
+    if (phase !== 'importing') return;
+    if (viewMode !== 'grid') dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' });
+    if (!multiClickSelect) {
+      multiClickSelectRef.current = true;
+      setMultiClickSelect(true);
+    }
+  }, [dispatch, multiClickSelect, phase, viewMode]);
   useEffect(() => { reviewPausedRef.current = reviewPaused; }, [reviewPaused]);
   useEffect(() => { reviewWaitingRef.current = reviewWaitingForThumbnails; }, [reviewWaitingForThumbnails]);
   useEffect(() => { fastKeeperModeRef.current = fastKeeperMode; }, [fastKeeperMode]);

@@ -511,7 +511,14 @@ export function reducer(state: State, action: Action): State {
     case 'SET_CUSTOM_PATTERN':
       return { ...state, customPattern: action.pattern };
     case 'IMPORT_START':
-      return { ...state, phase: 'importing', importProgress: null, importResult: null };
+      return {
+        ...state,
+        phase: 'importing',
+        viewMode: 'grid',
+        previousViewMode: null,
+        importProgress: null,
+        importResult: null,
+      };
     case 'IMPORT_PROGRESS':
       return { ...state, importProgress: action.progress };
     case 'IMPORT_COMPLETE':
