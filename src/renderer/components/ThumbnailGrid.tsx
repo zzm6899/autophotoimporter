@@ -2101,45 +2101,36 @@ export function ThumbnailGrid() {
     const dates = new Set<string>();
     const exts = new Set<string>();
     const scenes = new Set<string>();
-    const faceGroups = new Map<string, { id: string; photos: number; faces: number; people: number }>();
     for (const f of files) {
       cameras.add(f.cameraModel || 'Unknown camera');
       if (f.type === 'photo') lenses.add(f.lensModel || 'Unknown lens');
       dates.add(f.dateTaken ? f.dateTaken.slice(0, 10) : 'Undated');
       exts.add(f.extension.toLowerCase());
       if (f.sceneBucket && !['scene', 'general'].includes(f.sceneBucket.trim().toLowerCase())) scenes.add(f.sceneBucket);
-      if (f.faceGroupId && (f.faceGroupSize ?? 0) > 1) {
-        const current = faceGroups.get(f.faceGroupId) ?? { id: f.faceGroupId, photos: 0, faces: 0, people: 0 };
-        current.photos += 1;
-        current.faces += f.faceBoxes?.length ?? f.faceCount ?? 0;
-        current.people += f.personBoxes?.length ?? f.personCount ?? 0;
-        faceGroups.set(f.faceGroupId, current);
-      }
     }
-    const filesByPath = new Map(files.map((file) => [file.path, file]));
-    const identityFaceGroups = displayFaceIdentityGroups.map((group) => {
-      const groupFiles = group.paths.map((path) => filesByPath.get(path)).filter((file): file is MediaFile => !!file);
-      return {
-        id: group.id,
-        photos: group.paths.length,
-        faces: groupFiles.reduce((sum, file) => sum + (file.faceBoxes?.length ?? file.faceCount ?? 0), 0),
-        people: groupFiles.reduce((sum, file) => sum + (file.personBoxes?.length ?? file.personCount ?? 0), 0),
-      };
-    });
-    const faceGroupValues = identityFaceGroups.length > 0 ? identityFaceGroups : [...faceGroups.values()];
     return {
       cameras: [...cameras].sort(),
       lenses: [...lenses].sort(),
       dates: [...dates].sort().reverse(),
       exts: [...exts].sort(),
       scenes: [...scenes].sort(),
-      faceGroups: faceGroupValues.sort((a, b) => b.photos - a.photos || a.id.localeCompare(b.id)),
     };
-  }, [files, displayFaceIdentityGroups]);
+  }, [files]);
   const activeFaceGroupId = filter.startsWith('face:') ? decodeURIComponent(filter.slice(5)) : null;
-  const activeFaceGroup = activeFaceGroupId
-    ? metadataFilters.faceGroups.find((group) => group.id === activeFaceGroupId) ?? null
-    : null;
+  const activeFaceGroup = useMemo(() => {
+    if (!activeFaceGroupId) return null;
+    const identityGroup = displayFaceIdentityGroups.find((group) => group.id === activeFaceGroupId);
+    const groupFiles = identityGroup
+      ? identityGroup.paths.map((path) => filesByPath.get(path)).filter((file): file is MediaFile => !!file)
+      : files.filter((file) => file.faceGroupId === activeFaceGroupId);
+    if (groupFiles.length === 0) return null;
+    return {
+      id: activeFaceGroupId,
+      photos: groupFiles.length,
+      faces: groupFiles.reduce((sum, file) => sum + (file.faceBoxes?.length ?? file.faceCount ?? 0), 0),
+      people: groupFiles.reduce((sum, file) => sum + (file.personBoxes?.length ?? file.personCount ?? 0), 0),
+    };
+  }, [activeFaceGroupId, displayFaceIdentityGroups, files, filesByPath]);
 
   const filePathSet = useMemo(() => new Set(files.map((file) => file.path)), [files]);
   const selectedFaceGroups = useMemo(
@@ -5224,7 +5215,7 @@ export function ThumbnailGrid() {
             )}
 
             <select
-              value={filter.startsWith('burst:') ? '' : filter}
+              value={filter.startsWith('burst:') || filter.startsWith('face:') ? '' : filter}
               onChange={(e) => {
                 if (!e.target.value) return;
                 const nextFilter = e.target.value as typeof filter;
@@ -5233,8 +5224,9 @@ export function ThumbnailGrid() {
                 dispatch({ type: 'SET_FILTER', filter: nextFilter });
               }}
               className="px-1 py-0.5 text-[10px] bg-surface border border-border rounded text-text-muted hover:text-text focus:outline-none focus:border-text cursor-pointer"
-              title={filter === 'all' ? 'Filter photos' : `Active filter: ${filter}`}
+              title={filter.startsWith('face:') ? 'Individual faces are selected from Face gallery.' : filter === 'all' ? 'Filter photos' : `Active filter: ${filter}`}
             >
+              <option value="" disabled>{filter.startsWith('face:') ? 'Face selected' : filter.startsWith('burst:') ? 'Burst selected' : 'Choose filter'}</option>
               <optgroup label="Review">
                 <option value="all">All photos</option>
                 <option value="unmarked">Unmarked</option>
@@ -5286,15 +5278,6 @@ export function ThumbnailGrid() {
               {metadataFilters.scenes.length > 0 && (
                 <optgroup label="Scene">
                   {metadataFilters.scenes.map((v) => <option key={v} value={`scene:${encodeURIComponent(v)}`}>{v}</option>)}
-                </optgroup>
-              )}
-              {metadataFilters.faceGroups.length > 0 && (
-                <optgroup label="Similar faces">
-                  {metadataFilters.faceGroups.map((group, index) => (
-                    <option key={group.id} value={`face:${encodeURIComponent(group.id)}`}>
-                      Face {index + 1}: {group.photos} photo{group.photos === 1 ? '' : 's'}, {group.faces} face{group.faces === 1 ? '' : 's'}{group.people > 0 ? `, ${group.people} people` : ''}
-                    </option>
-                  ))}
                 </optgroup>
               )}
               {metadataFilters.exts.length > 1 && (
