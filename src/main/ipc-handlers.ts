@@ -4,7 +4,7 @@ import { execFile, spawn } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 import path from 'node:path';
 import { DEFAULT_VIEW_OVERLAY_PREFERENCES, IPC, PHOTO_EXTENSIONS } from '../shared/types';
-import type { ImportConfig, ImportResult, AppSettings, MediaFile, FtpConfig, FtpSyncStatus, Volume, UpdateState, ImportLedger, ImportHealthSummary, MacFirstRunDoctor, AppDiagnosticsSnapshot, UpdateRepairResult, AppSession, WatchFolder, CatalogBrowserQuery } from '../shared/types';
+import type { ImportConfig, ImportResult, AppSettings, MediaFile, FtpConfig, FtpSyncStatus, Volume, UpdateState, ImportLedger, ImportHealthSummary, MacFirstRunDoctor, AppDiagnosticsSnapshot, UpdateRepairResult, AppSession, WatchFolder, CatalogBrowserQuery, CatalogFaceSearchQuery } from '../shared/types';
 import { listVolumes, startWatching, stopWatching } from './services/volume-watcher';
 import { scanFiles, cancelScan, pauseScan, resumeScan } from './services/file-scanner';
 import { importFiles, cancelImport, planImportFiles } from './services/import-engine';
@@ -200,6 +200,23 @@ function isCatalogBrowserQuery(value: unknown): value is CatalogBrowserQuery {
   if (value.sortBy != null && !['lastSeenAt', 'lastImportedAt', 'name', 'size'].includes(String(value.sortBy))) return false;
   if (value.sortDirection != null && !['asc', 'desc'].includes(String(value.sortDirection))) return false;
   return true;
+}
+
+function isCatalogFaceSearchQuery(value: unknown): value is CatalogFaceSearchQuery {
+  if (!isRecord(value)) return false;
+  if (!isNonEmptyString(value.embedding)) return false;
+  if (value.embedding.length > 32768 || value.embedding.length % 2 !== 0) return false;
+  if (value.threshold != null && !isOptionalBoundedNumber(value.threshold, 0.1, 0.99)) return false;
+  if (value.limit != null && !isOptionalBoundedNumber(value.limit, 1, 200)) return false;
+  if (value.excludePaths != null && (!Array.isArray(value.excludePaths) || value.excludePaths.length > 1000 || !value.excludePaths.every((item) => typeof item === 'string'))) return false;
+  return true;
+}
+
+function isFaceMetadataWritePayload(files: unknown, sessionId: unknown): files is MediaFile[] {
+  return isMediaFileArray(files)
+    && files.length <= 1000
+    && files.every((file) => !!file.faceEmbedding || (file.faceEmbeddings?.length ?? 0) > 0)
+    && (sessionId == null || typeof sessionId === 'string');
 }
 
 type IpcValidator = (args: unknown[]) => IpcErrorResponse | null;
@@ -1953,6 +1970,20 @@ export function registerIpcHandlers(): void {
   handleIpc(IPC.CATALOG_BROWSE, async (_event, query: CatalogBrowserQuery = {}) => {
     return (await getCatalogService()).browse(query);
   }, ([query]) => isCatalogBrowserQuery(query) ? null : ipcError('VALIDATION_ERROR', 'Invalid catalog query payload.'));
+
+  handleIpc(IPC.CATALOG_SEARCH_FACES, async (_event, query: CatalogFaceSearchQuery) => {
+    return (await getCatalogService()).searchFaces(query);
+  }, ([query]) => isCatalogFaceSearchQuery(query) ? null : ipcError('VALIDATION_ERROR', 'Invalid face search payload.'));
+
+  handleIpc(IPC.CATALOG_UPSERT_FACE_METADATA, async (_event, files: MediaFile[], sessionId?: string) => {
+    const faceFiles = files.filter((file) => !!file.faceEmbedding || (file.faceEmbeddings?.length ?? 0) > 0);
+    const result = await (await getCatalogService()).upsertMediaFiles(faceFiles, sessionId);
+    return {
+      upserted: result.upserted,
+      faceFiles: faceFiles.length,
+      embeddings: faceFiles.reduce((sum, file) => sum + (file.faceEmbeddings?.length ?? (file.faceEmbedding ? 1 : 0)), 0),
+    };
+  }, ([files, sessionId]) => isFaceMetadataWritePayload(files, sessionId) ? null : ipcError('VALIDATION_ERROR', 'Invalid face metadata payload.'));
 
   handleIpc(IPC.CATALOG_VERIFY_MISSING, async () => {
     return (await getCatalogService()).verifyMissingPaths();

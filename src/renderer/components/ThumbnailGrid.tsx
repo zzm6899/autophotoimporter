@@ -6,7 +6,7 @@ import { useAppState, useAppDispatch, useMergedFiles } from '../context/ImportCo
 import type { FilterMode } from '../context/ImportContext';
 import { useFileScanner } from '../hooks/useFileScanner';
 import { useImport } from '../hooks/useImport';
-import type { MediaFile, WhiteBalanceAdjustment } from '../../shared/types';
+import type { CatalogFaceSearchResult, MediaFile, WhiteBalanceAdjustment } from '../../shared/types';
 import { ThumbnailCard } from './ThumbnailCard';
 import { SingleView } from './SingleView';
 import { CompareView } from './CompareView';
@@ -77,6 +77,24 @@ const FACE_GROUP_SENSITIVITY_OPTIONS = [
 ] as const;
 
 type FaceGroupSensitivity = typeof FACE_GROUP_SENSITIVITY_OPTIONS[number]['id'];
+
+type ManualFaceGroup = FaceIdentityGroup & { manual?: true; sourceIds: string[] };
+
+type FaceCatalogSearchState = {
+  status: 'loading' | 'done' | 'error';
+  groupId: string;
+  groupLabel: string;
+  result?: CatalogFaceSearchResult;
+  message?: string;
+};
+
+function stablePathId(value: string): string {
+  let hash = 0;
+  for (let i = 0; i < value.length; i++) {
+    hash = ((hash << 5) - hash + value.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash).toString(36);
+}
 
 function faceGroupThresholdFor(sensitivity: FaceGroupSensitivity): number {
   return FACE_GROUP_SENSITIVITY_OPTIONS.find((option) => option.id === sensitivity)?.threshold ?? FACE_GROUP_EMBEDDING_THRESHOLD;
@@ -189,15 +207,33 @@ function FaceIdentityGallery({
   groups,
   filesByPath,
   sensitivity,
+  selectedGroupIds,
+  manualCorrectionCount,
+  catalogSearch,
   onSensitivityChange,
   onOpenGroup,
+  onToggleGroupSelection,
+  onMergeSelected,
+  onSplitSelected,
+  onNotSameFace,
+  onResetManualCorrections,
+  onFindInCatalog,
   onBuildGroups,
 }: {
   groups: FaceIdentityGroup[];
   filesByPath: Map<string, MediaFile>;
   sensitivity: FaceGroupSensitivity;
+  selectedGroupIds: Set<string>;
+  manualCorrectionCount: number;
+  catalogSearch: FaceCatalogSearchState | null;
   onSensitivityChange: (sensitivity: FaceGroupSensitivity) => void;
   onOpenGroup: (group: FaceIdentityGroup) => void;
+  onToggleGroupSelection: (group: FaceIdentityGroup) => void;
+  onMergeSelected: () => void;
+  onSplitSelected: () => void;
+  onNotSameFace: () => void;
+  onResetManualCorrections: () => void;
+  onFindInCatalog: (group: FaceIdentityGroup, label: string) => void;
   onBuildGroups: () => void;
 }) {
   const [showSingletonFaces, setShowSingletonFaces] = useState(true);
@@ -211,15 +247,55 @@ function FaceIdentityGallery({
   const cards = showSingletonFaces
     ? allCards
     : allCards.filter(({ group }) => group.size > 1 || group.embeddingCount > 1);
+  const selectedCount = selectedGroupIds.size;
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="sticky top-0 z-20 flex items-center gap-2 border-b border-border bg-surface/95 py-2">
+      <div className="sticky top-0 z-20 flex flex-wrap items-center gap-2 border-b border-border bg-surface/95 py-2">
         <Users size={15} className="text-violet-300" />
         <span className="text-xs font-medium text-text-secondary">Face gallery</span>
         <span className="text-[11px] text-text-muted">
           {cards.length} people/groups{!showSingletonFaces && singletonCount > 0 ? ` · ${singletonCount} hidden` : ''}
         </span>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={onMergeSelected}
+            disabled={selectedCount < 2}
+            className="rounded border border-border bg-surface-raised px-2 py-1 text-[10px] text-text-muted hover:border-violet-500/35 hover:text-violet-200 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-border disabled:hover:text-text-muted"
+            title={selectedCount < 2 ? 'Select at least two face groups to merge them into one person.' : 'Merge selected face groups into one person for this session.'}
+          >
+            Merge people
+          </button>
+          <button
+            type="button"
+            onClick={onSplitSelected}
+            disabled={selectedCount < 1}
+            className="rounded border border-border bg-surface-raised px-2 py-1 text-[10px] text-text-muted hover:border-violet-500/35 hover:text-violet-200 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-border disabled:hover:text-text-muted"
+            title={selectedCount < 1 ? 'Select a face group to split it into individual face cards.' : 'Split selected people/groups into individual face cards for this session.'}
+          >
+            Split person
+          </button>
+          <button
+            type="button"
+            onClick={onNotSameFace}
+            disabled={selectedCount < 1}
+            className="rounded border border-orange-500/20 bg-orange-500/10 px-2 py-1 text-[10px] text-orange-300 hover:bg-orange-500/20 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-orange-500/10"
+            title={selectedCount < 1 ? 'Select a mistaken group first.' : 'Mark selected groups as not the same face by splitting them apart.'}
+          >
+            Not same face
+          </button>
+          {manualCorrectionCount > 0 && (
+            <button
+              type="button"
+              onClick={onResetManualCorrections}
+              className="rounded border border-border bg-surface-raised px-2 py-1 text-[10px] text-text-muted hover:border-red-500/35 hover:text-red-300"
+              title="Clear manual face merge/split corrections for this session."
+            >
+              Reset manual
+            </button>
+          )}
+        </div>
         <select
           value={sensitivity}
           onChange={(e) => onSensitivityChange(e.target.value as FaceGroupSensitivity)}
@@ -249,6 +325,53 @@ function FaceIdentityGallery({
         </button>
       </div>
 
+      {catalogSearch && (
+        <div className={`rounded border px-3 py-2 ${
+          catalogSearch.status === 'error'
+            ? 'border-red-500/25 bg-red-500/10'
+            : 'border-violet-500/25 bg-violet-500/10'
+        }`}>
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-[11px] font-medium text-text-secondary">
+              Find in catalog: {catalogSearch.groupLabel}
+            </div>
+            {catalogSearch.status === 'loading' && (
+              <span className="text-[10px] text-blue-300">Searching older saved face embeddings...</span>
+            )}
+          </div>
+          {catalogSearch.status === 'error' && (
+            <p className="mt-1 text-[10px] text-red-300">{catalogSearch.message ?? 'Catalog face search failed.'}</p>
+          )}
+          {catalogSearch.status === 'done' && catalogSearch.result && (
+            <div className="mt-1">
+              <div className="text-[10px] text-text-muted">
+                {catalogSearch.result.matches.length > 0
+                  ? `${catalogSearch.result.matches.length} match${catalogSearch.result.matches.length === 1 ? '' : 'es'} above ${Math.round(catalogSearch.result.threshold * 100)}% from ${catalogSearch.result.totalCandidates} saved face embedding${catalogSearch.result.totalCandidates === 1 ? '' : 's'}.`
+                  : `No older catalog matches above ${Math.round(catalogSearch.result.threshold * 100)}% yet. New face scans are saved locally as they finish.`}
+              </div>
+              {catalogSearch.result.matches.length > 0 && (
+                <div className="mt-1 grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-1">
+                  {catalogSearch.result.matches.slice(0, 12).map((match) => (
+                    <button
+                      key={`${match.sourcePath}:${match.faceIndex}`}
+                      type="button"
+                      onClick={() => { void window.electronAPI.openPath(match.destFullPath ?? match.backupFullPath ?? match.sourcePath); }}
+                      className="min-w-0 rounded border border-border bg-surface-alt px-2 py-1 text-left hover:border-violet-500/35 hover:bg-violet-500/10"
+                      title={match.destFullPath ?? match.backupFullPath ?? match.sourcePath}
+                    >
+                      <div className="truncate text-[10px] text-text-secondary">{match.name}</div>
+                      <div className="truncate text-[9px] text-text-muted">
+                        {Math.round(match.similarity * 100)}% match{match.imported ? ' · imported' : ' · seen'}{match.cameraModel ? ` · ${match.cameraModel}` : ''}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {cards.length === 0 ? (
         <div className="flex min-h-[240px] flex-col items-center justify-center gap-2 rounded border border-border bg-surface-alt/30 text-center">
           <p className="text-sm text-text-secondary">No similar-face groups yet.</p>
@@ -265,31 +388,63 @@ function FaceIdentityGallery({
         </div>
       ) : (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(116px,1fr))] gap-3">
-          {cards.map(({ group, sample }, index) => (
-            <button
-              key={group.id}
-              type="button"
-              onClick={() => onOpenGroup(group)}
-              className="group overflow-hidden rounded border border-border bg-surface-alt text-left transition-colors hover:border-violet-400/60 hover:bg-violet-500/10 focus:outline-none focus:ring-2 focus:ring-violet-400/50"
-              title={`Show ${group.size} photo${group.size === 1 ? '' : 's'} containing this similar face`}
-            >
-              <div className="aspect-square w-full">
-                <FaceCrop file={sample} box={sampleFaceBox(sample, group)} />
+          {cards.map(({ group, sample }, index) => {
+            const label = `${'manual' in group ? 'Person' : 'Face'} ${index + 1}`;
+            const selected = selectedGroupIds.has(group.id);
+            return (
+              <div
+                key={group.id}
+                className={`group overflow-hidden rounded border bg-surface-alt text-left transition-colors ${
+                  selected
+                    ? 'border-violet-400/80 bg-violet-500/15 ring-1 ring-violet-400/35'
+                    : 'border-border hover:border-violet-400/60 hover:bg-violet-500/10'
+                }`}
+              >
+                <button
+                  type="button"
+                  onClick={() => onOpenGroup(group)}
+                  className="block aspect-square w-full focus:outline-none focus:ring-2 focus:ring-violet-400/50"
+                  title={`Show ${group.size} photo${group.size === 1 ? '' : 's'} containing this similar face`}
+                >
+                  <FaceCrop file={sample} box={sampleFaceBox(sample, group)} />
+                </button>
+                <div className="space-y-1 p-2">
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="truncate text-[11px] font-medium text-text-secondary">{label}</span>
+                    <span className="rounded bg-violet-500/20 px-1.5 py-0.5 text-[10px] text-violet-200">{group.size}</span>
+                  </div>
+                  <div className="truncate text-[10px] text-text-muted" title={sample.name}>
+                    {group.size} photo{group.size === 1 ? '' : 's'} · {group.embeddingCount} match{group.embeddingCount === 1 ? '' : 'es'}
+                  </div>
+                  <div className={`text-[9px] ${group.confidence >= 0.7 ? 'text-emerald-300' : group.confidence >= 0.52 ? 'text-yellow-300' : 'text-orange-300'}`}>
+                    {'manual' in group ? 'manual group' : group.confidence >= 0.7 ? 'strong match' : group.confidence >= 0.52 ? 'check match' : 'weak crop'}
+                  </div>
+                  <div className="grid grid-cols-2 gap-1 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => onToggleGroupSelection(group)}
+                      className={`rounded px-1.5 py-0.5 text-[10px] ${
+                        selected
+                          ? 'bg-violet-500/25 text-violet-100'
+                          : 'bg-surface-raised text-text-muted hover:bg-violet-500/15 hover:text-violet-200'
+                      }`}
+                      title={selected ? 'Remove this face group from the manual correction selection.' : 'Select this face group for merge/split correction.'}
+                    >
+                      {selected ? 'Selected' : 'Select'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onFindInCatalog(group, label)}
+                      className="rounded bg-surface-raised px-1.5 py-0.5 text-[10px] text-text-muted hover:bg-violet-500/15 hover:text-violet-200"
+                      title="Find this face in older locally saved catalog entries."
+                    >
+                      Find older
+                    </button>
+                  </div>
+                </div>
               </div>
-              <div className="space-y-1 p-2">
-                <div className="flex items-center justify-between gap-1">
-                  <span className="truncate text-[11px] font-medium text-text-secondary">Face {index + 1}</span>
-                  <span className="rounded bg-violet-500/20 px-1.5 py-0.5 text-[10px] text-violet-200">{group.size}</span>
-                </div>
-                <div className="truncate text-[10px] text-text-muted" title={sample.name}>
-                  {group.size} photo{group.size === 1 ? '' : 's'} · {group.embeddingCount} match{group.embeddingCount === 1 ? '' : 'es'}
-                </div>
-                <div className={`text-[9px] ${group.confidence >= 0.7 ? 'text-emerald-300' : group.confidence >= 0.52 ? 'text-yellow-300' : 'text-orange-300'}`}>
-                  {group.confidence >= 0.7 ? 'strong match' : group.confidence >= 0.52 ? 'check match' : 'weak crop'}
-                </div>
-              </div>
-            </button>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
@@ -865,6 +1020,10 @@ export function ThumbnailGrid() {
   const [faceProviderSummary, setFaceProviderSummary] = useState<string>('Face engine warming');
   const [showAiReviewStrip, setShowAiReviewStrip] = useState(false);
   const [faceGroupSensitivity, setFaceGroupSensitivity] = useState<FaceGroupSensitivity>('balanced');
+  const [selectedFaceGroupIds, setSelectedFaceGroupIds] = useState<Set<string>>(new Set());
+  const [manualFaceGroups, setManualFaceGroups] = useState<ManualFaceGroup[]>([]);
+  const [manualFaceSplitPaths, setManualFaceSplitPaths] = useState<Set<string>>(new Set());
+  const [catalogFaceSearch, setCatalogFaceSearch] = useState<FaceCatalogSearchState | null>(null);
   const [reviewSprintMode, setReviewSprintMode] = useState(false);
   const [flatGridWidth, setFlatGridWidth] = useState(0);
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -875,6 +1034,7 @@ export function ThumbnailGrid() {
   const reviewBatchCounterRef = useRef(0);
   const reviewGenerationRef = useRef(0);
   const faceScanEtaRef = useRef<{ source: string | null; total: number; startedAt: number; startedScanned: number } | null>(null);
+  const lastCatalogFacePersistRef = useRef('');
   // Stable refs so the review loop effect doesn't need files/sortedFiles as deps.
   // Without these, every SET_REVIEW_SCORES dispatch (one per analyzed image) triggers
   // a new files reference → effect cleanup + re-run mid-flight → concurrent ONNX batches
@@ -921,20 +1081,79 @@ export function ThumbnailGrid() {
     () => shouldBuildFaceIdentityGroups ? buildFaceIdentityGroups(files, faceGroupEmbeddingThreshold, includeFaceIdentitySingletons) : [],
     [faceGroupEmbeddingThreshold, files, includeFaceIdentitySingletons, shouldBuildFaceIdentityGroups],
   );
+  const displayFaceIdentityGroups = useMemo(() => {
+    if (faceIdentityGroups.length === 0 && manualFaceGroups.length === 0) return [];
+    const splitPaths = manualFaceSplitPaths;
+    const retainedManual = manualFaceGroups.filter((group) => !group.paths.some((path) => splitPaths.has(path)));
+    const manualPaths = new Set<string>();
+    for (const group of retainedManual) {
+      for (const path of group.paths) manualPaths.add(path);
+    }
+    const next: FaceIdentityGroup[] = [...retainedManual];
+    let splitIndex = 1;
+    for (const group of faceIdentityGroups) {
+      const remainingPaths = group.paths.filter((path) => !manualPaths.has(path));
+      if (remainingPaths.length === 0) continue;
+      const shouldSplit = remainingPaths.some((path) => splitPaths.has(path));
+      if (shouldSplit) {
+        for (const path of remainingPaths) {
+          next.push({
+            id: `split-${group.id}-${stablePathId(path)}-${splitIndex++}`,
+            paths: [path],
+            size: 1,
+            embeddingCount: 1,
+            samplePath: path,
+            sampleEmbeddingIndex: path === group.samplePath ? group.sampleEmbeddingIndex : 0,
+            confidence: group.confidence,
+          });
+        }
+        continue;
+      }
+      if (remainingPaths.length === group.paths.length) {
+        next.push(group);
+      } else {
+        const samplePath = remainingPaths.includes(group.samplePath) ? group.samplePath : remainingPaths[0];
+        next.push({
+          ...group,
+          paths: remainingPaths,
+          size: remainingPaths.length,
+          samplePath,
+          sampleEmbeddingIndex: samplePath === group.samplePath ? group.sampleEmbeddingIndex : 0,
+        });
+      }
+    }
+    return next.sort((a, b) =>
+      b.size - a.size ||
+      b.embeddingCount - a.embeddingCount ||
+      b.confidence - a.confidence ||
+      a.samplePath.localeCompare(b.samplePath),
+    );
+  }, [faceIdentityGroups, manualFaceGroups, manualFaceSplitPaths]);
   const faceIdentityPathMap = useMemo(() => {
     const map = new Map<string, Set<string>>();
-    for (const group of faceIdentityGroups) {
+    for (const group of displayFaceIdentityGroups) {
       map.set(group.id, new Set(group.paths));
     }
     return map;
-  }, [faceIdentityGroups]);
+  }, [displayFaceIdentityGroups]);
   const faceIdentityGroupedPaths = useMemo(() => {
     const paths = new Set<string>();
-    for (const group of faceIdentityGroups) {
+    for (const group of displayFaceIdentityGroups) {
       for (const path of group.paths) paths.add(path);
     }
     return paths;
-  }, [faceIdentityGroups]);
+  }, [displayFaceIdentityGroups]);
+  useEffect(() => {
+    if (selectedFaceGroupIds.size === 0) return;
+    const validIds = new Set(displayFaceIdentityGroups.map((group) => group.id));
+    let changed = false;
+    const next = new Set<string>();
+    for (const id of selectedFaceGroupIds) {
+      if (validIds.has(id)) next.add(id);
+      else changed = true;
+    }
+    if (changed) setSelectedFaceGroupIds(next);
+  }, [displayFaceIdentityGroups, selectedFaceGroupIds]);
 
   // Sort order (top → bottom):
   //   1. Protected / in-camera-locked / read-only files (fast-import priority)
@@ -1058,7 +1277,7 @@ export function ThumbnailGrid() {
       }
     }
     const filesByPath = new Map(files.map((file) => [file.path, file]));
-    const identityFaceGroups = faceIdentityGroups.map((group) => {
+    const identityFaceGroups = displayFaceIdentityGroups.map((group) => {
       const groupFiles = group.paths.map((path) => filesByPath.get(path)).filter((file): file is MediaFile => !!file);
       return {
         id: group.id,
@@ -1076,7 +1295,7 @@ export function ThumbnailGrid() {
       scenes: [...scenes].sort(),
       faceGroups: faceGroupValues.sort((a, b) => b.photos - a.photos || a.id.localeCompare(b.id)),
     };
-  }, [files, faceIdentityGroups]);
+  }, [files, displayFaceIdentityGroups]);
   const activeFaceGroupId = filter.startsWith('face:') ? decodeURIComponent(filter.slice(5)) : null;
   const activeFaceGroup = activeFaceGroupId
     ? metadataFilters.faceGroups.find((group) => group.id === activeFaceGroupId) ?? null
@@ -1084,6 +1303,115 @@ export function ThumbnailGrid() {
 
   const filesByPath = useMemo(() => new Map(files.map((file) => [file.path, file])), [files]);
   const filePathSet = useMemo(() => new Set(files.map((file) => file.path)), [files]);
+  const selectedFaceGroups = useMemo(
+    () => displayFaceIdentityGroups.filter((group) => selectedFaceGroupIds.has(group.id)),
+    [displayFaceIdentityGroups, selectedFaceGroupIds],
+  );
+  const manualFaceCorrectionCount = manualFaceGroups.length + manualFaceSplitPaths.size;
+  const toggleFaceGroupSelection = useCallback((group: FaceIdentityGroup) => {
+    setSelectedFaceGroupIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(group.id)) next.delete(group.id);
+      else next.add(group.id);
+      return next;
+    });
+  }, []);
+  const mergeSelectedFaceGroups = useCallback(() => {
+    if (selectedFaceGroups.length < 2) return;
+    const order = new Map(files.map((file, index) => [file.path, index]));
+    const pathSet = new Set<string>();
+    const sourceIds: string[] = [];
+    let embeddingCount = 0;
+    let confidence = 0;
+    let samplePath = selectedFaceGroups[0].samplePath;
+    let sampleEmbeddingIndex = selectedFaceGroups[0].sampleEmbeddingIndex;
+    for (const group of selectedFaceGroups) {
+      sourceIds.push(...('sourceIds' in group ? (group as ManualFaceGroup).sourceIds : [group.id]));
+      embeddingCount += group.embeddingCount;
+      if (group.confidence >= confidence) {
+        confidence = group.confidence;
+        samplePath = group.samplePath;
+        sampleEmbeddingIndex = group.sampleEmbeddingIndex;
+      }
+      for (const path of group.paths) pathSet.add(path);
+    }
+    const paths = Array.from(pathSet).sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
+    const merged: ManualFaceGroup = {
+      id: `manual-face-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      paths,
+      size: paths.length,
+      embeddingCount,
+      samplePath,
+      sampleEmbeddingIndex,
+      confidence,
+      sourceIds: Array.from(new Set(sourceIds)),
+      manual: true,
+    };
+    setManualFaceGroups((previous) => [
+      ...previous.filter((group) => !group.paths.some((path) => pathSet.has(path))),
+      merged,
+    ]);
+    setManualFaceSplitPaths((previous) => {
+      const next = new Set(previous);
+      for (const path of pathSet) next.delete(path);
+      return next;
+    });
+    setSelectedFaceGroupIds(new Set([merged.id]));
+  }, [files, selectedFaceGroups]);
+  const splitSelectedFaceGroups = useCallback(() => {
+    if (selectedFaceGroups.length === 0) return;
+    const splitPaths = new Set(selectedFaceGroups.flatMap((group) => group.paths));
+    const selectedIds = new Set(selectedFaceGroups.map((group) => group.id));
+    setManualFaceSplitPaths((previous) => new Set([...previous, ...splitPaths]));
+    setManualFaceGroups((previous) => previous.filter((group) =>
+      !selectedIds.has(group.id) && !group.paths.some((path) => splitPaths.has(path)),
+    ));
+    setSelectedFaceGroupIds(new Set());
+  }, [selectedFaceGroups]);
+  const resetManualFaceCorrections = useCallback(() => {
+    setManualFaceGroups([]);
+    setManualFaceSplitPaths(new Set());
+    setSelectedFaceGroupIds(new Set());
+  }, []);
+  const sampleEmbeddingForGroup = useCallback((group: FaceIdentityGroup): string | null => {
+    const sample = filesByPath.get(group.samplePath);
+    const sampleEmbedding = sample?.faceEmbeddings?.[group.sampleEmbeddingIndex] ?? sample?.faceEmbedding;
+    if (sampleEmbedding) return sampleEmbedding;
+    for (const path of group.paths) {
+      const file = filesByPath.get(path);
+      const embedding = file?.faceEmbeddings?.[0] ?? file?.faceEmbedding;
+      if (embedding) return embedding;
+    }
+    return null;
+  }, [filesByPath]);
+  const findFaceInCatalog = useCallback((group: FaceIdentityGroup, label: string) => {
+    const embedding = sampleEmbeddingForGroup(group);
+    if (!embedding) {
+      setCatalogFaceSearch({
+        status: 'error',
+        groupId: group.id,
+        groupLabel: label,
+        message: 'This face has not produced a matching embedding yet. Let face scanning finish, then try again.',
+      });
+      return;
+    }
+    setCatalogFaceSearch({ status: 'loading', groupId: group.id, groupLabel: label });
+    void window.electronAPI.searchCatalogFaces({
+      embedding,
+      threshold: Math.max(0.42, faceGroupEmbeddingThreshold - 0.03),
+      limit: 48,
+      excludePaths: group.paths,
+    }).then((result) => {
+      setCatalogFaceSearch({ status: 'done', groupId: group.id, groupLabel: label, result });
+    }).catch((error) => {
+      setCatalogFaceSearch({
+        status: 'error',
+        groupId: group.id,
+        groupLabel: label,
+        message: error instanceof Error ? error.message : 'Catalog face search failed.',
+      });
+    });
+  }, [faceGroupEmbeddingThreshold, sampleEmbeddingForGroup]);
 
   const selectedIndices = useMemo(() => {
     if (selectedPaths.length === 0) return new Set<number>();
@@ -1192,6 +1520,10 @@ export function ThumbnailGrid() {
   useEffect(() => {
     reviewGenerationRef.current++;
     sharpnessInFlightRef.current = false;
+    setSelectedFaceGroupIds(new Set());
+    setManualFaceGroups([]);
+    setManualFaceSplitPaths(new Set());
+    setCatalogFaceSearch(null);
   }, [selectedSource]);
   useEffect(() => {
     let cancelled = false;
@@ -1209,6 +1541,35 @@ export function ThumbnailGrid() {
       window.clearInterval(timer);
     };
   }, []);
+
+  const catalogFaceFingerprint = useMemo(() => {
+    const parts: string[] = [];
+    for (const file of files) {
+      if (!hasFaceMatchData(file)) continue;
+      parts.push(`${file.path}:${file.faceEmbeddings?.length ?? (file.faceEmbedding ? 1 : 0)}:${file.faceEmbeddingBoxes?.length ?? 0}:${file.faceCount ?? 0}`);
+    }
+    return parts.join('|');
+  }, [files]);
+
+  useEffect(() => {
+    if (!catalogFaceFingerprint || !selectedSource) return;
+    const timer = window.setTimeout(() => {
+      if (lastCatalogFacePersistRef.current === catalogFaceFingerprint) return;
+      lastCatalogFacePersistRef.current = catalogFaceFingerprint;
+      const faceFiles = filesRef.current
+        .filter((file) => hasFaceMatchData(file))
+        .map((file) => {
+          const { thumbnail: _thumbnail, ...metadata } = file;
+          return metadata as MediaFile;
+        });
+      void (async () => {
+        for (let i = 0; i < faceFiles.length; i += 200) {
+          await window.electronAPI.upsertCatalogFaceMetadata(faceFiles.slice(i, i + 200), selectedSource);
+        }
+      })().catch((error) => console.warn('[catalog] face metadata persist failed', error));
+    }, 1800);
+    return () => window.clearTimeout(timer);
+  }, [catalogFaceFingerprint, selectedSource]);
 
   // Also kick the review loop when new thumbnails arrive (so it picks up files
   // that were waiting on thumbnails) — but throttled to avoid per-thumbnail spam.
@@ -2679,7 +3040,7 @@ export function ThumbnailGrid() {
     const faceFiles = photoFiles.filter((f) => (f.faceCount ?? f.faceBoxes?.length ?? 0) > 0);
     const faces = faceFiles.length;
     const faceBoxes = faceFiles.reduce((sum, file) => sum + (file.faceBoxes?.length ?? file.faceCount ?? 0), 0);
-    const faceGroups = faceIdentityGroups.length || new Set(faceFiles.map((f) => f.faceGroupId).filter(Boolean)).size;
+    const faceGroups = displayFaceIdentityGroups.length || new Set(faceFiles.map((f) => f.faceGroupId).filter(Boolean)).size;
     const faceScanned = photoFiles.filter((f) => f.faceBoxes !== undefined).length;
     const embeddings = photoFiles.filter(hasFaceMatchData).length;
     const lowConfidenceFaces = faceFiles.filter((f) => faceSignalConfidence(f) < 0.55).length;
@@ -2715,7 +3076,7 @@ export function ThumbnailGrid() {
       strongCandidates,
       duplicates,
     };
-  }, [faceIdentityGroups.length, files, queuedPaths.length]);
+  }, [displayFaceIdentityGroups.length, files, queuedPaths.length]);
   const faceScanEtaActive =
     reviewStats.total > 0 &&
     reviewStats.faceScanned < reviewStats.total &&
@@ -3803,7 +4164,7 @@ export function ThumbnailGrid() {
                 className="px-1.5 py-0.5 text-[10px] rounded bg-violet-500/10 text-violet-300 hover:bg-violet-500/20 transition-colors"
                 title="Showing one tile per similar face/person group. Click to clear the filter."
               >
-                Face gallery: {faceIdentityGroups.length} group{faceIdentityGroups.length === 1 ? '' : 's'}
+                Face gallery: {displayFaceIdentityGroups.length} group{displayFaceIdentityGroups.length === 1 ? '' : 's'}
               </button>
             )}
 
@@ -4179,11 +4540,20 @@ export function ThumbnailGrid() {
             <div ref={flatScrollRef} className="h-full overflow-y-auto px-4 pt-3 pb-16">
               {filter === 'face-gallery' ? (
                 <FaceIdentityGallery
-                  groups={faceIdentityGroups}
+                  groups={displayFaceIdentityGroups}
                   filesByPath={filesByPath}
                   sensitivity={faceGroupSensitivity}
+                  selectedGroupIds={selectedFaceGroupIds}
+                  manualCorrectionCount={manualFaceCorrectionCount}
+                  catalogSearch={catalogFaceSearch}
                   onSensitivityChange={setFaceGroupSensitivity}
                   onOpenGroup={(group) => handleFaceGroupFilter(group.id, group.samplePath)}
+                  onToggleGroupSelection={toggleFaceGroupSelection}
+                  onMergeSelected={mergeSelectedFaceGroups}
+                  onSplitSelected={splitSelectedFaceGroups}
+                  onNotSameFace={splitSelectedFaceGroups}
+                  onResetManualCorrections={resetManualFaceCorrections}
+                  onFindInCatalog={findFaceInCatalog}
                   onBuildGroups={() => dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10, embeddingThreshold: faceGroupEmbeddingThreshold })}
                 />
               ) : folderGroups ? (

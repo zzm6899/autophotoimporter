@@ -34,6 +34,25 @@ function applyFormat(destPath: string, format: SaveFormat): string {
   return destPath.slice(0, lastDot) + ext;
 }
 
+function formatDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return 'under 1s';
+  const rounded = Math.max(1, Math.round(seconds));
+  if (rounded < 60) return `${rounded}s`;
+  const minutes = Math.floor(rounded / 60);
+  const remainder = rounded % 60;
+  if (minutes < 60) return remainder > 0 ? `${minutes}m ${remainder}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const minuteRemainder = minutes % 60;
+  return minuteRemainder > 0 ? `${hours}h ${minuteRemainder}m` : `${hours}h`;
+}
+
+function sourceSpeedMbps(profile: SourceProfile): number {
+  if (profile === 'ssd') return 350;
+  if (profile === 'usb') return 90;
+  if (profile === 'nas') return 45;
+  return 120;
+}
+
 export function DestinationPanel() {
   const {
     destination, skipDuplicates, saveFormat, jpegQuality, folderPreset, customPattern,
@@ -58,6 +77,7 @@ export function DestinationPanel() {
   const [preflight, setPreflight] = useState<ImportPreflight | null>(null);
   const [preflightOpen, setPreflightOpen] = useState(false);
   const [handoffBusy, setHandoffBusy] = useState(false);
+  const [benchmarkOpen, setBenchmarkOpen] = useState(false);
 
   useEffect(() => {
     void window.electronAPI.getSettings().then((s) => setJobPresets(s.jobPresets ?? []));
@@ -367,6 +387,48 @@ export function DestinationPanel() {
     locationCount > 0 ? 'GPS/location' : null,
     sceneCount > 0 ? 'scene buckets' : null,
   ].filter(Boolean) as string[];
+  const importBenchmark = useMemo(() => {
+    const baseSpeed = sourceSpeedMbps(sourceProfile);
+    const activeSlowdowns: Array<{ label: string; multiplier: number }> = [];
+    const conversionActive = saveFormat !== 'original' || exposureEditCount > 0 || hasWhiteBalance || hasRenderableWatermark || autoStraighten;
+    const sidecarsActive = metadataFieldLabels.length > 0;
+    if (skipDuplicates) activeSlowdowns.push({ label: 'duplicate checks', multiplier: 0.88 });
+    if (verifyChecksums) activeSlowdowns.push({ label: 'checksum verification', multiplier: 0.72 });
+    if (backupDestRoot) activeSlowdowns.push({ label: 'backup copy', multiplier: 0.55 });
+    if (ftpDestEnabled) activeSlowdowns.push({ label: 'FTP upload', multiplier: 0.45 });
+    if (conversionActive) activeSlowdowns.push({ label: saveFormat === 'original' ? 'output edits need conversion' : `${saveFormat.toUpperCase()} conversion`, multiplier: 0.34 });
+    if (sidecarsActive) activeSlowdowns.push({ label: 'metadata sidecars', multiplier: 0.92 });
+    const multiplier = activeSlowdowns.reduce((value, item) => value * item.multiplier, 1);
+    const keptraSpeed = Math.max(4, baseSpeed * multiplier);
+    const rawSeconds = totalSize > 0 ? totalSize / (baseSpeed * 1024 * 1024) : 0;
+    const keptraSeconds = totalSize > 0 ? (totalSize / (keptraSpeed * 1024 * 1024)) + importFiles.length * 0.025 : 0;
+    const actualSpeed = importResult?.durationMs && importResult.totalBytes > 0
+      ? (importResult.totalBytes / (1024 * 1024)) / (importResult.durationMs / 1000)
+      : null;
+    return {
+      baseSpeed,
+      keptraSpeed,
+      rawSeconds,
+      keptraSeconds,
+      activeSlowdowns,
+      actualSpeed,
+    };
+  }, [
+    autoStraighten,
+    backupDestRoot,
+    exposureEditCount,
+    ftpDestEnabled,
+    hasRenderableWatermark,
+    hasWhiteBalance,
+    importFiles.length,
+    importResult,
+    metadataFieldLabels.length,
+    saveFormat,
+    skipDuplicates,
+    sourceProfile,
+    totalSize,
+    verifyChecksums,
+  ]);
   const refreshPreflight = async (dryRun = false) => {
     const config = buildImportConfig(dryRun);
     if (!config) return;
@@ -1113,6 +1175,35 @@ export function DestinationPanel() {
               : `Tight on space — ${formatSize(freeBytes)} free for ${formatSize(totalSize)} import`}
           </div>
         )}
+        {benchmarkOpen && files.length > 0 && (
+          <div className="mb-2 rounded border border-blue-500/20 bg-blue-500/10 px-2 py-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-[10px] font-medium text-blue-200">Import benchmark</div>
+              <button
+                onClick={() => setBenchmarkOpen(false)}
+                className="text-[10px] text-text-muted hover:text-text"
+              >
+                Hide
+              </button>
+            </div>
+            <div className="mt-1 grid grid-cols-2 gap-1 text-[10px] text-text-secondary">
+              <div>OS-style copy <span className="text-text">{Math.round(importBenchmark.baseSpeed)} MB/s</span></div>
+              <div>ETA <span className="text-text">{formatDuration(importBenchmark.rawSeconds)}</span></div>
+              <div>Keptra current <span className="text-blue-200">{Math.round(importBenchmark.keptraSpeed)} MB/s</span></div>
+              <div>ETA <span className="text-blue-200">{formatDuration(importBenchmark.keptraSeconds)}</span></div>
+            </div>
+            {importBenchmark.actualSpeed !== null && (
+              <div className="mt-1 text-[10px] text-emerald-300">
+                Last import measured about {Math.round(importBenchmark.actualSpeed)} MB/s on this machine.
+              </div>
+            )}
+            <div className="mt-1 text-[10px] text-text-muted">
+              {importBenchmark.activeSlowdowns.length > 0
+                ? `Active slowdowns: ${importBenchmark.activeSlowdowns.map((item) => item.label).join(', ')}.`
+                : 'Fast raw ingest path: checksum, duplicate checks, sidecars, conversion, FTP, and backup are off.'}
+            </div>
+          </div>
+        )}
         {preflightOpen && preflight && (
           <div className="mb-2 rounded border border-border bg-surface-alt px-2 py-1.5">
             <div className="flex items-center justify-between gap-2">
@@ -1169,7 +1260,7 @@ export function DestinationPanel() {
             )}
           </div>
         )}
-        <div className="mb-1 grid grid-cols-2 gap-1">
+        <div className="mb-1 grid grid-cols-3 gap-1">
           <button
             onClick={() => { void handlePreviewImport(); }}
             disabled={!destination || importFiles.length === 0}
@@ -1178,6 +1269,15 @@ export function DestinationPanel() {
             aria-label="Preview the import plan without copying files"
           >
             Check Plan
+          </button>
+          <button
+            onClick={() => setBenchmarkOpen((value) => !value)}
+            disabled={importFiles.length === 0}
+            className="py-1 rounded text-[10px] bg-surface-raised hover:bg-blue-500/10 text-blue-300 disabled:text-text-muted disabled:cursor-not-allowed"
+            title="Compare a raw copy estimate with Keptra's current import settings."
+            aria-label="Show import speed benchmark"
+          >
+            Benchmark
           </button>
           <button
             onClick={() => { void handleExportLightroomHandoff(); }}

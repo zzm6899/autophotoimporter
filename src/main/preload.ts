@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC } from '../shared/types';
-import type { ImportConfig, AppSettings, MediaFile, Volume, ImportProgress, ImportResult, UpdateInfo, UpdateReleaseSummary, UpdateState, FtpConfig, FtpSyncStatus, ImportError, LicenseValidation, ImportPreflight, ImportLedger, ImportHealthSummary, MacFirstRunDoctor, AppDiagnosticsSnapshot, UpdateRepairResult, AppSession, WatchFolder, CatalogStats, CatalogBrowserQuery, CatalogBrowserResult, CatalogMaintenanceResult, CatalogPruneResult, CatalogBackupResult, LightroomHandoffResult } from '../shared/types';
+import type { ImportConfig, AppSettings, MediaFile, Volume, ImportProgress, ImportResult, UpdateInfo, UpdateReleaseSummary, UpdateState, FtpConfig, FtpSyncStatus, ImportError, LicenseValidation, ImportPreflight, ImportLedger, ImportHealthSummary, MacFirstRunDoctor, AppDiagnosticsSnapshot, UpdateRepairResult, AppSession, WatchFolder, CatalogStats, CatalogBrowserQuery, CatalogBrowserResult, CatalogFaceSearchQuery, CatalogFaceSearchResult, CatalogFaceMetadataWriteResult, CatalogMaintenanceResult, CatalogPruneResult, CatalogBackupResult, LightroomHandoffResult } from '../shared/types';
 import type { FaceBox } from './services/face-engine';
 import type { ModelDownloadProgress } from './services/model-downloader';
 
@@ -121,6 +121,10 @@ const api = {
     ipcRenderer.invoke(IPC.CATALOG_STATS),
   browseCatalog: (query: CatalogBrowserQuery = {}): Promise<CatalogBrowserResult> =>
     ipcRenderer.invoke(IPC.CATALOG_BROWSE, query),
+  searchCatalogFaces: (query: CatalogFaceSearchQuery): Promise<CatalogFaceSearchResult> =>
+    ipcRenderer.invoke(IPC.CATALOG_SEARCH_FACES, query),
+  upsertCatalogFaceMetadata: (files: MediaFile[], sessionId?: string): Promise<CatalogFaceMetadataWriteResult> =>
+    ipcRenderer.invoke(IPC.CATALOG_UPSERT_FACE_METADATA, files, sessionId),
   verifyCatalogMissingPaths: (): Promise<CatalogMaintenanceResult> =>
     ipcRenderer.invoke(IPC.CATALOG_VERIFY_MISSING),
   pruneCatalogMissingEntries: (): Promise<CatalogPruneResult> =>

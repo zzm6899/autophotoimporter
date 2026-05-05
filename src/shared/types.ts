@@ -621,6 +621,46 @@ export interface CatalogBrowserResult {
   offset: number;
 }
 
+export interface CatalogFaceSearchQuery {
+  embedding: string;
+  threshold?: number;
+  limit?: number;
+  excludePaths?: string[];
+}
+
+export interface CatalogFaceSearchMatch {
+  sourcePath: string;
+  name: string;
+  size: number;
+  type?: MediaFile['type'];
+  extension?: string;
+  dateTaken?: string;
+  cameraMake?: string;
+  cameraModel?: string;
+  lensModel?: string;
+  faceIndex: number;
+  similarity: number;
+  imported: boolean;
+  destFullPath?: string;
+  backupFullPath?: string;
+  lastSeenAt?: string;
+  lastImportedAt?: string;
+}
+
+export interface CatalogFaceSearchResult {
+  matches: CatalogFaceSearchMatch[];
+  totalCandidates: number;
+  threshold: number;
+  limit: number;
+  searchedAt: string;
+}
+
+export interface CatalogFaceMetadataWriteResult {
+  upserted: number;
+  faceFiles: number;
+  embeddings: number;
+}
+
 export interface CatalogMissingPath {
   kind: 'source' | 'destination' | 'backup';
   sourcePath: string;
@@ -1134,6 +1174,8 @@ export const IPC = {
   SESSION_LATEST: 'session:latest',
   CATALOG_STATS: 'catalog:stats',
   CATALOG_BROWSE: 'catalog:browse',
+  CATALOG_SEARCH_FACES: 'catalog:search-faces',
+  CATALOG_UPSERT_FACE_METADATA: 'catalog:upsert-face-metadata',
   CATALOG_VERIFY_MISSING: 'catalog:verify-missing',
   CATALOG_PRUNE_MISSING: 'catalog:prune-missing',
   CATALOG_EXPORT_BACKUP: 'catalog:export-backup',

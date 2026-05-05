@@ -41,6 +41,12 @@ function makeLedgerItem(overrides: Partial<ImportLedgerItem> = {}): ImportLedger
   };
 }
 
+function embeddingHex(values: number[]): string {
+  const buffer = Buffer.alloc(values.length * 4);
+  values.forEach((value, index) => buffer.writeFloatLE(value, index * 4));
+  return buffer.toString('hex');
+}
+
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
@@ -155,6 +161,62 @@ describe('CatalogService JSON fallback', () => {
       importOutcomes: 1,
     }));
     await second.close();
+  });
+
+  it('stores face embeddings and searches older catalog faces by similarity', async () => {
+    const userDataPath = await tempCatalogDir();
+    const personA = embeddingHex([1, 0, 0, 0]);
+    const personB = embeddingHex([0, 1, 0, 0]);
+    const catalog = await openCatalog(userDataPath, {
+      preferJson: true,
+      now: () => '2026-05-02T00:00:00.000Z',
+    });
+
+    await catalog.upsertMediaFiles([
+      makeFile({
+        path: '/old-card/person-a.jpg',
+        name: 'person-a.jpg',
+        faceCount: 1,
+        faceEmbeddings: [personA],
+        faceEmbeddingBoxes: [{ x: 0.2, y: 0.2, width: 0.2, height: 0.2, score: 0.95 }],
+      }),
+      makeFile({
+        path: '/old-card/person-b.jpg',
+        name: 'person-b.jpg',
+        faceCount: 1,
+        faceEmbeddings: [personB],
+      }),
+    ], 'old-session');
+    await catalog.recordImportLedgerItems('ledger-a', [
+      makeLedgerItem({
+        sourcePath: '/old-card/person-a.jpg',
+        name: 'person-a.jpg',
+        destFullPath: '/imports/person-a.jpg',
+      }),
+    ], { sessionId: 'old-session', importedAt: '2026-05-02T00:10:00.000Z' });
+
+    const result = await catalog.searchFaces({
+      embedding: personA,
+      threshold: 0.9,
+      excludePaths: ['/current-card/person-a.jpg'],
+    });
+
+    expect(result.totalCandidates).toBe(2);
+    expect(result.matches).toEqual([
+      expect.objectContaining({
+        sourcePath: '/old-card/person-a.jpg',
+        name: 'person-a.jpg',
+        faceIndex: 0,
+        imported: true,
+        destFullPath: '/imports/person-a.jpg',
+        similarity: expect.any(Number),
+      }),
+    ]);
+
+    const raw = await readFile(catalog.catalogPath, 'utf8');
+    expect(raw).toContain('"faceEmbeddings"');
+    expect(raw).not.toContain('huge-preview-data');
+    await catalog.close();
   });
 
   it('browses catalog records by camera, lens, hash, destination, and imported state', async () => {

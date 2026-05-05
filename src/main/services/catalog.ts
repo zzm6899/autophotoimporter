@@ -6,6 +6,9 @@ import type {
   CatalogBrowserQuery,
   CatalogBrowserRecord,
   CatalogBrowserResult,
+  CatalogFaceSearchMatch,
+  CatalogFaceSearchQuery,
+  CatalogFaceSearchResult,
   CatalogImportedFilter,
   CatalogMaintenanceResult,
   CatalogMissingPath,
@@ -16,6 +19,7 @@ import type {
   ImportResult,
   MediaFile,
 } from '../../shared/types';
+import { cosineSimilarity, deserializeEmbedding } from '../../shared/review';
 
 type SqliteRunResult = { changes: number; lastInsertRowid: number | bigint };
 type SqliteStatement = {
@@ -384,6 +388,78 @@ function buildBrowserRecords(
   return Array.from(records.values());
 }
 
+function getSerializedFaceEmbeddings(record: CatalogMediaRecord): string[] {
+  const metadata = record.metadata;
+  if (metadata.faceEmbeddings?.length) return metadata.faceEmbeddings;
+  return metadata.faceEmbedding ? [metadata.faceEmbedding] : [];
+}
+
+function searchCatalogFaces(
+  mediaRecords: CatalogMediaRecord[],
+  importRecords: CatalogImportOutcomeRecord[],
+  query: CatalogFaceSearchQuery,
+  searchedAt: string,
+): CatalogFaceSearchResult {
+  const threshold = Math.max(0.1, Math.min(0.99, query.threshold ?? 0.52));
+  const limit = Math.max(1, Math.min(200, Math.round(query.limit ?? 48)));
+  const excludePaths = new Set((query.excludePaths ?? []).filter(Boolean));
+  const target = deserializeEmbedding(query.embedding);
+  if (!target) {
+    return { matches: [], totalCandidates: 0, threshold, limit, searchedAt };
+  }
+
+  const browserBySource = new Map(
+    buildBrowserRecords(mediaRecords, importRecords).map((record) => [record.sourcePath, record]),
+  );
+  const matches: CatalogFaceSearchMatch[] = [];
+  let totalCandidates = 0;
+
+  for (const media of mediaRecords) {
+    if (excludePaths.has(media.sourcePath)) continue;
+    const embeddings = getSerializedFaceEmbeddings(media);
+    for (let faceIndex = 0; faceIndex < embeddings.length; faceIndex++) {
+      const embedding = deserializeEmbedding(embeddings[faceIndex]);
+      if (!embedding) continue;
+      totalCandidates++;
+      const similarity = cosineSimilarity(target, embedding);
+      if (similarity < threshold) continue;
+      const browser = browserBySource.get(media.sourcePath);
+      matches.push({
+        sourcePath: media.sourcePath,
+        name: media.name,
+        size: media.size,
+        type: media.type,
+        extension: media.extension,
+        dateTaken: media.dateTaken,
+        cameraMake: metadataString(media, 'cameraMake'),
+        cameraModel: metadataString(media, 'cameraModel'),
+        lensModel: metadataString(media, 'lensModel'),
+        faceIndex,
+        similarity,
+        imported: browser?.imported ?? false,
+        destFullPath: browser?.destFullPath,
+        backupFullPath: browser?.backupFullPath,
+        lastSeenAt: media.lastSeenAt,
+        lastImportedAt: browser?.lastImportedAt,
+      });
+    }
+  }
+
+  matches.sort((a, b) =>
+    b.similarity - a.similarity ||
+    String(b.lastImportedAt ?? b.lastSeenAt ?? '').localeCompare(String(a.lastImportedAt ?? a.lastSeenAt ?? '')) ||
+    a.name.localeCompare(b.name),
+  );
+
+  return {
+    matches: matches.slice(0, limit),
+    totalCandidates,
+    threshold,
+    limit,
+    searchedAt,
+  };
+}
+
 function includesFolded(value: string | undefined, query: string): boolean {
   return value?.toLocaleLowerCase().includes(query) ?? false;
 }
@@ -638,6 +714,10 @@ class JsonCatalogStore {
 
   async browse(query: CatalogBrowserQuery): Promise<CatalogBrowserResult> {
     return browseCatalogRecords(Object.values(this.state.mediaFiles), this.state.importOutcomes, query);
+  }
+
+  async searchFaces(query: CatalogFaceSearchQuery, searchedAt: string): Promise<CatalogFaceSearchResult> {
+    return searchCatalogFaces(Object.values(this.state.mediaFiles), this.state.importOutcomes, query, searchedAt);
   }
 
   async verifyMissingPaths(): Promise<CatalogMaintenanceResult> {
@@ -928,6 +1008,10 @@ class SqliteCatalogStore {
     return browseCatalogRecords(this.getAllMediaRecords(), this.getAllImportRecords(), query);
   }
 
+  async searchFaces(query: CatalogFaceSearchQuery, searchedAt: string): Promise<CatalogFaceSearchResult> {
+    return searchCatalogFaces(this.getAllMediaRecords(), this.getAllImportRecords(), query, searchedAt);
+  }
+
   async verifyMissingPaths(): Promise<CatalogMaintenanceResult> {
     return verifyCatalogPaths(this.getAllMediaRecords(), this.getAllImportRecords());
   }
@@ -1135,6 +1219,10 @@ export class CatalogService {
 
   async browse(query: CatalogBrowserQuery = {}): Promise<CatalogBrowserResult> {
     return this.store.browse(query);
+  }
+
+  async searchFaces(query: CatalogFaceSearchQuery): Promise<CatalogFaceSearchResult> {
+    return this.store.searchFaces(query, this.now());
   }
 
   async verifyMissingPaths(): Promise<CatalogMaintenanceResult> {
