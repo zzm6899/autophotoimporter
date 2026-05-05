@@ -394,12 +394,16 @@ function getSerializedFaceEmbeddings(record: CatalogMediaRecord): string[] {
   return metadata.faceEmbedding ? [metadata.faceEmbedding] : [];
 }
 
-function searchCatalogFaces(
+function yieldCatalogSearch(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+async function searchCatalogFaces(
   mediaRecords: CatalogMediaRecord[],
   importRecords: CatalogImportOutcomeRecord[],
   query: CatalogFaceSearchQuery,
   searchedAt: string,
-): CatalogFaceSearchResult {
+): Promise<CatalogFaceSearchResult> {
   const threshold = Math.max(0.1, Math.min(0.99, query.threshold ?? 0.52));
   const limit = Math.max(1, Math.min(200, Math.round(query.limit ?? 48)));
   const excludePaths = new Set((query.excludePaths ?? []).filter(Boolean));
@@ -408,13 +412,11 @@ function searchCatalogFaces(
     return { matches: [], totalCandidates: 0, threshold, limit, searchedAt };
   }
 
-  const browserBySource = new Map(
-    buildBrowserRecords(mediaRecords, importRecords).map((record) => [record.sourcePath, record]),
-  );
   const matches: CatalogFaceSearchMatch[] = [];
   let totalCandidates = 0;
 
-  for (const media of mediaRecords) {
+  for (let mediaIndex = 0; mediaIndex < mediaRecords.length; mediaIndex++) {
+    const media = mediaRecords[mediaIndex];
     if (excludePaths.has(media.sourcePath)) continue;
     const embeddings = getSerializedFaceEmbeddings(media);
     for (let faceIndex = 0; faceIndex < embeddings.length; faceIndex++) {
@@ -423,7 +425,6 @@ function searchCatalogFaces(
       totalCandidates++;
       const similarity = cosineSimilarity(target, embedding);
       if (similarity < threshold) continue;
-      const browser = browserBySource.get(media.sourcePath);
       matches.push({
         sourcePath: media.sourcePath,
         name: media.name,
@@ -436,12 +437,27 @@ function searchCatalogFaces(
         lensModel: metadataString(media, 'lensModel'),
         faceIndex,
         similarity,
-        imported: browser?.imported ?? false,
-        destFullPath: browser?.destFullPath,
-        backupFullPath: browser?.backupFullPath,
+        imported: false,
         lastSeenAt: media.lastSeenAt,
-        lastImportedAt: browser?.lastImportedAt,
       });
+    }
+    if (mediaIndex > 0 && mediaIndex % 500 === 0) await yieldCatalogSearch();
+  }
+
+  if (matches.length > 0) {
+    const matchedSources = new Set(matches.map((match) => match.sourcePath));
+    const browserBySource = new Map(
+      buildBrowserRecords(
+        mediaRecords.filter((record) => matchedSources.has(record.sourcePath)),
+        importRecords.filter((record) => matchedSources.has(record.sourcePath)),
+      ).map((record) => [record.sourcePath, record]),
+    );
+    for (const match of matches) {
+      const browser = browserBySource.get(match.sourcePath);
+      match.imported = browser?.imported ?? false;
+      match.destFullPath = browser?.destFullPath;
+      match.backupFullPath = browser?.backupFullPath;
+      match.lastImportedAt = browser?.lastImportedAt;
     }
   }
 

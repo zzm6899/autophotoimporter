@@ -396,11 +396,22 @@ export function DestinationPanel() {
     window.electronAPI.setSettings({ protectedFolderName: value });
   };
 
-  const duplicateCount = files.filter((f) => f.duplicate).length;
-  const pickedCount = files.filter((f) => f.pick === 'selected').length;
-  const rejectedCount = files.filter((f) => f.pick === 'rejected').length;
-  const protectedCount = files.filter((f) => f.isProtected).length;
-  const adjustedCount = files.filter((f) => f.normalizeToAnchor || f.exposureAdjustmentStops).length;
+  const fileStats = useMemo(() => {
+    let duplicateCount = 0;
+    let pickedCount = 0;
+    let rejectedCount = 0;
+    let protectedCount = 0;
+    let adjustedCount = 0;
+    for (const file of files) {
+      if (file.duplicate) duplicateCount++;
+      if (file.pick === 'selected') pickedCount++;
+      if (file.pick === 'rejected') rejectedCount++;
+      if (file.isProtected) protectedCount++;
+      if (file.normalizeToAnchor || file.exposureAdjustmentStops) adjustedCount++;
+    }
+    return { duplicateCount, pickedCount, rejectedCount, protectedCount, adjustedCount };
+  }, [files]);
+  const { duplicateCount, pickedCount, rejectedCount, protectedCount, adjustedCount } = fileStats;
   const wbTemperature = whiteBalanceTemperature ?? 0;
   const wbTint = whiteBalanceTint ?? 0;
   const wbKelvin = whiteBalanceTemperatureToKelvin(wbTemperature);

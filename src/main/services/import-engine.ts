@@ -1097,6 +1097,29 @@ export async function importFiles(
     return { bytesPerSec: Math.round(bytesPerSec), etaSec };
   }
 
+  const PROGRESS_MIN_INTERVAL_MS = 120;
+  const PROGRESS_MIN_FILE_DELTA = 16;
+  let lastProgressAt = 0;
+  let lastProgressIndex = 0;
+  function emitProgress(currentFile: string, force = false): void {
+    const now = Date.now();
+    const enoughTime = now - lastProgressAt >= PROGRESS_MIN_INTERVAL_MS;
+    const enoughFiles = processedCount - lastProgressIndex >= PROGRESS_MIN_FILE_DELTA;
+    if (!force && !enoughTime && !enoughFiles) return;
+    lastProgressAt = now;
+    lastProgressIndex = processedCount;
+    onProgress({
+      currentFile,
+      currentIndex: processedCount,
+      totalFiles: files.length,
+      bytesTransferred,
+      totalBytes,
+      skipped,
+      errors: errors.length,
+      ...computeSpeed(),
+    });
+  }
+
   async function worker(): Promise<void> {
     while (!signal.aborted) {
       const idx = nextIndex++;
@@ -1105,17 +1128,7 @@ export async function importFiles(
       await importOne(files[idx]);
       processedCount++;
       recordSpeedSample();
-
-      onProgress({
-        currentFile: files[idx].name,
-        currentIndex: processedCount,
-        totalFiles: files.length,
-        bytesTransferred,
-        totalBytes,
-        skipped,
-        errors: errors.length,
-        ...computeSpeed(),
-      });
+      emitProgress(files[idx].name, processedCount >= files.length || signal.aborted);
     }
   }
 
@@ -1136,16 +1149,7 @@ export async function importFiles(
         await client.uploadFrom(upload.localPath, remoteName);
         uploaded++;
         recordSpeedSample();
-        onProgress({
-          currentFile: `${upload.fileName} (FTP ${uploaded}/${ftpUploads.length})`,
-          currentIndex: processedCount,
-          totalFiles: files.length,
-          bytesTransferred,
-          totalBytes,
-          skipped,
-          errors: errors.length,
-          ...computeSpeed(),
-        });
+        emitProgress(`${upload.fileName} (FTP ${uploaded}/${ftpUploads.length})`, uploaded >= ftpUploads.length);
       }
     } catch (ftpErr: unknown) {
       const e = ftpErr as Error;

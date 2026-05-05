@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { AlertTriangle, CheckCircle2, CircleHelp, Download, FolderOpen, Gauge, Images, Moon, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Search, Settings, Sun } from 'lucide-react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import { formatSize } from '../utils/formatters';
@@ -104,17 +104,60 @@ export function Layout({ left, center, right }: LayoutProps) {
   const sourceDone = !!selectedSource;
   const reviewDone = files.length > 0;
   const outputDone = !!destination;
-  const photoCount = files.filter((f) => f.type === 'photo').length;
-  const videoCount = files.filter((f) => f.type === 'video').length;
-  const pickedCount = files.filter((f) => f.pick === 'selected').length;
-  const rejectedCount = files.filter((f) => f.pick === 'rejected').length;
-  const protectedCount = files.filter((f) => f.isProtected).length;
-  const faceCount = files.filter((f) => (f.faceCount ?? 0) > 0).length;
-  const estimatedFaceCount = files.filter((f) => (f.faceCount ?? 0) > 0 && f.faceDetection === 'estimated').length;
-  const faceGroupCount = new Set(files.map((f) => f.faceGroupId).filter(Boolean)).size;
-  const blurCount = files.filter((f) => f.blurRisk === 'high' || f.blurRisk === 'medium').length;
-  const analyzedCount = files.filter((f) => typeof f.reviewScore === 'number' || typeof f.subjectSharpnessScore === 'number').length;
-  const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
+  const fileStats = useMemo(() => {
+    let photoCount = 0;
+    let videoCount = 0;
+    let pickedCount = 0;
+    let rejectedCount = 0;
+    let protectedCount = 0;
+    let faceCount = 0;
+    let estimatedFaceCount = 0;
+    let blurCount = 0;
+    let analyzedCount = 0;
+    let totalBytes = 0;
+    const faceGroupIds = new Set<string>();
+    for (const file of files) {
+      if (file.type === 'photo') photoCount++;
+      else if (file.type === 'video') videoCount++;
+      if (file.pick === 'selected') pickedCount++;
+      if (file.pick === 'rejected') rejectedCount++;
+      if (file.isProtected) protectedCount++;
+      if ((file.faceCount ?? 0) > 0) {
+        faceCount++;
+        if (file.faceDetection === 'estimated') estimatedFaceCount++;
+      }
+      if (file.faceGroupId) faceGroupIds.add(file.faceGroupId);
+      if (file.blurRisk === 'high' || file.blurRisk === 'medium') blurCount++;
+      if (typeof file.reviewScore === 'number' || typeof file.subjectSharpnessScore === 'number') analyzedCount++;
+      totalBytes += file.size;
+    }
+    return {
+      photoCount,
+      videoCount,
+      pickedCount,
+      rejectedCount,
+      protectedCount,
+      faceCount,
+      estimatedFaceCount,
+      faceGroupCount: faceGroupIds.size,
+      blurCount,
+      analyzedCount,
+      totalBytes,
+    };
+  }, [files]);
+  const {
+    photoCount,
+    videoCount,
+    pickedCount,
+    rejectedCount,
+    protectedCount,
+    faceCount,
+    estimatedFaceCount,
+    faceGroupCount,
+    blurCount,
+    analyzedCount,
+    totalBytes,
+  } = fileStats;
   const reviewPct = photoCount > 0 ? Math.round((analyzedCount / photoCount) * 100) : 0;
   const reviewLeft = Math.max(0, photoCount - analyzedCount);
   const activeFilter = filter === 'all' ? 'All photos' : filter.replace(/^face:/, 'Face ');

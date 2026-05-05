@@ -306,6 +306,7 @@ function execFileAsync(
 
 let scannedFiles: MediaFile[] = [];
 let scannedFilesByPath = new Map<string, MediaFile>();
+let scanEventGeneration = 0;
 let knownVolumePaths = new Set<string>();
 type QueuedAutoImport = {
   volume: Volume;
@@ -1008,7 +1009,7 @@ const DEFAULT_SETTINGS: AppSettings = {
 let faceSemaphoreSlots = 1;
 let faceSemaphoreQueue: Array<() => void> = [];
 let faceActiveCount = 0;
-const FACE_CONCURRENCY_HARD_MAX = 8;
+const FACE_CONCURRENCY_HARD_MAX = 4;
 
 // Incremented on every SCAN_START so in-flight semaphore waiters from the
 // previous source can detect they've been superseded and bail out early.
@@ -1082,6 +1083,26 @@ function releaseFaceSemaphore(): void {
     // does not need to increment faceActiveCount itself.
     faceActiveCount++;
     faceSemaphoreQueue.shift()?.();
+  }
+}
+
+// Preview generation can read RAW files and return large base64 strings over
+// IPC. Keep detail previews single-file and thumbnail previews bounded so UI
+// clicks, progress, and settings IPC are not starved by a preview burst.
+const previewActiveByVariant: Record<'preview' | 'detail', number> = { preview: 0, detail: 0 };
+const previewQueueByVariant: Record<'preview' | 'detail', Array<() => void>> = { preview: [], detail: [] };
+const PREVIEW_CONCURRENCY: Record<'preview' | 'detail', number> = { preview: 3, detail: 1 };
+
+async function withPreviewSlot<T>(variant: 'preview' | 'detail', task: () => Promise<T>): Promise<T> {
+  if (previewActiveByVariant[variant] >= PREVIEW_CONCURRENCY[variant]) {
+    await new Promise<void>((resolve) => previewQueueByVariant[variant].push(resolve));
+  }
+  previewActiveByVariant[variant]++;
+  try {
+    return await task();
+  } finally {
+    previewActiveByVariant[variant] = Math.max(0, previewActiveByVariant[variant] - 1);
+    previewQueueByVariant[variant].shift()?.();
   }
 }
 
@@ -1975,8 +1996,36 @@ export function registerIpcHandlers(): void {
     console.log(`[scan] Starting scan of: ${sourcePath}`);
     scannedFiles = [];
     scannedFilesByPath = new Map();
+    const scanGeneration = ++scanEventGeneration;
     clearImageDecodeCache(); // flush stale RAW decodes from previous source
     cancelPendingFaceJobs(); // drain queued face jobs from old source so they don't compete with new scan
+    const thumbnailBuffer = new Map<string, string>();
+    let thumbnailFlushTimer: NodeJS.Timeout | null = null;
+    const flushThumbnailBuffer = () => {
+      if (thumbnailFlushTimer) {
+        clearTimeout(thumbnailFlushTimer);
+        thumbnailFlushTimer = null;
+      }
+      if (scanGeneration !== scanEventGeneration) {
+        thumbnailBuffer.clear();
+        return;
+      }
+      if (thumbnailBuffer.size === 0) return;
+      const batch = Array.from(thumbnailBuffer.entries());
+      thumbnailBuffer.clear();
+      for (const [filePath, thumbnail] of batch) {
+        sendToRenderer(IPC.SCAN_THUMBNAIL, filePath, thumbnail);
+      }
+    };
+    const scheduleThumbnailFlush = () => {
+      if (thumbnailBuffer.size >= 32) {
+        flushThumbnailBuffer();
+        return;
+      }
+      if (!thumbnailFlushTimer) {
+        thumbnailFlushTimer = setTimeout(flushThumbnailBuffer, 120);
+      }
+    };
     try {
       const total = await scanFiles(
         sourcePath,
@@ -1986,9 +2035,12 @@ export function registerIpcHandlers(): void {
           sendToRenderer(IPC.SCAN_BATCH, batch);
         },
         (filePath, thumbnail) => {
+          if (scanGeneration !== scanEventGeneration) return;
           const file = scannedFilesByPath.get(filePath);
-          if (file) file.thumbnail = thumbnail;
-          sendToRenderer(IPC.SCAN_THUMBNAIL, filePath, thumbnail);
+          if (!file) return;
+          file.thumbnail = thumbnail;
+          thumbnailBuffer.set(filePath, thumbnail);
+          scheduleThumbnailFlush();
         },
         folderPattern,
       );
@@ -1998,6 +2050,8 @@ export function registerIpcHandlers(): void {
     } catch (err) {
       console.error('[scan] Error:', err);
       sendToRenderer(IPC.SCAN_COMPLETE, 0);
+    } finally {
+      flushThumbnailBuffer();
     }
   });
 
@@ -2026,10 +2080,12 @@ export function registerIpcHandlers(): void {
     if (typeof filePath !== 'string') return undefined;
     if (variant !== undefined && variant !== 'preview' && variant !== 'detail') return undefined;
     if (!scannedFilesByPath.has(filePath)) return undefined;
-    return generatePreview(filePath, variant ?? 'preview');
+    const requestedVariant = variant ?? 'preview';
+    return withPreviewSlot(requestedVariant, () => generatePreview(filePath, requestedVariant));
   });
 
   handleIpc(IPC.SCAN_CANCEL, async () => {
+    scanEventGeneration++;
     cancelScan();
   });
 
@@ -3030,6 +3086,32 @@ async function runAutoImport(volume: Volume, options: Omit<QueuedAutoImport, 'vo
   try {
     scannedFiles = [];
     scannedFilesByPath = new Map();
+    const scanGeneration = ++scanEventGeneration;
+    const thumbnailBuffer = new Map<string, string>();
+    let thumbnailFlushTimer: NodeJS.Timeout | null = null;
+    const flushThumbnailBuffer = () => {
+      if (thumbnailFlushTimer) {
+        clearTimeout(thumbnailFlushTimer);
+        thumbnailFlushTimer = null;
+      }
+      if (scanGeneration !== scanEventGeneration) {
+        thumbnailBuffer.clear();
+        return;
+      }
+      if (thumbnailBuffer.size === 0) return;
+      const batch = Array.from(thumbnailBuffer.entries());
+      thumbnailBuffer.clear();
+      for (const [filePath, thumbnail] of batch) {
+        sendToRenderer(IPC.SCAN_THUMBNAIL, filePath, thumbnail);
+      }
+    };
+    const scheduleThumbnailFlush = () => {
+      if (thumbnailBuffer.size >= 32) {
+        flushThumbnailBuffer();
+        return;
+      }
+      if (!thumbnailFlushTimer) thumbnailFlushTimer = setTimeout(flushThumbnailBuffer, 120);
+    };
     const pattern = settings.folderPreset === 'custom'
       ? settings.customPattern
       : undefined; // main-process default is '{YYYY}-{MM}-{DD}/{filename}'
@@ -3041,14 +3123,18 @@ async function runAutoImport(volume: Volume, options: Omit<QueuedAutoImport, 'vo
         sendToRenderer(IPC.SCAN_BATCH, batch);
       },
       (filePath, thumbnail) => {
+        if (scanGeneration !== scanEventGeneration) return;
         const file = scannedFilesByPath.get(filePath);
-        if (file) file.thumbnail = thumbnail;
-        sendToRenderer(IPC.SCAN_THUMBNAIL, filePath, thumbnail);
+        if (!file) return;
+        file.thumbnail = thumbnail;
+        thumbnailBuffer.set(filePath, thumbnail);
+        scheduleThumbnailFlush();
       },
       pattern,
     );
     await applyCatalogScanMemory(volume.path).catch((error) => log.warn('[catalog] auto scan memory failed', error));
     sendToRenderer(IPC.SCAN_COMPLETE, total);
+    flushThumbnailBuffer();
 
     const importConfig: ImportConfig = {
       sourcePath: volume.path,
@@ -3097,6 +3183,7 @@ async function runAutoImport(volume: Volume, options: Omit<QueuedAutoImport, 'vo
     }
     sendToRenderer(IPC.AUTO_IMPORT_COMPLETE, result);
   } catch (err) {
+    scanEventGeneration++;
     console.error('[auto-import] failed:', err);
     const message = err instanceof Error ? err.message : 'Auto-import failed';
     sendToRenderer(IPC.AUTO_IMPORT_COMPLETE, {

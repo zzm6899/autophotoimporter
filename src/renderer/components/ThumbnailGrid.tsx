@@ -100,10 +100,11 @@ type FaceSampleQuality = {
   title: string;
 };
 
-const FACE_GALLERY_INITIAL_CARD_LIMIT = 180;
-const FACE_GALLERY_CARD_PAGE_SIZE = 180;
+const FACE_GALLERY_INITIAL_CARD_LIMIT = 96;
+const FACE_GALLERY_CARD_PAGE_SIZE = 96;
 const FACE_CROP_THUMB_SIZE = 224;
 const FACE_CROP_DETAIL_SIZE = 320;
+const FACE_CROP_BUILD_CONCURRENCY = 2;
 
 function stablePathId(value: string): string {
   let hash = 0;
@@ -256,6 +257,24 @@ function maxFaceSimilarityToSample(file: MediaFile | undefined, sampleEmbedding:
 }
 
 const faceCropPreviewCache = new Map<string, string>();
+let activeFaceCropBuilds = 0;
+const faceCropBuildQueue: Array<() => void> = [];
+
+function scheduleFaceCropBuild(task: () => Promise<string>): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const run = () => {
+      activeFaceCropBuilds++;
+      task()
+        .then(resolve, reject)
+        .finally(() => {
+          activeFaceCropBuilds = Math.max(0, activeFaceCropBuilds - 1);
+          faceCropBuildQueue.shift()?.();
+        });
+    };
+    if (activeFaceCropBuilds < FACE_CROP_BUILD_CONCURRENCY) run();
+    else faceCropBuildQueue.push(run);
+  });
+}
 
 function releaseFaceCrop(value: string | undefined): void {
   if (value?.startsWith('blob:')) URL.revokeObjectURL(value);
@@ -383,7 +402,7 @@ function FaceCrop({ file, box }: { file: MediaFile; box?: MediaFaceBox }) {
       setCropPreview(cached);
       return () => { cancelled = true; };
     }
-    void buildFaceCropImage(source, box, cropSize)
+    void scheduleFaceCropBuild(() => buildFaceCropImage(source, box, cropSize))
       .then((preview) => {
         rememberFaceCrop(key, preview);
         if (!cancelled) setCropPreview(preview);
@@ -457,6 +476,35 @@ function FaceCrop({ file, box }: { file: MediaFile; box?: MediaFaceBox }) {
         }}
       />
     </div>
+  );
+}
+
+function FaceThresholdSlider({
+  value,
+  title,
+  onCommit,
+}: {
+  value: number;
+  title: string;
+  onCommit: (value: number) => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [value]);
+  const commit = useCallback(() => onCommit(draft), [draft, onCommit]);
+  return (
+    <input
+      type="range"
+      min={0.42}
+      max={0.72}
+      step={0.01}
+      value={draft}
+      onChange={(event) => setDraft(Number(event.target.value))}
+      onPointerUp={commit}
+      onKeyUp={commit}
+      onBlur={commit}
+      className="w-full h-1 bg-surface-raised rounded appearance-none cursor-pointer accent-violet-400"
+      title={title}
+    />
   );
 }
 
@@ -732,14 +780,9 @@ function FaceIdentityGallery({
                         <span title="Minimum similarity used for this person's card. Lower can pull in more faces; higher splits uncertain faces out.">match {thresholdPercent}%</span>
                         <span title={box ? `Face box covers ${faceAreaPct}% of the image.` : 'No face box was available.'}>{box ? `${faceAreaPct}% face` : 'no box'}</span>
                       </div>
-                      <input
-                        type="range"
-                        min={0.42}
-                        max={0.72}
-                        step={0.01}
+                      <FaceThresholdSlider
                         value={groupThreshold}
-                        onChange={(event) => onGroupThresholdChange(group, Number(event.target.value))}
-                        className="w-full h-1 bg-surface-raised rounded appearance-none cursor-pointer accent-violet-400"
+                        onCommit={(value) => onGroupThresholdChange(group, value)}
                         title="Per-person grouping strictness. Move right to split questionable matches; left to pull in more possible matches."
                       />
                     </div>
@@ -990,10 +1033,21 @@ async function mapWithConcurrency<T, R>(
     while (nextIndex < items.length) {
       const index = nextIndex++;
       results[index] = await fn(items[index], index);
+      if (index % 2 === 1) await yieldToBrowser();
     }
   }));
 
   return results;
+}
+
+function yieldToBrowser(): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof window.requestIdleCallback === 'function') {
+      window.requestIdleCallback(() => resolve(), { timeout: 80 });
+      return;
+    }
+    window.setTimeout(resolve, 0);
+  });
 }
 
 function regionSharpness(data: Uint8ClampedArray, width: number, height: number, region?: { x: number; y: number; w: number; h: number }): number {
@@ -1016,6 +1070,128 @@ function regionSharpness(data: Uint8ClampedArray, width: number, height: number,
   }
   const mean = sum / Math.max(1, count);
   return Math.round(Math.max(0, sumSq / Math.max(1, count) - mean * mean));
+}
+
+type ThumbnailSignals = {
+  sharpnessScore?: number;
+  visualHash?: string;
+  subject?: {
+    subjectSharpnessScore: number;
+    faceCount: number;
+    faceBoxes: Array<{ x: number; y: number; width: number; height: number; eyeScore?: number }>;
+    faceDetection?: 'native' | 'estimated';
+    faceSignature?: string;
+    subjectReasons: string[];
+  };
+};
+
+function loadReviewImage(src: string): Promise<HTMLImageElement> {
+  const img = new Image();
+  img.decoding = 'async';
+  const loaded = new Promise<HTMLImageElement>((resolve, reject) => {
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('image load failed'));
+  });
+  img.src = src;
+  return loaded;
+}
+
+function scoreSharpnessFromImage(img: HTMLImageElement): number {
+  const canvas = document.createElement('canvas');
+  const size = 96;
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return 0;
+  ctx.drawImage(img, 0, 0, size, size);
+  const data = ctx.getImageData(0, 0, size, size).data;
+  let sum = 0;
+  let sumSq = 0;
+  let count = 0;
+  const gray = (idx: number) => data[idx] * 0.299 + data[idx + 1] * 0.587 + data[idx + 2] * 0.114;
+  for (let y = 1; y < size - 1; y++) {
+    for (let x = 1; x < size - 1; x++) {
+      const i = (y * size + x) * 4;
+      const lap = Math.abs(
+        gray(i - size * 4) + gray(i + size * 4) + gray(i - 4) + gray(i + 4) - 4 * gray(i),
+      );
+      sum += lap;
+      sumSq += lap * lap;
+      count++;
+    }
+  }
+  const mean = sum / Math.max(1, count);
+  return Math.round(Math.max(0, sumSq / Math.max(1, count) - mean * mean));
+}
+
+function visualHashFromImage(img: HTMLImageElement): string {
+  const canvas = document.createElement('canvas');
+  const size = 8;
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return '0000000000000000';
+  ctx.drawImage(img, 0, 0, size, size);
+  const data = ctx.getImageData(0, 0, size, size).data;
+  const luma: number[] = [];
+  for (let i = 0; i < data.length; i += 4) {
+    luma.push(data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114);
+  }
+  const sorted = luma.slice().sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)] ?? 0;
+  let bits = '';
+  for (const v of luma) bits += v >= median ? '1' : '0';
+  let hex = '';
+  for (let i = 0; i < bits.length; i += 4) {
+    hex += parseInt(bits.slice(i, i + 4), 2).toString(16);
+  }
+  return hex.padStart(16, '0');
+}
+
+function analyzeSubjectFromImage(img: HTMLImageElement): NonNullable<ThumbnailSignals['subject']> {
+  const canvas = document.createElement('canvas');
+  const width = Math.min(img.naturalWidth, 480);
+  const height = Math.round(width * img.naturalHeight / img.naturalWidth);
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return { subjectSharpnessScore: 0, faceCount: 0, faceBoxes: [], subjectReasons: [] };
+  ctx.drawImage(img, 0, 0, width, height);
+  const data = ctx.getImageData(0, 0, width, height).data;
+  const center = regionSharpness(data, width, height, {
+    x: width * 0.2, y: height * 0.1, w: width * 0.6, h: height * 0.8,
+  });
+  const subjects = detectSubjectBoxes(data, width, height, 0.008);
+  const scored = subjects.map((box) => ({
+    ...box,
+    sharpness: regionSharpness(data, width, height, { x: box.x, y: box.y, w: box.w, h: box.h }),
+  }));
+  const bestSharp = Math.max(center, ...scored.map((s) => s.sharpness));
+  return {
+    subjectSharpnessScore: bestSharp,
+    faceCount: 0,
+    faceBoxes: [],
+    faceDetection: undefined,
+    faceSignature: undefined,
+    subjectReasons: [
+      scored.length > 0
+        ? (scored.length > 1 ? `${scored.length} subject zones` : 'subject focus')
+        : 'center subject',
+    ],
+  };
+}
+
+async function analyzeThumbnailSignals(
+  src: string,
+  needs: { sharpness?: boolean; visualHash?: boolean; subject?: boolean },
+): Promise<ThumbnailSignals> {
+  if (!needs.sharpness && !needs.visualHash && !needs.subject) return {};
+  const img = await loadReviewImage(src);
+  const result: ThumbnailSignals = {};
+  if (needs.sharpness) result.sharpnessScore = scoreSharpnessFromImage(img);
+  if (needs.visualHash) result.visualHash = visualHashFromImage(img);
+  if (needs.subject) result.subject = analyzeSubjectFromImage(img);
+  return result;
 }
 
 function faceCropSignature(
@@ -2154,50 +2330,52 @@ export function ThumbnailGrid() {
       // Canvas work (sharpness, hash, analyzeSubject) runs in the renderer
       // concurrently with the IPC round-trip, overlapping CPU work efficiently.
       void (async () => {
-      const canvasConcurrency = currentFastKeeperMode ? 2 : Math.min(8, Math.max(3, currentFaceConcurrency * 2));
+      const canvasConcurrency = currentFastKeeperMode ? 1 : Math.min(3, Math.max(1, currentFaceConcurrency));
       const entries = await mapWithConcurrency(candidates, canvasConcurrency, async (f): Promise<[string, Partial<MediaFile>]> => {
         if (reviewGeneration !== reviewGenerationRef.current) return [f.path, {}];
         const thumbnail = f.thumbnail as string;
         const failureTag = `analysis-failed:${f.path}`;
         try {
-          // Kick off ONNX IPC and canvas analysis in parallel.
+          const needsSharpness = typeof f.sharpnessScore !== 'number';
+          const needsVisualHash = currentReviewVisualDuplicates && !f.visualHash;
+          const needsSubject = currentReviewFaceAnalysis && !(typeof f.subjectSharpnessScore === 'number' && f.faceBoxes !== undefined);
+          // Kick off ONNX IPC and one shared thumbnail canvas pass in parallel.
           // ONNX is serialised in the main process via the semaphore — concurrent
           // IPC calls queue there and return one at a time, but we overlap the
           // renderer-side canvas work with whatever is ahead in the queue.
-          const [onnxArr, sharpnessScore, hash, subject] = await Promise.all([
+          const [onnxArr, thumbnailSignals] = await Promise.all([
             !currentReviewFaceAnalysis
               ? Promise.resolve([] as Awaited<ReturnType<typeof window.electronAPI.analyzeFaces>>)
               : window.electronAPI.analyzeFaces(f.path).catch(
                   () => [] as Awaited<ReturnType<typeof window.electronAPI.analyzeFaces>>,
                 ),
-            typeof f.sharpnessScore === 'number'
-              ? Promise.resolve(f.sharpnessScore)
-              : scoreSharpness(thumbnail),
-            !currentReviewVisualDuplicates
-              ? Promise.resolve(f.visualHash)
-              : f.visualHash
-              ? Promise.resolve(f.visualHash)
-              : visualHash(thumbnail),
-            !currentReviewFaceAnalysis
-              ? Promise.resolve({
-                  subjectSharpnessScore: f.subjectSharpnessScore ?? 0,
-                  faceCount: f.faceCount ?? 0,
-                  faceBoxes: f.faceBoxes ?? [],
-                  faceDetection: f.faceDetection,
-                  faceSignature: f.faceSignature,
-                  subjectReasons: f.subjectReasons ?? [],
-                })
-              : (typeof f.subjectSharpnessScore === 'number' && f.faceBoxes !== undefined)
-              ? Promise.resolve({
-                  subjectSharpnessScore: f.subjectSharpnessScore,
-                  faceCount: f.faceCount ?? 0,
-                  faceBoxes: f.faceBoxes,
-                  faceDetection: f.faceDetection,
-                  faceSignature: f.faceSignature,
-                  subjectReasons: f.subjectReasons ?? [],
-                })
-              : analyzeSubject(thumbnail),
+            analyzeThumbnailSignals(thumbnail, {
+              sharpness: needsSharpness,
+              visualHash: needsVisualHash,
+              subject: needsSubject,
+            }),
           ]);
+          const sharpnessScore = needsSharpness
+            ? thumbnailSignals.sharpnessScore ?? 0
+            : f.sharpnessScore ?? 0;
+          const hash = needsVisualHash
+            ? thumbnailSignals.visualHash
+            : f.visualHash;
+          const subject = needsSubject
+            ? thumbnailSignals.subject ?? {
+                subjectSharpnessScore: 0,
+                faceCount: 0,
+                faceBoxes: [],
+                subjectReasons: [],
+              }
+            : {
+                subjectSharpnessScore: f.subjectSharpnessScore ?? 0,
+                faceCount: f.faceCount ?? 0,
+                faceBoxes: f.faceBoxes ?? [],
+                faceDetection: f.faceDetection,
+                faceSignature: f.faceSignature,
+                subjectReasons: f.subjectReasons ?? [],
+              };
 
           const onnx = onnxArr[0]; // single-path call always returns 1 result
           const onnxFaceBoxes = normalizeFaceEngineBoxes(onnx?.boxes);
@@ -2264,10 +2442,18 @@ export function ThumbnailGrid() {
         // is a no-op for already-dispatched entries but ensures nothing is missed.
         reviewBatchCounterRef.current += 1;
         if (reviewGeneration !== reviewGenerationRef.current) return;
-        const shouldRefreshGroups = entries.length < batchSize || reviewBatchCounterRef.current % 18 === 0;
+        const shouldRefreshGroups = entries.length < batchSize || reviewBatchCounterRef.current % 36 === 0;
         if (shouldRefreshGroups && phaseRef.current !== 'importing') {
-          if (reviewFaceMatchingRef.current) dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10, embeddingThreshold: faceGroupEmbeddingThresholdRef.current });
-          if (reviewVisualDuplicatesRef.current) dispatch({ type: 'GROUP_VISUAL_DUPLICATES', threshold: 8 });
+          const regroup = () => {
+            if (reviewGeneration !== reviewGenerationRef.current || phaseRef.current === 'importing') return;
+            if (reviewFaceMatchingRef.current) dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10, embeddingThreshold: faceGroupEmbeddingThresholdRef.current });
+            if (reviewVisualDuplicatesRef.current) dispatch({ type: 'GROUP_VISUAL_DUPLICATES', threshold: 8 });
+          };
+          if (typeof window.requestIdleCallback === 'function') {
+            window.requestIdleCallback(regroup, { timeout: 1200 });
+          } else {
+            window.setTimeout(regroup, 250);
+          }
         }
       })
       .catch((err) => { console.error('[review-loop] batch error:', err); })
@@ -3376,14 +3562,13 @@ export function ThumbnailGrid() {
   // Expose-normalize button state (computed before early returns so the
   // handleNormalizeToggle useCallback is always called unconditionally).
   const focusedFile = focusedIndex >= 0 && focusedIndex < sortedFiles.length ? sortedFiles[focusedIndex] : null;
-  const selectedFileMap = useMemo(() => new Map(files.map((file) => [file.path, file])), [files]);
   const selectedFiles = useMemo(() => (
     selectedPaths
-      .map((path) => selectedFileMap.get(path))
+      .map((path) => filesByPath.get(path))
       .filter((file): file is NonNullable<typeof file> => !!file)
-  ), [selectedFileMap, selectedPaths]);
+  ), [filesByPath, selectedPaths]);
   const hasBatchSelection = selectedPaths.length > 0;
-  const anchorFile = exposureAnchorPath ? files.find((f) => f.path === exposureAnchorPath) : null;
+  const anchorFile = exposureAnchorPath ? filesByPath.get(exposureAnchorPath) ?? null : null;
   const anchorHasEV = typeof anchorFile?.exposureValue === 'number';
   const canNormalize = anchorHasEV && saveFormat !== 'original';
   const getThumbnailExposureStops = useCallback((file: typeof files[number]): number => {
@@ -3731,40 +3916,59 @@ export function ThumbnailGrid() {
     dispatch({ type: 'SET_AUTO_SPEED_MODE', enabled: next });
     void window.electronAPI.setSettings({ autoSpeedMode: next });
   }, [autoSpeedMode, dispatch]);
-  const sprintRemaining = useMemo(() => (
-    sortedFiles.filter((file) =>
-      file.type === 'photo' &&
-      !file.pick &&
-      (!file.reviewScore || file.blurRisk === 'high' || !!file.visualGroupId || !!file.burstId)
-    ).length
-  ), [sortedFiles]);
+  const sprintRemaining = useMemo(() => {
+    let count = 0;
+    for (const file of sortedFiles) {
+      if (
+        file.type === 'photo' &&
+        !file.pick &&
+        (!file.reviewScore || file.blurRisk === 'high' || !!file.visualGroupId || !!file.burstId)
+      ) {
+        count++;
+      }
+    }
+    return count;
+  }, [sortedFiles]);
   const visibleThumbStats = useMemo(() => {
     const total = sortedFiles.length;
-    const ready = sortedFiles.filter((f) => !!f.thumbnail).length;
+    let ready = 0;
+    for (const file of sortedFiles) if (file.thumbnail) ready++;
     return { total, ready };
   }, [sortedFiles]);
   const allTargetsNormalized = normalizeTargetPaths.length > 0 &&
     normalizeTargetPaths.every((p) => files.find((f) => f.path === p)?.normalizeToAnchor);
-  const duplicateCount = files.filter((f) => f.duplicate).length;
-  const catalogMatchCount = files.filter((f) => !!f.duplicateMemory).length;
-  const highBlurRejectPaths = useMemo(
-    () => files.filter((f) => f.blurRisk === 'high' && f.pick !== 'selected').map((f) => f.path),
-    [files],
-  );
-  const groupedDecisionCount = useMemo(
-    () => files.filter((f) =>
-      (f.burstId && f.burstSize && f.burstSize > 1) ||
-      (f.visualGroupId && f.visualGroupSize && f.visualGroupSize > 1) ||
-      (f.faceGroupId && f.faceGroupSize && f.faceGroupSize > 1)
-    ).length,
-    [files],
-  );
+  const duplicateCount = reviewStats.duplicates;
+  const catalogMatchCount = useMemo(() => {
+    let count = 0;
+    for (const file of files) if (file.duplicateMemory) count++;
+    return count;
+  }, [files]);
+  const highBlurRejectPaths = useMemo(() => {
+    const paths: string[] = [];
+    for (const file of files) {
+      if (file.blurRisk === 'high' && file.pick !== 'selected') paths.push(file.path);
+    }
+    return paths;
+  }, [files]);
+  const groupedDecisionCount = useMemo(() => {
+    let count = 0;
+    for (const file of files) {
+      if (
+        (file.burstId && file.burstSize && file.burstSize > 1) ||
+        (file.visualGroupId && file.visualGroupSize && file.visualGroupSize > 1) ||
+        (file.faceGroupId && file.faceGroupSize && file.faceGroupSize > 1)
+      ) {
+        count++;
+      }
+    }
+    return count;
+  }, [files]);
   const avgManualStops = normalizeTargetPaths.length > 0
-    ? normalizeTargetPaths.reduce((sum, p) => sum + (files.find((f) => f.path === p)?.exposureAdjustmentStops ?? 0), 0) / normalizeTargetPaths.length
+    ? normalizeTargetPaths.reduce((sum, p) => sum + (filesByPath.get(p)?.exposureAdjustmentStops ?? 0), 0) / normalizeTargetPaths.length
     : 0;
   const avgEffectiveStops = normalizeTargetPaths.length > 0
     ? normalizeTargetPaths.reduce((sum, p) => {
-      const file = files.find((entry) => entry.path === p);
+      const file = filesByPath.get(p);
       return sum + (file
         ? getEffectiveExposureStops(
             file.exposureAdjustmentStops,
