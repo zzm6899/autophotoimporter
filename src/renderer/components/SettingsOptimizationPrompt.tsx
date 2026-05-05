@@ -1,13 +1,31 @@
 import { useEffect, useState } from 'react';
 import { useAppDispatch } from '../context/ImportContext';
-import packageJson from '../../../package.json';
 
 const OPEN_PERFORMANCE_EVENT = 'photo-importer:settings-performance';
+const PERFORMANCE_PROMPT_ID = 'ai-preview-performance-controls-v1';
+const PERFORMANCE_PROMPT_STORAGE_KEY = 'keptra.performancePromptSeen';
+
+function hasSeenPerformancePrompt(settingsValue?: string): boolean {
+  if (typeof settingsValue === 'string' && settingsValue.trim().length > 0) return true;
+  try {
+    const localValue = window.localStorage.getItem(PERFORMANCE_PROMPT_STORAGE_KEY);
+    return localValue === PERFORMANCE_PROMPT_ID || localValue === 'dismissed';
+  } catch {
+    return false;
+  }
+}
+
+function rememberPerformancePromptSeen(): void {
+  try {
+    window.localStorage.setItem(PERFORMANCE_PROMPT_STORAGE_KEY, PERFORMANCE_PROMPT_ID);
+  } catch {
+    // Settings persistence below is the primary store; localStorage is only a renderer fallback.
+  }
+}
 
 export function SettingsOptimizationPrompt() {
   const dispatch = useAppDispatch();
   const [show, setShow] = useState(false);
-  const [version, setVersion] = useState<string>('');
   const [summary, setSummary] = useState<string>('Checking this PC can tune GPU, CPU, preview cache, and face scan concurrency.');
 
   useEffect(() => {
@@ -21,9 +39,6 @@ export function SettingsOptimizationPrompt() {
         ]);
         if (cancelled) return;
 
-        const currentVersion = packageJson.version || 'local';
-        setVersion(currentVersion);
-
         if (profile) {
           setSummary(
             `${profile.cpuCores} CPU threads and ${profile.totalMemGB}GB RAM detected. ` +
@@ -31,7 +46,7 @@ export function SettingsOptimizationPrompt() {
           );
         }
 
-        if (settings.performancePromptSeenVersion !== currentVersion) {
+        if (!hasSeenPerformancePrompt(settings.performancePromptSeenVersion)) {
           setShow(true);
         }
       } catch {
@@ -50,14 +65,13 @@ export function SettingsOptimizationPrompt() {
   }, []);
 
   const markSeen = async () => {
-    if (version) {
-      await window.electronAPI.setSettings({ performancePromptSeenVersion: version });
-    }
+    rememberPerformancePromptSeen();
+    await window.electronAPI.setSettings({ performancePromptSeenVersion: PERFORMANCE_PROMPT_ID }).catch(() => undefined);
   };
 
   const handleOpenSettings = async () => {
-    await markSeen();
     setShow(false);
+    await markSeen();
     dispatch({ type: 'SET_VIEW_MODE', mode: 'settings' });
     window.setTimeout(() => {
       window.dispatchEvent(new Event(OPEN_PERFORMANCE_EVENT));
@@ -65,8 +79,8 @@ export function SettingsOptimizationPrompt() {
   };
 
   const handleLater = async () => {
-    await markSeen();
     setShow(false);
+    await markSeen();
   };
 
   if (!show) return null;
