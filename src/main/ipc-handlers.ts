@@ -19,6 +19,7 @@ import { getCachedFaceResult, setCachedFaceResult, clearFaceCache } from './serv
 import { detectDeviceTier, applyDeviceTier } from './services/device-tier';
 import { setRawPreviewQuality } from './services/exif-parser';
 import { openCatalog, type CatalogService } from './services/catalog';
+import { openSessionStore, type SessionStoreService } from './services/session-store';
 import { normalizeWatchFolders, WatchFolderManager, type WatchFolderTrigger } from './services/watch-folders';
 import { registerSettingsHandlers } from './ipc/settings-handlers';
 import { registerScanHandlers } from './ipc/scan-handlers';
@@ -334,10 +335,16 @@ let lastFtpSyncStatus: FtpSyncStatus = {
 };
 let watchFolderManager: WatchFolderManager | null = null;
 let catalogService: Promise<CatalogService> | null = null;
+let sessionStoreService: Promise<SessionStoreService> | null = null;
 
 function getCatalogService(): Promise<CatalogService> {
   catalogService ??= openCatalog(path.join(app.getPath('userData'), 'catalog'));
   return catalogService;
+}
+
+function getSessionStoreService(): Promise<SessionStoreService> {
+  sessionStoreService ??= openSessionStore(getSessionsDir());
+  return sessionStoreService;
 }
 
 const UPDATE_ALLOWED_HOSTS = new Set([
@@ -405,10 +412,6 @@ function getLatestLedgerPath(): string {
 
 function getSessionsDir(): string {
   return path.join(app.getPath('userData'), 'sessions');
-}
-
-function getLatestSessionPath(): string {
-  return path.join(getSessionsDir(), 'latest.json');
 }
 
 function getUpdateMetadataPath(): string {
@@ -870,58 +873,21 @@ async function recordCatalogImport(config: ImportConfig, result: ImportResult): 
   await db.recordImportLedgerItems(result.ledgerId, result.ledgerItems, { sessionId: config.sourcePath });
 }
 
-async function readAppSessionFile(filePath: string): Promise<AppSession | null> {
-  try {
-    return JSON.parse(await readFile(filePath, 'utf8')) as AppSession;
-  } catch {
-    return null;
-  }
-}
-
 let lastSavedSessionIdSetting = '';
 
-function stripSessionMediaFile(file: MediaFile): MediaFile {
-  const { thumbnail: _thumbnail, ...metadata } = file;
-  return metadata as MediaFile;
-}
-
-function stripSessionThumbnails(session: AppSession): { session: AppSession; removed: number } {
-  let removed = 0;
-  const files = session.files.map((file) => {
-    if (file.thumbnail) removed++;
-    return stripSessionMediaFile(file);
-  });
-  return {
-    session: removed > 0 ? { ...session, files } : session,
-    removed,
-  };
-}
-
 async function persistAppSession(session: AppSession): Promise<AppSession> {
-  const dir = getSessionsDir();
-  await mkdir(dir, { recursive: true });
-  const sessionPath = path.join(dir, `${session.id}.json`);
-  const { session: leanSession } = stripSessionThumbnails(session);
-  const content = JSON.stringify(leanSession);
-  await writeFile(sessionPath, content, { encoding: 'utf8', mode: 0o600 });
-  await writeFile(getLatestSessionPath(), content, { encoding: 'utf8', mode: 0o600 });
+  const store = await getSessionStoreService();
+  const saved = await store.save(session);
   if (lastSavedSessionIdSetting !== session.id) {
     await saveSettings({ lastSessionId: session.id });
     lastSavedSessionIdSetting = session.id;
   }
-  return leanSession;
+  return saved;
 }
 
 async function readLatestAppSession(): Promise<AppSession | null> {
-  const session = await readAppSessionFile(getLatestSessionPath());
-  if (!session) return null;
-  const compacted = stripSessionThumbnails(session);
-  if (compacted.removed > 0) {
-    await persistAppSession(compacted.session).catch((error) => {
-      log.warn('[session] thumbnail compaction failed', error);
-    });
-  }
-  return compacted.session;
+  const store = await getSessionStoreService();
+  return store.readLatest();
 }
 
 async function readSettingsData(): Promise<string> {
