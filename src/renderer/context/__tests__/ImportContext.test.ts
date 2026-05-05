@@ -205,6 +205,13 @@ describe('ImportContext reducer', () => {
       expect(next.previousViewMode).toBeNull();
     });
 
+    it('leaves expensive face filters when import starts', () => {
+      const state = makeState({ phase: 'ready', filter: 'face-gallery' });
+      const next = reducer(state, { type: 'IMPORT_START' });
+      expect(next.phase).toBe('importing');
+      expect(next.filter).toBe('all');
+    });
+
     it('importing → complete on IMPORT_COMPLETE', () => {
       const result: ImportResult = { imported: 5, skipped: 0, errors: [], totalBytes: 1000, durationMs: 500 };
       const state = makeState({ phase: 'importing' });

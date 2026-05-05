@@ -116,6 +116,35 @@ function hasFaceMatchData(file: MediaFile): boolean {
   return !!file.faceEmbedding || (file.faceEmbeddings?.length ?? 0) > 0;
 }
 
+function faceMatchFingerprint(files: MediaFile[], enabled: boolean): string {
+  if (!enabled) return '';
+  let count = 0;
+  let hash = 2166136261;
+  const append = (value: string | number | undefined) => {
+    const text = String(value ?? '');
+    for (let i = 0; i < text.length; i++) {
+      hash ^= text.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+  };
+  for (const file of files) {
+    const embeddings = serializedFaceEmbeddings(file);
+    if (embeddings.length === 0) continue;
+    count++;
+    const first = embeddings[0] ?? '';
+    const last = embeddings[embeddings.length - 1] ?? '';
+    append(file.path);
+    append(embeddings.length);
+    append(first.length);
+    append(first.slice(0, 24));
+    append(last.slice(-24));
+    append(file.faceCount ?? file.faceBoxes?.length ?? 0);
+    append(file.faceDetection);
+    append(Math.round(faceSignalConfidence(file) * 1000));
+  }
+  return `${count}:${(hash >>> 0).toString(36)}`;
+}
+
 function normalizeFaceEngineBoxes(boxes: Array<{ x: number; y: number; width: number; height: number; score?: number }> | undefined): MediaFaceBox[] {
   return (boxes ?? [])
     .filter((box) => box.width > 0 && box.height > 0)
@@ -1305,6 +1334,7 @@ export function ThumbnailGrid() {
   // race each other, ref resets cancel in-flight work, and the loop stalls after 1 image.
   const filesRef = useRef(files);
   const sortedFilesRef = useRef<typeof files>([]);
+  const phaseRef = useRef(phase);
   const multiClickSelectRef = useRef(false);
   const reviewPausedRef = useRef(false);
   const reviewWaitingRef = useRef(false);
@@ -1315,6 +1345,8 @@ export function ThumbnailGrid() {
   const reviewFaceMatchingRef = useRef(reviewFaceMatching);
   const reviewVisualDuplicatesRef = useRef(reviewVisualDuplicates);
   const faceGroupEmbeddingThresholdRef = useRef(FACE_GROUP_EMBEDDING_THRESHOLD);
+  const faceIdentityCacheRef = useRef<{ key: string; groups: FaceIdentityGroup[] } | null>(null);
+  const importPausedReviewRef = useRef(false);
   const autoSpeedTriggeredRef = useRef(false);
   const collapsedSet = useMemo(() => new Set(collapsedBursts), [collapsedBursts]);
   const queuedSet = useMemo(() => new Set(queuedPaths), [queuedPaths]);
@@ -1337,14 +1369,27 @@ export function ThumbnailGrid() {
     return a.every((value, index) => value === b[index]);
   }, []);
 
-  const shouldBuildFaceIdentityGroups = filter === 'face-gallery' || filter === 'face-groups' || filter.startsWith('face:');
+  const faceGroupingSuspended = phase === 'importing' || phase === 'scanning';
+  const shouldBuildFaceIdentityGroups = !faceGroupingSuspended && (filter === 'face-gallery' || filter === 'face-groups' || filter.startsWith('face:'));
   const includeFaceIdentitySingletons = filter === 'face-gallery' || filter.startsWith('face:');
   const faceGroupEmbeddingThreshold = faceGroupThresholdFor(faceGroupSensitivity);
   useEffect(() => { faceGroupEmbeddingThresholdRef.current = faceGroupEmbeddingThreshold; }, [faceGroupEmbeddingThreshold]);
-  const faceIdentityGroups = useMemo(
-    () => shouldBuildFaceIdentityGroups ? buildFaceIdentityGroups(files, faceGroupEmbeddingThreshold, includeFaceIdentitySingletons) : [],
-    [faceGroupEmbeddingThreshold, files, includeFaceIdentitySingletons, shouldBuildFaceIdentityGroups],
+  const faceIdentityFingerprint = useMemo(
+    () => faceMatchFingerprint(files, shouldBuildFaceIdentityGroups),
+    [files, shouldBuildFaceIdentityGroups],
   );
+  const faceIdentityGroups = useMemo(() => {
+    if (!shouldBuildFaceIdentityGroups) return [];
+    const key = `${faceIdentityFingerprint}:${faceGroupEmbeddingThreshold}:${includeFaceIdentitySingletons ? 1 : 0}`;
+    const cached = faceIdentityCacheRef.current;
+    if (cached?.key === key) return cached.groups;
+    const groups = buildFaceIdentityGroups(files, faceGroupEmbeddingThreshold, includeFaceIdentitySingletons);
+    faceIdentityCacheRef.current = { key, groups };
+    return groups;
+  // files is intentionally read through the face-data fingerprint so unrelated
+  // review score updates do not rebuild identity clusters on the renderer thread.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [faceGroupEmbeddingThreshold, faceIdentityFingerprint, includeFaceIdentitySingletons, shouldBuildFaceIdentityGroups]);
   const filesByPath = useMemo(() => new Map(files.map((file) => [file.path, file])), [files]);
   const displayFaceIdentityGroups = useMemo(() => {
     if (faceIdentityGroups.length === 0 && manualFaceGroups.length === 0) return [];
@@ -1817,6 +1862,7 @@ export function ThumbnailGrid() {
   // having them as deps (which would restart the loop on every score update).
   useEffect(() => { filesRef.current = files; });
   useEffect(() => { sortedFilesRef.current = sortedFiles; });
+  useEffect(() => { phaseRef.current = phase; }, [phase]);
   useEffect(() => {
     if (sortedFiles.length === 0) {
       if (focusedIndex !== -1 || focusedPath) dispatch({ type: 'SET_FOCUSED', index: -1, path: null });
@@ -1841,11 +1887,31 @@ export function ThumbnailGrid() {
   useEffect(() => {
     if (phase !== 'importing') return;
     if (viewMode !== 'grid') dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' });
+    if (filter === 'face-gallery' || filter === 'face-groups' || filter.startsWith('face:')) {
+      dispatch({ type: 'SET_FILTER', filter: 'all' });
+    }
     if (!multiClickSelect) {
       multiClickSelectRef.current = true;
       setMultiClickSelect(true);
     }
-  }, [dispatch, multiClickSelect, phase, viewMode]);
+  }, [dispatch, filter, multiClickSelect, phase, viewMode]);
+  useEffect(() => {
+    if (phase === 'importing') {
+      importPausedReviewRef.current = true;
+      reviewGenerationRef.current++;
+      sharpnessInFlightRef.current = false;
+      setBackgroundLoadingPaused(true);
+      void window.electronAPI.cancelFaceAnalysis?.().catch(() => undefined);
+    } else if (!reviewPaused) {
+      setBackgroundLoadingPaused(false);
+      if (importPausedReviewRef.current) {
+        importPausedReviewRef.current = false;
+        setReviewLoopTick((value) => value + 1);
+      }
+    } else {
+      importPausedReviewRef.current = false;
+    }
+  }, [phase, reviewPaused]);
   useEffect(() => { reviewPausedRef.current = reviewPaused; }, [reviewPaused]);
   useEffect(() => { reviewWaitingRef.current = reviewWaitingForThumbnails; }, [reviewWaitingForThumbnails]);
   useEffect(() => { fastKeeperModeRef.current = fastKeeperMode; }, [fastKeeperMode]);
@@ -1872,6 +1938,7 @@ export function ThumbnailGrid() {
     setCatalogFaceSearch(null);
     setFaceCoverOverrides({});
     setFaceThresholdOverrides({});
+    faceIdentityCacheRef.current = null;
   }, [selectedSource]);
   useEffect(() => {
     let cancelled = false;
@@ -1939,6 +2006,7 @@ export function ThumbnailGrid() {
   useEffect(() => {
     if (sharpnessInFlightRef.current) return;
     if (reviewPausedRef.current) return;
+    if (phaseRef.current === 'importing') return;
     // Don't start analysis until at least one thumbnail is ready — the candidate
     // filter requires f.thumbnail to be truthy. If we bail with 0 candidates here
     // the sharpnessInFlightRef is NOT set, so the loop will re-fire correctly once
@@ -2134,7 +2202,8 @@ export function ThumbnailGrid() {
         // is a no-op for already-dispatched entries but ensures nothing is missed.
         reviewBatchCounterRef.current += 1;
         if (reviewGeneration !== reviewGenerationRef.current) return;
-        if (reviewBatchCounterRef.current % 5 === 0 || entries.length < batchSize) {
+        const shouldRefreshGroups = entries.length < batchSize || reviewBatchCounterRef.current % 18 === 0;
+        if (shouldRefreshGroups && phaseRef.current !== 'importing') {
           if (reviewFaceMatchingRef.current) dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10, embeddingThreshold: faceGroupEmbeddingThresholdRef.current });
           if (reviewVisualDuplicatesRef.current) dispatch({ type: 'GROUP_VISUAL_DUPLICATES', threshold: 8 });
         }

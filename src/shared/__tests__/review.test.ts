@@ -19,6 +19,33 @@ function embeddingHex(values: number[]): string {
   return Buffer.from(array.buffer).toString('hex');
 }
 
+function seededRandom(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    return state / 0x100000000;
+  };
+}
+
+function dot(a: number[], b: number[]): number {
+  return a.reduce((sum, value, index) => sum + value * b[index], 0);
+}
+
+function normalize(values: number[]): number[] {
+  const norm = Math.sqrt(values.reduce((sum, value) => sum + value * value, 0));
+  return values.map((value) => value / norm);
+}
+
+function randomUnitVector(dimensions: number, random: () => number): number[] {
+  return normalize(Array.from({ length: dimensions }, () => random() * 2 - 1));
+}
+
+function orthogonalUnitVector(anchor: number[], random: () => number): number[] {
+  const candidate = randomUnitVector(anchor.length, random);
+  const projection = dot(anchor, candidate);
+  return normalize(candidate.map((value, index) => value - anchor[index] * projection));
+}
+
 describe('review utilities', () => {
   it('computes hamming distance for hex hashes', () => {
     expect(hammingDistanceHex('0000', '0000')).toBe(0);
@@ -127,6 +154,47 @@ describe('review utilities', () => {
     expect(groups).toHaveLength(1);
     expect(groups[0].paths).toEqual(['/front.jpg', '/profile.jpg', '/turned.jpg']);
   });
+
+  it('handles large bridged face galleries without an exhaustive second-pass merge', () => {
+    const identityCount = 270;
+    const random = seededRandom(42);
+    const fronts: MediaFile[] = [];
+    const profiles: MediaFile[] = [];
+    const bridges: MediaFile[] = [];
+
+    for (let index = 0; index < identityCount; index++) {
+      const front = randomUnitVector(128, random);
+      const profile = orthogonalUnitVector(front, random);
+      const bridge = normalize(front.map((value, dimension) => value + profile[dimension]));
+      const faceMetadata: Partial<MediaFile> = {
+        faceCount: 1,
+        faceDetection: 'native',
+        faceBoxes: [{ x: 0.3, y: 0.2, width: 0.18, height: 0.2, score: 0.96 }],
+        subjectSharpnessScore: 140,
+      };
+
+      fronts.push(file(`/identity-${index}-front.jpg`, undefined, {
+        ...faceMetadata,
+        faceEmbedding: embeddingHex(front),
+      }));
+      profiles.push(file(`/identity-${index}-profile.jpg`, undefined, {
+        ...faceMetadata,
+        faceEmbedding: embeddingHex(profile),
+      }));
+      bridges.push(file(`/identity-${index}-bridge.jpg`, undefined, {
+        ...faceMetadata,
+        faceEmbedding: embeddingHex(bridge),
+      }));
+    }
+
+    const startedAt = Date.now();
+    const groups = buildFaceIdentityGroups([...fronts, ...profiles, ...bridges], 0.67);
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(groups).toHaveLength(identityCount);
+    expect(groups.every((group) => group.size === 3)).toBe(true);
+    expect(elapsedMs).toBeLessThan(4000);
+  }, 10000);
 
   it('can include one-photo face identities for the gallery', () => {
     const groups = buildFaceIdentityGroups([

@@ -1,7 +1,7 @@
 {
   "name": "keptra",
   "productName": "Keptra",
-  "version": "1.4.30",
+  "version": "1.4.31",
   "description": "AI-assisted photo culling, import, and keeper selection",
   "main": ".vite/build/main.js",
   "private": true,

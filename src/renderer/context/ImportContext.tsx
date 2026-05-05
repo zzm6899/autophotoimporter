@@ -11,6 +11,10 @@ export type ViewMode = 'grid' | 'single' | 'split' | 'compare' | 'settings';
 export type FilterMode = 'all' | 'protected' | 'picked' | 'rejected' | 'unrated' | 'duplicates' | 'catalog-duplicates' | 'unmarked' | 'queue' | 'best' | 'faces' | 'face-groups' | 'face-gallery' | 'group-photos' | 'blur-risk' | 'near-duplicates' | 'review-needed' | 'needs-exposure' | 'normalized' | 'adjusted' | 'photos' | 'videos' | 'raw' | RatingFilter | `camera:${string}` | `lens:${string}` | `date:${string}` | `ext:${string}` | `scene:${string}` | `burst:${string}` | `face:${string}`;
 const MAX_FACE_CONCURRENCY = 8;
 
+function isExpensiveImportFilter(filter: FilterMode): boolean {
+  return filter === 'face-gallery' || filter === 'face-groups' || filter.startsWith('face:');
+}
+
 interface State {
   volumes: Volume[];
   selectedSource: string | null;
@@ -516,6 +520,7 @@ export function reducer(state: State, action: Action): State {
         phase: 'importing',
         viewMode: 'grid',
         previousViewMode: null,
+        filter: isExpensiveImportFilter(state.filter) ? 'all' : state.filter,
         importProgress: null,
         importResult: null,
       };

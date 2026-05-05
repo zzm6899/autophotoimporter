@@ -542,6 +542,7 @@ type FaceEmbeddingEntry = {
 };
 
 const FACE_CLUSTER_REPRESENTATIVE_LIMIT = 8;
+const FACE_CLUSTER_SECOND_PASS_LIMIT = 512;
 
 type FaceCluster = {
   pathSet: Set<string>;
@@ -734,7 +735,31 @@ function mergeFaceClusterInto(target: FaceCluster, source: FaceCluster): void {
   for (const candidate of candidates) addFaceRepresentative(target, candidate);
 }
 
+function addFaceEntryToCluster(cluster: FaceCluster, entry: FaceEmbeddingEntry): void {
+  cluster.pathSet.add(entry.path);
+  cluster.entries.push(entry);
+  cluster.embeddingCount += 1;
+  if (
+    entry.confidence > cluster.sampleEntry.confidence ||
+    (entry.confidence === cluster.sampleEntry.confidence && entry.order < cluster.sampleEntry.order)
+  ) {
+    cluster.sampleEntry = entry;
+  }
+  const nextWeight = Math.max(0.35, entry.confidence);
+  const totalWeight = cluster.weight + nextWeight;
+  const nextCentroid = new Float32Array(cluster.centroid.length);
+  for (let i = 0; i < nextCentroid.length; i++) {
+    nextCentroid[i] = (cluster.centroid[i] * cluster.weight + entry.embedding[i] * nextWeight) / totalWeight;
+  }
+  cluster.centroid = normalizeEmbedding(nextCentroid) ?? cluster.centroid;
+  cluster.weight = totalWeight;
+  cluster.confidence = Math.max(cluster.confidence, entry.confidence);
+  addFaceRepresentative(cluster, entry);
+}
+
 function mergeFaceIdentityClusters(clusters: FaceCluster[], threshold: number): FaceCluster[] {
+  if (clusters.length > FACE_CLUSTER_SECOND_PASS_LIMIT) return clusters;
+
   let changed = true;
   while (changed) {
     changed = false;
@@ -760,6 +785,7 @@ export function buildFaceIdentityGroups(files: MediaFile[], threshold = 0.67, in
   for (const entry of faceEntries) {
     let bestCluster: FaceCluster | null = null;
     let bestSimilarity = 0;
+    const matchingClusters: FaceCluster[] = [];
     for (const cluster of clusters) {
       const centroidSimilarity = cosineSimilarity(entry.embedding, cluster.centroid);
       let representativeSimilarity = centroidSimilarity;
@@ -777,11 +803,13 @@ export function buildFaceIdentityGroups(files: MediaFile[], threshold = 0.67, in
         representativeMatch ? representativeSimilarity - 0.025 : 0,
       );
       if (
-        (centroidSimilarity >= adaptiveThreshold || representativeMatch) &&
-        similarity > bestSimilarity
+        centroidSimilarity >= adaptiveThreshold || representativeMatch
       ) {
-        bestCluster = cluster;
-        bestSimilarity = similarity;
+        matchingClusters.push(cluster);
+        if (similarity > bestSimilarity) {
+          bestCluster = cluster;
+          bestSimilarity = similarity;
+        }
       }
     }
 
@@ -790,25 +818,16 @@ export function buildFaceIdentityGroups(files: MediaFile[], threshold = 0.67, in
       continue;
     }
 
-    bestCluster.pathSet.add(entry.path);
-    bestCluster.entries.push(entry);
-    bestCluster.embeddingCount += 1;
-    if (
-      entry.confidence > bestCluster.sampleEntry.confidence ||
-      (entry.confidence === bestCluster.sampleEntry.confidence && entry.order < bestCluster.sampleEntry.order)
-    ) {
-      bestCluster.sampleEntry = entry;
+    if (matchingClusters.length > 1) {
+      const mergedClusters = new Set(matchingClusters.filter((cluster) => cluster !== bestCluster));
+      for (const cluster of matchingClusters) {
+        if (cluster !== bestCluster) mergeFaceClusterInto(bestCluster, cluster);
+      }
+      for (let i = clusters.length - 1; i >= 0; i--) {
+        if (mergedClusters.has(clusters[i])) clusters.splice(i, 1);
+      }
     }
-    const nextWeight = Math.max(0.35, entry.confidence);
-    const totalWeight = bestCluster.weight + nextWeight;
-    const nextCentroid = new Float32Array(bestCluster.centroid.length);
-    for (let i = 0; i < nextCentroid.length; i++) {
-      nextCentroid[i] = (bestCluster.centroid[i] * bestCluster.weight + entry.embedding[i] * nextWeight) / totalWeight;
-    }
-    bestCluster.centroid = normalizeEmbedding(nextCentroid) ?? bestCluster.centroid;
-    bestCluster.weight = totalWeight;
-    bestCluster.confidence = Math.max(bestCluster.confidence, entry.confidence);
-    addFaceRepresentative(bestCluster, entry);
+    addFaceEntryToCluster(bestCluster, entry);
   }
 
   return mergeFaceIdentityClusters(clusters, threshold)
