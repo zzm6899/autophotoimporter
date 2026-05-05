@@ -17,9 +17,15 @@ function getRendererDevServerUrl(): string | undefined {
 }
 
 const rendererDevServerUrl = getRendererDevServerUrl();
+const packageSmokeMode = process.env.KEPTRA_PACKAGE_SMOKE === '1';
+const packageSmokeShowWindow = process.env.KEPTRA_PACKAGE_SMOKE_SHOW === '1';
 
 if (rendererDevServerUrl) {
   app.setPath('userData', path.join(app.getPath('appData'), 'Keptra Dev'));
+}
+
+if (packageSmokeMode) {
+  app.setPath('userData', path.join(app.getPath('temp'), `Keptra Package Smoke ${process.pid}`));
 }
 
 initializeLogging();
@@ -32,8 +38,6 @@ if (process.platform === 'win32' && process.env.KEPTRA_DISABLE_RENDERER_GPU === 
 }
 
 let mainWindow: BrowserWindow | null = null;
-const packageSmokeMode = process.env.KEPTRA_PACKAGE_SMOKE === '1';
-const packageSmokeShowWindow = process.env.KEPTRA_PACKAGE_SMOKE_SHOW === '1';
 
 function getWindowIconPath(): string | undefined {
   if (process.platform === 'darwin') return undefined;

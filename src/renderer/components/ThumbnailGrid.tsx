@@ -540,6 +540,8 @@ function FaceCrop({ file, box }: { file: MediaFile; box?: MediaFaceBox }) {
   const [detailPreview, setDetailPreview] = useState<string | undefined>();
   const [cropPreview, setCropPreview] = useState<string | undefined>();
   const boxKey = box ? `${box.x}:${box.y}:${box.width}:${box.height}` : 'none';
+  const requestDetail = useCallback(() => setDetailRequested(true), []);
+  const needsPreview = !file.thumbnail || detailRequested;
 
   useEffect(() => {
     const node = cropRef.current;
@@ -560,7 +562,7 @@ function FaceCrop({ file, box }: { file: MediaFile; box?: MediaFaceBox }) {
   useEffect(() => {
     let cancelled = false;
     setDetailPreview(undefined);
-    if (!box || file.type !== 'photo' || !shouldLoadDetail || !detailRequested) return () => { cancelled = true; };
+    if (file.type !== 'photo' || !shouldLoadDetail || !needsPreview) return () => { cancelled = true; };
     void getCachedPreview(file.path, 'detail', 'normal')
       .then((preview) => {
         if (!cancelled) setDetailPreview(preview);
@@ -569,14 +571,14 @@ function FaceCrop({ file, box }: { file: MediaFile; box?: MediaFaceBox }) {
         if (!cancelled) setDetailPreview(undefined);
       });
     return () => { cancelled = true; };
-  }, [box, boxKey, detailRequested, file.path, file.type, shouldLoadDetail]);
+  }, [box, boxKey, file.path, file.type, needsPreview, shouldLoadDetail]);
 
   useEffect(() => {
     let cancelled = false;
     setCropPreview(undefined);
-    const source = detailPreview || file.thumbnail;
-    if (!source || !shouldLoadDetail) return () => { cancelled = true; };
-    const cropSize = detailPreview ? FACE_CROP_DETAIL_SIZE : FACE_CROP_THUMB_SIZE;
+    const source = detailPreview;
+    if (!source || !shouldLoadDetail || !needsPreview) return () => { cancelled = true; };
+    const cropSize = FACE_CROP_DETAIL_SIZE;
     const key = faceCropKey(file.path, box, source, cropSize);
     const cached = faceCropPreviewCache.get(key);
     if (cached) {
@@ -592,26 +594,31 @@ function FaceCrop({ file, box }: { file: MediaFile; box?: MediaFaceBox }) {
         if (!cancelled) setCropPreview(undefined);
       });
     return () => { cancelled = true; };
-  }, [box, boxKey, detailPreview, file.path, file.thumbnail, shouldLoadDetail]);
+  }, [box, boxKey, detailPreview, file.path, needsPreview, shouldLoadDetail]);
 
   if (cropPreview) {
     return (
       <div
         ref={cropRef}
         className="h-full w-full overflow-hidden bg-black"
-        onPointerEnter={() => setDetailRequested(true)}
-        onFocusCapture={() => setDetailRequested(true)}
+        onPointerEnter={requestDetail}
+        onFocusCapture={requestDetail}
       >
         <img src={cropPreview} alt="" className="h-full w-full object-cover" draggable={false} decoding="async" />
       </div>
     );
   }
 
-  const source = detailPreview || file.thumbnail || file.path;
+  const source = file.thumbnail ?? detailPreview;
   if (!source) {
     return (
-      <div className="flex h-full w-full items-center justify-center bg-surface-raised text-[10px] text-text-muted">
-        No preview
+      <div
+        ref={cropRef}
+        className="flex h-full w-full items-center justify-center bg-surface-raised text-[10px] text-text-muted"
+        onPointerEnter={requestDetail}
+        onFocusCapture={requestDetail}
+      >
+        Loading
       </div>
     );
   }
@@ -621,8 +628,8 @@ function FaceCrop({ file, box }: { file: MediaFile; box?: MediaFaceBox }) {
       <div
         ref={cropRef}
         className="h-full w-full overflow-hidden bg-black"
-        onPointerEnter={() => setDetailRequested(true)}
-        onFocusCapture={() => setDetailRequested(true)}
+        onPointerEnter={requestDetail}
+        onFocusCapture={requestDetail}
       >
         <img src={source} alt="" className="h-full w-full object-cover" draggable={false} decoding="async" />
       </div>
@@ -640,8 +647,8 @@ function FaceCrop({ file, box }: { file: MediaFile; box?: MediaFaceBox }) {
     <div
       ref={cropRef}
       className="h-full w-full overflow-hidden bg-black"
-      onPointerEnter={() => setDetailRequested(true)}
-      onFocusCapture={() => setDetailRequested(true)}
+      onPointerEnter={requestDetail}
+      onFocusCapture={requestDetail}
     >
       <img
         src={source}
@@ -700,7 +707,9 @@ function FaceIdentityGallery({
   thresholdOverrides,
   coverOverrides,
   tuningCount,
+  showSingletonFaces,
   onSensitivityChange,
+  onToggleSingletonFaces,
   onOpenGroup,
   onToggleGroupSelection,
   onMergeSelected,
@@ -723,7 +732,9 @@ function FaceIdentityGallery({
   thresholdOverrides: Record<string, number>;
   coverOverrides: Record<string, FaceCoverOverride>;
   tuningCount: number;
+  showSingletonFaces: boolean;
   onSensitivityChange: (sensitivity: FaceGroupSensitivity) => void;
+  onToggleSingletonFaces: () => void;
   onOpenGroup: (group: FaceIdentityGroup) => void;
   onToggleGroupSelection: (group: FaceIdentityGroup) => void;
   onMergeSelected: () => void;
@@ -736,8 +747,8 @@ function FaceIdentityGallery({
   onResetFaceTuning: () => void;
   onBuildGroups: () => void;
 }) {
-  const [showSingletonFaces, setShowSingletonFaces] = useState(true);
   const [visibleCardLimit, setVisibleCardLimit] = useState(FACE_GALLERY_INITIAL_CARD_LIMIT);
+  const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null);
   const allCards = useMemo(() => groups
     .map((group) => {
       const override = coverOverrides[group.id];
@@ -749,18 +760,15 @@ function FaceIdentityGallery({
       return sample ? { group: sampleGroup, sample } : null;
     })
     .filter((item): item is { group: FaceIdentityGroup; sample: MediaFile } => !!item), [coverOverrides, filesByPath, groups]);
+  const cards = allCards;
   const singletonCount = useMemo(
     () => allCards.filter(({ group }) => group.size <= 1 && group.embeddingCount <= 1).length,
     [allCards],
   );
-  const cards = useMemo(() => (
-    showSingletonFaces
-      ? allCards
-      : allCards.filter(({ group }) => group.size > 1 || group.embeddingCount > 1)
-  ), [allCards, showSingletonFaces]);
   const cardFingerprint = `${showSingletonFaces ? 1 : 0}:${cards.length}:${cards[0]?.group.id ?? ''}:${cards[cards.length - 1]?.group.id ?? ''}`;
   useEffect(() => {
     setVisibleCardLimit(FACE_GALLERY_INITIAL_CARD_LIMIT);
+    setExpandedGroupId(null);
   }, [cardFingerprint]);
   const visibleCards = cards.slice(0, visibleCardLimit);
   const hiddenCardCount = Math.max(0, cards.length - visibleCards.length);
@@ -772,36 +780,41 @@ function FaceIdentityGallery({
         <Users size={15} className="text-violet-300" />
         <span className="text-xs font-medium text-text-secondary">Face gallery</span>
         <span className="text-[11px] text-text-muted">
-          {cards.length} possible face stack{cards.length === 1 ? '' : 's'}{hiddenCardCount > 0 ? ` · showing ${visibleCards.length}` : ''}{!showSingletonFaces && singletonCount > 0 ? ` · ${singletonCount} singles hidden` : ''}
+          {cards.length} visible person/face stack{cards.length === 1 ? '' : 's'}{hiddenCardCount > 0 ? ` · showing ${visibleCards.length}` : ''}{!showSingletonFaces ? ' · singles hidden' : singletonCount > 0 ? ` · ${singletonCount} single${singletonCount === 1 ? '' : 's'}` : ''}
         </span>
-        <div className="flex items-center gap-1">
+        {selectedCount > 0 && (
+          <div className="flex items-center gap-1 rounded border border-violet-500/20 bg-violet-500/10 px-1 py-0.5">
+            <span className="px-1 text-[10px] text-violet-200">{selectedCount} selected</span>
           <button
             type="button"
             onClick={onMergeSelected}
             disabled={selectedCount < 2}
-            className="rounded border border-border bg-surface-raised px-2 py-1 text-[10px] text-text-muted hover:border-violet-500/35 hover:text-violet-200 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-border disabled:hover:text-text-muted"
+              className="rounded bg-surface-raised px-2 py-1 text-[10px] text-text-muted hover:text-violet-200 disabled:cursor-not-allowed disabled:opacity-40"
             title={selectedCount < 2 ? 'Select at least two face groups to merge them into one person.' : 'Merge selected face groups into one person for this session.'}
           >
-            Merge people
+              Merge
           </button>
           <button
             type="button"
             onClick={onSplitSelected}
             disabled={selectedCount < 1}
-            className="rounded border border-border bg-surface-raised px-2 py-1 text-[10px] text-text-muted hover:border-violet-500/35 hover:text-violet-200 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-border disabled:hover:text-text-muted"
+              className="rounded bg-surface-raised px-2 py-1 text-[10px] text-text-muted hover:text-violet-200 disabled:cursor-not-allowed disabled:opacity-40"
             title={selectedCount < 1 ? 'Select a face group to split it into individual face cards.' : 'Split selected people/groups into individual face cards for this session.'}
           >
-            Split person
+              Split
           </button>
           <button
             type="button"
             onClick={onNotSameFace}
             disabled={selectedCount < 1}
-            className="rounded border border-orange-500/20 bg-orange-500/10 px-2 py-1 text-[10px] text-orange-300 hover:bg-orange-500/20 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-orange-500/10"
+              className="rounded bg-orange-500/10 px-2 py-1 text-[10px] text-orange-300 hover:bg-orange-500/20 disabled:cursor-not-allowed disabled:opacity-40"
             title={selectedCount < 1 ? 'Select a mistaken group first.' : 'Mark selected groups as not the same face by splitting them apart.'}
           >
-            Not same face
+              Not same
           </button>
+          </div>
+        )}
+        <div className="ml-auto flex items-center gap-1">
           {manualCorrectionCount > 0 && (
             <button
               type="button"
@@ -809,7 +822,7 @@ function FaceIdentityGallery({
               className="rounded border border-border bg-surface-raised px-2 py-1 text-[10px] text-text-muted hover:border-red-500/35 hover:text-red-300"
               title="Clear manual face merge/split corrections for this session."
             >
-              Reset manual
+              Reset
             </button>
           )}
           {tuningCount > 0 && (
@@ -819,37 +832,35 @@ function FaceIdentityGallery({
               className="rounded border border-border bg-surface-raised px-2 py-1 text-[10px] text-text-muted hover:border-violet-500/35 hover:text-violet-200"
               title="Clear per-person strictness sliders and chosen face thumbnails for this session."
             >
-              Reset tuning {tuningCount}
+              Reset tuning
             </button>
           )}
-        </div>
         <select
           value={sensitivity}
           onChange={(e) => onSensitivityChange(e.target.value as FaceGroupSensitivity)}
-          className="ml-auto rounded border border-border bg-surface-raised px-2 py-1 text-[10px] text-text-muted hover:border-violet-500/35 hover:text-violet-200 focus:outline-none focus:border-violet-400"
+            className="rounded border border-border bg-surface-raised px-2 py-1 text-[10px] text-text-muted hover:border-violet-500/35 hover:text-violet-200 focus:outline-none focus:border-violet-400"
           title={FACE_GROUP_SENSITIVITY_OPTIONS.find((option) => option.id === sensitivity)?.hint}
         >
           {FACE_GROUP_SENSITIVITY_OPTIONS.map((option) => (
             <option key={option.id} value={option.id}>{option.label}</option>
           ))}
         </select>
-        {singletonCount > 0 && (
           <button
             type="button"
-            onClick={() => setShowSingletonFaces((value) => !value)}
+            onClick={onToggleSingletonFaces}
             className="rounded border border-border bg-surface-raised px-2 py-1 text-[10px] text-text-muted hover:border-violet-500/35 hover:text-violet-200"
-            title={showSingletonFaces ? 'Hide one-photo face crops so stacked people are easier to scan.' : 'Show one-photo face crops too.'}
+            title={showSingletonFaces ? 'Hide one-photo face crops so stacked people load faster.' : 'Include one-photo face crops. This can be slower on large shoots.'}
           >
             {showSingletonFaces ? 'Hide singles' : 'Show singles'}
           </button>
-        )}
         <button
           type="button"
           onClick={onBuildGroups}
           className="rounded border border-violet-500/25 bg-violet-500/10 px-2 py-1 text-[10px] text-violet-300 hover:bg-violet-500/20"
         >
-          Rebuild groups
+          Rebuild
         </button>
+        </div>
       </div>
 
       {catalogSearch && (
@@ -918,6 +929,7 @@ function FaceIdentityGallery({
           {visibleCards.map(({ group, sample }, index) => {
             const label = `${'manual' in group || group.size > 1 ? 'Person' : 'Face'} ${index + 1}`;
             const selected = selectedGroupIds.has(group.id);
+            const expanded = expandedGroupId === group.id;
             const box = sampleFaceBox(sample, group);
             const quality = faceSampleQuality(sample, group, box);
             const groupThreshold = thresholdOverrides[group.id] ?? faceGroupThreshold;
@@ -942,41 +954,15 @@ function FaceIdentityGallery({
                 >
                   <FaceCrop file={sample} box={box} />
                 </button>
-                <div className="space-y-1 p-2">
+                <div className="space-y-1.5 p-2">
                   <div className="flex items-center justify-between gap-1">
                     <span className="truncate text-[11px] font-medium text-text-secondary">{label}</span>
                     <span className="rounded bg-violet-500/20 px-1.5 py-0.5 text-[10px] text-violet-200">{group.size}</span>
                   </div>
-                  <div className="truncate text-[10px] text-text-muted" title={sample.name}>
-                    {group.size} photo{group.size === 1 ? '' : 's'} · {group.embeddingCount} match{group.embeddingCount === 1 ? '' : 'es'}
+                  <div className="flex items-center justify-between gap-1 text-[10px] text-text-muted" title={sample.name}>
+                    <span className="truncate">{group.size} photo{group.size === 1 ? '' : 's'} · {group.embeddingCount} match{group.embeddingCount === 1 ? '' : 'es'}</span>
+                    <span className={quality.tone} title={quality.title}>{quality.score}</span>
                   </div>
-                  <div className={`text-[9px] ${quality.tone}`} title={quality.title}>
-                    {quality.label} · {quality.score}/100
-                  </div>
-                  <div className="flex flex-wrap gap-1">
-                    {[quality.matchLabel, quality.sizeLabel, quality.sharpnessLabel].map((badge) => (
-                      <span key={badge} className="rounded bg-surface-raised px-1 py-0.5 text-[9px] text-text-muted" title={quality.title}>
-                        {badge}
-                      </span>
-                    ))}
-                  </div>
-                  {!manualGroup ? (
-                    <div className="space-y-1 rounded border border-border/80 bg-surface/45 px-1.5 py-1">
-                      <div className="flex items-center justify-between gap-2 text-[9px] text-text-muted">
-                        <span title="Minimum similarity used for this person's card. Lower can pull in more faces; higher splits uncertain faces out.">match {thresholdPercent}%</span>
-                        <span title={box ? `Face box covers ${faceAreaPct}% of the image.` : 'No face box was available.'}>{box ? `${faceAreaPct}% face` : 'no box'}</span>
-                      </div>
-                      <FaceThresholdSlider
-                        value={groupThreshold}
-                        onCommit={(value) => onGroupThresholdChange(group, value)}
-                        title="Per-person grouping strictness. Move right to split questionable matches; left to pull in more possible matches."
-                      />
-                    </div>
-                  ) : (
-                    <div className="rounded border border-border/80 bg-surface/45 px-1.5 py-1 text-[9px] text-text-muted">
-                      Manual group · {box ? `${faceAreaPct}% face` : 'no box'}
-                    </div>
-                  )}
                   <div className="grid grid-cols-2 gap-1 pt-1">
                     <button
                       type="button"
@@ -992,23 +978,61 @@ function FaceIdentityGallery({
                     </button>
                     <button
                       type="button"
-                      onClick={() => onFindInCatalog(group, label)}
+                      onClick={() => setExpandedGroupId((value) => value === group.id ? null : group.id)}
                       className="rounded bg-surface-raised px-1.5 py-0.5 text-[10px] text-text-muted hover:bg-violet-500/15 hover:text-violet-200"
-                      title="Find this face in older locally saved catalog entries."
+                      title={expanded ? 'Hide face tools for this card.' : 'Show confidence and catalog tools for this card.'}
                     >
-                      Find older
+                      {expanded ? 'Hide tools' : 'Tools'}
                     </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => onChooseBestCover(group)}
-                    className={`w-full rounded px-1.5 py-0.5 text-[10px] hover:bg-emerald-500/15 hover:text-emerald-200 ${
-                      hasCoverOverride ? 'bg-emerald-500/10 text-emerald-300' : 'bg-surface-raised text-text-muted'
-                    }`}
-                    title="Pick the sharpest/largest face crop in this group as the thumbnail cover."
-                  >
-                    {hasCoverOverride ? 'Best thumbnail set' : 'Choose best thumbnail'}
-                  </button>
+                  {(expanded || selected) && (
+                    <div className="space-y-1 rounded border border-border/80 bg-surface/45 p-1.5">
+                      <div className="flex flex-wrap gap-1">
+                        {[quality.matchLabel, quality.sizeLabel, quality.sharpnessLabel].map((badge) => (
+                          <span key={badge} className="rounded bg-surface-raised px-1 py-0.5 text-[9px] text-text-muted" title={quality.title}>
+                            {badge}
+                          </span>
+                        ))}
+                      </div>
+                      {!manualGroup ? (
+                        <>
+                          <div className="flex items-center justify-between gap-2 text-[9px] text-text-muted">
+                            <span title="Minimum similarity used for this person's card. Lower can pull in more faces; higher splits uncertain faces out.">match {thresholdPercent}%</span>
+                            <span title={box ? `Face box covers ${faceAreaPct}% of the image.` : 'No face box was available.'}>{box ? `${faceAreaPct}% face` : 'no box'}</span>
+                          </div>
+                          <FaceThresholdSlider
+                            value={groupThreshold}
+                            onCommit={(value) => onGroupThresholdChange(group, value)}
+                            title="Per-person grouping strictness. Move right to split questionable matches; left to pull in more possible matches."
+                          />
+                        </>
+                      ) : (
+                        <div className="text-[9px] text-text-muted">
+                          Manual group · {box ? `${faceAreaPct}% face` : 'no box'}
+                        </div>
+                      )}
+                      <div className="grid grid-cols-2 gap-1">
+                        <button
+                          type="button"
+                          onClick={() => onFindInCatalog(group, label)}
+                          className="rounded bg-surface-raised px-1.5 py-0.5 text-[10px] text-text-muted hover:bg-violet-500/15 hover:text-violet-200"
+                          title="Find this face in older locally saved catalog entries."
+                        >
+                          Find older
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onChooseBestCover(group)}
+                          className={`rounded px-1.5 py-0.5 text-[10px] hover:bg-emerald-500/15 hover:text-emerald-200 ${
+                            hasCoverOverride ? 'bg-emerald-500/10 text-emerald-300' : 'bg-surface-raised text-text-muted'
+                          }`}
+                          title="Pick the sharpest/largest face crop in this group as the thumbnail cover."
+                        >
+                          Best cover
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             );
@@ -1737,6 +1761,7 @@ export function ThumbnailGrid() {
   const [faceProviderSummary, setFaceProviderSummary] = useState<string>('Face engine warming');
   const [showAiReviewStrip, setShowAiReviewStrip] = useState(false);
   const [faceGroupSensitivity, setFaceGroupSensitivity] = useState<FaceGroupSensitivity>('loose');
+  const [faceGalleryShowSingles, setFaceGalleryShowSingles] = useState(false);
   const [selectedFaceGroupIds, setSelectedFaceGroupIds] = useState<Set<string>>(new Set());
   const [manualFaceGroups, setManualFaceGroups] = useState<ManualFaceGroup[]>([]);
   const [manualFaceSplitPaths, setManualFaceSplitPaths] = useState<Set<string>>(new Set());
@@ -1798,7 +1823,7 @@ export function ThumbnailGrid() {
 
   const faceGroupingSuspended = phase === 'importing' || phase === 'scanning';
   const shouldBuildFaceIdentityGroups = !faceGroupingSuspended && (filter === 'face-gallery' || filter === 'face-groups' || filter.startsWith('face:'));
-  const includeFaceIdentitySingletons = filter === 'face-gallery' || filter.startsWith('face:');
+  const includeFaceIdentitySingletons = filter.startsWith('face:') || (filter === 'face-gallery' && faceGalleryShowSingles);
   const faceGroupEmbeddingThreshold = faceGroupThresholdFor(faceGroupSensitivity);
   useEffect(() => { faceGroupEmbeddingThresholdRef.current = faceGroupEmbeddingThreshold; }, [faceGroupEmbeddingThreshold]);
   const faceIdentityFingerprint = useMemo(
@@ -1931,6 +1956,7 @@ export function ThumbnailGrid() {
   //   4. Stable by dateTaken (oldest first) so bursts stay grouped
   const sortedFiles = useMemo(() => {
     if (files.length === 0) return [];
+    if (filter === 'face-gallery') return [];
     const query = deferredSearchText.trim().toLowerCase();
     const filtered = files.filter((f) => {
       if (query) {
@@ -1961,7 +1987,6 @@ export function ThumbnailGrid() {
         case 'best': return (f.reviewScore ?? 0) >= 70;
         case 'faces': return mediaFaceCount(f) > 0;
         case 'face-groups': return !!f.faceGroupId || faceIdentityGroupedPaths.has(f.path);
-        case 'face-gallery': return hasFaceMatchData(f);
         case 'group-photos': return isGroupPhotoCandidate(f);
         case 'blur-risk': return f.blurRisk === 'high' || f.blurRisk === 'medium';
         case 'near-duplicates': return !!f.visualGroupId;
@@ -5539,7 +5564,12 @@ export function ThumbnailGrid() {
                   thresholdOverrides={faceThresholdOverrides}
                   coverOverrides={faceCoverOverrides}
                   tuningCount={faceTuningCount}
+                  showSingletonFaces={faceGalleryShowSingles}
                   onSensitivityChange={setFaceGroupSensitivity}
+                  onToggleSingletonFaces={() => {
+                    setFaceGalleryShowSingles((value) => !value);
+                    setSelectedFaceGroupIds(new Set());
+                  }}
                   onOpenGroup={(group) => handleFaceGroupFilter(group.id, group.samplePath)}
                   onToggleGroupSelection={toggleFaceGroupSelection}
                   onMergeSelected={mergeSelectedFaceGroups}

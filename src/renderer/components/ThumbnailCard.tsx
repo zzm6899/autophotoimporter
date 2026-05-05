@@ -135,6 +135,7 @@ function ThumbnailCardInner({
   const faceCount = mediaFaceCount(file);
   const personCount = mediaPersonCount(file);
   const groupBadge = groupPhotoBadge(file);
+  const showFaceGroupButton = !!file.faceGroupId && (focused || selected);
   const whiteBalanceMarked = !!file.whiteBalanceAdjustment || !!whiteBalancePreview;
   const exposureMarked = !!file.normalizeToAnchor || Math.abs(file.exposureAdjustmentStops ?? 0) >= 0.01 || whiteBalanceMarked;
   const totalPreviewStops = clampStops((file.exposureAdjustmentStops ?? 0) + exposurePreviewStops, 4);
@@ -278,7 +279,7 @@ function ThumbnailCardInner({
             </div>
           )}
 
-          {(file.reviewScore || file.blurRisk === 'high' || file.visualGroupId || faceCount || personCount || groupBadge) && (
+          {(file.reviewScore || file.blurRisk === 'high' || file.visualGroupId || faceCount || personCount || groupBadge || showFaceGroupButton) && (
             <div className="absolute left-1.5 bottom-1.5 flex gap-0.5 z-20">
               {!!faceCount && (
                 <span className="bg-emerald-600/90 text-[9px] text-white px-1 py-0.5 rounded font-medium" title={`${faceCount} ${file.faceDetection === 'estimated' ? 'estimated ' : ''}face(s) detected`}>
@@ -310,7 +311,7 @@ function ThumbnailCardInner({
                   SIM
                 </span>
               )}
-              {file.faceGroupId && (
+              {showFaceGroupButton && (
                 <button
                   type="button"
                   className="bg-violet-600/90 text-[9px] text-white px-1 py-0.5 rounded font-medium hover:bg-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-200"
