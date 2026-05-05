@@ -105,6 +105,11 @@ const FACE_GALLERY_CARD_PAGE_SIZE = 96;
 const FACE_CROP_THUMB_SIZE = 224;
 const FACE_CROP_DETAIL_SIZE = 320;
 const FACE_CROP_BUILD_CONCURRENCY = 2;
+const FACE_SOFT_MERGE_REP_LIMIT = 6;
+const FACE_SOFT_MERGE_TIME_BUDGET_MS = 36;
+const FACE_SOFT_MERGE_LARGE_GROUP_LIMIT = 120;
+const FACE_SOFT_MERGE_LARGE_COMPARISON_LIMIT = 5200;
+const RESTORE_THUMBNAIL_HYDRATE_LIMIT = 28;
 
 function stablePathId(value: string): string {
   let hash = 0;
@@ -325,7 +330,7 @@ function faceGroupSampleEmbedding(group: FaceIdentityGroup, filesByPath: Map<str
 function faceGroupRepresentativeEmbeddings(
   group: FaceIdentityGroup,
   filesByPath: Map<string, MediaFile>,
-  limit = 10,
+  limit = FACE_SOFT_MERGE_REP_LIMIT,
 ): Float32Array[] {
   const reps: Float32Array[] = [];
   const sample = faceGroupSampleEmbedding(group, filesByPath);
@@ -345,13 +350,7 @@ function faceGroupRepresentativeEmbeddings(
   return reps;
 }
 
-function faceGroupBestSimilarity(
-  a: FaceIdentityGroup,
-  b: FaceIdentityGroup,
-  filesByPath: Map<string, MediaFile>,
-): number {
-  const aReps = faceGroupRepresentativeEmbeddings(a, filesByPath);
-  const bReps = faceGroupRepresentativeEmbeddings(b, filesByPath);
+function faceGroupBestSimilarityFromReps(aReps: Float32Array[], bReps: Float32Array[]): number {
   let best = 0;
   for (const left of aReps) {
     for (const right of bReps) {
@@ -392,6 +391,54 @@ function coalesceNearbyFaceGroups(
   if (groups.length < 2) return groups;
   const mergeThreshold = sensitivity === 'strict' ? 0.55 : sensitivity === 'balanced' ? 0.46 : 0.42;
   const clusters = groups.map((group) => ({ groups: [group], paths: new Set(group.paths), manual: 'manual' in group }));
+  const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  const comparisonLimit = groups.length > FACE_SOFT_MERGE_LARGE_GROUP_LIMIT
+    ? FACE_SOFT_MERGE_LARGE_COMPARISON_LIMIT
+    : Number.POSITIVE_INFINITY;
+  let comparisons = 0;
+  const repCache = new Map<string, Float32Array[]>();
+  const pairSimilarityCache = new Map<string, number>();
+
+  const repsFor = (group: FaceIdentityGroup) => {
+    let cached = repCache.get(group.id);
+    if (!cached) {
+      cached = faceGroupRepresentativeEmbeddings(group, filesByPath);
+      repCache.set(group.id, cached);
+    }
+    return cached;
+  };
+
+  const bestSimilarity = (left: FaceIdentityGroup, right: FaceIdentityGroup) => {
+    const key = left.id < right.id ? `${left.id}|${right.id}` : `${right.id}|${left.id}`;
+    const cached = pairSimilarityCache.get(key);
+    if (cached !== undefined) return cached;
+    const similarity = faceGroupBestSimilarityFromReps(repsFor(left), repsFor(right));
+    pairSimilarityCache.set(key, similarity);
+    return similarity;
+  };
+
+  const overBudget = () => {
+    comparisons++;
+    if (comparisons > comparisonLimit) return true;
+    if ((comparisons & 63) !== 0) return false;
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    return now - startedAt > FACE_SOFT_MERGE_TIME_BUDGET_MS;
+  };
+
+  const finalizeClusters = () => clusters.map((cluster) => {
+    if (cluster.groups.length === 1) return cluster.groups[0];
+    const paths = Array.from(cluster.paths).sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
+    const cover = chooseFaceGroupCover(cluster.groups, filesByPath);
+    return {
+      id: `face-soft-${cluster.groups.map((group) => group.id).join('-')}`,
+      paths,
+      size: paths.length,
+      embeddingCount: cluster.groups.reduce((sum, group) => sum + group.embeddingCount, 0),
+      samplePath: cover.samplePath,
+      sampleEmbeddingIndex: cover.sampleEmbeddingIndex,
+      confidence: cover.confidence,
+    };
+  });
 
   let changed = true;
   while (changed) {
@@ -404,7 +451,8 @@ function coalesceNearbyFaceGroups(
         let confidentEnough = false;
         for (const left of clusters[i].groups) {
           for (const right of clusters[j].groups) {
-            similarity = Math.max(similarity, faceGroupBestSimilarity(left, right, filesByPath));
+            if (overBudget()) return finalizeClusters();
+            similarity = Math.max(similarity, bestSimilarity(left, right));
             confidentEnough = confidentEnough ||
               Math.max(left.confidence, right.confidence) >= 0.52 ||
               left.size > 1 ||
@@ -421,20 +469,7 @@ function coalesceNearbyFaceGroups(
     }
   }
 
-  return clusters.map((cluster) => {
-    if (cluster.groups.length === 1) return cluster.groups[0];
-    const paths = Array.from(cluster.paths).sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
-    const cover = chooseFaceGroupCover(cluster.groups, filesByPath);
-    return {
-      id: `face-soft-${cluster.groups.map((group) => group.id).join('-')}`,
-      paths,
-      size: paths.length,
-      embeddingCount: cluster.groups.reduce((sum, group) => sum + group.embeddingCount, 0),
-      samplePath: cover.samplePath,
-      sampleEmbeddingIndex: cover.sampleEmbeddingIndex,
-      confidence: cover.confidence,
-    };
-  });
+  return finalizeClusters();
 }
 
 const faceCropPreviewCache = new Map<string, string>();
@@ -3787,6 +3822,51 @@ export function ThumbnailGrid() {
     const id = window.setTimeout(() => warmPreviews(paths, 'low', limit), 120);
     return () => window.clearTimeout(id);
   }, [backgroundLoadingPaused, fastKeeperMode, focusedIndex, sortedFiles, viewMode]);
+
+  useEffect(() => {
+    if (phase !== 'ready' || viewMode !== 'grid' || backgroundLoadingPaused || sortedFiles.length === 0) return;
+    const start = Math.max(0, focusedIndex >= 0 ? focusedIndex : 0);
+    const limit = fastKeeperMode ? 12 : RESTORE_THUMBNAIL_HYDRATE_LIMIT;
+    const candidates = sortedFiles
+      .slice(start, start + limit * 3)
+      .filter((file) => file.type === 'photo' && !file.thumbnail)
+      .slice(0, limit);
+    if (candidates.length === 0) return;
+
+    let cancelled = false;
+    let pending = candidates.length;
+    let updateCount = 0;
+    const updates: Record<string, string> = {};
+    const flush = () => {
+      if (cancelled || updateCount === 0) return;
+      const batch = { ...updates };
+      for (const key of Object.keys(updates)) delete updates[key];
+      updateCount = 0;
+      dispatch({ type: 'SET_THUMBNAILS', thumbnails: batch });
+    };
+
+    const id = window.setTimeout(() => {
+      for (const file of candidates) {
+        void getCachedPreview(file.path, 'preview', 'low')
+          .then((preview) => {
+            if (cancelled || !preview) return;
+            updates[file.path] = preview;
+            updateCount++;
+            if (updateCount >= 6) flush();
+          })
+          .catch(() => undefined)
+          .finally(() => {
+            pending--;
+            if (pending === 0) flush();
+          });
+      }
+    }, 180);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(id);
+    };
+  }, [backgroundLoadingPaused, dispatch, fastKeeperMode, focusedIndex, phase, sortedFiles, viewMode]);
 
   // Expose-normalize button state (computed before early returns so the
   // handleNormalizeToggle useCallback is always called unconditionally).

@@ -880,26 +880,29 @@ async function readAppSessionFile(filePath: string): Promise<AppSession | null> 
 
 let lastSavedSessionIdSetting = '';
 
+function stripSessionMediaFile(file: MediaFile): MediaFile {
+  const { thumbnail: _thumbnail, ...metadata } = file;
+  return metadata as MediaFile;
+}
+
+function stripSessionThumbnails(session: AppSession): { session: AppSession; removed: number } {
+  let removed = 0;
+  const files = session.files.map((file) => {
+    if (file.thumbnail) removed++;
+    return stripSessionMediaFile(file);
+  });
+  return {
+    session: removed > 0 ? { ...session, files } : session,
+    removed,
+  };
+}
+
 async function persistAppSession(session: AppSession): Promise<AppSession> {
   const dir = getSessionsDir();
   await mkdir(dir, { recursive: true });
   const sessionPath = path.join(dir, `${session.id}.json`);
-  const previousSession = await readAppSessionFile(sessionPath);
-  const previousThumbnailByPath = new Map<string, string>();
-  for (const file of previousSession?.files ?? []) {
-    if (file.thumbnail) previousThumbnailByPath.set(file.path, file.thumbnail);
-  }
-  const leanSession: AppSession = {
-    ...session,
-    files: session.files.map((file) => {
-      const { thumbnail: _thumbnail, ...metadata } = file;
-      const thumbnail = file.thumbnail
-        ?? scannedFilesByPath.get(file.path)?.thumbnail
-        ?? previousThumbnailByPath.get(file.path);
-      return thumbnail ? { ...metadata, thumbnail } as MediaFile : metadata as MediaFile;
-    }),
-  };
-  const content = JSON.stringify(leanSession, null, 2);
+  const { session: leanSession } = stripSessionThumbnails(session);
+  const content = JSON.stringify(leanSession);
   await writeFile(sessionPath, content, { encoding: 'utf8', mode: 0o600 });
   await writeFile(getLatestSessionPath(), content, { encoding: 'utf8', mode: 0o600 });
   if (lastSavedSessionIdSetting !== session.id) {
@@ -910,7 +913,15 @@ async function persistAppSession(session: AppSession): Promise<AppSession> {
 }
 
 async function readLatestAppSession(): Promise<AppSession | null> {
-  return readAppSessionFile(getLatestSessionPath());
+  const session = await readAppSessionFile(getLatestSessionPath());
+  if (!session) return null;
+  const compacted = stripSessionThumbnails(session);
+  if (compacted.removed > 0) {
+    await persistAppSession(compacted.session).catch((error) => {
+      log.warn('[session] thumbnail compaction failed', error);
+    });
+  }
+  return compacted.session;
 }
 
 async function readSettingsData(): Promise<string> {

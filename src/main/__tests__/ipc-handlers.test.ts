@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { ImportConfig, ImportResult, MediaFile } from '../../shared/types';
+import type { AppSession, ImportConfig, ImportResult, MediaFile } from '../../shared/types';
 
 // Mocks
 const mockHandle = vi.fn();
@@ -319,6 +319,62 @@ describe('IPC Handlers', () => {
         deviceSlotsUsed: 1,
         deviceSlotsTotal: 2,
       }));
+    });
+  });
+
+  describe('Sessions', () => {
+    const makeSession = (): AppSession => {
+      const file: MediaFile = {
+        path: '/photos/IMG_0001.JPG',
+        name: 'IMG_0001.JPG',
+        size: 1234,
+        type: 'photo',
+        extension: '.jpg',
+        thumbnail: 'data:image/jpeg;base64,large-preview-payload',
+      };
+      return {
+        id: 'session-1',
+        updatedAt: '2026-05-06T00:00:00.000Z',
+        sourcePath: '/photos',
+        destRoot: '/dest',
+        files: [file],
+        selectedPaths: [file.path],
+        queuedPaths: [],
+        filter: 'all',
+        focusedPath: file.path,
+        stats: { totalFiles: 1, picked: 0, rejected: 0, queued: 0, reviewed: 0 },
+      };
+    };
+
+    it('persists review sessions without thumbnail payloads', async () => {
+      const handler = getHandler('session:save');
+      const result = await handler({}, makeSession()) as AppSession;
+
+      expect(result.files[0].thumbnail).toBeUndefined();
+      const sessionWrites = mockWriteFile.mock.calls.filter(([filePath]) => String(filePath).includes('sessions'));
+      expect(sessionWrites.length).toBeGreaterThanOrEqual(2);
+      for (const [, content] of sessionWrites) {
+        expect(String(content)).not.toContain('large-preview-payload');
+        expect(JSON.parse(String(content)).files[0].thumbnail).toBeUndefined();
+      }
+    });
+
+    it('compacts old latest sessions before returning them to the renderer', async () => {
+      const session = makeSession();
+      mockReadFile.mockImplementation(async (filePath) => {
+        if (String(filePath).includes('latest.json')) return JSON.stringify(session);
+        throw new Error('ENOENT');
+      });
+      const handler = getHandler('session:latest');
+
+      const result = await handler({}) as AppSession;
+
+      expect(result.files[0].thumbnail).toBeUndefined();
+      const sessionWrites = mockWriteFile.mock.calls.filter(([filePath]) => String(filePath).includes('sessions'));
+      expect(sessionWrites.length).toBeGreaterThanOrEqual(2);
+      for (const [, content] of sessionWrites) {
+        expect(String(content)).not.toContain('large-preview-payload');
+      }
     });
   });
 
