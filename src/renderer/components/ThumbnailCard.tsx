@@ -82,6 +82,35 @@ function orientationTransform(orientation?: number) {
   }
 }
 
+function mediaFaceCount(file: MediaFile): number {
+  return file.faceBoxes?.length ?? file.faceCount ?? 0;
+}
+
+function mediaPersonCount(file: MediaFile): number {
+  return file.personBoxes?.length ?? file.personCount ?? 0;
+}
+
+function groupPhotoBadge(file: MediaFile): { label: string; className: string; title: string } | null {
+  if (file.type !== 'photo') return null;
+  const faces = mediaFaceCount(file);
+  const people = mediaPersonCount(file);
+  const subjects = Math.max(faces, people);
+  if (subjects < 2) return null;
+  const sharp = Math.max(file.subjectSharpnessScore ?? 0, file.sharpnessScore ?? 0);
+  const blurPenalty = file.blurRisk === 'high' ? 35 : file.blurRisk === 'medium' ? 16 : 0;
+  const score = Math.max(0, Math.min(100, Math.round(subjects * 12 + Math.min(36, sharp / 4) - blurPenalty)));
+  const className = score >= 68
+    ? 'bg-violet-600/90 text-white'
+    : score >= 45
+      ? 'bg-violet-500/85 text-white'
+      : 'bg-orange-600/90 text-white';
+  return {
+    label: `GROUP x${subjects}`,
+    className,
+    title: `Group photo candidate: ${faces} face${faces === 1 ? '' : 's'}, ${people} person/body detection${people === 1 ? '' : 's'}, thumbnail score ${score}/100.`,
+  };
+}
+
 function ThumbnailCardInner({
   index,
   file,
@@ -103,6 +132,9 @@ function ThumbnailCardInner({
   const isVideo = file.type === 'video';
   const isPicked = file.pick === 'selected';
   const isRejected = file.pick === 'rejected';
+  const faceCount = mediaFaceCount(file);
+  const personCount = mediaPersonCount(file);
+  const groupBadge = groupPhotoBadge(file);
   const whiteBalanceMarked = !!file.whiteBalanceAdjustment || !!whiteBalancePreview;
   const exposureMarked = !!file.normalizeToAnchor || Math.abs(file.exposureAdjustmentStops ?? 0) >= 0.01 || whiteBalanceMarked;
   const totalPreviewStops = clampStops((file.exposureAdjustmentStops ?? 0) + exposurePreviewStops, 4);
@@ -246,16 +278,21 @@ function ThumbnailCardInner({
             </div>
           )}
 
-          {(file.reviewScore || file.blurRisk === 'high' || file.visualGroupId || file.faceCount || file.personCount) && (
+          {(file.reviewScore || file.blurRisk === 'high' || file.visualGroupId || faceCount || personCount || groupBadge) && (
             <div className="absolute left-1.5 bottom-1.5 flex gap-0.5 z-20">
-              {!!file.faceCount && (
-                <span className="bg-emerald-600/90 text-[9px] text-white px-1 py-0.5 rounded font-medium" title={`${file.faceCount} ${file.faceDetection === 'estimated' ? 'estimated ' : ''}face(s) detected`}>
+              {!!faceCount && (
+                <span className="bg-emerald-600/90 text-[9px] text-white px-1 py-0.5 rounded font-medium" title={`${faceCount} ${file.faceDetection === 'estimated' ? 'estimated ' : ''}face(s) detected`}>
                   {file.faceDetection === 'estimated' ? 'FACE?' : 'FACE'}
                 </span>
               )}
-              {!!file.personCount && (
-                <span className="bg-sky-600/90 text-[9px] text-white px-1 py-0.5 rounded font-medium" title={`${file.personCount} person/body detection(s)`}>
+              {!!personCount && (
+                <span className="bg-sky-600/90 text-[9px] text-white px-1 py-0.5 rounded font-medium" title={`${personCount} person/body detection(s)`}>
                   PERSON
+                </span>
+              )}
+              {groupBadge && (
+                <span className={`${groupBadge.className} text-[9px] px-1 py-0.5 rounded font-medium`} title={groupBadge.title}>
+                  {groupBadge.label}
                 </span>
               )}
               {(file.reviewScore ?? 0) >= 70 && isBurstBest && (
@@ -376,7 +413,10 @@ export const ThumbnailCard = memo(ThumbnailCardInner, (prev, next) => {
     a.reviewScore === b.reviewScore &&
     a.subjectSharpnessScore === b.subjectSharpnessScore &&
     a.faceCount === b.faceCount &&
+    a.faceBoxes === b.faceBoxes &&
     a.faceDetection === b.faceDetection &&
+    a.personCount === b.personCount &&
+    a.personBoxes === b.personBoxes &&
     a.faceSignature === b.faceSignature &&
     a.faceEmbedding === b.faceEmbedding &&
     a.faceEmbeddings === b.faceEmbeddings &&

@@ -301,6 +301,16 @@ export function buildCommandItems(
       run: handlers['filter.face-gallery'],
     },
     {
+      id: 'filter.group-photos',
+      group: 'Filters',
+      label: 'Show Group Photos',
+      description: 'Review photos with multiple detected faces or people, sorted for everyone-good picks.',
+      keywords: ['people', 'faces', 'team', 'everyone good'],
+      icon: Users,
+      disabledReason: needsPhoto,
+      run: handlers['filter.group-photos'],
+    },
+    {
       id: 'filter.duplicates',
       group: 'Filters',
       label: 'Show Similar / Duplicate Photos',
@@ -712,6 +722,7 @@ export function CommandPalette() {
     'filter.blur': () => setFilter('blur-risk'),
     'filter.face-groups': () => setFilter('face-groups'),
     'filter.face-gallery': () => setFilter('face-gallery'),
+    'filter.group-photos': () => setFilter('group-photos'),
     'filter.duplicates': () => {
       setFilter('near-duplicates');
       dispatch({ type: 'SET_VIEW_MODE', mode: 'compare' });

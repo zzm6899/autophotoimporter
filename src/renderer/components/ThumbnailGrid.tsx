@@ -18,7 +18,7 @@ import { REVIEW_COMMAND_EVENT } from './CommandPalette';
 import { ActionButton, ToolbarGroup } from './ui';
 import { getCachedPreview, getPreviewCacheStats, setBackgroundPreviewPaused, warmPreviews } from '../utils/previewCache';
 import { clampStops, getEffectiveExposureStops, getNormalizedExposureStops, normalizeExposureStops } from '../../shared/exposure';
-import { buildFaceIdentityGroups, cosineSimilarity, deserializeEmbedding, FACE_GROUP_EMBEDDING_THRESHOLD, faceSignalConfidence, type FaceIdentityGroup } from '../../shared/review';
+import { buildFaceIdentityGroups, cosineSimilarity, deserializeEmbedding, FACE_GROUP_EMBEDDING_THRESHOLD, faceSignalConfidence, humanMomentQuality, type FaceIdentityGroup } from '../../shared/review';
 import { needsSecondPass } from '../../shared/review-lane';
 
 // ── Laplacian sharpness-based subject detector ────────────────────────────
@@ -169,6 +169,35 @@ function faceSampleQuality(file: MediaFile, group: FaceIdentityGroup, box?: Medi
     matchLabel,
     title: `${label}: ${matchLabel}, ${sizeLabel}, ${sharpnessLabel}.`,
   };
+}
+
+function mediaFaceCount(file: MediaFile): number {
+  return file.faceBoxes?.length ?? file.faceCount ?? 0;
+}
+
+function mediaPersonCount(file: MediaFile): number {
+  return file.personBoxes?.length ?? file.personCount ?? 0;
+}
+
+function groupPhotoSubjectCount(file: MediaFile): number {
+  return Math.max(mediaFaceCount(file), mediaPersonCount(file));
+}
+
+function isGroupPhotoCandidate(file: MediaFile): boolean {
+  return file.type === 'photo' && groupPhotoSubjectCount(file) >= 2;
+}
+
+function groupPhotoReviewScore(file: MediaFile): number {
+  if (!isGroupPhotoCandidate(file)) return 0;
+  const subjectCount = groupPhotoSubjectCount(file);
+  const faceCount = mediaFaceCount(file);
+  const humanSignal = clampUnit(humanMomentQuality(file) / 120);
+  const faceSignal = faceCount > 0 ? faceSignalConfidence(file) : 0.45;
+  const coverageSignal = clampUnit(subjectCount / 6);
+  const sharpSignal = clampUnit((file.subjectSharpnessScore ?? file.sharpnessScore ?? 0) / 160);
+  const blurPenalty = file.blurRisk === 'high' ? 0.34 : file.blurRisk === 'medium' ? 0.16 : 0;
+  const score = humanSignal * 0.4 + faceSignal * 0.25 + coverageSignal * 0.18 + sharpSignal * 0.17 - blurPenalty;
+  return Math.round(clampUnit(score) * 100);
 }
 
 function serializedFaceEmbeddings(file: MediaFile): string[] {
@@ -1459,9 +1488,10 @@ export function ThumbnailGrid() {
         case 'queue': return queuedSet.has(f.path);
         case 'unmarked': return !f.pick;
         case 'best': return (f.reviewScore ?? 0) >= 70;
-        case 'faces': return (f.faceCount ?? 0) > 0;
+        case 'faces': return mediaFaceCount(f) > 0;
         case 'face-groups': return !!f.faceGroupId || faceIdentityGroupedPaths.has(f.path);
         case 'face-gallery': return hasFaceMatchData(f);
+        case 'group-photos': return isGroupPhotoCandidate(f);
         case 'blur-risk': return f.blurRisk === 'high' || f.blurRisk === 'medium';
         case 'near-duplicates': return !!f.visualGroupId;
         case 'review-needed': return needsSecondPass(f);
@@ -1488,6 +1518,14 @@ export function ThumbnailGrid() {
       const ra = a.rating ?? 0;
       const rb = b.rating ?? 0;
       if (ra !== rb) return rb - ra;
+      if (filter === 'group-photos') {
+        const groupScoreA = groupPhotoReviewScore(a);
+        const groupScoreB = groupPhotoReviewScore(b);
+        if (groupScoreA !== groupScoreB) return groupScoreB - groupScoreA;
+        const subjectCountA = groupPhotoSubjectCount(a);
+        const subjectCountB = groupPhotoSubjectCount(b);
+        if (subjectCountA !== subjectCountB) return subjectCountB - subjectCountA;
+      }
       const da = a.duplicate ? 1 : 0;
       const db = b.duplicate ? 1 : 0;
       if (da !== db) return da - db;
@@ -3345,6 +3383,8 @@ export function ThumbnailGrid() {
     const faceGroups = displayFaceIdentityGroups.length || new Set(faceFiles.map((f) => f.faceGroupId).filter(Boolean)).size;
     const faceScanned = photoFiles.filter((f) => f.faceBoxes !== undefined).length;
     const embeddings = photoFiles.filter(hasFaceMatchData).length;
+    const groupPhotos = photoFiles.filter(isGroupPhotoCandidate).length;
+    const groupPhotosStrong = photoFiles.filter((f) => isGroupPhotoCandidate(f) && groupPhotoReviewScore(f) >= 72).length;
     const lowConfidenceFaces = faceFiles.filter((f) => faceSignalConfidence(f) < 0.55).length;
     const nativeFaces = faceFiles.filter((f) => f.faceDetection === 'native').length;
     const blur = photoFiles.filter((f) => f.blurRisk === 'high' || f.blurRisk === 'medium').length;
@@ -3367,6 +3407,8 @@ export function ThumbnailGrid() {
       faceGroups,
       faceScanned,
       embeddings,
+      groupPhotos,
+      groupPhotosStrong,
       lowConfidenceFaces,
       nativeFaces,
       blur,
@@ -3432,6 +3474,7 @@ export function ThumbnailGrid() {
       `${reviewStats.faces} face photo${reviewStats.faces === 1 ? '' : 's'}`,
       `${reviewStats.faceBoxes} box${reviewStats.faceBoxes === 1 ? '' : 'es'}`,
       `${reviewStats.faceGroups} face group${reviewStats.faceGroups === 1 ? '' : 's'}`,
+      `${reviewStats.groupPhotos} group photo${reviewStats.groupPhotos === 1 ? '' : 's'}`,
       `${reviewStats.faceScanned} face-scanned`,
       `${reviewStats.embeddings} match-ready`,
       `${reviewStats.nativeFaces} model-scanned`,
@@ -3579,19 +3622,21 @@ export function ThumbnailGrid() {
           ? 'Face gallery'
           : filter === 'face-groups'
             ? 'Face groups'
-            : filter === 'near-duplicates'
-              ? 'Similar photos'
-              : filter === 'catalog-duplicates'
-                ? 'Catalog matches'
-                : filter === 'queue'
-                  ? 'Queue'
-                  : filter === 'review-needed'
-                    ? 'Second pass'
-                    : filter === 'unmarked'
-                      ? 'Unmarked'
-                      : filter === 'all'
-                        ? 'All photos'
-                        : filter;
+            : filter === 'group-photos'
+              ? 'Group photos'
+              : filter === 'near-duplicates'
+                ? 'Similar photos'
+                : filter === 'catalog-duplicates'
+                  ? 'Catalog matches'
+                  : filter === 'queue'
+                    ? 'Queue'
+                    : filter === 'review-needed'
+                      ? 'Second pass'
+                      : filter === 'unmarked'
+                        ? 'Unmarked'
+                        : filter === 'all'
+                          ? 'All photos'
+                          : filter;
     const nextStep = queuedPaths.length > 0
       ? `Import ${queuedPaths.length} queued`
       : reviewStats.pending > 0
@@ -3603,11 +3648,13 @@ export function ThumbnailGrid() {
       ? `${reviewStats.blur} blur risk`
       : catalogMatchCount > 0
         ? `${catalogMatchCount} catalog matches`
-        : reviewStats.faceGroups > 0
-          ? `${reviewStats.faceGroups} face groups`
-          : 'Clean review lane';
+        : reviewStats.groupPhotos > 0
+          ? `${reviewStats.groupPhotos} group photos`
+          : reviewStats.faceGroups > 0
+            ? `${reviewStats.faceGroups} face groups`
+            : 'Clean review lane';
     return { filterLabel, nextStep, health };
-  }, [catalogMatchCount, destination, filter, queuedPaths.length, reviewStats.blur, reviewStats.faceGroups, reviewStats.pending]);
+  }, [catalogMatchCount, destination, filter, queuedPaths.length, reviewStats.blur, reviewStats.faceGroups, reviewStats.groupPhotos, reviewStats.pending]);
 
   const handleNormalizeToggle = useCallback(() => {
     if (normalizeTargetPaths.length === 0) return;
@@ -4125,6 +4172,19 @@ export function ThumbnailGrid() {
           >
             Best
           </ActionButton>
+          {reviewStats.groupPhotos > 0 && (
+            <ActionButton
+              icon={Users}
+              tone={filter === 'group-photos' ? 'primary' : 'neutral'}
+              onClick={() => {
+                dispatch({ type: 'SET_FILTER', filter: 'group-photos' });
+                dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' });
+              }}
+              title={`Review ${reviewStats.groupPhotos} photo${reviewStats.groupPhotos === 1 ? '' : 's'} with multiple detected faces/people. Strong candidates: ${reviewStats.groupPhotosStrong}.`}
+            >
+              Groups ({reviewStats.groupPhotos})
+            </ActionButton>
+          )}
         </ToolbarGroup>
 
         <ToolbarGroup>
@@ -4469,6 +4529,15 @@ export function ThumbnailGrid() {
                 Face gallery: {displayFaceIdentityGroups.length} group{displayFaceIdentityGroups.length === 1 ? '' : 's'}
               </button>
             )}
+            {filter === 'group-photos' && (
+              <button
+                onClick={handleBackToMain}
+                className="px-1.5 py-0.5 text-[10px] rounded bg-violet-500/10 text-violet-300 hover:bg-violet-500/20 transition-colors"
+                title="Showing photos with two or more detected faces/people. Click to clear the filter."
+              >
+                Group photos: {sortedFiles.length} candidate{sortedFiles.length === 1 ? '' : 's'}
+              </button>
+            )}
 
             <select
               value={filter.startsWith('burst:') ? '' : filter}
@@ -4498,6 +4567,7 @@ export function ThumbnailGrid() {
                 <option value="faces">Faces detected</option>
                 <option value="face-groups">Face groups</option>
                 <option value="face-gallery">Face gallery</option>
+                <option value="group-photos">Group photos</option>
                 <option value="blur-risk">Blur risk</option>
                 <option value="near-duplicates">Similar photos</option>
                 <option value="review-needed">Second pass</option>
@@ -4704,7 +4774,7 @@ export function ThumbnailGrid() {
             <span className="text-text-secondary">{reviewFlow.nextStep}</span>
             <button
               type="button"
-              onClick={() => dispatch({ type: 'SET_FILTER', filter: reviewStats.blur > 0 ? 'blur-risk' : catalogMatchCount > 0 ? 'catalog-duplicates' : reviewStats.faceGroups > 0 ? 'face-gallery' : 'all' })}
+              onClick={() => dispatch({ type: 'SET_FILTER', filter: reviewStats.blur > 0 ? 'blur-risk' : catalogMatchCount > 0 ? 'catalog-duplicates' : reviewStats.groupPhotos > 0 ? 'group-photos' : reviewStats.faceGroups > 0 ? 'face-gallery' : 'all' })}
               className="rounded border border-border bg-surface-raised px-2 py-0.5 text-text-muted hover:border-yellow-500/35 hover:text-yellow-300"
               title="Open the most useful health filter for this scan."
             >
@@ -4744,6 +4814,16 @@ export function ThumbnailGrid() {
                 title="Rebuild similar-face groups from match-ready faces."
               >
                 {reviewStats.faceGroups > 0 ? 'Regroup faces' : 'Group faces'}
+              </button>
+            )}
+            {reviewStats.groupPhotos > 0 && (
+              <button
+                type="button"
+                onClick={() => dispatch({ type: 'SET_FILTER', filter: 'group-photos' })}
+                className="rounded border border-violet-500/25 bg-violet-500/10 px-1.5 py-0.5 text-violet-300 hover:bg-violet-500/20 hover:text-violet-200"
+                title="Show photos with multiple detected faces/people, sorted by group-photo quality."
+              >
+                Review groups ({reviewStats.groupPhotosStrong}/{reviewStats.groupPhotos} strong)
               </button>
             )}
             {reviewSprintMode && (
@@ -4840,6 +4920,19 @@ export function ThumbnailGrid() {
         ) : (
           <div className="h-full relative">
             <div ref={flatScrollRef} className="h-full overflow-y-auto px-4 pt-3 pb-16">
+              {filter === 'group-photos' && (
+                <div className="sticky top-0 z-20 mb-3 flex flex-wrap items-center gap-2 border-b border-border bg-surface/95 py-2 text-[10px] text-text-muted">
+                  <Users size={15} className="text-violet-300" />
+                  <span className="font-medium text-text-secondary">Group photo review</span>
+                  <span>{sortedFiles.length} multi-person candidate{sortedFiles.length === 1 ? '' : 's'}</span>
+                  <span className="rounded bg-violet-500/10 px-1.5 py-0.5 text-violet-300">
+                    {reviewStats.groupPhotosStrong} strong
+                  </span>
+                  <span className="text-text-faint">
+                    Sorted by group quality: face confidence, subject sharpness, people count, and blur risk.
+                  </span>
+                </div>
+              )}
               {filter === 'face-gallery' ? (
                 <FaceIdentityGallery
                   groups={displayFaceIdentityGroups}

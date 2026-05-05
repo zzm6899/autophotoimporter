@@ -50,6 +50,15 @@ describe('CommandPalette command helpers', () => {
     expect(commands.find((command) => command.id === 'source.rescan')?.disabledReason).toBe('Choose a source first.');
   });
 
+  it('exposes group photo review through people and everyone-good search terms', () => {
+    const commands = buildCommandItems(baseContext);
+    const peopleMatch = filterCommandItems(commands, 'group photos')[0];
+    const everyoneMatch = filterCommandItems(commands, 'everyone good')[0];
+
+    expect(peopleMatch?.id).toBe('filter.group-photos');
+    expect(everyoneMatch?.id).toBe('filter.group-photos');
+  });
+
   it('marks bulk and destructive commands as confirmation-gated', () => {
     const commands = buildCommandItems(baseContext);
 
