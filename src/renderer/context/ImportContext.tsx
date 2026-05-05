@@ -112,6 +112,7 @@ interface State {
   reviewFaceMatching: boolean;
   reviewPersonDetection: boolean;
   reviewVisualDuplicates: boolean;
+  autoSpeedMode: boolean;
   perfTier: 'auto' | 'low' | 'balanced' | 'high';
   fastKeeperMode: boolean;
   previewConcurrency: number;
@@ -215,7 +216,7 @@ export type Action =
   | { type: 'SET_REVIEW_SCORES'; scores: Record<string, Partial<MediaFile>> }
   | { type: 'RESOLVE_SECOND_PASS'; filePaths: string[]; pick: 'selected' | 'rejected' }
   | { type: 'GROUP_VISUAL_DUPLICATES'; threshold?: number; files?: MediaFile[] }
-  | { type: 'GROUP_FACE_SIMILAR'; threshold?: number; files?: MediaFile[] }
+  | { type: 'GROUP_FACE_SIMILAR'; threshold?: number; embeddingThreshold?: number; files?: MediaFile[] }
   | { type: 'GROUP_SCENE_BUCKETS' }
   | { type: 'PICK_BEST_IN_GROUPS' }
   | { type: 'QUEUE_BEST' }
@@ -247,6 +248,7 @@ export type Action =
   | { type: 'SET_RAW_PREVIEW_QUALITY'; quality: number }
   | { type: 'SET_PERF_TIER'; tier: 'auto' | 'low' | 'balanced' | 'high' }
   | { type: 'SET_FAST_KEEPER_MODE'; enabled: boolean }
+  | { type: 'SET_AUTO_SPEED_MODE'; enabled: boolean }
   | { type: 'SET_PREVIEW_CONCURRENCY'; concurrency: number }
   | { type: 'SET_FACE_CONCURRENCY'; concurrency: number }
   | { type: 'SET_KEYBIND'; action: keyof KeybindMap; key: string }
@@ -374,6 +376,7 @@ const initialState: State = {
   reviewFaceMatching: true,
   reviewPersonDetection: true,
   reviewVisualDuplicates: true,
+  autoSpeedMode: false,
   perfTier: 'auto',
   fastKeeperMode: false,
   previewConcurrency: 2,
@@ -922,7 +925,11 @@ export function reducer(state: State, action: Action): State {
       };
     }
     case 'GROUP_FACE_SIMILAR': {
-      const groups = groupByFaceSimilarity(action.files ?? state.files, FACE_GROUP_EMBEDDING_THRESHOLD, action.threshold ?? 10);
+      const groups = groupByFaceSimilarity(
+        action.files ?? state.files,
+        action.embeddingThreshold ?? FACE_GROUP_EMBEDDING_THRESHOLD,
+        action.threshold ?? 10,
+      );
       const groupByPath = new Map<string, { id: string; size: number }>();
       for (const [id, paths] of Object.entries(groups)) {
         for (const p of paths) {
@@ -1118,6 +1125,7 @@ export function reducer(state: State, action: Action): State {
           reviewFaceMatching: false,
           reviewPersonDetection: false,
           reviewVisualDuplicates: false,
+          autoSpeedMode: false,
         };
       }
       if (action.tier === 'balanced') {
@@ -1152,6 +1160,8 @@ export function reducer(state: State, action: Action): State {
       return { ...state, perfTier: action.tier };
     case 'SET_FAST_KEEPER_MODE':
       return { ...state, fastKeeperMode: action.enabled };
+    case 'SET_AUTO_SPEED_MODE':
+      return { ...state, autoSpeedMode: action.enabled };
     case 'SET_REVIEW_PERFORMANCE_OPTION':
       return { ...state, [action.key]: action.value };
     case 'SET_PREVIEW_CONCURRENCY':

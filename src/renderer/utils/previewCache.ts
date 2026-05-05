@@ -177,6 +177,26 @@ export function warmPreview(filePath: string, priority: 'normal' | 'low' = 'low'
     .catch(() => undefined);
 }
 
+export function warmPreviews(
+  filePaths: string[],
+  priority: 'normal' | 'low' = 'low',
+  limit = 12,
+): void {
+  if (backgroundPaused || limit <= 0) return;
+  let scheduled = 0;
+  const seen = new Set<string>();
+  for (const filePath of filePaths) {
+    if (!filePath || seen.has(filePath)) continue;
+    seen.add(filePath);
+    const key = previewKey(filePath, 'preview');
+    if (previewCache.has(key) || previewInflight.has(key)) continue;
+    if (priority === 'low' && queuedRequests.length > MAX_QUEUED_REQUESTS * 0.75) break;
+    warmPreview(filePath, scheduled === 0 && priority === 'normal' ? 'normal' : priority);
+    scheduled++;
+    if (scheduled >= limit) break;
+  }
+}
+
 export function setBackgroundPreviewPaused(paused: boolean): void {
   backgroundPaused = paused;
   if (paused) {

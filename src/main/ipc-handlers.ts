@@ -894,6 +894,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   perfTier: 'auto',
   performancePromptSeenVersion: '',
   fastKeeperMode: false,
+  autoSpeedMode: false,
   previewConcurrency: 2,
   faceConcurrency: 2,
   viewOverlayPreferences: { ...DEFAULT_VIEW_OVERLAY_PREFERENCES },

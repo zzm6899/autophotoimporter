@@ -196,6 +196,9 @@ export function useSettings() {
       if (typeof settings.fastKeeperMode === 'boolean') {
         dispatch({ type: 'SET_FAST_KEEPER_MODE', enabled: settings.fastKeeperMode });
       }
+      if (typeof settings.autoSpeedMode === 'boolean') {
+        dispatch({ type: 'SET_AUTO_SPEED_MODE', enabled: settings.autoSpeedMode });
+      }
       const fixedPerfTier = settings.perfTier && settings.perfTier !== 'auto';
       if (typeof settings.previewConcurrency === 'number' && settings.previewConcurrency > 0) {
         dispatch({ type: 'SET_PREVIEW_CONCURRENCY', concurrency: settings.previewConcurrency });

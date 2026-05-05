@@ -4,7 +4,19 @@ import { useImport } from '../hooks/useImport';
 import { formatSize, formatSpeed, formatEta } from '../utils/formatters';
 
 export function ImportProgress() {
-  const { phase, importProgress, volumeImportQueue } = useAppState();
+  const {
+    phase,
+    importProgress,
+    volumeImportQueue,
+    saveFormat,
+    verifyChecksums,
+    backupDestRoot,
+    ftpDestEnabled,
+    skipDuplicates,
+    metadataExport,
+    watermarkEnabled,
+    autoStraighten,
+  } = useAppState();
   const { cancelImport } = useImport();
   const [collapsed, setCollapsed] = useState(true);
 
@@ -30,6 +42,23 @@ export function ImportProgress() {
   const queueLabel = volumeImportQueue.length > 1
     ? ` — Card 1 of ${volumeImportQueue.length}`
     : '';
+  const metadataSidecarsEnabled = Object.values(metadataExport ?? {}).some((enabled) => enabled);
+  const activeCosts = [
+    saveFormat !== 'original' ? 'conversion' : null,
+    verifyChecksums ? 'checksum' : null,
+    backupDestRoot ? 'backup copy' : null,
+    ftpDestEnabled ? 'FTP mirror' : null,
+    skipDuplicates ? 'duplicate checks' : null,
+    metadataSidecarsEnabled ? 'XMP sidecars' : null,
+    watermarkEnabled ? 'watermark' : null,
+    autoStraighten && saveFormat !== 'original' ? 'auto straighten' : null,
+  ].filter((item): item is string => !!item);
+  const copyMode = saveFormat === 'original' && !verifyChecksums && !backupDestRoot && !ftpDestEnabled && !watermarkEnabled && !skipDuplicates && !metadataSidecarsEnabled;
+  const speedHint = copyMode
+    ? 'Fast copy path: originals are copied without conversion/checksum/mirror work.'
+    : activeCosts.length > 0
+      ? `Extra work active: ${activeCosts.join(', ')}. Disable unneeded stages for raw ingest speed.`
+      : 'Import is mostly limited by source/destination disk speed.';
 
   if (collapsed) {
     return (
@@ -138,6 +167,10 @@ export function ImportProgress() {
                   </span>
                 </div>
               )}
+              <div className="rounded border border-border bg-surface px-2 py-1.5 text-[11px] text-text-muted">
+                <div className="mb-0.5 font-semibold uppercase tracking-wide text-text-secondary">Speed diagnosis</div>
+                <div>{speedHint}</div>
+              </div>
               {importProgress.skipped > 0 && (
                 <div className="flex justify-between text-sm">
                   <span className="text-text-secondary">Skipped (duplicates)</span>

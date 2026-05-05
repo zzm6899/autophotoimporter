@@ -123,6 +123,7 @@ function makeState(overrides: Record<string, unknown> = {}) {
     reviewFaceMatching: true,
     reviewPersonDetection: true,
     reviewVisualDuplicates: true,
+    autoSpeedMode: false,
     perfTier: 'auto' as const,
     fastKeeperMode: false,
     previewConcurrency: 2,
@@ -275,6 +276,14 @@ describe('ImportContext reducer', () => {
       expect(next.reviewFaceMatching).toBe(false);
       expect(next.reviewPersonDetection).toBe(false);
       expect(next.reviewVisualDuplicates).toBe(false);
+    });
+
+    it('stores auto speed fallback mode and clears it when low tier is applied', () => {
+      const enabled = reducer(makeState({ autoSpeedMode: false }), { type: 'SET_AUTO_SPEED_MODE', enabled: true });
+      expect(enabled.autoSpeedMode).toBe(true);
+
+      const low = reducer(enabled, { type: 'SET_PERF_TIER', tier: 'low' });
+      expect(low.autoSpeedMode).toBe(false);
     });
   });
 

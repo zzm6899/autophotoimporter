@@ -172,6 +172,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     reviewFaceMatching,
     reviewPersonDetection,
     reviewVisualDuplicates,
+    autoSpeedMode,
     perfTier,
     fastKeeperMode,
     cullConfidence,
@@ -482,6 +483,10 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const handleFastKeeperMode = (enabled: boolean) => {
     dispatch({ type: 'SET_FAST_KEEPER_MODE', enabled });
     void window.electronAPI.setSettings({ fastKeeperMode: enabled });
+  };
+  const handleAutoSpeedMode = (enabled: boolean) => {
+    dispatch({ type: 'SET_AUTO_SPEED_MODE', enabled });
+    void window.electronAPI.setSettings({ autoSpeedMode: enabled });
   };
   const handleCullConfidence = (confidence: CullConfidence) => {
     dispatch({ type: 'SET_CULL_CONFIDENCE', confidence });
@@ -2477,6 +2482,18 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                 Skips face detection — scores photos by sharpness &amp; exposure only. Much faster for large batches.
               </p>
             )}
+
+            <label className="flex items-center gap-2 cursor-pointer mb-2">
+              <input
+                type="checkbox"
+                checked={autoSpeedMode}
+                onChange={(e) => handleAutoSpeedMode(e.target.checked)}
+              />
+              <span className="text-xs text-text">Auto speed fallback</span>
+            </label>
+            <p className="text-[10px] text-text-muted mb-2 ml-5">
+              If face scanning is too slow on a large card, Keptra switches to low-end review settings automatically.
+            </p>
 
             <div className="mb-2 rounded border border-border bg-surface-alt px-2 py-2">
               <div className="mb-2 flex items-center justify-between gap-2">

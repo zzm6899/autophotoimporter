@@ -1,6 +1,6 @@
 import { useMemo, useEffect, useCallback, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { AlertTriangle, ClipboardCheck, Copy, Download, Eye, ListChecks, MoreHorizontal, Pause, Play, ShieldCheck, Sparkles, Trash2, Users, Wand2 } from 'lucide-react';
+import { AlertTriangle, ClipboardCheck, Copy, Download, Eye, Gauge, ListChecks, MoreHorizontal, Pause, Play, ShieldCheck, Sparkles, Trash2, Users, Wand2 } from 'lucide-react';
 // Main grid / single / split view orchestrator.
 import { useAppState, useAppDispatch, useMergedFiles } from '../context/ImportContext';
 import type { FilterMode } from '../context/ImportContext';
@@ -16,7 +16,7 @@ import { ShortcutsOverlay } from './ShortcutsOverlay';
 import { BestOfSelectionPanel, rankBestOfSelection } from './BestOfSelectionPanel';
 import { REVIEW_COMMAND_EVENT } from './CommandPalette';
 import { ActionButton, ToolbarGroup } from './ui';
-import { getCachedPreview, getPreviewCacheStats, setBackgroundPreviewPaused, warmPreview } from '../utils/previewCache';
+import { getCachedPreview, getPreviewCacheStats, setBackgroundPreviewPaused, warmPreviews } from '../utils/previewCache';
 import { clampStops, getEffectiveExposureStops, getNormalizedExposureStops, normalizeExposureStops } from '../../shared/exposure';
 import { buildFaceIdentityGroups, FACE_GROUP_EMBEDDING_THRESHOLD, faceSignalConfidence, type FaceIdentityGroup } from '../../shared/review';
 import { needsSecondPass } from '../../shared/review-lane';
@@ -69,6 +69,18 @@ function formatFaceScanRate(ratePerSecond: number): string {
 }
 
 type MediaFaceBox = NonNullable<MediaFile['faceBoxes']>[number];
+
+const FACE_GROUP_SENSITIVITY_OPTIONS = [
+  { id: 'strict', label: 'Strict', threshold: 0.6, hint: 'Fewer false matches, more split people.' },
+  { id: 'balanced', label: 'Balanced', threshold: FACE_GROUP_EMBEDDING_THRESHOLD, hint: 'Default event-photo grouping.' },
+  { id: 'loose', label: 'Loose', threshold: 0.46, hint: 'Stacks more angle/blur variants, may need checking.' },
+] as const;
+
+type FaceGroupSensitivity = typeof FACE_GROUP_SENSITIVITY_OPTIONS[number]['id'];
+
+function faceGroupThresholdFor(sensitivity: FaceGroupSensitivity): number {
+  return FACE_GROUP_SENSITIVITY_OPTIONS.find((option) => option.id === sensitivity)?.threshold ?? FACE_GROUP_EMBEDDING_THRESHOLD;
+}
 
 function hasFaceMatchData(file: MediaFile): boolean {
   return !!file.faceEmbedding || (file.faceEmbeddings?.length ?? 0) > 0;
@@ -176,11 +188,15 @@ function FaceCrop({ file, box }: { file: MediaFile; box?: MediaFaceBox }) {
 function FaceIdentityGallery({
   groups,
   filesByPath,
+  sensitivity,
+  onSensitivityChange,
   onOpenGroup,
   onBuildGroups,
 }: {
   groups: FaceIdentityGroup[];
   filesByPath: Map<string, MediaFile>;
+  sensitivity: FaceGroupSensitivity;
+  onSensitivityChange: (sensitivity: FaceGroupSensitivity) => void;
   onOpenGroup: (group: FaceIdentityGroup) => void;
   onBuildGroups: () => void;
 }) {
@@ -204,11 +220,21 @@ function FaceIdentityGallery({
         <span className="text-[11px] text-text-muted">
           {cards.length} people/groups{!showSingletonFaces && singletonCount > 0 ? ` · ${singletonCount} hidden` : ''}
         </span>
+        <select
+          value={sensitivity}
+          onChange={(e) => onSensitivityChange(e.target.value as FaceGroupSensitivity)}
+          className="ml-auto rounded border border-border bg-surface-raised px-2 py-1 text-[10px] text-text-muted hover:border-violet-500/35 hover:text-violet-200 focus:outline-none focus:border-violet-400"
+          title={FACE_GROUP_SENSITIVITY_OPTIONS.find((option) => option.id === sensitivity)?.hint}
+        >
+          {FACE_GROUP_SENSITIVITY_OPTIONS.map((option) => (
+            <option key={option.id} value={option.id}>{option.label}</option>
+          ))}
+        </select>
         {singletonCount > 0 && (
           <button
             type="button"
             onClick={() => setShowSingletonFaces((value) => !value)}
-            className="ml-auto rounded border border-border bg-surface-raised px-2 py-1 text-[10px] text-text-muted hover:border-violet-500/35 hover:text-violet-200"
+            className="rounded border border-border bg-surface-raised px-2 py-1 text-[10px] text-text-muted hover:border-violet-500/35 hover:text-violet-200"
             title={showSingletonFaces ? 'Hide one-photo face crops so stacked people are easier to scan.' : 'Show one-photo face crops too.'}
           >
             {showSingletonFaces ? 'Hide singles' : 'Show singles'}
@@ -217,7 +243,7 @@ function FaceIdentityGallery({
         <button
           type="button"
           onClick={onBuildGroups}
-          className={`${singletonCount > 0 ? '' : 'ml-auto'} rounded border border-violet-500/25 bg-violet-500/10 px-2 py-1 text-[10px] text-violet-300 hover:bg-violet-500/20`}
+          className="rounded border border-violet-500/25 bg-violet-500/10 px-2 py-1 text-[10px] text-violet-300 hover:bg-violet-500/20"
         >
           Rebuild groups
         </button>
@@ -257,6 +283,9 @@ function FaceIdentityGallery({
                 </div>
                 <div className="truncate text-[10px] text-text-muted" title={sample.name}>
                   {group.size} photo{group.size === 1 ? '' : 's'} · {group.embeddingCount} match{group.embeddingCount === 1 ? '' : 'es'}
+                </div>
+                <div className={`text-[9px] ${group.confidence >= 0.7 ? 'text-emerald-300' : group.confidence >= 0.52 ? 'text-yellow-300' : 'text-orange-300'}`}>
+                  {group.confidence >= 0.7 ? 'strong match' : group.confidence >= 0.52 ? 'check match' : 'weak crop'}
                 </div>
               </div>
             </button>
@@ -802,7 +831,7 @@ async function visualHash(src: string): Promise<string> {
 }
 
 export function ThumbnailGrid() {
-  const { phase, selectedSource, scanError, focusedIndex, focusedPath, viewMode, filter, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, exposureAdjustmentStep, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused, fastKeeperMode, faceConcurrency, gpuFaceAcceleration, reviewFaceAnalysis, reviewFaceMatching, reviewPersonDetection, reviewVisualDuplicates, keybinds, metadataKeywords, whiteBalanceTemperature, whiteBalanceTint, destination, licenseStatus, ftpDestEnabled, ftpDestConfig } = useAppState();
+  const { phase, selectedSource, scanError, focusedIndex, focusedPath, viewMode, filter, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, exposureAdjustmentStep, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused, fastKeeperMode, autoSpeedMode, faceConcurrency, gpuFaceAcceleration, reviewFaceAnalysis, reviewFaceMatching, reviewPersonDetection, reviewVisualDuplicates, keybinds, metadataKeywords, whiteBalanceTemperature, whiteBalanceTint, destination, licenseStatus, ftpDestEnabled, ftpDestConfig } = useAppState();
   // useMergedFiles() overlays face/review scores without re-running the full
   // reducer map — O(n) only when scores.size > 0, otherwise returns the same array.
   const files = useMergedFiles();
@@ -835,6 +864,7 @@ export function ThumbnailGrid() {
   const [showTagSuggestions, setShowTagSuggestions] = useState(false);
   const [faceProviderSummary, setFaceProviderSummary] = useState<string>('Face engine warming');
   const [showAiReviewStrip, setShowAiReviewStrip] = useState(false);
+  const [faceGroupSensitivity, setFaceGroupSensitivity] = useState<FaceGroupSensitivity>('balanced');
   const [reviewSprintMode, setReviewSprintMode] = useState(false);
   const [flatGridWidth, setFlatGridWidth] = useState(0);
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -860,6 +890,8 @@ export function ThumbnailGrid() {
   const reviewFaceAnalysisRef = useRef(reviewFaceAnalysis);
   const reviewFaceMatchingRef = useRef(reviewFaceMatching);
   const reviewVisualDuplicatesRef = useRef(reviewVisualDuplicates);
+  const faceGroupEmbeddingThresholdRef = useRef(FACE_GROUP_EMBEDDING_THRESHOLD);
+  const autoSpeedTriggeredRef = useRef(false);
   const collapsedSet = useMemo(() => new Set(collapsedBursts), [collapsedBursts]);
   const queuedSet = useMemo(() => new Set(queuedPaths), [queuedPaths]);
   const totalPhotoCount = useMemo(() => files.filter((f) => f.type === 'photo').length, [files]);
@@ -883,9 +915,11 @@ export function ThumbnailGrid() {
 
   const shouldBuildFaceIdentityGroups = filter === 'face-gallery' || filter === 'face-groups' || filter.startsWith('face:');
   const includeFaceIdentitySingletons = filter === 'face-gallery' || filter.startsWith('face:');
+  const faceGroupEmbeddingThreshold = faceGroupThresholdFor(faceGroupSensitivity);
+  useEffect(() => { faceGroupEmbeddingThresholdRef.current = faceGroupEmbeddingThreshold; }, [faceGroupEmbeddingThreshold]);
   const faceIdentityGroups = useMemo(
-    () => shouldBuildFaceIdentityGroups ? buildFaceIdentityGroups(files, FACE_GROUP_EMBEDDING_THRESHOLD, includeFaceIdentitySingletons) : [],
-    [files, includeFaceIdentitySingletons, shouldBuildFaceIdentityGroups],
+    () => shouldBuildFaceIdentityGroups ? buildFaceIdentityGroups(files, faceGroupEmbeddingThreshold, includeFaceIdentitySingletons) : [],
+    [faceGroupEmbeddingThreshold, files, includeFaceIdentitySingletons, shouldBuildFaceIdentityGroups],
   );
   const faceIdentityPathMap = useMemo(() => {
     const map = new Map<string, Set<string>>();
@@ -1392,7 +1426,7 @@ export function ThumbnailGrid() {
         reviewBatchCounterRef.current += 1;
         if (reviewGeneration !== reviewGenerationRef.current) return;
         if (reviewBatchCounterRef.current % 5 === 0 || entries.length < batchSize) {
-          if (reviewFaceMatchingRef.current) dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10 });
+          if (reviewFaceMatchingRef.current) dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10, embeddingThreshold: faceGroupEmbeddingThresholdRef.current });
           if (reviewVisualDuplicatesRef.current) dispatch({ type: 'GROUP_VISUAL_DUPLICATES', threshold: 8 });
         }
       })
@@ -2475,20 +2509,29 @@ export function ThumbnailGrid() {
           focusedIndex - 1,
         ];
     const id = setTimeout(() => {
+      const immediate: string[] = [];
+      const background: string[] = [];
       for (const i of neighbors) {
-        if (i >= 0 && i < sortedFiles.length) {
-          const candidate = sortedFiles[i];
-          const isRawCandidate = /\.(nef|nrw|cr2|cr3|arw|raf|rw2|orf|dng|pef|srw)$/i.test(candidate.name || candidate.extension);
-          if (isRawFocused || isRawCandidate) {
-            if (i === focusedIndex + 1) warmPreview(candidate.path, 'normal');
-          } else {
-            warmPreview(candidate.path, i === focusedIndex + 1 ? 'normal' : 'low');
-          }
-        }
+        if (i < 0 || i >= sortedFiles.length) continue;
+        const candidate = sortedFiles[i];
+        const isRawCandidate = /\.(nef|nrw|cr2|cr3|arw|raf|rw2|orf|dng|pef|srw)$/i.test(candidate.name || candidate.extension);
+        if (i === focusedIndex + 1) immediate.push(candidate.path);
+        else if (!isRawFocused && !isRawCandidate) background.push(candidate.path);
       }
+      warmPreviews(immediate, 'normal', isRawFocused ? 1 : 2);
+      if (!isRawFocused) warmPreviews(background, 'low', 3);
     }, isRawFocused ? 180 : 50);
     return () => clearTimeout(id);
   }, [focusedIndex, viewMode, sortedFiles]);
+
+  useEffect(() => {
+    if (viewMode !== 'grid' || backgroundLoadingPaused || sortedFiles.length === 0) return;
+    const start = Math.max(0, focusedIndex >= 0 ? focusedIndex : 0);
+    const limit = fastKeeperMode ? 8 : 18;
+    const paths = sortedFiles.slice(start, start + limit).map((file) => file.path);
+    const id = window.setTimeout(() => warmPreviews(paths, 'low', limit), 120);
+    return () => window.clearTimeout(id);
+  }, [backgroundLoadingPaused, fastKeeperMode, focusedIndex, sortedFiles, viewMode]);
 
   // Expose-normalize button state (computed before early returns so the
   // handleNormalizeToggle useCallback is always called unconditionally).
@@ -2692,6 +2735,7 @@ export function ThumbnailGrid() {
         return {
           label: 'estimating',
           detail: `ETA estimating · ${remaining} left`,
+          ratePerMinute: undefined,
         };
       }
       const rate = processed / elapsedSeconds;
@@ -2699,6 +2743,7 @@ export function ThumbnailGrid() {
       return {
         label: formatEtaDuration(remainingSeconds),
         detail: `ETA ${formatEtaDuration(remainingSeconds)} · ${remaining} left · ${formatFaceScanRate(rate)}`,
+        ratePerMinute: rate * 60,
       };
     })();
     const ready = reviewStats.total > 0 && reviewStats.analyzed >= reviewStats.total;
@@ -2776,6 +2821,39 @@ export function ThumbnailGrid() {
     const timer = window.setInterval(() => setFaceScanEtaTick((value) => value + 1), 1000);
     return () => window.clearInterval(timer);
   }, [faceScanEtaActive]);
+  const applyLowEndSpeed = useCallback((autoTriggered = false) => {
+    dispatch({ type: 'SET_PERF_TIER', tier: 'low' });
+    if (autoTriggered) dispatch({ type: 'SET_AUTO_SPEED_MODE', enabled: false });
+    void window.electronAPI.setSettings({
+      perfTier: 'low',
+      fastKeeperMode: true,
+      previewConcurrency: 1,
+      faceConcurrency: 1,
+      rawPreviewQuality: 60,
+      reviewFaceAnalysis: false,
+      reviewFaceMatching: false,
+      reviewPersonDetection: false,
+      reviewVisualDuplicates: false,
+      autoSpeedMode: autoTriggered ? false : autoSpeedMode,
+    });
+    void window.electronAPI.setFaceAnalysisConcurrency?.(1);
+  }, [autoSpeedMode, dispatch]);
+  useEffect(() => {
+    if (!autoSpeedMode || autoSpeedTriggeredRef.current || !faceScanEtaActive) return;
+    const ratePerMinute = aiOverview.faceScanEta?.ratePerMinute;
+    if (!ratePerMinute || reviewStats.total < 500 || reviewStats.faceScanned < 60) return;
+    if (ratePerMinute >= 90) return;
+    autoSpeedTriggeredRef.current = true;
+    applyLowEndSpeed(true);
+  }, [aiOverview.faceScanEta, applyLowEndSpeed, autoSpeedMode, faceScanEtaActive, reviewStats.faceScanned, reviewStats.total]);
+  useEffect(() => {
+    if (autoSpeedMode) autoSpeedTriggeredRef.current = false;
+  }, [autoSpeedMode, selectedSource]);
+  const handleAutoSpeedToggle = useCallback(() => {
+    const next = !autoSpeedMode;
+    dispatch({ type: 'SET_AUTO_SPEED_MODE', enabled: next });
+    void window.electronAPI.setSettings({ autoSpeedMode: next });
+  }, [autoSpeedMode, dispatch]);
   const sprintRemaining = useMemo(() => (
     sortedFiles.filter((file) =>
       file.type === 'photo' &&
@@ -2791,6 +2869,7 @@ export function ThumbnailGrid() {
   const allTargetsNormalized = normalizeTargetPaths.length > 0 &&
     normalizeTargetPaths.every((p) => files.find((f) => f.path === p)?.normalizeToAnchor);
   const duplicateCount = files.filter((f) => f.duplicate).length;
+  const catalogMatchCount = files.filter((f) => !!f.duplicateMemory).length;
   const highBlurRejectPaths = useMemo(
     () => files.filter((f) => f.blurRisk === 'high' && f.pick !== 'selected').map((f) => f.path),
     [files],
@@ -2828,6 +2907,44 @@ export function ThumbnailGrid() {
     for (const f of files) if (f.burstId && f.burstSize && f.burstSize > 1) ids.add(f.burstId);
     return ids;
   }, [files]);
+  const reviewFlow = useMemo(() => {
+    const filterLabel = filter.startsWith('face:')
+      ? 'Similar face'
+      : filter.startsWith('burst:')
+        ? 'Burst'
+        : filter === 'face-gallery'
+          ? 'Face gallery'
+          : filter === 'face-groups'
+            ? 'Face groups'
+            : filter === 'near-duplicates'
+              ? 'Similar photos'
+              : filter === 'catalog-duplicates'
+                ? 'Catalog matches'
+                : filter === 'queue'
+                  ? 'Queue'
+                  : filter === 'review-needed'
+                    ? 'Second pass'
+                    : filter === 'unmarked'
+                      ? 'Unmarked'
+                      : filter === 'all'
+                        ? 'All photos'
+                        : filter;
+    const nextStep = queuedPaths.length > 0
+      ? `Import ${queuedPaths.length} queued`
+      : reviewStats.pending > 0
+        ? `${reviewStats.pending} left to decide`
+        : destination
+          ? 'Ready to import'
+          : 'Choose destination';
+    const health = reviewStats.blur > 0
+      ? `${reviewStats.blur} blur risk`
+      : catalogMatchCount > 0
+        ? `${catalogMatchCount} catalog matches`
+        : reviewStats.faceGroups > 0
+          ? `${reviewStats.faceGroups} face groups`
+          : 'Clean review lane';
+    return { filterLabel, nextStep, health };
+  }, [catalogMatchCount, destination, filter, queuedPaths.length, reviewStats.blur, reviewStats.faceGroups, reviewStats.pending]);
 
   const handleNormalizeToggle = useCallback(() => {
     if (normalizeTargetPaths.length === 0) return;
@@ -3390,9 +3507,33 @@ export function ThumbnailGrid() {
             AI {reviewStats.analyzed}/{reviewStats.total}{aiOverview.faceScanEta ? ` ETA ${aiOverview.faceScanEta.label}` : ''}
           </button>
         )}
+        {totalPhotoCount > 0 && (
+          <button
+            type="button"
+            onClick={handleAutoSpeedToggle}
+            className={`shrink-0 rounded border px-2 py-1 text-[10px] transition-colors ${
+              autoSpeedMode
+                ? 'border-yellow-500/40 bg-yellow-500/15 text-yellow-300'
+                : 'border-border bg-surface-raised text-text-muted hover:border-yellow-500/35 hover:text-yellow-300'
+            }`}
+            title={autoSpeedMode
+              ? 'Auto speed is watching face-scan throughput and will switch to Low-end speed if this card is too slow.'
+              : 'Watch face-scan speed and automatically switch to Low-end speed on slow devices.'}
+          >
+            Auto speed {autoSpeedMode ? 'On' : 'Off'}
+          </button>
+        )}
 
         {showAdvancedTools && (
           <ToolbarGroup className="ml-1">
+            <ActionButton
+              icon={Gauge}
+              tone="warning"
+              onClick={() => applyLowEndSpeed(false)}
+              title="Switch to low-end speed now: Fast Keeper, one preview worker, one face worker, lower RAW preview quality, and optional AI stages off."
+            >
+              Low-end now
+            </ActionButton>
             <ActionButton
               icon={Eye}
               tone={reviewSprintMode ? 'primary' : 'neutral'}
@@ -3671,7 +3812,7 @@ export function ThumbnailGrid() {
               onChange={(e) => {
                 if (!e.target.value) return;
                 const nextFilter = e.target.value as typeof filter;
-                if (nextFilter === 'face-groups' || nextFilter === 'face-gallery') dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10 });
+                if (nextFilter === 'face-groups' || nextFilter === 'face-gallery') dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10, embeddingThreshold: faceGroupEmbeddingThreshold });
                 if (nextFilter === 'near-duplicates') dispatch({ type: 'GROUP_VISUAL_DUPLICATES', threshold: 8 });
                 dispatch({ type: 'SET_FILTER', filter: nextFilter });
               }}
@@ -3880,6 +4021,36 @@ export function ThumbnailGrid() {
 
       {nextActionToolbar}
 
+      {files.length > 0 && (
+        <div className="shrink-0 border-b border-border bg-surface/75 px-3 py-1">
+          <div className="flex flex-wrap items-center gap-2 text-[10px] text-text-muted">
+            <button
+              type="button"
+              onClick={handleBackToMain}
+              disabled={!canGoBack}
+              className="rounded border border-border bg-surface-raised px-2 py-0.5 text-text-secondary hover:border-blue-500/35 hover:text-blue-300 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:border-border disabled:hover:text-text-secondary"
+              title="Return from the current filtered/review view."
+            >
+              Back
+            </button>
+            <span className="text-text-faint">Review</span>
+            <span className="text-text-secondary">/</span>
+            <span className="rounded bg-surface-raised px-1.5 py-0.5 text-text-secondary">{reviewFlow.filterLabel}</span>
+            {searchText.trim() && <span className="rounded bg-blue-500/10 px-1.5 py-0.5 text-blue-300">search</span>}
+            <span className="text-text-secondary">/</span>
+            <span className="text-text-secondary">{reviewFlow.nextStep}</span>
+            <button
+              type="button"
+              onClick={() => dispatch({ type: 'SET_FILTER', filter: reviewStats.blur > 0 ? 'blur-risk' : catalogMatchCount > 0 ? 'catalog-duplicates' : reviewStats.faceGroups > 0 ? 'face-gallery' : 'all' })}
+              className="rounded border border-border bg-surface-raised px-2 py-0.5 text-text-muted hover:border-yellow-500/35 hover:text-yellow-300"
+              title="Open the most useful health filter for this scan."
+            >
+              {reviewFlow.health}
+            </button>
+          </div>
+        </div>
+      )}
+
       {totalPhotoCount > 0 && showAiReviewStrip && (
         <div className="shrink-0 border-b border-border bg-surface-alt/55 px-3 py-1.5">
           <div className="flex flex-wrap items-center gap-2 text-[10px] text-text-muted">
@@ -3905,7 +4076,7 @@ export function ThumbnailGrid() {
             {reviewStats.embeddings > 1 && (
               <button
                 type="button"
-                onClick={() => dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10 })}
+                onClick={() => dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10, embeddingThreshold: faceGroupEmbeddingThreshold })}
                 className="rounded border border-violet-500/25 bg-violet-500/10 px-1.5 py-0.5 text-violet-300 hover:bg-violet-500/20 hover:text-violet-200"
                 title="Rebuild similar-face groups from match-ready faces."
               >
@@ -4010,8 +4181,10 @@ export function ThumbnailGrid() {
                 <FaceIdentityGallery
                   groups={faceIdentityGroups}
                   filesByPath={filesByPath}
+                  sensitivity={faceGroupSensitivity}
+                  onSensitivityChange={setFaceGroupSensitivity}
                   onOpenGroup={(group) => handleFaceGroupFilter(group.id, group.samplePath)}
-                  onBuildGroups={() => dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10 })}
+                  onBuildGroups={() => dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10, embeddingThreshold: faceGroupEmbeddingThreshold })}
                 />
               ) : folderGroups ? (
                 /* Folder view: one section per sub-directory, ranked by star */
