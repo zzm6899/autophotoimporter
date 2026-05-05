@@ -72,8 +72,8 @@ type MediaFaceBox = NonNullable<MediaFile['faceBoxes']>[number];
 
 const FACE_GROUP_SENSITIVITY_OPTIONS = [
   { id: 'strict', label: 'Strict', threshold: 0.6, hint: 'Fewer false matches, more split people.' },
-  { id: 'balanced', label: 'Balanced', threshold: FACE_GROUP_EMBEDDING_THRESHOLD, hint: 'Default event-photo grouping.' },
-  { id: 'loose', label: 'Loose', threshold: 0.46, hint: 'Stacks more angle/blur variants, may need checking.' },
+  { id: 'balanced', label: 'Balanced', threshold: 0.5, hint: 'Safer event-photo grouping.' },
+  { id: 'loose', label: 'Event', threshold: 0.44, hint: 'Stacks more angle/blur variants, may need checking.' },
 ] as const;
 
 type FaceGroupSensitivity = typeof FACE_GROUP_SENSITIVITY_OPTIONS[number]['id'];
@@ -254,6 +254,125 @@ function maxFaceSimilarityToSample(file: MediaFile | undefined, sampleEmbedding:
     if (embedding) best = Math.max(best, cosineSimilarity(sampleEmbedding, embedding));
   }
   return best;
+}
+
+function faceGroupSampleEmbedding(group: FaceIdentityGroup, filesByPath: Map<string, MediaFile>): Float32Array | null {
+  return faceEmbeddingAt(filesByPath.get(group.samplePath), group.sampleEmbeddingIndex);
+}
+
+function faceGroupRepresentativeEmbeddings(
+  group: FaceIdentityGroup,
+  filesByPath: Map<string, MediaFile>,
+  limit = 10,
+): Float32Array[] {
+  const reps: Float32Array[] = [];
+  const sample = faceGroupSampleEmbedding(group, filesByPath);
+  if (sample) reps.push(sample);
+  for (const path of group.paths) {
+    const file = filesByPath.get(path);
+    if (!file) continue;
+    const embeddings = serializedFaceEmbeddings(file);
+    for (let index = 0; index < embeddings.length; index++) {
+      if (path === group.samplePath && index === group.sampleEmbeddingIndex) continue;
+      const embedding = deserializeEmbedding(embeddings[index]);
+      if (!embedding) continue;
+      if (!sample || cosineSimilarity(sample, embedding) >= 0.38) reps.push(embedding);
+      if (reps.length >= limit) return reps;
+    }
+  }
+  return reps;
+}
+
+function faceGroupBestSimilarity(
+  a: FaceIdentityGroup,
+  b: FaceIdentityGroup,
+  filesByPath: Map<string, MediaFile>,
+): number {
+  const aReps = faceGroupRepresentativeEmbeddings(a, filesByPath);
+  const bReps = faceGroupRepresentativeEmbeddings(b, filesByPath);
+  let best = 0;
+  for (const left of aReps) {
+    for (const right of bReps) {
+      best = Math.max(best, cosineSimilarity(left, right));
+    }
+  }
+  return best;
+}
+
+function chooseFaceGroupCover(
+  groups: FaceIdentityGroup[],
+  filesByPath: Map<string, MediaFile>,
+): { samplePath: string; sampleEmbeddingIndex: number; confidence: number } {
+  let best = groups[0];
+  let bestScore = -1;
+  for (const group of groups) {
+    const file = filesByPath.get(group.samplePath);
+    const quality = file ? faceSampleQuality(file, group, sampleFaceBox(file, group)).score : 0;
+    const score = quality + group.confidence * 35 + Math.min(20, group.embeddingCount);
+    if (score > bestScore) {
+      best = group;
+      bestScore = score;
+    }
+  }
+  return {
+    samplePath: best.samplePath,
+    sampleEmbeddingIndex: best.sampleEmbeddingIndex,
+    confidence: Math.max(...groups.map((group) => group.confidence)),
+  };
+}
+
+function coalesceNearbyFaceGroups(
+  groups: FaceIdentityGroup[],
+  filesByPath: Map<string, MediaFile>,
+  order: Map<string, number>,
+  sensitivity: FaceGroupSensitivity,
+): FaceIdentityGroup[] {
+  if (groups.length < 2) return groups;
+  const mergeThreshold = sensitivity === 'strict' ? 0.55 : sensitivity === 'balanced' ? 0.46 : 0.42;
+  const clusters = groups.map((group) => ({ groups: [group], paths: new Set(group.paths), manual: 'manual' in group }));
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    outer:
+    for (let i = 0; i < clusters.length; i++) {
+      for (let j = i + 1; j < clusters.length; j++) {
+        if (clusters[i].manual || clusters[j].manual) continue;
+        let similarity = 0;
+        let confidentEnough = false;
+        for (const left of clusters[i].groups) {
+          for (const right of clusters[j].groups) {
+            similarity = Math.max(similarity, faceGroupBestSimilarity(left, right, filesByPath));
+            confidentEnough = confidentEnough ||
+              Math.max(left.confidence, right.confidence) >= 0.52 ||
+              left.size > 1 ||
+              right.size > 1;
+          }
+        }
+        if (!confidentEnough || similarity < mergeThreshold) continue;
+        clusters[i].groups.push(...clusters[j].groups);
+        for (const path of clusters[j].paths) clusters[i].paths.add(path);
+        clusters.splice(j, 1);
+        changed = true;
+        break outer;
+      }
+    }
+  }
+
+  return clusters.map((cluster) => {
+    if (cluster.groups.length === 1) return cluster.groups[0];
+    const paths = Array.from(cluster.paths).sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
+    const cover = chooseFaceGroupCover(cluster.groups, filesByPath);
+    return {
+      id: `face-soft-${cluster.groups.map((group) => group.id).join('-')}`,
+      paths,
+      size: paths.length,
+      embeddingCount: cluster.groups.reduce((sum, group) => sum + group.embeddingCount, 0),
+      samplePath: cover.samplePath,
+      sampleEmbeddingIndex: cover.sampleEmbeddingIndex,
+      confidence: cover.confidence,
+    };
+  });
 }
 
 const faceCropPreviewCache = new Map<string, string>();
@@ -586,7 +705,7 @@ function FaceIdentityGallery({
         <Users size={15} className="text-violet-300" />
         <span className="text-xs font-medium text-text-secondary">Face gallery</span>
         <span className="text-[11px] text-text-muted">
-          {cards.length} people/groups{hiddenCardCount > 0 ? ` · showing ${visibleCards.length}` : ''}{!showSingletonFaces && singletonCount > 0 ? ` · ${singletonCount} singles hidden` : ''}
+          {cards.length} possible face stack{cards.length === 1 ? '' : 's'}{hiddenCardCount > 0 ? ` · showing ${visibleCards.length}` : ''}{!showSingletonFaces && singletonCount > 0 ? ` · ${singletonCount} singles hidden` : ''}
         </span>
         <div className="flex items-center gap-1">
           <button
@@ -730,7 +849,7 @@ function FaceIdentityGallery({
       ) : (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(154px,1fr))] gap-3">
           {visibleCards.map(({ group, sample }, index) => {
-            const label = `${'manual' in group ? 'Person' : 'Face'} ${index + 1}`;
+            const label = `${'manual' in group || group.size > 1 ? 'Person' : 'Face'} ${index + 1}`;
             const selected = selectedGroupIds.has(group.id);
             const box = sampleFaceBox(sample, group);
             const quality = faceSampleQuality(sample, group, box);
@@ -1548,7 +1667,7 @@ export function ThumbnailGrid() {
   const [showTagSuggestions, setShowTagSuggestions] = useState(false);
   const [faceProviderSummary, setFaceProviderSummary] = useState<string>('Face engine warming');
   const [showAiReviewStrip, setShowAiReviewStrip] = useState(false);
-  const [faceGroupSensitivity, setFaceGroupSensitivity] = useState<FaceGroupSensitivity>('balanced');
+  const [faceGroupSensitivity, setFaceGroupSensitivity] = useState<FaceGroupSensitivity>('loose');
   const [selectedFaceGroupIds, setSelectedFaceGroupIds] = useState<Set<string>>(new Set());
   const [manualFaceGroups, setManualFaceGroups] = useState<ManualFaceGroup[]>([]);
   const [manualFaceSplitPaths, setManualFaceSplitPaths] = useState<Set<string>>(new Set());
@@ -1660,6 +1779,9 @@ export function ThumbnailGrid() {
         sampleEmbeddingIndex: samplePath === group.samplePath ? group.sampleEmbeddingIndex : 0,
       };
     });
+    const autoMergedGroups = manualFaceGroups.length === 0 && manualFaceSplitPaths.size === 0
+      ? coalesceNearbyFaceGroups(thresholdAdjustedGroups, filesByPath, order, faceGroupSensitivity)
+      : thresholdAdjustedGroups;
     const splitPaths = manualFaceSplitPaths;
     const retainedManual = manualFaceGroups.filter((group) => !group.paths.some((path) => splitPaths.has(path)));
     const manualPaths = new Set<string>();
@@ -1668,7 +1790,7 @@ export function ThumbnailGrid() {
     }
     const next: FaceIdentityGroup[] = [...retainedManual];
     let splitIndex = 1;
-    for (const group of thresholdAdjustedGroups) {
+    for (const group of autoMergedGroups) {
       const remainingPaths = group.paths.filter((path) => !manualPaths.has(path));
       if (remainingPaths.length === 0) continue;
       const shouldSplit = remainingPaths.some((path) => splitPaths.has(path));
@@ -1705,7 +1827,7 @@ export function ThumbnailGrid() {
       b.confidence - a.confidence ||
       a.samplePath.localeCompare(b.samplePath),
     );
-  }, [faceGroupEmbeddingThreshold, faceIdentityGroups, faceThresholdOverrides, files, filesByPath, manualFaceGroups, manualFaceSplitPaths]);
+  }, [faceGroupEmbeddingThreshold, faceGroupSensitivity, faceIdentityGroups, faceThresholdOverrides, files, filesByPath, manualFaceGroups, manualFaceSplitPaths]);
   const faceIdentityPathMap = useMemo(() => {
     const map = new Map<string, Set<string>>();
     for (const group of displayFaceIdentityGroups) {
