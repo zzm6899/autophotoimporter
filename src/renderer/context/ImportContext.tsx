@@ -9,6 +9,7 @@ export type AppPhase = 'idle' | 'scanning' | 'ready' | 'importing' | 'complete';
 export type ViewMode = 'grid' | 'single' | 'split' | 'compare' | 'settings';
 
 export type FilterMode = 'all' | 'protected' | 'picked' | 'rejected' | 'unrated' | 'duplicates' | 'catalog-duplicates' | 'unmarked' | 'queue' | 'best' | 'faces' | 'face-groups' | 'face-gallery' | 'group-photos' | 'blur-risk' | 'near-duplicates' | 'review-needed' | 'needs-exposure' | 'normalized' | 'adjusted' | 'photos' | 'videos' | 'raw' | RatingFilter | `camera:${string}` | `lens:${string}` | `date:${string}` | `ext:${string}` | `scene:${string}` | `burst:${string}` | `face:${string}`;
+const MAX_FACE_CONCURRENCY = 8;
 
 interface State {
   volumes: Volume[];
@@ -1167,7 +1168,7 @@ export function reducer(state: State, action: Action): State {
     case 'SET_PREVIEW_CONCURRENCY':
       return { ...state, previewConcurrency: action.concurrency };
     case 'SET_FACE_CONCURRENCY':
-      return { ...state, faceConcurrency: action.concurrency };
+      return { ...state, faceConcurrency: Math.max(1, Math.min(MAX_FACE_CONCURRENCY, Math.round(action.concurrency))) };
     case 'SET_KEYBIND':
       return { ...state, keybinds: { ...state.keybinds, [action.action]: action.key } };
     case 'SET_KEYBINDS':

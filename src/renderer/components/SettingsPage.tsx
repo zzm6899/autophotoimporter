@@ -94,6 +94,7 @@ const FAST_RAW_METADATA_EXPORT: MetadataExportFlags = {
   pickLabel: false,
   stripGps: false,
 };
+const MAX_FACE_CONCURRENCY = 8;
 
 type SettingsTopic = typeof SETTINGS_TOPICS[number]['id'];
 
@@ -570,7 +571,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   };
 
   const handleFaceConcurrency = (concurrency: number) => {
-    const next = Math.max(1, Math.min(32, Math.round(concurrency)));
+    const next = Math.max(1, Math.min(MAX_FACE_CONCURRENCY, Math.round(concurrency)));
     dispatch({ type: 'SET_FACE_CONCURRENCY', concurrency: next });
     void window.electronAPI.setSettings({ faceConcurrency: next });
     void window.electronAPI.setFaceAnalysisConcurrency?.(next);
@@ -2777,14 +2778,14 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
               <input
                 type="range"
                 min={1}
-                max={32}
+                max={MAX_FACE_CONCURRENCY}
                 step={1}
                 value={faceConcurrency}
                 onChange={(e) => handleFaceConcurrency(Number(e.target.value))}
                 className="w-full h-1 bg-surface-raised rounded appearance-none cursor-pointer accent-accent"
               />
               <div className="mt-1 flex gap-1">
-                {[1, 4, 8, 12, 16, 24, 32].map((value) => (
+                {[1, 2, 4, 6, 8].map((value) => (
                   <button
                     key={value}
                     type="button"
@@ -2797,7 +2798,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                 ))}
               </div>
               <p className="text-[10px] text-text-muted mt-0.5">
-                Higher can push GPUs harder on large batches. Fast DirectML runs often like 16-24; use 32 only for stress testing if the UI stays smooth.
+                Higher can push GPUs harder on large batches. Capped at 8 for DirectML stability; use 2-5 if the app restarts during face scans.
               </p>
             </div>
 

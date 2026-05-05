@@ -1008,6 +1008,7 @@ const DEFAULT_SETTINGS: AppSettings = {
 let faceSemaphoreSlots = 1;
 let faceSemaphoreQueue: Array<() => void> = [];
 let faceActiveCount = 0;
+const FACE_CONCURRENCY_HARD_MAX = 8;
 
 // Incremented on every SCAN_START so in-flight semaphore waiters from the
 // previous source can detect they've been superseded and bail out early.
@@ -1024,8 +1025,24 @@ function cancelPendingFaceJobs(): void {
 
 const STALE_FACE_JOB = 'stale-face-job';
 
+function clampFaceConcurrency(n: number, max = FACE_CONCURRENCY_HARD_MAX): number {
+  const safeMax = Math.max(1, Math.min(FACE_CONCURRENCY_HARD_MAX, Math.round(max)));
+  return Math.max(1, Math.min(safeMax, Math.round(n)));
+}
+
+function resolveFaceConcurrency(settings: Pick<AppSettings, 'perfTier' | 'faceConcurrency'>, profile = detectDeviceTier(
+  settings.perfTier && settings.perfTier !== 'auto' ? settings.perfTier : undefined,
+)): number {
+  const requested = settings.faceConcurrency;
+  const profileMax = profile.faceConcurrency;
+  if ((!settings.perfTier || settings.perfTier === 'auto') && (requested ?? 0) <= 1) {
+    return clampFaceConcurrency(profileMax, profileMax);
+  }
+  return clampFaceConcurrency(requested ?? profileMax, profileMax);
+}
+
 function setFaceConcurrency(n: number): void {
-  faceSemaphoreSlots = Math.max(1, Math.min(32, Math.round(n)));
+  faceSemaphoreSlots = clampFaceConcurrency(n);
   configureFaceThroughput(faceSemaphoreSlots);
   while (faceActiveCount < faceSemaphoreSlots && faceSemaphoreQueue.length > 0) {
     faceActiveCount++;
@@ -1126,10 +1143,7 @@ async function loadSettings(): Promise<AppSettings> {
     const profile = detectDeviceTier(
       merged.perfTier && merged.perfTier !== 'auto' ? merged.perfTier : undefined
     );
-    const resolvedFaceConcurrency =
-      (!merged.perfTier || merged.perfTier === 'auto') && (merged.faceConcurrency ?? 0) <= 1
-        ? profile.faceConcurrency
-        : merged.faceConcurrency ?? profile.faceConcurrency;
+    const resolvedFaceConcurrency = resolveFaceConcurrency(merged, profile);
 
     // Apply performance settings immediately
     configureGpuAcceleration(merged.gpuFaceAcceleration ?? true);
@@ -1178,19 +1192,24 @@ async function saveSettings(settings: Partial<AppSettings>): Promise<void> {
     watchFolders: settings.watchFolders != null ? normalizeWatchFolders(settings.watchFolders) : current.watchFolders,
     licenseStatus: settings.licenseStatus ?? current.licenseStatus,
   };
-  await writeSettingsFile(merged);
+  const profile = detectDeviceTier(merged.perfTier && merged.perfTier !== 'auto' ? merged.perfTier : undefined);
+  const normalized: AppSettings = {
+    ...merged,
+    faceConcurrency: resolveFaceConcurrency(merged, profile),
+  };
+  await writeSettingsFile(normalized);
   
   // Reapply settings to running services
-  configureGpuAcceleration(merged.gpuFaceAcceleration ?? true);
-  configureGpuDevice(merged.gpuDeviceId);
-  configureCpuOptimization(merged.cpuOptimization ?? false);
+  configureGpuAcceleration(normalized.gpuFaceAcceleration ?? true);
+  configureGpuDevice(normalized.gpuDeviceId);
+  configureCpuOptimization(normalized.cpuOptimization ?? false);
   configureFaceFeatureOptions({
-    faceMatching: merged.reviewFaceMatching ?? true,
-    personDetection: merged.reviewPersonDetection ?? true,
+    faceMatching: normalized.reviewFaceMatching ?? true,
+    personDetection: normalized.reviewPersonDetection ?? true,
   });
-  setRawPreviewQuality(merged.rawPreviewQuality ?? 70);
-  setFaceConcurrency(merged.faceConcurrency ?? 1);
-  watchFolderManager?.update(merged.watchFolders ?? []);
+  setRawPreviewQuality(normalized.rawPreviewQuality ?? 70);
+  setFaceConcurrency(normalized.faceConcurrency ?? 1);
+  watchFolderManager?.update(normalized.watchFolders ?? []);
   };
 
   const nextSave = settingsSaveQueue.then(write, write);

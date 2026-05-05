@@ -241,6 +241,26 @@ describe('IPC Handlers', () => {
       expect(settings.theme).toBe('light');
     });
 
+    it('clamps saved face concurrency to a device-safe maximum', async () => {
+      mockReadFile.mockResolvedValue(JSON.stringify({ perfTier: 'high', faceConcurrency: 24 }) as any);
+      const handler = getHandler('settings:get');
+      const settings = await handler({}) as any;
+
+      expect(settings.faceConcurrency).toBeGreaterThanOrEqual(1);
+      expect(settings.faceConcurrency).toBeLessThanOrEqual(8);
+    });
+
+    it('persists clamped face concurrency when settings are updated', async () => {
+      mockReadFile.mockResolvedValue(JSON.stringify({ perfTier: 'high', faceConcurrency: 24 }) as any);
+      const handler = getHandler('settings:set');
+
+      await handler({}, { faceConcurrency: 24 });
+      const written = JSON.parse(String(mockWriteFile.mock.calls[0][1]));
+
+      expect(written.faceConcurrency).toBeGreaterThanOrEqual(1);
+      expect(written.faceConcurrency).toBeLessThanOrEqual(8);
+    });
+
     it('returns defaults on JSON parse error', async () => {
       mockReadFile.mockResolvedValue('not-json' as any);
       const handler = getHandler('settings:get');
