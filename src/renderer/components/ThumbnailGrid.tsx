@@ -1,4 +1,4 @@
-import { useMemo, useEffect, useCallback, useRef, useState } from 'react';
+import { useMemo, useEffect, useCallback, useRef, useState, useDeferredValue } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { AlertTriangle, ClipboardCheck, Copy, Download, Eye, Gauge, ListChecks, MoreHorizontal, Pause, Play, ShieldCheck, Sparkles, Trash2, Users, Wand2 } from 'lucide-react';
 // Main grid / single / split view orchestrator.
@@ -112,6 +112,68 @@ function stablePathId(value: string): string {
     hash = ((hash << 5) - hash + value.charCodeAt(i)) | 0;
   }
   return Math.abs(hash).toString(36);
+}
+
+const mediaDateSortCache = new Map<string, { date?: string; ms: number }>();
+const mediaSearchTextCache = new Map<string, { fingerprint: string; text: string }>();
+const MEDIA_DERIVED_CACHE_LIMIT = 50000;
+
+function mediaDateSortMs(file: MediaFile): number {
+  const cached = mediaDateSortCache.get(file.path);
+  if (cached && cached.date === file.dateTaken) return cached.ms;
+  if (mediaDateSortCache.size > MEDIA_DERIVED_CACHE_LIMIT) mediaDateSortCache.clear();
+  const ms = file.dateTaken ? Date.parse(file.dateTaken) || 0 : 0;
+  mediaDateSortCache.set(file.path, { date: file.dateTaken, ms });
+  return ms;
+}
+
+function mediaSearchText(file: MediaFile): string {
+  const fingerprint = [
+    file.name,
+    file.path,
+    file.extension,
+    file.cameraMake,
+    file.cameraModel,
+    file.lensModel,
+    file.dateTaken?.slice(0, 10),
+    file.sceneBucket,
+    file.locationName,
+  ].join('\u001f');
+  const cached = mediaSearchTextCache.get(file.path);
+  if (cached?.fingerprint === fingerprint) return cached.text;
+  if (mediaSearchTextCache.size > MEDIA_DERIVED_CACHE_LIMIT) mediaSearchTextCache.clear();
+  const text = fingerprint.replace(/\u001f/g, ' ').toLowerCase();
+  mediaSearchTextCache.set(file.path, { fingerprint, text });
+  return text;
+}
+
+function catalogFaceFileFingerprint(file: MediaFile): string {
+  return [
+    file.path,
+    file.faceEmbedding ? 1 : 0,
+    file.faceEmbeddings?.length ?? 0,
+    file.faceEmbeddingBoxes?.length ?? 0,
+    file.faceBoxes?.length ?? file.faceCount ?? 0,
+    file.personBoxes?.length ?? file.personCount ?? 0,
+    file.faceDetection,
+  ].join(':');
+}
+
+function catalogFaceFingerprint(files: MediaFile[]): string {
+  let count = 0;
+  let hash = 2166136261;
+  const append = (value: string) => {
+    for (let i = 0; i < value.length; i++) {
+      hash ^= value.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+  };
+  for (const file of files) {
+    if (!hasFaceMatchData(file)) continue;
+    count++;
+    append(catalogFaceFileFingerprint(file));
+  }
+  return `${count}:${(hash >>> 0).toString(36)}`;
 }
 
 function faceGroupThresholdFor(sensitivity: FaceGroupSensitivity): number {
@@ -676,7 +738,7 @@ function FaceIdentityGallery({
 }) {
   const [showSingletonFaces, setShowSingletonFaces] = useState(true);
   const [visibleCardLimit, setVisibleCardLimit] = useState(FACE_GALLERY_INITIAL_CARD_LIMIT);
-  const allCards = groups
+  const allCards = useMemo(() => groups
     .map((group) => {
       const override = coverOverrides[group.id];
       const samplePath = override?.path && group.paths.includes(override.path) ? override.path : group.samplePath;
@@ -686,11 +748,16 @@ function FaceIdentityGallery({
         : group;
       return sample ? { group: sampleGroup, sample } : null;
     })
-    .filter((item): item is { group: FaceIdentityGroup; sample: MediaFile } => !!item);
-  const singletonCount = allCards.filter(({ group }) => group.size <= 1 && group.embeddingCount <= 1).length;
-  const cards = showSingletonFaces
-    ? allCards
-    : allCards.filter(({ group }) => group.size > 1 || group.embeddingCount > 1);
+    .filter((item): item is { group: FaceIdentityGroup; sample: MediaFile } => !!item), [coverOverrides, filesByPath, groups]);
+  const singletonCount = useMemo(
+    () => allCards.filter(({ group }) => group.size <= 1 && group.embeddingCount <= 1).length,
+    [allCards],
+  );
+  const cards = useMemo(() => (
+    showSingletonFaces
+      ? allCards
+      : allCards.filter(({ group }) => group.size > 1 || group.embeddingCount > 1)
+  ), [allCards, showSingletonFaces]);
   const cardFingerprint = `${showSingletonFaces ? 1 : 0}:${cards.length}:${cards[0]?.group.id ?? ''}:${cards[cards.length - 1]?.group.id ?? ''}`;
   useEffect(() => {
     setVisibleCardLimit(FACE_GALLERY_INITIAL_CARD_LIMIT);
@@ -1644,8 +1711,10 @@ export function ThumbnailGrid() {
   const queueActionsDisabled = phase === 'scanning' || phase === 'importing';
   const gridRef = useRef<HTMLDivElement>(null);
   const flatScrollRef = useRef<HTMLDivElement>(null);
+  const splitScrollRef = useRef<HTMLDivElement>(null);
   const splitGridRef = useRef<HTMLDivElement>(null);
   const [searchText, setSearchText] = useState('');
+  const deferredSearchText = useDeferredValue(searchText);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showBestOfSelection, setShowBestOfSelection] = useState(false);
   const [bestScope, setBestScope] = useState<{ paths: string[]; title: string; subtitle?: string } | null>(null);
@@ -1685,6 +1754,7 @@ export function ThumbnailGrid() {
   const reviewGenerationRef = useRef(0);
   const faceScanEtaRef = useRef<{ source: string | null; total: number; startedAt: number; startedScanned: number } | null>(null);
   const lastCatalogFacePersistRef = useRef('');
+  const lastCatalogFaceFileFingerprintsRef = useRef<Map<string, string>>(new Map());
   // Stable refs so the review loop effect doesn't need files/sortedFiles as deps.
   // Without these, every SET_REVIEW_SCORES dispatch (one per analyzed image) triggers
   // a new files reference → effect cleanup + re-run mid-flight → concurrent ONNX batches
@@ -1861,14 +1931,10 @@ export function ThumbnailGrid() {
   //   4. Stable by dateTaken (oldest first) so bursts stay grouped
   const sortedFiles = useMemo(() => {
     if (files.length === 0) return [];
-    const query = searchText.trim().toLowerCase();
+    const query = deferredSearchText.trim().toLowerCase();
     const filtered = files.filter((f) => {
       if (query) {
-        const haystack = [
-          f.name, f.path, f.extension, f.cameraMake, f.cameraModel, f.lensModel,
-          f.dateTaken?.slice(0, 10), f.sceneBucket, f.locationName,
-        ].filter(Boolean).join(' ').toLowerCase();
-        if (!haystack.includes(query)) return false;
+        if (!mediaSearchText(f).includes(query)) return false;
       }
       if (filter.startsWith('camera:')) return (f.cameraModel || 'Unknown camera') === decodeURIComponent(filter.slice(7));
       if (filter.startsWith('lens:')) return (f.lensModel || 'Unknown lens') === decodeURIComponent(filter.slice(5));
@@ -1934,8 +2000,8 @@ export function ThumbnailGrid() {
       const da = a.duplicate ? 1 : 0;
       const db = b.duplicate ? 1 : 0;
       if (da !== db) return da - db;
-      const ta = a.dateTaken ? Date.parse(a.dateTaken) : 0;
-      const tb = b.dateTaken ? Date.parse(b.dateTaken) : 0;
+      const ta = mediaDateSortMs(a);
+      const tb = mediaDateSortMs(b);
       if (ta !== tb) return ta - tb;
       // Within the same second, bursts go by their index so shots stay in order.
       return (a.burstIndex ?? 0) - (b.burstIndex ?? 0);
@@ -1951,7 +2017,7 @@ export function ThumbnailGrid() {
       seenCollapsedLeader.add(f.burstId);
       return true;
     });
-  }, [files, filter, collapsedSet, exposureAnchorPath, searchText, queuedSet, faceIdentityPathMap, faceIdentityGroupedPaths]);
+  }, [files, filter, collapsedSet, exposureAnchorPath, deferredSearchText, queuedSet, faceIdentityPathMap, faceIdentityGroupedPaths]);
   const flatGridContentWidth = Math.max(0, flatGridWidth - 32);
   const virtualGridColumns = Math.max(1, Math.floor((flatGridContentWidth + 12) / (160 + 12)));
   const virtualGridEnabled = viewMode === 'grid' && filter !== 'face-gallery' && !groupByFolder && sortedFiles.length > 300;
@@ -1961,6 +2027,12 @@ export function ThumbnailGrid() {
     getScrollElement: () => flatScrollRef.current,
     estimateSize: () => 248,
     overscan: 6,
+  });
+  const splitVirtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
+    count: viewMode === 'split' ? sortedFiles.length : 0,
+    getScrollElement: () => splitScrollRef.current,
+    estimateSize: () => 184,
+    overscan: 8,
   });
 
   const metadataFilters = useMemo(() => {
@@ -2299,6 +2371,10 @@ export function ThumbnailGrid() {
     setFaceCoverOverrides({});
     setFaceThresholdOverrides({});
     faceIdentityCacheRef.current = null;
+    lastCatalogFacePersistRef.current = '';
+    lastCatalogFaceFileFingerprintsRef.current.clear();
+    mediaDateSortCache.clear();
+    mediaSearchTextCache.clear();
   }, [selectedSource]);
   useEffect(() => {
     let cancelled = false;
@@ -2317,34 +2393,41 @@ export function ThumbnailGrid() {
     };
   }, []);
 
-  const catalogFaceFingerprint = useMemo(() => {
-    const parts: string[] = [];
-    for (const file of files) {
-      if (!hasFaceMatchData(file)) continue;
-      parts.push(`${file.path}:${file.faceEmbeddings?.length ?? (file.faceEmbedding ? 1 : 0)}:${file.faceEmbeddingBoxes?.length ?? 0}:${file.faceCount ?? 0}`);
-    }
-    return parts.join('|');
-  }, [files]);
+  const catalogFacePersistFingerprint = useMemo(() => catalogFaceFingerprint(files), [files]);
 
   useEffect(() => {
-    if (!catalogFaceFingerprint || !selectedSource) return;
+    if (!catalogFacePersistFingerprint || !selectedSource) return;
     const timer = window.setTimeout(() => {
-      if (lastCatalogFacePersistRef.current === catalogFaceFingerprint) return;
-      lastCatalogFacePersistRef.current = catalogFaceFingerprint;
-      const faceFiles = filesRef.current
-        .filter((file) => hasFaceMatchData(file))
-        .map((file) => {
+      if (lastCatalogFacePersistRef.current === catalogFacePersistFingerprint) return;
+      const sentFingerprints = lastCatalogFaceFileFingerprintsRef.current;
+      const changedFaceFiles: MediaFile[] = [];
+      const pendingFingerprints = new Map<string, string>();
+      for (const file of filesRef.current) {
+        if (!hasFaceMatchData(file)) continue;
+        const fingerprint = catalogFaceFileFingerprint(file);
+        if (sentFingerprints.get(file.path) === fingerprint) continue;
+        pendingFingerprints.set(file.path, fingerprint);
+        changedFaceFiles.push((() => {
           const { thumbnail: _thumbnail, ...metadata } = file;
           return metadata as MediaFile;
-        });
+        })());
+      }
+      if (changedFaceFiles.length === 0) {
+        lastCatalogFacePersistRef.current = catalogFacePersistFingerprint;
+        return;
+      }
       void (async () => {
-        for (let i = 0; i < faceFiles.length; i += 200) {
-          await window.electronAPI.upsertCatalogFaceMetadata(faceFiles.slice(i, i + 200), selectedSource);
+        for (let i = 0; i < changedFaceFiles.length; i += 100) {
+          await window.electronAPI.upsertCatalogFaceMetadata(changedFaceFiles.slice(i, i + 100), selectedSource);
         }
+        for (const [path, fingerprint] of pendingFingerprints) {
+          sentFingerprints.set(path, fingerprint);
+        }
+        lastCatalogFacePersistRef.current = catalogFacePersistFingerprint;
       })().catch((error) => console.warn('[catalog] face metadata persist failed', error));
     }, 1800);
     return () => window.clearTimeout(timer);
-  }, [catalogFaceFingerprint, selectedSource]);
+  }, [catalogFacePersistFingerprint, selectedSource]);
 
   // Also kick the review loop when new thumbnails arrive (so it picks up files
   // that were waiting on thumbnails) — but throttled to avoid per-thumbnail spam.
@@ -2854,7 +2937,7 @@ export function ThumbnailGrid() {
       .filter((f) => paths.includes(f.path) && f.type === 'photo' && f.faceBoxes === undefined);
     if (unscanned.length === 0) return;
     void (async () => {
-      const panelConcurrency = Math.min(8, Math.max(2, faceConcurrencyRef.current));
+      const panelConcurrency = Math.min(4, Math.max(1, faceConcurrencyRef.current));
       await mapWithConcurrency(unscanned, panelConcurrency, async (f) => {
         try {
           const results = await window.electronAPI.analyzeFaces(f.path);
@@ -2899,7 +2982,7 @@ export function ThumbnailGrid() {
     } else if (focused?.faceGroupId && focused.faceGroupSize && focused.faceGroupSize > 1) {
       const faceFiles = files
         .filter((f) => f.faceGroupId === focused.faceGroupId)
-        .sort((a, b) => (a.dateTaken ? Date.parse(a.dateTaken) : 0) - (b.dateTaken ? Date.parse(b.dateTaken) : 0));
+        .sort((a, b) => mediaDateSortMs(a) - mediaDateSortMs(b));
       panelPaths = faceFiles.map((f) => f.path);
       setBestScope({ paths: panelPaths, title: 'Best Face Group', subtitle: `${faceFiles.length} similar face shots` });
     } else if (selectedPaths.length >= 2) {
@@ -3636,11 +3719,10 @@ export function ThumbnailGrid() {
     } else if (viewMode === 'grid' && gridRef.current) {
       const card = gridRef.current.children[focusedIndex] as HTMLElement | undefined;
       card?.scrollIntoView({ block: 'nearest', behavior: 'instant' });
-    } else if (viewMode === 'split' && splitGridRef.current) {
-      const card = splitGridRef.current.children[focusedIndex] as HTMLElement | undefined;
-      card?.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+    } else if (viewMode === 'split') {
+      splitVirtualizer.scrollToIndex(focusedIndex, { align: 'auto' });
     }
-  }, [focusedIndex, rowVirtualizer, viewMode, virtualGridColumns, virtualGridEnabled]);
+  }, [focusedIndex, rowVirtualizer, splitVirtualizer, viewMode, virtualGridColumns, virtualGridEnabled]);
 
   // Preload adjacent photos so SingleView navigation feels instant.
   // Fire-and-forget: generatePreview deduplicates in-flight requests.
@@ -3801,8 +3883,8 @@ export function ThumbnailGrid() {
         const ra = a.rating ?? 0;
         const rb = b.rating ?? 0;
         if (ra !== rb) return rb - ra;
-        const ta = a.dateTaken ? Date.parse(a.dateTaken) : 0;
-        const tb = b.dateTaken ? Date.parse(b.dateTaken) : 0;
+        const ta = mediaDateSortMs(a);
+        const tb = mediaDateSortMs(b);
         return ta - tb;
       });
     }
@@ -5362,6 +5444,7 @@ export function ThumbnailGrid() {
           <div className="h-full relative">
             <SingleView
               file={focusedFile}
+              files={files}
               index={focusedIndex}
               total={sortedFiles.length}
               aiPaused={reviewPaused}
@@ -5370,38 +5453,52 @@ export function ThumbnailGrid() {
           </div>
         ) : viewMode === 'split' ? (
           <div className="h-full flex">
-            <div className="w-[200px] shrink-0 border-r border-border overflow-y-auto px-2 pt-1 pb-16">
+            <div ref={splitScrollRef} className="w-[200px] shrink-0 border-r border-border overflow-y-auto px-2 pt-1 pb-16">
               <div
                 ref={splitGridRef}
-                className="flex flex-col gap-1"
+                className="relative"
+                style={{ height: `${splitVirtualizer.getTotalSize()}px` }}
               >
-                {sortedFiles.map((file, i) => (
-                  <ThumbnailCard
-                    key={file.path}
-                    index={i}
-                    file={file}
-                    focused={i === focusedIndex}
-                    selected={selectedIndices.has(i)}
-                    queued={queuedSet.has(file.path)}
-                    forceLoad={forceVisibleThumbnails(i, file.path)}
-                    exposurePreviewStops={getThumbnailExposureStops(file)}
-                    whiteBalancePreview={getThumbnailWhiteBalance(file)}
-                    isBurstBest={false}
-                    compact
-                    frameNumber={i + 1}
-                    burstCollapsed={!!file.burstId && collapsedSet.has(file.burstId)}
-                    onBurstToggle={handleBurstToggle}
-                    onFaceGroupClick={handleFaceGroupFilter}
-                    onClickCard={handleCardClick}
-                    onDoubleClickCard={setFocused}
-                  />
-                ))}
+                {splitVirtualizer.getVirtualItems().map((virtualItem) => {
+                  const i = virtualItem.index;
+                  const file = sortedFiles[i];
+                  if (!file) return null;
+                  return (
+                    <div
+                      key={virtualItem.key}
+                      ref={splitVirtualizer.measureElement}
+                      data-index={i}
+                      className="absolute left-0 top-0 w-full pb-1"
+                      style={{ transform: `translateY(${virtualItem.start}px)` }}
+                    >
+                      <ThumbnailCard
+                        index={i}
+                        file={file}
+                        focused={i === focusedIndex}
+                        selected={selectedIndices.has(i)}
+                        queued={queuedSet.has(file.path)}
+                        forceLoad={forceVisibleThumbnails(i, file.path)}
+                        exposurePreviewStops={getThumbnailExposureStops(file)}
+                        whiteBalancePreview={getThumbnailWhiteBalance(file)}
+                        isBurstBest={false}
+                        compact
+                        frameNumber={i + 1}
+                        burstCollapsed={!!file.burstId && collapsedSet.has(file.burstId)}
+                        onBurstToggle={handleBurstToggle}
+                        onFaceGroupClick={handleFaceGroupFilter}
+                        onClickCard={handleCardClick}
+                        onDoubleClickCard={setFocused}
+                      />
+                    </div>
+                  );
+                })}
               </div>
             </div>
             <div className="flex-1 min-w-0 relative">
               {focusedFile ? (
                 <SingleView
                   file={focusedFile}
+                  files={files}
                   index={focusedIndex}
                   total={sortedFiles.length}
                   aiPaused={reviewPaused}

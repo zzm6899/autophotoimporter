@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { ImportProvider, useAppDispatch, useAppState, type AppPhase } from './context/ImportContext';
+import type { AppSession, MediaFile } from '../shared/types';
 import { useVolumes } from './hooks/useVolumes';
 import { useSettings } from './hooks/useSettings';
 import { useScanListeners } from './hooks/useScanListeners';
@@ -21,6 +22,35 @@ import { LicenseBanner } from './components/LicenseBanner';
 import { CommandPalette } from './components/CommandPalette';
 import { playCompletionSound } from './utils/completionSound';
 import { setPreviewConcurrency } from './utils/previewCache';
+
+function sourceSessionId(source: string): string {
+  let sum = 0;
+  for (let i = 0; i < source.length; i++) sum += source.charCodeAt(i);
+  return `${Date.now()}-${Math.abs(sum)}`;
+}
+
+function stripSessionFile(file: MediaFile): MediaFile {
+  const { thumbnail: _thumbnail, ...metadata } = file;
+  return metadata as MediaFile;
+}
+
+function buildSessionStats(files: MediaFile[], queuedCount: number): AppSession['stats'] {
+  let picked = 0;
+  let rejected = 0;
+  let reviewed = 0;
+  for (const file of files) {
+    if (file.pick === 'selected') picked++;
+    else if (file.pick === 'rejected') rejected++;
+    if (file.pick || typeof file.reviewScore === 'number') reviewed++;
+  }
+  return {
+    totalFiles: files.length,
+    picked,
+    rejected,
+    queued: queuedCount,
+    reviewed,
+  };
+}
 
 function AppInner() {
   useVolumes();
@@ -50,6 +80,19 @@ function AppInner() {
   const lastAutoImportDestRef = useRef<string>('');
   const sessionIdRef = useRef<string>('');
   const sessionSourceRef = useRef<string | null>(null);
+  const sessionSaveTimerRef = useRef<number | null>(null);
+  const sessionSnapshotRef = useRef({
+    selectedSource,
+    destination,
+    files,
+    selectedPaths,
+    queuedPaths,
+    filter,
+    focusedIndex,
+    focusedPath,
+    phase,
+    importLedgerId: importResult?.ledgerId,
+  });
 
   // Stable refs so queue-orchestration effect doesn't go stale
   const volumeImportQueueRef = useRef(volumeImportQueue);
@@ -59,6 +102,19 @@ function AppInner() {
   const startScanRef = useRef(startScan);
   startScanRef.current = startScan;
   const prevPhaseRef = useRef<AppPhase>('idle');
+
+  sessionSnapshotRef.current = {
+    selectedSource,
+    destination,
+    files,
+    selectedPaths,
+    queuedPaths,
+    filter,
+    focusedIndex,
+    focusedPath,
+    phase,
+    importLedgerId: importResult?.ledgerId,
+  };
 
   useEffect(() => {
     const unsub = window.electronAPI.onImportProgress((progress) => {
@@ -121,35 +177,44 @@ function AppInner() {
   }, [dispatch, playSoundOnComplete, completeSoundPath, openFolderOnComplete, autoImportDestRoot]);
 
   useEffect(() => {
+    if (sessionSaveTimerRef.current !== null) {
+      window.clearTimeout(sessionSaveTimerRef.current);
+      sessionSaveTimerRef.current = null;
+    }
     if (!selectedSource || files.length === 0 || phase === 'scanning' || phase === 'importing') return;
     if (sessionSourceRef.current !== selectedSource || !sessionIdRef.current) {
       sessionSourceRef.current = selectedSource;
-      sessionIdRef.current = `${Date.now()}-${Math.abs([...selectedSource].reduce((sum, ch) => sum + ch.charCodeAt(0), 0))}`;
+      sessionIdRef.current = sourceSessionId(selectedSource);
     }
-    const sessionFocusedPath = focusedPath ?? (focusedIndex >= 0 ? files[focusedIndex]?.path : undefined);
-    const session = {
-      id: sessionIdRef.current,
-      updatedAt: new Date().toISOString(),
-      sourcePath: selectedSource,
-      destRoot: destination,
-      files,
-      selectedPaths,
-      queuedPaths,
-      filter,
-      focusedPath: sessionFocusedPath,
-      importLedgerId: importResult?.ledgerId,
-      stats: {
-        totalFiles: files.length,
-        picked: files.filter((file) => file.pick === 'selected').length,
-        rejected: files.filter((file) => file.pick === 'rejected').length,
-        queued: queuedPaths.length,
-        reviewed: files.filter((file) => file.pick || typeof file.reviewScore === 'number').length,
-      },
-    };
-    const timer = window.setTimeout(() => {
+    const delay = files.length >= 2500 ? 2600 : files.length >= 800 ? 1800 : 1200;
+    sessionSaveTimerRef.current = window.setTimeout(() => {
+      sessionSaveTimerRef.current = null;
+      const snapshot = sessionSnapshotRef.current;
+      if (!snapshot.selectedSource || snapshot.files.length === 0 || snapshot.phase === 'scanning' || snapshot.phase === 'importing') return;
+      const sessionFocusedPath = snapshot.focusedPath ?? (
+        snapshot.focusedIndex >= 0 ? snapshot.files[snapshot.focusedIndex]?.path : undefined
+      );
+      const session: AppSession = {
+        id: sessionIdRef.current || sourceSessionId(snapshot.selectedSource),
+        updatedAt: new Date().toISOString(),
+        sourcePath: snapshot.selectedSource,
+        destRoot: snapshot.destination,
+        files: snapshot.files.map(stripSessionFile),
+        selectedPaths: snapshot.selectedPaths,
+        queuedPaths: snapshot.queuedPaths,
+        filter: snapshot.filter,
+        focusedPath: sessionFocusedPath,
+        importLedgerId: snapshot.importLedgerId,
+        stats: buildSessionStats(snapshot.files, snapshot.queuedPaths.length),
+      };
       void window.electronAPI.saveSession(session).catch(() => undefined);
-    }, 1200);
-    return () => window.clearTimeout(timer);
+    }, delay);
+    return () => {
+      if (sessionSaveTimerRef.current !== null) {
+        window.clearTimeout(sessionSaveTimerRef.current);
+        sessionSaveTimerRef.current = null;
+      }
+    };
   }, [selectedSource, destination, files, selectedPaths, queuedPaths, filter, focusedIndex, focusedPath, phase, importResult?.ledgerId]);
 
   return (

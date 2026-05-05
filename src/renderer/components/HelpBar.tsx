@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useAppDispatch, useAppState, useMergedFiles } from '../context/ImportContext';
 
 const isMac = typeof window !== 'undefined' && window.electronAPI?.platform === 'darwin';
@@ -22,18 +22,48 @@ export function HelpBar() {
   const dispatch = useAppDispatch();
   const [showAiStats, setShowAiStats] = useState(true);
 
-  const picked = files.filter((f) => f.pick === 'selected').length;
-  const rejected = files.filter((f) => f.pick === 'rejected').length;
-  const photoFiles = files.filter((f) => f.type === 'photo');
-  const analyzed = photoFiles.filter((f) => typeof f.reviewScore === 'number' || typeof f.subjectSharpnessScore === 'number').length;
-  const nativeFaceFiles = files.filter((f) => (f.faceCount ?? 0) > 0 && f.faceDetection === 'native').length;
-  const estimatedFaceFiles = files.filter((f) => (f.faceCount ?? 0) > 0 && f.faceDetection === 'estimated').length;
-  const blurRisk = files.filter((f) => f.blurRisk === 'high' || f.blurRisk === 'medium').length;
-  const faceFiles = files.filter((f) => (f.faceCount ?? 0) > 0).length;
-  const faceGroups = new Set(files.map((f) => f.faceGroupId).filter(Boolean)).size;
-  const thumbnailReady = files.filter((f) => !!f.thumbnail).length;
-  const totalThumbnails = files.length;
-  const totalPhotos = photoFiles.length;
+  const stats = useMemo(() => {
+    let picked = 0;
+    let rejected = 0;
+    let analyzed = 0;
+    let nativeFaceFiles = 0;
+    let estimatedFaceFiles = 0;
+    let blurRisk = 0;
+    let faceFiles = 0;
+    let thumbnailReady = 0;
+    let totalPhotos = 0;
+    const faceGroupIds = new Set<string>();
+    for (const file of files) {
+      if (file.pick === 'selected') picked++;
+      else if (file.pick === 'rejected') rejected++;
+      if (file.thumbnail) thumbnailReady++;
+      if (file.type === 'photo') {
+        totalPhotos++;
+        if (typeof file.reviewScore === 'number' || typeof file.subjectSharpnessScore === 'number') analyzed++;
+      }
+      if ((file.faceCount ?? 0) > 0) {
+        faceFiles++;
+        if (file.faceDetection === 'native') nativeFaceFiles++;
+        if (file.faceDetection === 'estimated') estimatedFaceFiles++;
+      }
+      if (file.faceGroupId) faceGroupIds.add(file.faceGroupId);
+      if (file.blurRisk === 'high' || file.blurRisk === 'medium') blurRisk++;
+    }
+    return {
+      picked,
+      rejected,
+      analyzed,
+      nativeFaceFiles,
+      estimatedFaceFiles,
+      blurRisk,
+      faceFiles,
+      faceGroups: faceGroupIds.size,
+      thumbnailReady,
+      totalThumbnails: files.length,
+      totalPhotos,
+    };
+  }, [files]);
+  const { picked, rejected, analyzed, nativeFaceFiles, estimatedFaceFiles, blurRisk, faceFiles, faceGroups, thumbnailReady, totalThumbnails, totalPhotos } = stats;
   const thumbnailPct = totalThumbnails > 0 ? Math.round((thumbnailReady / totalThumbnails) * 100) : 0;
   const reviewPct = totalPhotos > 0 ? Math.round((analyzed / totalPhotos) * 100) : 0;
   const showThumbnailProgress = totalThumbnails > 0 && thumbnailReady < totalThumbnails;

@@ -870,22 +870,47 @@ async function recordCatalogImport(config: ImportConfig, result: ImportResult): 
   await db.recordImportLedgerItems(result.ledgerId, result.ledgerItems, { sessionId: config.sourcePath });
 }
 
-async function persistAppSession(session: AppSession): Promise<AppSession> {
-  const dir = getSessionsDir();
-  await mkdir(dir, { recursive: true });
-  const content = JSON.stringify(session, null, 2);
-  await writeFile(path.join(dir, `${session.id}.json`), content, { encoding: 'utf8', mode: 0o600 });
-  await writeFile(getLatestSessionPath(), content, { encoding: 'utf8', mode: 0o600 });
-  await saveSettings({ lastSessionId: session.id });
-  return session;
-}
-
-async function readLatestAppSession(): Promise<AppSession | null> {
+async function readAppSessionFile(filePath: string): Promise<AppSession | null> {
   try {
-    return JSON.parse(await readFile(getLatestSessionPath(), 'utf8')) as AppSession;
+    return JSON.parse(await readFile(filePath, 'utf8')) as AppSession;
   } catch {
     return null;
   }
+}
+
+let lastSavedSessionIdSetting = '';
+
+async function persistAppSession(session: AppSession): Promise<AppSession> {
+  const dir = getSessionsDir();
+  await mkdir(dir, { recursive: true });
+  const sessionPath = path.join(dir, `${session.id}.json`);
+  const previousSession = await readAppSessionFile(sessionPath);
+  const previousThumbnailByPath = new Map<string, string>();
+  for (const file of previousSession?.files ?? []) {
+    if (file.thumbnail) previousThumbnailByPath.set(file.path, file.thumbnail);
+  }
+  const leanSession: AppSession = {
+    ...session,
+    files: session.files.map((file) => {
+      const { thumbnail: _thumbnail, ...metadata } = file;
+      const thumbnail = file.thumbnail
+        ?? scannedFilesByPath.get(file.path)?.thumbnail
+        ?? previousThumbnailByPath.get(file.path);
+      return thumbnail ? { ...metadata, thumbnail } as MediaFile : metadata as MediaFile;
+    }),
+  };
+  const content = JSON.stringify(leanSession, null, 2);
+  await writeFile(sessionPath, content, { encoding: 'utf8', mode: 0o600 });
+  await writeFile(getLatestSessionPath(), content, { encoding: 'utf8', mode: 0o600 });
+  if (lastSavedSessionIdSetting !== session.id) {
+    await saveSettings({ lastSessionId: session.id });
+    lastSavedSessionIdSetting = session.id;
+  }
+  return leanSession;
+}
+
+async function readLatestAppSession(): Promise<AppSession | null> {
+  return readAppSessionFile(getLatestSessionPath());
 }
 
 async function readSettingsData(): Promise<string> {
@@ -1882,6 +1907,22 @@ function contactSheetHtml(files: MediaFile[]): string {
     </html>`;
 }
 
+function stripManifestMediaFile(file: MediaFile): Omit<MediaFile, 'thumbnail'> {
+  const {
+    thumbnail: _thumbnail,
+    faceEmbedding: _faceEmbedding,
+    faceEmbeddings: _faceEmbeddings,
+    faceEmbeddingBoxes: _faceEmbeddingBoxes,
+    faceBoxes: _faceBoxes,
+    personBoxes: _personBoxes,
+    reviewReasons: _reviewReasons,
+    subjectReasons: _subjectReasons,
+    duplicateMemory: _duplicateMemory,
+    ...metadata
+  } = file;
+  return metadata;
+}
+
 async function contactSheetFiles(files: MediaFile[]): Promise<MediaFile[]> {
   const sheetFiles = files.slice(0, 500);
   const hydrated: MediaFile[] = [];
@@ -2729,7 +2770,7 @@ export function registerIpcHandlers(): void {
     if (result.canceled || !result.filePath) return null;
 
     if (format === 'json') {
-      await writeFile(result.filePath, JSON.stringify(scannedFiles, null, 2));
+      await writeFile(result.filePath, JSON.stringify(scannedFiles.map(stripManifestMediaFile), null, 2));
     } else {
       const headers = [
         'name', 'path', 'size', 'type', 'extension', 'dateTaken',

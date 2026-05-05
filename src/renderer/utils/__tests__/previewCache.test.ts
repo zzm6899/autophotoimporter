@@ -66,7 +66,7 @@ describe('previewCache scheduler', () => {
     await expect(highPriority).resolves.toBe('high-done');
   });
 
-  it('does not reuse a queued low-priority warmup for a later high-priority request', async () => {
+  it('reuses and promotes a queued low-priority warmup for a later high-priority request', async () => {
     const activeResolvers: Array<(value: string | undefined) => void> = [];
     const requestedPaths: string[] = [];
     installPreviewMock((filePath) => {
@@ -82,6 +82,7 @@ describe('previewCache scheduler', () => {
     }
 
     const lowPriority = getCachedPreview('same-file.jpg', 'preview', 'low');
+    void getCachedPreview('queued-normal.jpg', 'preview', 'normal');
     const highPriority = getCachedPreview('same-file.jpg', 'preview', 'high');
 
     activeResolvers[0]('done');
@@ -90,10 +91,43 @@ describe('previewCache scheduler', () => {
 
     expect(requestedPaths).toContain('same-file.jpg');
     expect(requestedPaths[6]).toBe('same-file.jpg');
+    expect(requestedPaths).not.toContain('queued-normal.jpg');
 
     activeResolvers[6]('focused-preview');
     await expect(highPriority).resolves.toBe('focused-preview');
-    expect(lowPriority).not.toBe(highPriority);
+    await expect(lowPriority).resolves.toBe('focused-preview');
+    expect(lowPriority).toBe(highPriority);
+  });
+
+  it('reschedules a focused preview when an earlier low-priority warmup was cancelled', async () => {
+    const activeResolvers: Array<(value: string | undefined) => void> = [];
+    const requestedPaths: string[] = [];
+    installPreviewMock((filePath) => {
+      requestedPaths.push(filePath);
+      return new Promise<string | undefined>((resolve) => {
+        activeResolvers.push(resolve);
+      });
+    });
+    const { getCachedPreview, setBackgroundPreviewPaused } = await loadPreviewCache();
+
+    for (let i = 0; i < 6; i++) {
+      void getCachedPreview(`active-${i}.jpg`, 'preview', 'normal');
+    }
+
+    const cancelledWarmup = getCachedPreview('same-file.jpg', 'preview', 'low');
+    setBackgroundPreviewPaused(true);
+    const focusedPreview = getCachedPreview('same-file.jpg', 'preview', 'high');
+
+    expect(focusedPreview).not.toBe(cancelledWarmup);
+    await expect(cancelledWarmup).resolves.toBeUndefined();
+
+    activeResolvers[0]('done');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(requestedPaths[6]).toBe('same-file.jpg');
+    activeResolvers[6]('focused-preview');
+    await expect(focusedPreview).resolves.toBe('focused-preview');
   });
 
   it('uses configured preview concurrency to drain queued requests', async () => {

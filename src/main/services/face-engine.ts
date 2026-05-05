@@ -861,6 +861,10 @@ let _embedTotalMs = 0;
 // we reject after 30s so the semaphore slot is released and the loop recovers.
 const ANALYZE_TIMEOUT_MS = 30_000;
 
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`face-engine timeout: ${label}`)), ms);
@@ -885,11 +889,13 @@ async function _analyzeFacesInner(imagePath: string): Promise<FaceAnalysisResult
   const decodeStart = Date.now();
   const img = await loadNativeImageCached(imagePath);
   const decodeMs = Date.now() - decodeStart;
+  await yieldToEventLoop();
 
   let boxes: FaceBox[] = [];
   let personBoxes: FaceBox[] = [];
   const detectStart = Date.now();
   boxes = await detectFaces(imagePath, img).catch(() => [] as FaceBox[]);
+  await yieldToEventLoop();
   const shouldRunPerson = personDetectionEnabled && (
     !highThroughputFaceMode ||
     boxes.length === 0 ||
@@ -898,6 +904,7 @@ async function _analyzeFacesInner(imagePath: string): Promise<FaceAnalysisResult
   personBoxes = shouldRunPerson
     ? await detectPersons(imagePath, img).catch(() => [] as FaceBox[])
     : [];
+  await yieldToEventLoop();
   const detectMs = Date.now() - detectStart;
 
   const finishStats = (embedMs: number) => {
@@ -933,12 +940,12 @@ async function _analyzeFacesInner(imagePath: string): Promise<FaceAnalysisResult
   const facesToEmbed = (reliableFaces.length > 0 ? reliableFaces : rankedFaces.slice(0, 1))
     .slice(0, faceEmbeddingLimit);
   const embedStart = Date.now();
-  const embeddedFaces = (await Promise.all(
-    facesToEmbed.map(async (box) => {
-      const embedding = await embedFace(imagePath, box, img).catch(() => null);
-      return embedding ? { box, embedding } : null;
-    }),
-  )).filter((entry): entry is { box: FaceBox; embedding: Float32Array } => !!entry);
+  const embeddedFaces: Array<{ box: FaceBox; embedding: Float32Array }> = [];
+  for (const box of facesToEmbed) {
+    const embedding = await embedFace(imagePath, box, img).catch(() => null);
+    if (embedding) embeddedFaces.push({ box, embedding });
+    await yieldToEventLoop();
+  }
   const embeddings = embeddedFaces.map((entry) => entry.embedding);
   const embeddingBoxes = embeddedFaces.map((entry) => entry.box);
   const embedMs = Date.now() - embedStart;

@@ -28,7 +28,9 @@ function execFileAsync(
 
 let currentJob: JobController | null = null;
 
-const COPY_CONCURRENCY = 8;
+const RAW_COPY_CONCURRENCY = 6;
+const MIRRORED_COPY_CONCURRENCY = 3;
+const HEAVY_IMPORT_CONCURRENCY = 2;
 
 function importPlanWarnings(file: MediaFile): string[] {
   const warnings: string[] = [];
@@ -216,6 +218,14 @@ function hasRenderableWatermark(watermark?: WatermarkConfig): boolean {
   if (!watermark?.enabled) return false;
   if (watermark.mode === 'image') return !!watermark.imagePath?.trim();
   return !!watermark.text?.trim();
+}
+
+function resolveImportConcurrency(config: ImportConfig): number {
+  if (config.saveFormat !== 'original') return HEAVY_IMPORT_CONCURRENCY;
+  if (config.verifyChecksums || !!config.backupDestRoot || !!config.ftpDestEnabled) {
+    return MIRRORED_COPY_CONCURRENCY;
+  }
+  return RAW_COPY_CONCURRENCY;
 }
 
 function isPortraitOrientation(orientation?: number): boolean {
@@ -1132,7 +1142,8 @@ export async function importFiles(
     }
   }
 
-  await Promise.all(Array.from({ length: Math.min(COPY_CONCURRENCY, files.length) }, () => worker()));
+  const importConcurrency = Math.min(resolveImportConcurrency(config), files.length);
+  await Promise.all(Array.from({ length: importConcurrency }, () => worker()));
 
   if (ftpMirrorActive && ftpUploads.length > 0 && config.ftpDestConfig && !signal.aborted) {
     let client: Client | null = null;

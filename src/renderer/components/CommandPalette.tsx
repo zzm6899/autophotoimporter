@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -633,7 +633,7 @@ export function CommandPalette() {
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const photoCount = files.filter((file) => file.type === 'photo').length;
+  const photoCount = useMemo(() => files.reduce((count, file) => count + (file.type === 'photo' ? 1 : 0), 0), [files]);
   const focused = selectedPaths.length > 0 || focusedIndex >= 0 || !!focusedPath;
 
   useEffect(() => {
@@ -660,12 +660,12 @@ export function CommandPalette() {
     window.setTimeout(() => inputRef.current?.focus(), 0);
   }, [open]);
 
-  const runReview = (id: string) => reviewEvent(id)();
-  const setFilter = (next: FilterMode) => {
+  const runReview = useCallback((id: string) => reviewEvent(id)(), []);
+  const setFilter = useCallback((next: FilterMode) => {
     if (next === 'face-groups' || next === 'face-gallery') dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10 });
     if (next === 'near-duplicates') dispatch({ type: 'GROUP_VISUAL_DUPLICATES', threshold: 8 });
     dispatch({ type: 'SET_FILTER', filter: next });
-  };
+  }, [dispatch]);
 
   const handlers = useMemo<Partial<Record<string, () => void | Promise<void>>>>(() => ({
     'source.choose-folder': async () => {
@@ -769,25 +769,28 @@ export function CommandPalette() {
     },
     'panel.left': () => { dispatch({ type: 'TOGGLE_LEFT_PANEL' }); },
     'panel.right': () => { dispatch({ type: 'TOGGLE_RIGHT_PANEL' }); },
-  }), [destination, dispatch, pauseScan, queuedPaths, resumeScan, setFilter, startImport, startScan, theme]);
+  }), [destination, dispatch, pauseScan, queuedPaths, resumeScan, runReview, setFilter, startImport, startScan, theme]);
 
-  const commands = useMemo(() => buildCommandItems({
-    phase,
-    scanPaused,
-    fileCount: files.length,
-    photoCount,
-    selectedSource,
-    destination,
-    queuedCount: queuedPaths.length,
-    selectedCount: selectedPaths.length,
-    focused,
-    filter,
-    theme,
-    showLeftPanel,
-    showRightPanel,
-    licenseValid: !!licenseStatus?.valid,
-    platform: window.electronAPI.platform,
-  }, handlers), [
+  const commands = useMemo(() => {
+    if (!open) return [];
+    return buildCommandItems({
+      phase,
+      scanPaused,
+      fileCount: files.length,
+      photoCount,
+      selectedSource,
+      destination,
+      queuedCount: queuedPaths.length,
+      selectedCount: selectedPaths.length,
+      focused,
+      filter,
+      theme,
+      showLeftPanel,
+      showRightPanel,
+      licenseValid: !!licenseStatus?.valid,
+      platform: window.electronAPI.platform,
+    }, handlers);
+  }, [
     destination,
     files.length,
     filter,
@@ -803,8 +806,9 @@ export function CommandPalette() {
     showLeftPanel,
     showRightPanel,
     theme,
+    open,
   ]);
-  const visibleCommands = useMemo(() => filterCommandItems(commands, query), [commands, query]);
+  const visibleCommands = useMemo(() => open ? filterCommandItems(commands, query) : [], [commands, open, query]);
   const activeCommand = visibleCommands[Math.min(activeIndex, Math.max(0, visibleCommands.length - 1))];
 
   useEffect(() => {

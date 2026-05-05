@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import type { MediaFile, ViewOverlayPreferences } from '../../shared/types';
 import { buildExposure, formatFileSize } from '../utils/formatters';
-import { useAppState, useAppDispatch, useMergedFiles } from '../context/ImportContext';
+import { useAppState, useAppDispatch } from '../context/ImportContext';
 import {
   buildPreviewExposureFilter,
   buildPreviewWhiteBalanceFilter,
@@ -26,6 +26,7 @@ import { buildAiReasons } from '../utils/aiReasons';
 
 interface SingleViewProps {
   file: MediaFile;
+  files: MediaFile[];
   index: number;
   total: number;
   aiPaused?: boolean;
@@ -83,7 +84,7 @@ function orientationQuarterTurns(orientation?: number) {
   }
 }
 
-export function SingleView({ file, index, total, aiPaused = false }: SingleViewProps) {
+export function SingleView({ file, files, index, total, aiPaused = false }: SingleViewProps) {
   const [preview, setPreview] = useState<string | undefined>(undefined);
   const [detailPreview, setDetailPreview] = useState<string | undefined>(undefined);
   const [loading, setLoading] = useState(false);
@@ -101,7 +102,6 @@ export function SingleView({ file, index, total, aiPaused = false }: SingleViewP
     fastKeeperMode,
     reviewFaceAnalysis,
   } = useAppState();
-  const files = useMergedFiles();
   const dispatch = useAppDispatch();
   const {
     photoStats: showStats,

@@ -6,9 +6,9 @@ import { parseExifDate, generateThumbnail, extractEmbeddedThumbnail, EXIFR_SUPPO
 import { JobController } from './job-controller';
 
 const BATCH_SIZE = 50;
-const FAST_THUMB_CONCURRENCY_MIN = 8;
-const FAST_THUMB_CONCURRENCY_DEFAULT = 48;
-const FAST_THUMB_CONCURRENCY_MAX = 64;
+const FAST_THUMB_CONCURRENCY_MIN = 4;
+const FAST_THUMB_CONCURRENCY_DEFAULT = 24;
+const FAST_THUMB_CONCURRENCY_MAX = 48;
 const SLOW_THUMB_CONCURRENCY = 4;   // PowerShell resize — one per process, keep low
 const SLOW_THUMB_TIMEOUT_MS = 8000; // Per-file timeout; corrupted/huge files abort
 

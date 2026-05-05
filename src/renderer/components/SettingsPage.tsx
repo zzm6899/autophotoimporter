@@ -210,6 +210,9 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const [activeTopic, setActiveTopic] = useState<SettingsTopic>('general');
   const settingsBodyRef = useRef<HTMLDivElement | null>(null);
   const performanceSectionRef = useRef<HTMLDivElement | null>(null);
+  const settingsPatchRef = useRef<Record<string, unknown>>({});
+  const settingsSaveTimerRef = useRef<number | null>(null);
+  const flushSettingsRef = useRef<() => void>(() => undefined);
   const [gpuLoadStreams, setGpuLoadStreams] = useState(8);
 
   const BASE_URL = 'https://keptra.z2hs.au';
@@ -325,8 +328,28 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     void refreshDiagnosticsSnapshot().catch(() => undefined);
   }, [activeTopic]);
 
+  flushSettingsRef.current = () => {
+    if (settingsSaveTimerRef.current !== null) {
+      window.clearTimeout(settingsSaveTimerRef.current);
+      settingsSaveTimerRef.current = null;
+    }
+    const patch = settingsPatchRef.current;
+    settingsPatchRef.current = {};
+    if (Object.keys(patch).length > 0) {
+      void window.electronAPI.setSettings(patch);
+    }
+  };
+
+  useEffect(() => () => {
+    flushSettingsRef.current();
+  }, []);
+
   const set = <K extends string>(key: K, value: unknown) => {
-    void window.electronAPI.setSettings({ [key]: value } as Record<string, unknown>);
+    settingsPatchRef.current[key] = value;
+    if (settingsSaveTimerRef.current !== null) return;
+    settingsSaveTimerRef.current = window.setTimeout(() => {
+      flushSettingsRef.current();
+    }, 260);
   };
 
   const handleTheme = (t: 'light' | 'dark') => {

@@ -5,6 +5,7 @@ const previewCache = new Map<string, string | undefined>();
 const previewInflight = new Map<string, {
   id: number;
   priority: PreviewPriority;
+  canceled: boolean;
   promise: Promise<string | undefined>;
 }>();
 const decodedCache = new Set<string>();
@@ -19,6 +20,7 @@ let activeRequests = 0;
 let backgroundPaused = false;
 let inflightSeq = 0;
 const queuedRequests: Array<{
+  key?: string;
   priority: PreviewPriority;
   run: () => void;
   cancel: () => void;
@@ -67,6 +69,16 @@ function cancelQueuedLowPriorityRequests(): void {
   }
 }
 
+function promoteQueuedRequest(key: string, priority: PreviewPriority): void {
+  for (const request of queuedRequests) {
+    if (request.key !== key) continue;
+    if (priorityRank[priority] > priorityRank[request.priority]) {
+      request.priority = priority;
+    }
+    return;
+  }
+}
+
 function previewKey(filePath: string, variant: PreviewVariant): string {
   return `${filePath}|${variant}`;
 }
@@ -82,11 +94,18 @@ function rememberPreview(filePath: string, variant: PreviewVariant, preview: str
   }
 }
 
-function schedule<T>(task: () => Promise<T>, priority: PreviewPriority): Promise<T> {
+function schedule<T>(
+  task: () => Promise<T>,
+  priority: PreviewPriority,
+  key?: string,
+  onCanceled?: () => void,
+): Promise<T> {
   if (priority === 'low' && backgroundPaused) {
+    onCanceled?.();
     return Promise.resolve(undefined as T);
   }
   if (priority === 'low' && activeRequests >= maxActiveRequests && queuedRequests.length >= MAX_QUEUED_REQUESTS) {
+    onCanceled?.();
     return Promise.resolve(undefined as T);
   }
   return new Promise((resolve, reject) => {
@@ -99,13 +118,16 @@ function schedule<T>(task: () => Promise<T>, priority: PreviewPriority): Promise
           drainQueue();
         });
     };
-    const cancel = () => resolve(undefined as T);
+    const cancel = () => {
+      onCanceled?.();
+      resolve(undefined as T);
+    };
     if (activeRequests < maxActiveRequests) {
       run();
     } else if (priority === 'high') {
-      queuedRequests.unshift({ priority, run, cancel });
+      queuedRequests.unshift({ key, priority, run, cancel });
     } else {
-      queuedRequests.push({ priority, run, cancel });
+      queuedRequests.push({ key, priority, run, cancel });
     }
   });
 }
@@ -126,11 +148,30 @@ export function getCachedPreview(
     return Promise.resolve(previewCache.get(key));
   }
   const existing = previewInflight.get(key);
-  if (existing && priorityRank[existing.priority] >= priorityRank[priority]) {
-    return existing.promise;
+  if (existing) {
+    if (existing.canceled && priorityRank[priority] > priorityRank[existing.priority]) {
+      previewInflight.delete(key);
+    } else {
+      if (priorityRank[priority] > priorityRank[existing.priority]) {
+        existing.priority = priority;
+        promoteQueuedRequest(key, priority);
+      }
+      return existing.promise;
+    }
   }
   const id = ++inflightSeq;
-  const promise = schedule(() => window.electronAPI.getPreview(filePath, variant), priority)
+  const entry = {
+    id,
+    priority,
+    canceled: false,
+    promise: Promise.resolve(undefined as string | undefined),
+  };
+  const promise = schedule(
+    () => window.electronAPI.getPreview(filePath, variant),
+    priority,
+    key,
+    () => { entry.canceled = true; },
+  )
     .then((preview) => {
       if (preview !== undefined) {
         rememberPreview(filePath, variant, preview);
@@ -142,7 +183,8 @@ export function getCachedPreview(
         previewInflight.delete(key);
       }
     });
-  previewInflight.set(key, { id, priority, promise });
+  entry.promise = promise;
+  previewInflight.set(key, entry);
   return promise;
 }
 

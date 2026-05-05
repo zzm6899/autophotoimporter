@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 
 type NormalizedJobState = 'queued' | 'running' | 'paused' | 'cancelled' | 'completed' | 'failed';
+const THUMBNAIL_FLUSH_MS = 120;
 
 export function useScanListeners() {
   const {
@@ -37,7 +38,7 @@ export function useScanListeners() {
 
     const scheduleThumbnailFlush = () => {
       if (thumbnailFlushTimerRef.current !== null) return;
-      thumbnailFlushTimerRef.current = window.setTimeout(flushThumbnails, 50);
+      thumbnailFlushTimerRef.current = window.setTimeout(flushThumbnails, THUMBNAIL_FLUSH_MS);
     };
 
     const unsubBatch = window.electronAPI.onScanBatch((files) => {
