@@ -342,6 +342,34 @@ describe('ImportContext reducer', () => {
       const next = reducer(state, { type: 'SET_DUPLICATE', filePath: '/photo.jpg' });
       expect(next.files[0].duplicate).toBe(true);
     });
+
+    it('stores catalog duplicate memory from scan events', () => {
+      const file = makeFile({ path: '/photo.jpg' });
+      const state = makeState({ files: [file] });
+      const duplicateMemory = {
+        kind: 'previous-import' as const,
+        matchedPath: '/archive/photo.jpg',
+        importedAt: '2026-05-01T00:00:00.000Z',
+      };
+      const next = reducer(state, { type: 'SET_DUPLICATE', filePath: '/photo.jpg', duplicateMemory });
+      expect(next.files[0].duplicate).toBe(true);
+      expect(next.files[0].duplicateMemory).toEqual(duplicateMemory);
+    });
+
+    it('does not mark previous rejects as duplicates', () => {
+      const file = makeFile({ path: '/photo.jpg' });
+      const state = makeState({ files: [file] });
+      const duplicateMemory = {
+        kind: 'previous-reject' as const,
+        matchedPath: '/archive/photo.jpg',
+        rejectedAt: '2026-05-01T00:00:00.000Z',
+      };
+
+      const next = reducer(state, { type: 'SET_DUPLICATE', filePath: '/photo.jpg', duplicateMemory });
+
+      expect(next.files[0].duplicate).toBe(false);
+      expect(next.files[0].duplicateMemory).toEqual(duplicateMemory);
+    });
   });
 
   describe('catalog duplicate filter', () => {
@@ -359,6 +387,42 @@ describe('ImportContext reducer', () => {
       const state = makeState({ files });
       const next = reducer(state, { type: 'CLEAR_DUPLICATES' });
       expect(next.files.every((f) => f.duplicate === false)).toBe(true);
+    });
+
+    it('keeps catalog duplicate flags so previous imports still skip', () => {
+      const files = [
+        makeFile({
+          path: '/a.jpg',
+          duplicate: true,
+          duplicateMemory: { kind: 'previous-import', matchedPath: '/archive/a.jpg' },
+        }),
+        makeFile({ path: '/b.jpg', duplicate: true }),
+      ];
+      const next = reducer(makeState({ files }), { type: 'CLEAR_DUPLICATES' });
+
+      expect(next.files[0].duplicate).toBe(true);
+      expect(next.files[0].duplicateMemory).toEqual({ kind: 'previous-import', matchedPath: '/archive/a.jpg' });
+      expect(next.files[1].duplicate).toBe(false);
+    });
+
+    it('keeps visual-match duplicates but clears previous rejects', () => {
+      const files = [
+        makeFile({
+          path: '/same.jpg',
+          duplicate: true,
+          duplicateMemory: { kind: 'same-visual', matchedPath: '/archive/same.jpg' },
+        }),
+        makeFile({
+          path: '/reject.jpg',
+          duplicate: true,
+          duplicateMemory: { kind: 'previous-reject', matchedPath: '/archive/reject.jpg', rejectedAt: '2026-05-01T00:00:00.000Z' },
+        }),
+      ];
+
+      const next = reducer(makeState({ files }), { type: 'CLEAR_DUPLICATES' });
+
+      expect(next.files[0].duplicate).toBe(true);
+      expect(next.files[1].duplicate).toBe(false);
     });
   });
 

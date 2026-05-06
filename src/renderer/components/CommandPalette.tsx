@@ -81,6 +81,7 @@ export interface CommandBuildContext {
   selectedSource?: string | null;
   destination?: string | null;
   queuedCount: number;
+  queuedImportableCount: number;
   selectedCount: number;
   focused: boolean;
   filter: string;
@@ -144,6 +145,11 @@ export function buildCommandItems(
   const busyReason = busy ? 'Wait for the current scan or import to finish.' : undefined;
   const importingReason = context.phase === 'importing' ? 'Import is already running.' : undefined;
   const queueReason = context.queuedCount === 0 ? 'Queue files first.' : undefined;
+  const importQueueReason = context.queuedCount === 0
+    ? 'Queue files first.'
+    : context.queuedImportableCount === 0
+      ? 'Queued files are rejected, duplicates, or missing destination paths.'
+      : undefined;
   const commands: CommandItem[] = [
     {
       id: 'source.choose-folder',
@@ -432,9 +438,9 @@ export function buildCommandItems(
     {
       id: 'import.queue',
       group: 'Import',
-      label: `Import Queue (${context.queuedCount})`,
+      label: `Import Queue (${context.queuedImportableCount})`,
       icon: Download,
-      disabledReason: importingReason || queueReason || needsDestination,
+      disabledReason: importingReason || importQueueReason || needsDestination,
       run: handlers['import.queue'],
     },
     {
@@ -617,6 +623,7 @@ export function CommandPalette() {
     files,
     selectedSource,
     destination,
+    skipDuplicates,
     queuedPaths,
     selectedPaths,
     focusedIndex,
@@ -634,6 +641,17 @@ export function CommandPalette() {
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const photoCount = useMemo(() => files.reduce((count, file) => count + (file.type === 'photo' ? 1 : 0), 0), [files]);
+  const queuedImportableCount = useMemo(() => {
+    const queued = new Set(queuedPaths);
+    return files.reduce((count, file) => (
+      queued.has(file.path) &&
+      !!file.destPath &&
+      file.pick !== 'rejected' &&
+      (!skipDuplicates || !file.duplicate)
+        ? count + 1
+        : count
+    ), 0);
+  }, [files, queuedPaths, skipDuplicates]);
   const focused = selectedPaths.length > 0 || focusedIndex >= 0 || !!focusedPath;
 
   useEffect(() => {
@@ -781,6 +799,7 @@ export function CommandPalette() {
       selectedSource,
       destination,
       queuedCount: queuedPaths.length,
+      queuedImportableCount,
       selectedCount: selectedPaths.length,
       focused,
       filter,
@@ -799,6 +818,7 @@ export function CommandPalette() {
     licenseStatus?.valid,
     phase,
     photoCount,
+    queuedImportableCount,
     queuedPaths.length,
     scanPaused,
     selectedPaths.length,

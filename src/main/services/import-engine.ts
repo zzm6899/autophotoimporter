@@ -805,9 +805,10 @@ export async function importFiles(
   onProgress: (progress: ImportProgress) => void,
 ): Promise<ImportResult> {
   currentJob?.cancel();
-  currentJob = new JobController('import');
-  currentJob.start();
-  const { signal } = currentJob;
+  const job = new JobController('import');
+  currentJob = job;
+  job.start();
+  const { signal } = job;
 
   const startTime = Date.now();
   let imported = 0;
@@ -1062,7 +1063,7 @@ export async function importFiles(
         const message = 'Disk full';
         errors.push({ file: file.name, error: message });
         ledgerItems.push({ ...resolvedLedgerBase, status: 'failed', error: message });
-        currentJob?.cancel();
+        job.cancel();
         return;
       }
 
@@ -1199,12 +1200,13 @@ export async function importFiles(
   }
 
   if (signal.aborted) {
-    currentJob?.cancel();
+    job.cancel();
   } else if (errors.length > 0) {
-    currentJob?.fail(new Error('Import completed with errors'));
+    job.fail(new Error('Import completed with errors'));
   } else {
-    currentJob?.complete({ current: files.length, total: files.length, percent: 100 });
+    job.complete({ current: files.length, total: files.length, percent: 100 });
   }
+  if (currentJob === job) currentJob = null;
 
   return {
     imported,

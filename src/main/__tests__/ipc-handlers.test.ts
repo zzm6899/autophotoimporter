@@ -178,6 +178,64 @@ describe('IPC Handlers', () => {
       );
     });
 
+    it('still applies duplicate and reject filters to selected paths', async () => {
+      mockReadFile.mockResolvedValue(JSON.stringify({ licenseKey: 'valid-key' }) as any);
+      const files: MediaFile[] = [
+        { path: '/src/keep.jpg', name: 'keep.jpg', size: 100, type: 'photo', extension: '.jpg', destPath: '2026/keep.jpg' },
+        { path: '/src/duplicate.jpg', name: 'duplicate.jpg', size: 100, type: 'photo', extension: '.jpg', destPath: '2026/duplicate.jpg', duplicate: true },
+        { path: '/src/rejected.jpg', name: 'rejected.jpg', size: 100, type: 'photo', extension: '.jpg', destPath: '2026/rejected.jpg', pick: 'rejected' },
+      ];
+      mockScanFiles.mockImplementation(async (_sourcePath, onBatch: (batch: MediaFile[]) => void) => {
+        onBatch(files);
+        return files.length;
+      });
+      mockImportFiles.mockResolvedValue({ imported: 1, skipped: 0, errors: [], totalBytes: 100, durationMs: 10 });
+
+      await getHandler('scan:start')({}, '/src');
+      await getHandler('import:start')({}, {
+        sourcePath: '/src',
+        destRoot: '/dest',
+        skipDuplicates: true,
+        saveFormat: 'original',
+        jpegQuality: 90,
+        selectedPaths: files.map((file) => file.path),
+      });
+
+      expect(mockImportFiles).toHaveBeenLastCalledWith(
+        [files[0]],
+        expect.any(Object),
+        expect.any(Function),
+      );
+    });
+
+    it('treats an explicit empty selected path list as importing no files', async () => {
+      mockReadFile.mockResolvedValue(JSON.stringify({ licenseKey: 'valid-key' }) as any);
+      const files: MediaFile[] = [
+        { path: '/src/keep.jpg', name: 'keep.jpg', size: 100, type: 'photo', extension: '.jpg', destPath: '2026/keep.jpg' },
+      ];
+      mockScanFiles.mockImplementation(async (_sourcePath, onBatch: (batch: MediaFile[]) => void) => {
+        onBatch(files);
+        return files.length;
+      });
+      mockImportFiles.mockResolvedValue({ imported: 0, skipped: 0, errors: [], totalBytes: 0, durationMs: 10 });
+
+      await getHandler('scan:start')({}, '/src');
+      await getHandler('import:start')({}, {
+        sourcePath: '/src',
+        destRoot: '/dest',
+        skipDuplicates: true,
+        saveFormat: 'original',
+        jpegQuality: 90,
+        selectedPaths: [],
+      });
+
+      expect(mockImportFiles).toHaveBeenLastCalledWith(
+        [],
+        expect.any(Object),
+        expect.any(Function),
+      );
+    });
+
     it('sends progress events to renderer', async () => {
       mockReadFile.mockResolvedValue(JSON.stringify({ licenseKey: 'valid-key' }) as any);
       const mockWin = { webContents: { send: vi.fn() } };

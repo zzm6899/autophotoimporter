@@ -14,6 +14,7 @@ const baseContext: CommandBuildContext = {
   selectedSource: 'D:\\DCIM',
   destination: 'E:\\Import',
   queuedCount: 12,
+  queuedImportableCount: 12,
   selectedCount: 0,
   focused: true,
   filter: 'all',
@@ -42,12 +43,25 @@ describe('CommandPalette command helpers', () => {
       selectedSource: null,
       destination: null,
       queuedCount: 0,
+      queuedImportableCount: 0,
       focused: false,
     });
 
     expect(commands.find((command) => command.id === 'review.pick')?.disabledReason).toBe('Focus a photo first.');
     expect(commands.find((command) => command.id === 'import.queue')?.disabledReason).toBe('Queue files first.');
     expect(commands.find((command) => command.id === 'source.rescan')?.disabledReason).toBe('Choose a source first.');
+  });
+
+  it('disables queue import when queued files are not importable', () => {
+    const commands = buildCommandItems({
+      ...baseContext,
+      queuedCount: 3,
+      queuedImportableCount: 0,
+    });
+
+    const command = commands.find((item) => item.id === 'import.queue');
+    expect(command?.label).toBe('Import Queue (0)');
+    expect(command?.disabledReason).toBe('Queued files are rejected, duplicates, or missing destination paths.');
   });
 
   it('exposes group photo review through people and everyone-good search terms', () => {

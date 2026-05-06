@@ -862,7 +862,7 @@ async function applyCatalogScanMemory(sourcePath: string): Promise<void> {
       matchedPath: candidate.matchedPaths[0] ?? file.path,
       importedAt: candidate.lastImportedAt,
     };
-    sendToRenderer(IPC.SCAN_DUPLICATE, file.path);
+    sendToRenderer(IPC.SCAN_DUPLICATE, file.path, file.duplicateMemory);
   }
 }
 
@@ -2049,6 +2049,7 @@ export function registerIpcHandlers(): void {
       const total = await scanFiles(
         sourcePath,
         (batch) => {
+          if (scanGeneration !== scanEventGeneration) return;
           scannedFiles.push(...batch);
           for (const file of batch) scannedFilesByPath.set(file.path, file);
           sendToRenderer(IPC.SCAN_BATCH, batch);
@@ -2065,9 +2066,11 @@ export function registerIpcHandlers(): void {
       );
       console.log(`[scan] Complete: ${total} files`);
       await applyCatalogScanMemory(sourcePath).catch((error) => log.warn('[catalog] scan memory failed', error));
+      if (scanGeneration !== scanEventGeneration) return;
       sendToRenderer(IPC.SCAN_COMPLETE, total);
     } catch (err) {
       console.error('[scan] Error:', err);
+      if (scanGeneration !== scanEventGeneration) return;
       sendToRenderer(IPC.SCAN_COMPLETE, 0);
     } finally {
       flushThumbnailBuffer();
@@ -3038,18 +3041,19 @@ export function registerIpcHandlers(): void {
  * Apply the renderer's intent to the current scan.
  *
  *   1. If config.selectedPaths is non-empty, keep only those files — this is
- *      the "I Cmd+clicked 40 thumbnails and hit Import" case.
+ *      the "I Cmd+clicked 40 thumbnails and hit Import" case — while still
+ *      respecting duplicate skipping when enabled.
  *   2. Else, drop rejected files. If skipDuplicates, also drop known dupes.
  *
  * Files with no destPath computed are always dropped (date parse failed).
  */
 function filterFilesForImport(all: MediaFile[], config: ImportConfig): MediaFile[] {
-  const selected = config.selectedPaths && config.selectedPaths.length > 0
+  const selected = Array.isArray(config.selectedPaths)
     ? new Set(config.selectedPaths)
     : null;
   return all.filter((f) => {
     if (!f.destPath) return false;
-    if (selected) return selected.has(f.path);
+    if (selected && !selected.has(f.path)) return false;
     if (f.pick === 'rejected') return false;
     if (config.skipDuplicates && f.duplicate) return false;
     return true;
@@ -3137,6 +3141,7 @@ async function runAutoImport(volume: Volume, options: Omit<QueuedAutoImport, 'vo
     const total = await scanFiles(
       volume.path,
       (batch) => {
+        if (scanGeneration !== scanEventGeneration) return;
         scannedFiles.push(...batch);
         for (const file of batch) scannedFilesByPath.set(file.path, file);
         sendToRenderer(IPC.SCAN_BATCH, batch);
@@ -3152,6 +3157,7 @@ async function runAutoImport(volume: Volume, options: Omit<QueuedAutoImport, 'vo
       pattern,
     );
     await applyCatalogScanMemory(volume.path).catch((error) => log.warn('[catalog] auto scan memory failed', error));
+    if (scanGeneration !== scanEventGeneration) return;
     sendToRenderer(IPC.SCAN_COMPLETE, total);
     flushThumbnailBuffer();
 

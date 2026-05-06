@@ -55,8 +55,9 @@ export async function probeFtp(config: FtpConfig): Promise<{
   totalBytes?: number;
 }> {
   ftpJob?.cancel();
-  ftpJob = new JobController('ftp-mirror');
-  ftpJob.start();
+  const job = new JobController('ftp-mirror');
+  ftpJob = job;
+  job.start();
   let client: Client | undefined;
   try {
     client = await openClient(config, 30_000);
@@ -68,10 +69,11 @@ export async function probeFtp(config: FtpConfig): Promise<{
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : 'FTP connection failed';
-    ftpJob?.fail(message);
+    job.fail(message);
     return { ok: false, error: message };
   } finally {
     client?.close();
+    if (ftpJob === job) ftpJob = null;
   }
 }
 

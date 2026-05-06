@@ -64,16 +64,20 @@ export function useImport() {
     //   4. Pick/reject flags.
     //   5. Everything that isn't rejected and (when enabled) isn't a duplicate.
     let pathsToImport: string[] | undefined;
+    const isImportableFile = (file: typeof files[number]) =>
+      !!file.destPath && file.pick !== 'rejected' && (!skipDuplicates || !file.duplicate);
+    const importablePathSet = new Set(files.filter(isImportableFile).map((file) => file.path));
+    const filterImportablePaths = (paths: string[]) => paths.filter((path) => importablePathSet.has(path));
     if (options?.selectedPathsOverride?.length) {
-      pathsToImport = options.selectedPathsOverride;
+      pathsToImport = filterImportablePaths(options.selectedPathsOverride);
     } else if (selectedPaths.length > 0) {
-      pathsToImport = selectedPaths;
+      pathsToImport = filterImportablePaths(selectedPaths);
     } else if (queuedPaths.length > 0) {
-      pathsToImport = queuedPaths;
+      pathsToImport = filterImportablePaths(queuedPaths);
     } else {
-      const picked = files.filter((f) => f.pick === 'selected').map((f) => f.path);
-      if (picked.length > 0) {
-        pathsToImport = picked;
+      const pickedFiles = files.filter((f) => f.pick === 'selected');
+      if (pickedFiles.length > 0) {
+        pathsToImport = pickedFiles.filter(isImportableFile).map((f) => f.path);
       }
       // else: leave undefined so the main process applies default filtering
       //       (skip rejects + skip duplicates if enabled).
@@ -117,7 +121,7 @@ export function useImport() {
       : {};
     const filesForImport = importPathSet
       ? files.filter((f) => importPathSet.has(f.path))
-      : files.filter((f) => f.pick !== 'rejected' && (!skipDuplicates || !f.duplicate));
+      : files.filter(isImportableFile);
     const smartKeywords = [
       ...eventModeKeywords(eventMode),
       ...(filesForImport.some((f) => (f.faceCount ?? 0) > 0) ? ['faces'] : []),

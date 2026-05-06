@@ -1,9 +1,35 @@
-import { describe, expect, it } from 'vitest';
-import { buildWatchFolder, isActiveWatchFolder, normalizeWatchFolder, normalizeWatchFolders } from '../watch-folders';
+import { EventEmitter } from 'node:events';
+import { watch } from 'node:fs';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { buildWatchFolder, isActiveWatchFolder, normalizeWatchFolder, normalizeWatchFolders, WatchFolderManager } from '../watch-folders';
+
+vi.mock('node:fs', () => ({
+  watch: vi.fn(),
+}));
 
 const NOW = '2026-05-02T00:00:00.000Z';
+const mockWatch = vi.mocked(watch);
+
+type MockWatcher = EventEmitter & {
+  close: ReturnType<typeof vi.fn>;
+  ref: ReturnType<typeof vi.fn>;
+  unref: ReturnType<typeof vi.fn>;
+};
+
+function makeWatcher(): MockWatcher {
+  return Object.assign(new EventEmitter(), { close: vi.fn(), ref: vi.fn(), unref: vi.fn() });
+}
 
 describe('watch-folders service', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mockWatch.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('normalizes a minimal folder into a safe saved config', () => {
     const folder = normalizeWatchFolder({ path: 'E:\\DCIM' }, NOW);
 
@@ -62,5 +88,55 @@ describe('watch-folders service', () => {
 
     expect(isActiveWatchFolder(autoImportOnly)).toBe(true);
     expect(isActiveWatchFolder(passive)).toBe(false);
+  });
+
+  it('debounces bursts of watch events into one trigger after the folder settles', () => {
+    const watcher = makeWatcher();
+    const onTrigger = vi.fn();
+    mockWatch.mockReturnValue(watcher as ReturnType<typeof watch>);
+
+    const manager = new WatchFolderManager(onTrigger);
+    manager.update([buildWatchFolder('D:\\Tether', {}, NOW)]);
+
+    const listener = (mockWatch.mock.calls[0] as unknown as [unknown, unknown, (eventType: string, filename?: string) => void])[2];
+    listener('rename', 'first.jpg');
+    vi.advanceTimersByTime(1000);
+    listener('change', 'second.jpg');
+    vi.advanceTimersByTime(2999);
+    expect(onTrigger).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(1);
+    expect(onTrigger).toHaveBeenCalledTimes(1);
+    expect(onTrigger).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: 'change',
+      filename: 'second.jpg',
+    }));
+
+    manager.stop();
+  });
+
+  it('uses the latest folder settings for an existing watcher', () => {
+    const watcher = makeWatcher();
+    const onTrigger = vi.fn();
+    mockWatch.mockReturnValue(watcher as ReturnType<typeof watch>);
+
+    const manager = new WatchFolderManager(onTrigger);
+    const folder = buildWatchFolder('D:\\Tether', { autoImport: true }, NOW);
+    manager.update([folder]);
+    manager.update([{ ...folder, autoImport: false, autoScan: true, updatedAt: '2026-05-02T00:01:00.000Z' }]);
+
+    const listener = (mockWatch.mock.calls[0] as unknown as [unknown, unknown, (eventType: string, filename?: string) => void])[2];
+    listener('change', 'photo.jpg');
+    vi.advanceTimersByTime(3000);
+
+    expect(mockWatch).toHaveBeenCalledTimes(1);
+    expect(onTrigger).toHaveBeenCalledWith(expect.objectContaining({
+      folder: expect.objectContaining({
+        autoImport: false,
+        updatedAt: '2026-05-02T00:01:00.000Z',
+      }),
+    }));
+
+    manager.stop();
   });
 });

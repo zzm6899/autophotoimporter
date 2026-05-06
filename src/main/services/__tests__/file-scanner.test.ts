@@ -190,6 +190,7 @@ describe('scanFiles', () => {
     const total = await scanFiles('/source', onBatch, onThumbnail);
     // Should return 0 because it was aborted
     expect(total).toBe(0);
+    expect(onBatch).not.toHaveBeenCalled();
   });
 
   it('batches files in groups of 50', async () => {

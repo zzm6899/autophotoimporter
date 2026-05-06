@@ -101,20 +101,21 @@ export async function scanFiles(
 ): Promise<number> {
   currentJob?.cancel();
   while (pauseWaiters.length) pauseWaiters.shift()?.();
-  currentJob = new JobController('file-scan');
-  currentJob.start();
+  const job = new JobController('file-scan');
+  currentJob = job;
+  job.start();
   paused = false;
   clearThumbnailMemCache(); // clear before each scan so modified files get fresh thumbnails
-  const { signal } = currentJob;
+  const { signal } = job;
 
   // Phase 1: Walk directory and get metadata + dates (fast)
   const allFiles: MediaFile[] = [];
   await walkDirectory(sourcePath, allFiles, signal);
-  if (signal.aborted) { currentJob?.cancel(); return 0; }
+  if (signal.aborted) { job.cancel(); if (currentJob === job) currentJob = null; return 0; }
 
   // Enrich with dates only (no thumbnails yet)
   for (let i = 0; i < allFiles.length; i += BATCH_SIZE) {
-    if (signal.aborted) { currentJob?.cancel(); return 0; }
+    if (signal.aborted) { job.cancel(); if (currentJob === job) currentJob = null; return 0; }
     await waitIfPaused(signal);
     const batch = allFiles.slice(i, i + BATCH_SIZE);
     const enriched = await Promise.all(
@@ -123,8 +124,9 @@ export async function scanFiles(
         return { ...file, ...dateInfo };
       }),
     );
+    if (signal.aborted) { job.cancel(); if (currentJob === job) currentJob = null; return 0; }
     onBatch(enriched);
-    currentJob?.progress({ current: Math.min(i + BATCH_SIZE, allFiles.length), total: allFiles.length, percent: allFiles.length ? Math.round(((i + BATCH_SIZE) / allFiles.length) * 100) : 0 });
+    job.progress({ current: Math.min(i + BATCH_SIZE, allFiles.length), total: allFiles.length, percent: allFiles.length ? Math.round(((i + BATCH_SIZE) / allFiles.length) * 100) : 0 });
   }
 
   // Thumbnails load in the background — don't block scan completion
@@ -132,7 +134,8 @@ export async function scanFiles(
     generateThumbnailsInBackground(allFiles, onThumbnail, signal);
   }
 
-  currentJob?.complete({ current: allFiles.length, total: allFiles.length, percent: 100 });
+  job.complete({ current: allFiles.length, total: allFiles.length, percent: 100 });
+  if (currentJob === job) currentJob = null;
   return allFiles.length;
 }
 

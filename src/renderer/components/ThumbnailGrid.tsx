@@ -1760,7 +1760,7 @@ async function visualHash(src: string): Promise<string> {
 }
 
 export function ThumbnailGrid() {
-  const { phase, selectedSource, scanError, focusedIndex, focusedPath, viewMode, filter, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, exposureAdjustmentStep, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused, fastKeeperMode, autoSpeedMode, faceConcurrency, gpuFaceAcceleration, reviewFaceAnalysis, reviewFaceMatching, reviewPersonDetection, reviewVisualDuplicates, keybinds, metadataKeywords, whiteBalanceTemperature, whiteBalanceTint, destination, licenseStatus, ftpDestEnabled, ftpDestConfig } = useAppState();
+  const { phase, selectedSource, scanError, focusedIndex, focusedPath, viewMode, filter, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, exposureAdjustmentStep, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused, fastKeeperMode, autoSpeedMode, faceConcurrency, gpuFaceAcceleration, reviewFaceAnalysis, reviewFaceMatching, reviewPersonDetection, reviewVisualDuplicates, keybinds, metadataKeywords, whiteBalanceTemperature, whiteBalanceTint, destination, skipDuplicates, licenseStatus, ftpDestEnabled, ftpDestConfig } = useAppState();
   // useMergedFiles() overlays face/review scores without re-running the full
   // reducer map — O(n) only when scores.size > 0, otherwise returns the same array.
   const files = useMergedFiles();
@@ -2815,6 +2815,20 @@ export function ThumbnailGrid() {
   }, [dispatch, queueActionsDisabled]);
 
   const visiblePaths = useMemo(() => sortedFiles.map((file) => file.path), [sortedFiles]);
+  const isImportableFile = useCallback((file: MediaFile) =>
+    !!file.destPath && file.pick !== 'rejected' && (!skipDuplicates || !file.duplicate),
+  [skipDuplicates]);
+  const visibleImportablePaths = useMemo(
+    () => sortedFiles.filter(isImportableFile).map((file) => file.path),
+    [isImportableFile, sortedFiles],
+  );
+  const queuedImportablePaths = useMemo(
+    () => queuedPaths.filter((path) => {
+      const file = filesByPath.get(path);
+      return !!file && isImportableFile(file);
+    }),
+    [filesByPath, isImportableFile, queuedPaths],
+  );
   const bulkPickVisible = useCallback((pick: 'selected' | 'rejected' | undefined) => {
     if (visiblePaths.length === 0) return;
     dispatch({ type: 'SET_PICK_BATCH', filePaths: visiblePaths, pick });
@@ -2834,7 +2848,7 @@ export function ThumbnailGrid() {
   }, [bulkPickVisible, confirmBulkAction, visiblePaths.length]);
   const toolbarFtpReady = !ftpDestEnabled || (!!ftpDestConfig.host && !!ftpDestConfig.remotePath);
   const toolbarImportDisabled =
-    queuedPaths.length === 0 ||
+    queuedImportablePaths.length === 0 ||
     !destination ||
     !licenseStatus?.valid ||
     !toolbarFtpReady ||
@@ -2847,22 +2861,24 @@ export function ThumbnailGrid() {
         ? 'Finish FTP output settings before importing.'
         : queuedPaths.length === 0
           ? 'Queue files before importing.'
+          : queuedImportablePaths.length === 0
+            ? 'Queued files are rejected, duplicates, or missing destination paths.'
           : phase === 'scanning'
             ? 'Wait for scanning to finish before importing.'
           : phase === 'importing'
             ? 'Import already in progress.'
             : 'Import all queued files to the destination folder set in the output panel.';
   const importVisibleDisabled =
-    visiblePaths.length === 0 ||
+    visibleImportablePaths.length === 0 ||
     !destination ||
     !licenseStatus?.valid ||
     !toolbarFtpReady ||
     phase !== 'ready';
   const importVisible = useCallback(() => {
     if (importVisibleDisabled) return;
-    dispatch({ type: 'QUEUE_ADD_PATHS', paths: visiblePaths });
-    void startImport({ selectedPathsOverride: visiblePaths });
-  }, [dispatch, importVisibleDisabled, startImport, visiblePaths]);
+    dispatch({ type: 'QUEUE_ADD_PATHS', paths: visibleImportablePaths });
+    void startImport({ selectedPathsOverride: visibleImportablePaths });
+  }, [dispatch, importVisibleDisabled, startImport, visibleImportablePaths]);
 
   const enterQueueKeepersMode = useCallback(() => {
     if (queueActionsDisabled) return;
@@ -3170,7 +3186,7 @@ export function ThumbnailGrid() {
           enterQueueKeepersMode();
           return;
         case 'queue.visible':
-          queuePaths(visiblePaths);
+          queuePaths(visibleImportablePaths);
           dispatch({ type: 'SET_FILTER', filter: 'queue' });
           dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' });
           multiClickSelectRef.current = true;
@@ -3249,6 +3265,7 @@ export function ThumbnailGrid() {
     setFocused,
     setSearchText,
     sortedFiles,
+    visibleImportablePaths,
     visiblePaths,
   ]);
 
@@ -4817,23 +4834,25 @@ export function ThumbnailGrid() {
               icon={Download}
               tone="success"
               onClick={() => {
-                if (!toolbarImportDisabled) void startImport({ selectedPathsOverride: queuedPaths });
+                if (!toolbarImportDisabled) void startImport({ selectedPathsOverride: queuedImportablePaths });
               }}
               disabled={toolbarImportDisabled}
               title={toolbarImportTitle}
             >
-              Import ({queuedPaths.length})
+              Import ({queuedImportablePaths.length})
             </ActionButton>
           ) : (
             showAdvancedTools && (
               <ActionButton
                 icon={ClipboardCheck}
                 tone="success"
-                onClick={() => queuePaths(sortedFiles.map((f) => f.path))}
-                disabled={queueActionsDisabled}
+                onClick={() => queuePaths(visibleImportablePaths)}
+                disabled={queueActionsDisabled || visibleImportablePaths.length === 0}
                 title={queueActionsDisabled
                   ? 'Wait for the current scan/import to finish before changing the import queue.'
-                  : `Queue every visible file for import. Thumbnails ready: ${visibleThumbStats.ready}/${visibleThumbStats.total}.`}
+                  : visibleImportablePaths.length === 0
+                    ? 'No visible files are importable with the current duplicate/reject settings.'
+                  : `Queue every importable visible file. Thumbnails ready: ${visibleThumbStats.ready}/${visibleThumbStats.total}.`}
               >
                 Queue Visible
               </ActionButton>

@@ -18,6 +18,10 @@ function isExpensiveImportFilter(filter: FilterMode): boolean {
   return filter === 'face-gallery' || filter === 'face-groups' || filter.startsWith('face:');
 }
 
+function isDuplicateMemoryMatch(memory?: MediaFile['duplicateMemory']): boolean {
+  return memory?.kind === 'previous-import' || memory?.kind === 'same-visual';
+}
+
 function reviewOverlayDelayMs(fileCount: number): number {
   if (fileCount >= 2500) return REVIEW_OVERLAY_LARGE_DELAY_MS;
   if (fileCount >= 800) return REVIEW_OVERLAY_MEDIUM_DELAY_MS;
@@ -159,7 +163,7 @@ export type Action =
   | { type: 'DISMISS_SUMMARY' }
   | { type: 'SET_THUMBNAIL'; filePath: string; thumbnail: string }
   | { type: 'SET_THUMBNAILS'; thumbnails: Record<string, string> }
-  | { type: 'SET_DUPLICATE'; filePath: string }
+  | { type: 'SET_DUPLICATE'; filePath: string; duplicateMemory?: MediaFile['duplicateMemory'] }
   | { type: 'CLEAR_DUPLICATES' }
   | { type: 'SET_PICK'; filePath: string; pick: 'selected' | 'rejected' | undefined }
   | { type: 'SET_PICK_BATCH'; filePaths: string[]; pick: 'selected' | 'rejected' | undefined }
@@ -566,13 +570,19 @@ export function reducer(state: State, action: Action): State {
       return {
         ...state,
         files: state.files.map((f) =>
-          f.path === action.filePath ? { ...f, duplicate: true } : f,
+          f.path === action.filePath
+            ? {
+              ...f,
+              duplicate: action.duplicateMemory ? isDuplicateMemoryMatch(action.duplicateMemory) : true,
+              duplicateMemory: action.duplicateMemory ?? f.duplicateMemory,
+            }
+            : f,
         ),
       };
     case 'CLEAR_DUPLICATES':
       return {
         ...state,
-        files: state.files.map((f) => ({ ...f, duplicate: false })),
+        files: state.files.map((f) => ({ ...f, duplicate: isDuplicateMemoryMatch(f.duplicateMemory) })),
       };
     case 'SET_PICK':
       return withFileHistory(state, state.files.map((f) =>

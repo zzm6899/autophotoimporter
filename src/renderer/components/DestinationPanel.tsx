@@ -432,20 +432,19 @@ export function DestinationPanel() {
   //   4. Pick flags (if any)
   //   5. Everything that isn't rejected and (optionally) isn't a duplicate
   const importFiles = useMemo(() => {
+    const importable = (f: typeof files[number]) => f.destPath && f.pick !== 'rejected' && (!skipDuplicates || !f.duplicate);
     if (hasClickSelection) {
       const paths = new Set(selectedPaths);
-      return files.filter((f) => paths.has(f.path));
+      return files.filter((f) => paths.has(f.path) && importable(f));
     }
     if (hasQueue) {
       const paths = new Set(queuedPaths);
-      return files.filter((f) => paths.has(f.path));
+      return files.filter((f) => paths.has(f.path) && importable(f));
     }
     if (hasPicks) {
-      return files.filter((f) => f.pick === 'selected');
+      return files.filter((f) => f.pick === 'selected' && importable(f));
     }
-    return skipDuplicates
-      ? files.filter((f) => !f.duplicate && f.pick !== 'rejected')
-      : files.filter((f) => f.pick !== 'rejected');
+    return files.filter(importable);
   }, [files, hasClickSelection, hasPicks, hasQueue, queuedPaths, skipDuplicates, selectedPaths]);
 
   const buildImportConfig = (dryRun = false): ImportConfig | null => {

@@ -53,8 +53,8 @@ const api = {
   },
   checkDuplicates: (destRoot: string): Promise<void> =>
     ipcRenderer.invoke(IPC.SCAN_CHECK_DUPLICATES, destRoot),
-  onScanDuplicate: (cb: (filePath: string) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, filePath: string) => cb(filePath);
+  onScanDuplicate: (cb: (filePath: string, duplicateMemory?: MediaFile['duplicateMemory']) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, filePath: string, duplicateMemory?: MediaFile['duplicateMemory']) => cb(filePath, duplicateMemory);
     ipcRenderer.on(IPC.SCAN_DUPLICATE, handler);
     return () => ipcRenderer.removeListener(IPC.SCAN_DUPLICATE, handler);
   },

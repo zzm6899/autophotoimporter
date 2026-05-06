@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { SourceProfile, WatchFolder } from '../../shared/types';
 
 const SOURCE_PROFILES = new Set<SourceProfile>(['auto', 'ssd', 'usb', 'nas']);
+const WATCH_FOLDER_DEBOUNCE_MS = 3000;
 
 export interface WatchFolderTrigger {
   folder: WatchFolder;
@@ -107,6 +108,9 @@ export function isActiveWatchFolder(folder: WatchFolder): boolean {
 
 export class WatchFolderManager {
   private watchers = new Map<string, FSWatcher>();
+  private foldersById = new Map<string, WatchFolder>();
+  private pendingTriggers = new Map<string, NodeJS.Timeout>();
+  private latestTriggers = new Map<string, WatchFolderTrigger>();
 
   constructor(private readonly onTrigger: (trigger: WatchFolderTrigger) => void) {}
 
@@ -116,11 +120,13 @@ export class WatchFolderManager {
         .filter(isActiveWatchFolder)
         .map((folder) => [folder.id, folder]),
     );
+    this.foldersById = active;
 
     for (const [id, watcher] of this.watchers) {
       if (!active.has(id)) {
         watcher.close();
         this.watchers.delete(id);
+        this.clearPending(id);
       }
     }
 
@@ -128,8 +134,10 @@ export class WatchFolderManager {
       if (this.watchers.has(id)) continue;
       try {
         const watcher = watch(folder.path, { persistent: false }, (eventType, filename) => {
-          this.onTrigger({
-            folder,
+          const latestFolder = this.foldersById.get(id);
+          if (!latestFolder) return;
+          this.scheduleTrigger(id, {
+            folder: latestFolder,
             eventType,
             filename: typeof filename === 'string' ? filename : undefined,
             triggeredAt: new Date().toISOString(),
@@ -138,6 +146,7 @@ export class WatchFolderManager {
         watcher.on('error', () => {
           watcher.close();
           this.watchers.delete(id);
+          this.clearPending(id);
         });
         this.watchers.set(id, watcher);
       } catch {
@@ -149,5 +158,28 @@ export class WatchFolderManager {
   stop(): void {
     for (const watcher of this.watchers.values()) watcher.close();
     this.watchers.clear();
+    this.foldersById.clear();
+    for (const id of this.pendingTriggers.keys()) this.clearPending(id);
+  }
+
+  private scheduleTrigger(id: string, trigger: WatchFolderTrigger): void {
+    this.latestTriggers.set(id, trigger);
+    const existing = this.pendingTriggers.get(id);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      this.pendingTriggers.delete(id);
+      const latest = this.latestTriggers.get(id);
+      this.latestTriggers.delete(id);
+      if (latest) this.onTrigger(latest);
+    }, WATCH_FOLDER_DEBOUNCE_MS);
+    timer.unref?.();
+    this.pendingTriggers.set(id, timer);
+  }
+
+  private clearPending(id: string): void {
+    const timer = this.pendingTriggers.get(id);
+    if (timer) clearTimeout(timer);
+    this.pendingTriggers.delete(id);
+    this.latestTriggers.delete(id);
   }
 }
