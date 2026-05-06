@@ -410,18 +410,21 @@ function withFileHistory(state: State, files: MediaFile[]): State {
 
 function collectReviewGroups(files: MediaFile[], includeFace = true): Map<string, MediaFile[]> {
   const groups = new Map<string, MediaFile[]>();
+  const addToGroup = (id: string, file: MediaFile) => {
+    const group = groups.get(id);
+    if (group) group.push(file);
+    else groups.set(id, [file]);
+  };
+
   for (const f of files) {
     if (f.burstId && f.burstSize && f.burstSize > 1) {
-      const id = `burst:${f.burstId}`;
-      groups.set(id, [...(groups.get(id) ?? []), f]);
+      addToGroup(`burst:${f.burstId}`, f);
     }
     if (f.visualGroupId && f.visualGroupSize && f.visualGroupSize > 1) {
-      const id = `visual:${f.visualGroupId}`;
-      groups.set(id, [...(groups.get(id) ?? []), f]);
+      addToGroup(`visual:${f.visualGroupId}`, f);
     }
     if (includeFace && f.faceGroupId && f.faceGroupSize && f.faceGroupSize > 1) {
-      const id = `face:${f.faceGroupId}`;
-      groups.set(id, [...(groups.get(id) ?? []), f]);
+      addToGroup(`face:${f.faceGroupId}`, f);
     }
   }
   return groups;

@@ -3,6 +3,13 @@ import { useAppState, useAppDispatch } from '../context/ImportContext';
 
 type NormalizedJobState = 'queued' | 'running' | 'paused' | 'cancelled' | 'completed' | 'failed';
 const THUMBNAIL_FLUSH_MS = 120;
+const THUMBNAIL_FLUSH_MAX_PENDING = 96;
+
+function thumbnailFlushDelay(fileCount: number): number {
+  if (fileCount >= 2500) return 400;
+  if (fileCount >= 800) return 250;
+  return THUMBNAIL_FLUSH_MS;
+}
 
 export function useScanListeners() {
   const {
@@ -14,7 +21,9 @@ export function useScanListeners() {
   } = useAppState();
   const dispatch = useAppDispatch();
   const thumbnailBufferRef = useRef<Record<string, string>>({});
+  const thumbnailBufferCountRef = useRef(0);
   const thumbnailFlushTimerRef = useRef<number | null>(null);
+  const fileCountRef = useRef(0);
 
   // Track whether we're in an active scan at the listener layer.
   // This ref stays in sync with the phase state and lets the onScanComplete
@@ -24,13 +33,19 @@ export function useScanListeners() {
   useEffect(() => {
     isActiveRef.current = phase === 'scanning';
     scanStateRef.current = phase === 'scanning' ? 'running' : scanStateRef.current;
+    fileCountRef.current = files.length;
   }, [phase]);
+
+  useEffect(() => {
+    fileCountRef.current = files.length;
+  }, [files.length]);
 
   useEffect(() => {
     const flushThumbnails = () => {
       thumbnailFlushTimerRef.current = null;
       const thumbnails = thumbnailBufferRef.current;
       thumbnailBufferRef.current = {};
+      thumbnailBufferCountRef.current = 0;
       if (Object.keys(thumbnails).length > 0) {
         dispatch({ type: 'SET_THUMBNAILS', thumbnails });
       }
@@ -38,7 +53,7 @@ export function useScanListeners() {
 
     const scheduleThumbnailFlush = () => {
       if (thumbnailFlushTimerRef.current !== null) return;
-      thumbnailFlushTimerRef.current = window.setTimeout(flushThumbnails, THUMBNAIL_FLUSH_MS);
+      thumbnailFlushTimerRef.current = window.setTimeout(flushThumbnails, thumbnailFlushDelay(fileCountRef.current));
     };
 
     const unsubBatch = window.electronAPI.onScanBatch((files) => {
@@ -55,7 +70,18 @@ export function useScanListeners() {
     });
 
     const unsubThumb = window.electronAPI.onScanThumbnail((filePath, thumbnail) => {
+      if (thumbnailBufferRef.current[filePath] === undefined) {
+        thumbnailBufferCountRef.current++;
+      }
       thumbnailBufferRef.current[filePath] = thumbnail;
+      if (thumbnailBufferCountRef.current >= THUMBNAIL_FLUSH_MAX_PENDING) {
+        if (thumbnailFlushTimerRef.current !== null) {
+          window.clearTimeout(thumbnailFlushTimerRef.current);
+          thumbnailFlushTimerRef.current = null;
+        }
+        flushThumbnails();
+        return;
+      }
       scheduleThumbnailFlush();
     });
 

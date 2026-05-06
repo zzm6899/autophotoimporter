@@ -1011,7 +1011,7 @@ const DEFAULT_SETTINGS: AppSettings = {
 let faceSemaphoreSlots = 1;
 let faceSemaphoreQueue: Array<() => void> = [];
 let faceActiveCount = 0;
-const FACE_CONCURRENCY_HARD_MAX = 4;
+const FACE_CONCURRENCY_HARD_MAX = 8;
 
 // Incremented on every SCAN_START so in-flight semaphore waiters from the
 // previous source can detect they've been superseded and bail out early.
@@ -1023,6 +1023,7 @@ function cancelPendingFaceJobs(): void {
   // Drain the queue — each resolve() unblocks the awaiting acquireFaceSemaphore()
   // call; the generation check inside will then throw STALE_FACE_JOB.
   const drained = faceSemaphoreQueue.splice(0);
+  faceActiveCount += drained.length;
   for (const resolve of drained) resolve();
 }
 
@@ -2897,14 +2898,14 @@ export function registerIpcHandlers(): void {
 
     const task = async (): Promise<object[]> => {
       // ── Phase 1: parallel cache lookup (no semaphore — pure disk reads) ──
+      const faceOptions = getFaceFeatureOptions();
       const cacheResults = await Promise.all(paths.map(async (filePath) => {
-        const cached = await getCachedFaceResult(filePath).catch(() => null);
+        const cached = await getCachedFaceResult(filePath, faceOptions).catch(() => null);
         return { filePath, cached };
       }));
 
       const hits: object[] = [];
       const misses: string[] = [];
-      const faceOptions = getFaceFeatureOptions();
       for (const { filePath, cached } of cacheResults) {
         if (cached) {
           const personBoxes = faceOptions.personDetection ? cached.result.personBoxes : [];
@@ -2940,9 +2941,9 @@ export function registerIpcHandlers(): void {
           throw err;
         }
         try {
-          const { boxes, personBoxes, embeddings, embeddingBoxes } = await analyzeFaces(filePath);
+          const { boxes, personBoxes, embeddings, embeddingBoxes, features } = await analyzeFaces(filePath);
           const hexEmbeddings = embeddings.map(serializeEmbedding);
-          await setCachedFaceResult(filePath, { boxes, personBoxes, embeddings, embeddingBoxes }, hexEmbeddings).catch(() => undefined);
+          await setCachedFaceResult(filePath, { boxes, personBoxes, embeddings, embeddingBoxes, features }, hexEmbeddings).catch(() => undefined);
           await new Promise<void>((resolve) => setImmediate(resolve));
           return {
             path: filePath,

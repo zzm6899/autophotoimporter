@@ -1,8 +1,8 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import type { MediaFile } from '../../shared/types';
 import { formatFileSize, formatExposure } from '../utils/formatters';
 import { getCachedPreview } from '../utils/previewCache';
-import { bestShotScore, rankBestShots } from '../../shared/review';
+import { bestShotScore, rankBestShots, scoreGapConfidence } from '../../shared/review';
 
 interface BestOfSelectionPanelProps {
   files: MediaFile[];
@@ -405,18 +405,28 @@ export function BestOfSelectionPanel({
   onQueueBest,
   onRejectRest,
 }: BestOfSelectionPanelProps) {
-  const ranked = rankBestOfSelection(files).slice(0, 6);
+  const ranked = useMemo(() => rankBestOfSelection(files).slice(0, 6), [files]);
   const best = ranked[0];
   const second = ranked[1];
-  const bestScore = Math.round(rankScore(best));
-  const scoreGap = second ? Math.round(rankScore(best) - rankScore(second)) : bestScore;
-  const analyzed = files.filter((f) =>
-    typeof f.subjectSharpnessScore === 'number' ||
-    typeof f.sharpnessScore === 'number' ||
-    typeof f.reviewScore === 'number'
-  ).length;
-  const faceFiles = files.filter((f) => (f.faceCount ?? 0) > 0).length;
-  const blurRisk = files.filter((f) => f.blurRisk === 'high' || f.blurRisk === 'medium').length;
+  const bestScore = best ? Math.round(rankScore(best)) : 0;
+  const scoreGap = best && second ? Math.round(rankScore(best) - rankScore(second)) : bestScore;
+  const confidence = scoreGapConfidence(scoreGap);
+  const panelStats = useMemo(() => {
+    let analyzed = 0;
+    let faceFiles = 0;
+    let blurRisk = 0;
+    for (const f of files) {
+      if (
+        typeof f.subjectSharpnessScore === 'number' ||
+        typeof f.sharpnessScore === 'number' ||
+        typeof f.reviewScore === 'number'
+      ) analyzed++;
+      if ((f.faceCount ?? 0) > 0) faceFiles++;
+      if (f.blurRisk === 'high' || f.blurRisk === 'medium') blurRisk++;
+    }
+    return { analyzed, faceFiles, blurRisk };
+  }, [files]);
+  const { analyzed, faceFiles, blurRisk } = panelStats;
 
   const [previews, setPreviews] = useState<Map<string, string>>(() => new Map());
   const [imgNaturals, setImgNaturals] = useState<Map<string, { w: number; h: number }>>(() => new Map());
@@ -424,22 +434,33 @@ export function BestOfSelectionPanel({
 
   useEffect(() => {
     let cancelled = false;
-    for (const file of ranked) {
-      void getCachedPreview(file.path, 'preview', 'high').then((src) => {
-        if (cancelled || !src) return;
-        // Measure natural dimensions for correct face-box letterbox math
+    void Promise.all(ranked.map(async (file) => {
+      const src = await getCachedPreview(file.path, 'preview', 'high');
+      if (!src) return null;
+      const natural = await new Promise<{ w: number; h: number } | null>((resolve) => {
         const img = new Image();
-        img.onload = () => {
-          if (cancelled) return;
-          setPreviews((prev) => { const m = new Map(prev); m.set(file.path, src); return m; });
-          setImgNaturals((prev) => { const m = new Map(prev); m.set(file.path, { w: img.naturalWidth, h: img.naturalHeight }); return m; });
-        };
+        img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
+        img.onerror = () => resolve(null);
         img.src = src;
       });
-    }
+      return natural ? { path: file.path, src, natural } : null;
+    })).then((loaded) => {
+      if (cancelled) return;
+      const entries = loaded.filter((entry): entry is { path: string; src: string; natural: { w: number; h: number } } => !!entry);
+      if (entries.length === 0) return;
+      setPreviews((prev) => {
+        const next = new Map(prev);
+        for (const entry of entries) next.set(entry.path, entry.src);
+        return next;
+      });
+      setImgNaturals((prev) => {
+        const next = new Map(prev);
+        for (const entry of entries) next.set(entry.path, entry.natural);
+        return next;
+      });
+    });
     return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [files]);
+  }, [ranked]);
 
   if (!best) return null;
 
@@ -537,8 +558,8 @@ export function BestOfSelectionPanel({
             <div className="grid grid-cols-3 gap-2">
               <div className="border border-border bg-surface-alt rounded p-2">
                 <div className="text-[9px] text-text-muted uppercase">Confidence</div>
-                <div className={`text-sm font-semibold ${scoreGap >= 12 ? 'text-emerald-300' : scoreGap >= 4 ? 'text-yellow-300' : 'text-red-300'}`}>
-                  {scoreGap >= 12 ? 'High' : scoreGap >= 4 ? 'Medium' : 'Close'}
+                <div className={`text-sm font-semibold ${confidence === 'high' ? 'text-emerald-300' : confidence === 'medium' ? 'text-yellow-300' : 'text-red-300'}`}>
+                  {confidence === 'high' ? 'High' : confidence === 'medium' ? 'Medium' : 'Close'}
                 </div>
                 <div className="text-[9px] text-text-muted">gap {scoreGap}</div>
               </div>

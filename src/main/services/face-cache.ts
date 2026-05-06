@@ -25,7 +25,7 @@ import { app } from 'electron';
 import crypto from 'node:crypto';
 import type { FaceAnalysisResult, FaceBox } from './face-engine';
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const MAX_ENTRIES = 50_000;       // ~50k photos worth of cached face data
 const PRUNE_BATCH = 5_000;        // remove this many oldest entries when over the cap
 
@@ -40,6 +40,11 @@ interface CachedEntry {
   personBoxes: FaceBox[];
   embeddings: string[];  // hex-serialised, matches the IPC wire format
   embeddingBoxes?: FaceBox[];
+  features: {
+    faceMatching: boolean;
+    personDetection: boolean;
+    embeddingLimit: number;
+  };
 }
 
 let cacheDirPromise: Promise<string> | null = null;
@@ -98,12 +103,27 @@ function rememberInMemory(key: string, entry: CachedEntry): void {
 export async function getCachedFaceResult(filePath: string): Promise<{
   result: FaceAnalysisResult;
   hexEmbeddings: string[];
+} | null>;
+export async function getCachedFaceResult(
+  filePath: string,
+  requiredFeatures: { faceMatching?: boolean; personDetection?: boolean; embeddingLimit?: number },
+): Promise<{
+  result: FaceAnalysisResult;
+  hexEmbeddings: string[];
+} | null>;
+export async function getCachedFaceResult(
+  filePath: string,
+  requiredFeatures?: { faceMatching?: boolean; personDetection?: boolean; embeddingLimit?: number },
+): Promise<{
+  result: FaceAnalysisResult;
+  hexEmbeddings: string[];
 } | null> {
   const key = await cacheKeyFor(filePath);
   if (!key) return null;
 
   const memHit = inMemoryHits.get(key);
   if (memHit) {
+    if (!cacheEntryHasRequiredFeatures(memHit, requiredFeatures)) return null;
     // Refresh LRU order
     inMemoryHits.delete(key);
     inMemoryHits.set(key, memHit);
@@ -115,11 +135,30 @@ export async function getCachedFaceResult(filePath: string): Promise<{
     const raw = await readFile(file, 'utf-8');
     const entry = JSON.parse(raw) as CachedEntry;
     if (entry.v !== SCHEMA_VERSION) return null;
+    if (!cacheEntryHasRequiredFeatures(entry, requiredFeatures)) return null;
     rememberInMemory(key, entry);
     return rehydrate(entry);
   } catch {
     return null;
   }
+}
+
+function cacheEntryHasRequiredFeatures(
+  entry: CachedEntry,
+  requiredFeatures?: { faceMatching?: boolean; personDetection?: boolean; embeddingLimit?: number },
+): boolean {
+  if (!entry.features) return false;
+  if (requiredFeatures?.faceMatching && !entry.features.faceMatching) return false;
+  if (requiredFeatures?.personDetection && !entry.features.personDetection) return false;
+  if (
+    requiredFeatures?.faceMatching &&
+    requiredFeatures.embeddingLimit &&
+    entry.features.embeddingLimit < requiredFeatures.embeddingLimit &&
+    entry.embeddings.length < entry.boxes.length
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function rehydrate(entry: CachedEntry): { result: FaceAnalysisResult; hexEmbeddings: string[] } {
@@ -133,6 +172,7 @@ function rehydrate(entry: CachedEntry): { result: FaceAnalysisResult; hexEmbeddi
       personBoxes: entry.personBoxes,
       embeddings,
       embeddingBoxes: entry.embeddingBoxes ?? [],
+      features: entry.features,
     },
     hexEmbeddings: entry.embeddings,
   };
@@ -167,6 +207,11 @@ export async function setCachedFaceResult(
     personBoxes: result.personBoxes,
     embeddings: hexEmbeddings,
     embeddingBoxes: result.embeddingBoxes,
+    features: result.features ?? {
+      faceMatching: hexEmbeddings.length > 0 || result.boxes.length === 0,
+      personDetection: true,
+      embeddingLimit: hexEmbeddings.length,
+    },
   };
   rememberInMemory(key, entry);
   try {

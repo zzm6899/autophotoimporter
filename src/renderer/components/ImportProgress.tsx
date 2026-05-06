@@ -67,8 +67,8 @@ export function ImportProgress() {
         {/* Mini progress bar */}
         <div className="flex-1 h-1.5 bg-surface-raised rounded-full overflow-hidden">
           <div
-            className="h-full bg-accent rounded-full transition-[width] duration-300 ease-out"
-            style={{ width: `${percent}%` }}
+            className="h-full w-full origin-left bg-accent rounded-full transition-transform duration-300 ease-out"
+            style={{ transform: `scaleX(${percent / 100})` }}
           />
         </div>
         <span className="text-xs font-mono text-text-secondary shrink-0">{percent}%</span>
@@ -130,8 +130,8 @@ export function ImportProgress() {
         {/* Progress bar */}
         <div className="h-2 bg-surface-raised rounded-full mb-4 overflow-hidden">
           <div
-            className="h-full bg-accent rounded-full transition-[width] duration-300 ease-out"
-            style={{ width: `${percent}%` }}
+            className="h-full w-full origin-left bg-accent rounded-full transition-transform duration-300 ease-out"
+            style={{ transform: `scaleX(${percent / 100})` }}
           />
         </div>
 

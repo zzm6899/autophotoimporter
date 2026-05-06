@@ -52,6 +52,11 @@ export function useImport() {
       await window.electronAPI.cancelScan();
     }
 
+    const runId = ++latestImportRunId;
+    importStateRef.current = 'running';
+    dispatch({ type: 'IMPORT_START' });
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
     // Selection priority:
     //   1. Explicit override from a button flow.
     //   2. Click-selected files (selectedPaths).
@@ -131,9 +136,6 @@ export function useImport() {
       ...smartKeywords,
     ].filter((value, index, all) => value && all.findIndex((other) => other.toLowerCase() === value.toLowerCase()) === index);
 
-    const runId = ++latestImportRunId;
-    importStateRef.current = 'running';
-    dispatch({ type: 'IMPORT_START' });
     try {
       const config = {
         sourcePath: selectedSource,

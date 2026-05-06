@@ -100,7 +100,7 @@ export function HelpBar() {
                   <span>{thumbnailPct}%</span>
                 </div>
                 <div className="h-1.5 overflow-hidden rounded-full bg-surface-raised">
-                  <div className="h-full bg-sky-500 transition-all duration-300" style={{ width: `${thumbnailPct}%` }} />
+                  <div className="h-full w-full origin-left bg-sky-500 transition-transform duration-300" style={{ transform: `scaleX(${thumbnailPct / 100})` }} />
                 </div>
               </div>
             )}
@@ -111,7 +111,7 @@ export function HelpBar() {
                   <span>{reviewPct}%</span>
                 </div>
                 <div className="h-1.5 overflow-hidden rounded-full bg-surface-raised">
-                  <div className="h-full bg-violet-500 transition-all duration-300" style={{ width: `${reviewPct}%` }} />
+                  <div className="h-full w-full origin-left bg-violet-500 transition-transform duration-300" style={{ transform: `scaleX(${reviewPct / 100})` }} />
                 </div>
               </div>
             )}

@@ -251,6 +251,10 @@ export interface AutoCullDecision {
   reasons: Record<string, string[]>;
 }
 
+export function scoreGapConfidence(gap: number): AutoCullDecision['confidence'] {
+  return gap >= 72 ? 'high' : gap >= 28 ? 'medium' : 'low';
+}
+
 export interface AutoCullOptions {
   confidence?: CullConfidence;
   groupPhotoEveryoneGood?: boolean;
@@ -359,7 +363,7 @@ export function autoCullGroup(files: MediaFile[], options: AutoCullOptions = {})
     best,
     keep: [...keep],
     reject: [...reject],
-    confidence: gap >= 72 ? 'high' : gap >= 28 ? 'medium' : 'low',
+    confidence: scoreGapConfidence(gap),
     reasons,
   };
 }

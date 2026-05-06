@@ -97,6 +97,12 @@ export interface FaceAnalysisResult {
   embeddings: Float32Array[];
   /** Face boxes corresponding 1:1 with embeddings. */
   embeddingBoxes?: FaceBox[];
+  /** Feature stages that were actually completed for this result. */
+  features?: {
+    faceMatching: boolean;
+    personDetection: boolean;
+    embeddingLimit: number;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -205,10 +211,11 @@ export function configureFaceFeatureOptions(options: { faceMatching?: boolean; p
   if (changed && sessionLoadPromise) void disposeFaceEngine().catch(() => undefined);
 }
 
-export function getFaceFeatureOptions(): { faceMatching: boolean; personDetection: boolean } {
+export function getFaceFeatureOptions(): { faceMatching: boolean; personDetection: boolean; embeddingLimit: number } {
   return {
     faceMatching: faceMatchingEnabled,
     personDetection: personDetectionEnabled,
+    embeddingLimit: faceEmbeddingLimit,
   };
 }
 
@@ -647,6 +654,20 @@ interface RawBox {
   x1: number; y1: number; x2: number; y2: number; score: number;
 }
 
+function clamp01(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(1, value));
+}
+
+function normalizeRawBox(box: RawBox, minSize = 0.001): RawBox | null {
+  const x1 = clamp01(Math.min(box.x1, box.x2));
+  const y1 = clamp01(Math.min(box.y1, box.y2));
+  const x2 = clamp01(Math.max(box.x1, box.x2));
+  const y2 = clamp01(Math.max(box.y1, box.y2));
+  if (x2 - x1 < minSize || y2 - y1 < minSize) return null;
+  return { x1, y1, x2, y2, score: clamp01(box.score) };
+}
+
 function iou(a: RawBox, b: RawBox): number {
   const ix1 = Math.max(a.x1, b.x1);
   const iy1 = Math.max(a.y1, b.y1);
@@ -728,7 +749,8 @@ async function detectFaces(imagePath: string, cachedImg?: Electron.NativeImage):
     const y1 = boxes[i * 4 + 1];
     const x2 = boxes[i * 4 + 2];
     const y2 = boxes[i * 4 + 3];
-    raw.push({ x1, y1, x2, y2, score: faceProb });
+    const normalized = normalizeRawBox({ x1, y1, x2, y2, score: faceProb }, 0.0015);
+    if (normalized) raw.push(normalized);
   }
 
   return nms(raw).map((b) => ({
@@ -781,14 +803,15 @@ async function detectPersons(imagePath: string, cachedImg?: Electron.NativeImage
     const left = boxes[i * 4 + 1];
     const bottom = boxes[i * 4 + 2];
     const right = boxes[i * 4 + 3];
-    raw.push({ x1: left, y1: top, x2: right, y2: bottom, score });
+    const normalized = normalizeRawBox({ x1: left, y1: top, x2: right, y2: bottom, score }, 0.006);
+    if (normalized) raw.push(normalized);
   }
 
   return nms(raw).map((b) => ({
-    x: Math.max(0, b.x1),
-    y: Math.max(0, b.y1),
-    width: Math.max(0, b.x2 - b.x1),
-    height: Math.max(0, b.y2 - b.y1),
+    x: b.x1,
+    y: b.y1,
+    width: b.x2 - b.x1,
+    height: b.y2 - b.y1,
     score: b.score,
   }));
 }
@@ -811,10 +834,17 @@ async function embedFace(imagePath: string, box: FaceBox, cachedImg?: Electron.N
   const { width: imgW, height: imgH } = img.getSize();
 
   // Convert normalised box → pixel coords (clamped)
-  const cropX = Math.max(0, Math.round(box.x * imgW));
-  const cropY = Math.max(0, Math.round(box.y * imgH));
-  const cropW = Math.min(imgW - cropX, Math.round(box.width  * imgW));
-  const cropH = Math.min(imgH - cropY, Math.round(box.height * imgH));
+  const padX = box.width * 0.12;
+  const padY = box.height * 0.16;
+  const left = clamp01(box.x - padX);
+  const top = clamp01(box.y - padY);
+  const right = clamp01(box.x + box.width + padX);
+  const bottom = clamp01(box.y + box.height + padY);
+  const cropX = Math.max(0, Math.round(left * imgW));
+  const cropY = Math.max(0, Math.round(top * imgH));
+  const cropW = Math.min(imgW - cropX, Math.max(1, Math.round((right - left) * imgW)));
+  const cropH = Math.min(imgH - cropY, Math.max(1, Math.round((bottom - top) * imgH)));
+  if (cropW < 2 || cropH < 2) throw new Error('Invalid face crop');
 
   img = img.crop({ x: cropX, y: cropY, width: cropW, height: cropH });
   img = img.resize({ width: EMBED_W, height: EMBED_H });
@@ -899,6 +929,7 @@ async function _analyzeFacesInner(imagePath: string): Promise<FaceAnalysisResult
   const shouldRunPerson = personDetectionEnabled && (
     !highThroughputFaceMode ||
     boxes.length === 0 ||
+    boxes.length >= 2 ||
     boxes.length === 1 && (boxes[0].width * boxes[0].height) < 0.012
   );
   personBoxes = shouldRunPerson
@@ -925,12 +956,24 @@ async function _analyzeFacesInner(imagePath: string): Promise<FaceAnalysisResult
 
   if (boxes.length === 0) {
     finishStats(0);
-    return { boxes, personBoxes, embeddings: [], embeddingBoxes: [] };
+    return {
+      boxes,
+      personBoxes,
+      embeddings: [],
+      embeddingBoxes: [],
+      features: { faceMatching: faceMatchingEnabled, personDetection: shouldRunPerson, embeddingLimit: faceEmbeddingLimit },
+    };
   }
 
   if (!faceMatchingEnabled) {
     finishStats(0);
-    return { boxes, personBoxes, embeddings: [], embeddingBoxes: [] };
+    return {
+      boxes,
+      personBoxes,
+      embeddings: [],
+      embeddingBoxes: [],
+      features: { faceMatching: false, personDetection: shouldRunPerson, embeddingLimit: 0 },
+    };
   }
 
   // Embed detected faces with a cap that scales up on fast GPU/concurrency
@@ -954,7 +997,13 @@ async function _analyzeFacesInner(imagePath: string): Promise<FaceAnalysisResult
 
   // Return ALL detected boxes so every face is visible in the UI. Embeddings
   // may be shorter when the per-image cap is hit.
-  return { boxes, personBoxes, embeddings, embeddingBoxes };
+  return {
+    boxes,
+    personBoxes,
+    embeddings,
+    embeddingBoxes,
+    features: { faceMatching: true, personDetection: shouldRunPerson, embeddingLimit: faceEmbeddingLimit },
+  };
 }
 
 /**

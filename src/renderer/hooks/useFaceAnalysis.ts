@@ -49,9 +49,18 @@ interface UseFaceAnalysisReturn {
   cancel: () => void;
 }
 
-const BATCH_SIZE = 1; // one at a time — face analysis is CPU-heavy (~1–4s each) and
-                      // running multiple in parallel blocks the main process event loop,
-                      // causing the UI to freeze. Sequential keeps the app responsive.
+function resolveBatchSize(): number {
+  // Renderer can safely pipeline multiple IPC calls because the main process
+  // applies its own semaphore cap. This lets high-end systems stay saturated
+  // while low-end devices remain conservative.
+  const cores = Math.max(1, Math.floor((navigator.hardwareConcurrency || 4)));
+  const nav = navigator as Navigator & { deviceMemory?: number };
+  const mem = typeof nav.deviceMemory === 'number' ? nav.deviceMemory : 4;
+
+  if (cores <= 4 || mem <= 4) return 1;
+  if (cores <= 8 || mem <= 8) return 2;
+  return 4;
+}
 
 export function useFaceAnalysis(): UseFaceAnalysisReturn {
   const [modelsAvailable, setModelsAvailable] = useState<boolean | null>(null);
@@ -65,6 +74,7 @@ export function useFaceAnalysis(): UseFaceAnalysisReturn {
   const cancel = useCallback(() => {
     cancelledRef.current = true;
     stateRef.current = 'cancelled';
+    void window.electronAPI.cancelFaceAnalysis?.().catch(() => undefined);
   }, []);
 
   const analyze = useCallback(async (paths: string[]) => {
@@ -155,12 +165,14 @@ export function useFaceAnalysis(): UseFaceAnalysisReturn {
     };
 
     let done = 0;
+    const batchSize = resolveBatchSize();
     try {
-      for (let i = 0; i < photoPaths.length; i += BATCH_SIZE) {
+      for (let i = 0; i < photoPaths.length; i += batchSize) {
         if (cancelledRef.current) break;
 
-        const batch = photoPaths.slice(i, i + BATCH_SIZE);
+        const batch = photoPaths.slice(i, i + batchSize);
         const batchResults = await window.electronAPI.analyzeFaces(batch);
+        if (cancelledRef.current) break;
 
         for (const r of batchResults) {
           accumulated.push({
@@ -174,6 +186,11 @@ export function useFaceAnalysis(): UseFaceAnalysisReturn {
 
         done += batch.length;
         setProcessedCount(done);
+
+        // Give React and input handlers a tiny window on large batches.
+        if (done % (batchSize * 2) === 0) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        }
 
         if (accumulated.length >= FLUSH_EVERY) flush();
       }
@@ -208,21 +225,24 @@ export function clusterFaces(
 ): Map<string, string> {
   const groups = new Map<string, string>(); // path → groupId (representative path)
 
-  type Entry = { path: string; embedding: Float32Array };
-  const reps: Entry[] = []; // one representative per cluster
+  type Entry = { path: string; embeddings: Float32Array[] };
+  const reps: Entry[] = []; // one representative set per cluster
 
   for (const [filePath, result] of results) {
     if (result.faceCount === 0 || result.embeddings.length === 0) continue;
 
-    // Use the first (highest-confidence) face embedding as the photo's identity
-    const embedding = deserializeEmbedding(result.embeddings[0]);
+    const embeddings = result.embeddings
+      .slice(0, 3)
+      .map((hex) => deserializeEmbedding(hex))
+      .filter((embedding) => embedding.length > 0);
+    if (embeddings.length === 0) continue;
 
     // Find the closest existing cluster representative
     let bestGroup: string | null = null;
     let bestSim = SAME_FACE_THRESHOLD;
 
     for (const rep of reps) {
-      const sim = cosineSimilarity(embedding, rep.embedding);
+      const sim = sharedFaceSimilarity(embeddings, rep.embeddings);
       if (sim > bestSim) {
         bestSim = sim;
         bestGroup = rep.path;
@@ -233,12 +253,35 @@ export function clusterFaces(
       groups.set(filePath, bestGroup);
     } else {
       // Start a new cluster with this image as representative
-      reps.push({ path: filePath, embedding });
+      reps.push({ path: filePath, embeddings });
       groups.set(filePath, filePath);
     }
   }
 
   return groups;
+}
+
+function averageBestSimilarity(aEmbeddings: Float32Array[], bEmbeddings: Float32Array[]): number {
+  if (aEmbeddings.length === 0 || bEmbeddings.length === 0) return 0;
+  let sum = 0;
+  for (const a of aEmbeddings) {
+    let best = 0;
+    for (const b of bEmbeddings) {
+      best = Math.max(best, cosineSimilarity(a, b));
+    }
+    sum += best;
+  }
+  return sum / aEmbeddings.length;
+}
+
+function sharedFaceSimilarity(aEmbeddings: Float32Array[], bEmbeddings: Float32Array[]): number {
+  if (aEmbeddings.length === 0 || bEmbeddings.length === 0) return 0;
+  // For group photos, a single shared person should be enough to connect a
+  // solo image to the group; averaging only one direction penalizes extra faces.
+  return Math.max(
+    averageBestSimilarity(aEmbeddings, bEmbeddings),
+    averageBestSimilarity(bEmbeddings, aEmbeddings),
+  );
 }
 
 function cosineSimilarity(a: Float32Array, b: Float32Array): number {
@@ -253,9 +296,13 @@ function cosineSimilarity(a: Float32Array, b: Float32Array): number {
  * Mirrors serializeEmbedding() in face-engine.ts.
  */
 export function deserializeEmbedding(hex: string): Float32Array {
+  if (!hex || hex.length % 2 !== 0) return new Float32Array();
   const bytes = new Uint8Array(hex.length / 2);
+  if (bytes.byteLength % 4 !== 0) return new Float32Array();
   for (let i = 0; i < bytes.length; i++) {
-    bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+    const value = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+    if (Number.isNaN(value)) return new Float32Array();
+    bytes[i] = value;
   }
   return new Float32Array(bytes.buffer);
 }
