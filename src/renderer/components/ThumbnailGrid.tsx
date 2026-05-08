@@ -21,6 +21,25 @@ import { clampStops, getEffectiveExposureStops, getNormalizedExposureStops, norm
 import { buildFaceIdentityGroups, cosineSimilarity, deserializeEmbedding, FACE_GROUP_EMBEDDING_THRESHOLD, faceSignalConfidence, humanMomentQuality, type FaceIdentityGroup } from '../../shared/review';
 import { needsSecondPass } from '../../shared/review-lane';
 
+const SIMPLE_FILTERS = new Set<string>([
+  'all',
+  'unmarked',
+  'picked',
+  'rejected',
+  'queue',
+  'protected',
+  'unrated',
+  'duplicates',
+  'best',
+  'photos',
+  'videos',
+  'raw',
+]);
+
+function isSimpleFilterMode(filter: FilterMode): boolean {
+  return SIMPLE_FILTERS.has(filter) || filter.startsWith('rating-');
+}
+
 // ── Laplacian sharpness-based subject detector ────────────────────────────
 // Uses focus sharpness (Laplacian variance) instead of colour/skin tone so it
 // works for helmeted fighters, animals, objects — anything that is in-focus.
@@ -1917,7 +1936,8 @@ async function visualHash(src: string): Promise<string> {
 }
 
 export function ThumbnailGrid() {
-  const { phase, selectedSource, scanError, focusedIndex, focusedPath, viewMode, filter, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, exposureAdjustmentStep, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused, fastKeeperMode, autoSpeedMode, faceConcurrency, gpuFaceAcceleration, reviewFaceAnalysis, reviewFaceMatching, reviewPersonDetection, reviewVisualDuplicates, keybinds, metadataKeywords, whiteBalanceTemperature, whiteBalanceTint, destination, skipDuplicates, licenseStatus, ftpDestEnabled, ftpDestConfig } = useAppState();
+  const { phase, selectedSource, scanError, focusedIndex, focusedPath, viewMode, filter, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, exposureAdjustmentStep, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused, fastKeeperMode, autoSpeedMode, faceConcurrency, gpuFaceAcceleration, reviewFaceAnalysis, reviewFaceMatching, reviewPersonDetection, reviewVisualDuplicates, keybinds, metadataKeywords, whiteBalanceTemperature, whiteBalanceTint, destination, skipDuplicates, licenseStatus, ftpDestEnabled, ftpDestConfig, experienceMode } = useAppState();
+  const isPro = experienceMode === 'pro';
   // useMergedFiles() overlays face/review scores without re-running the full
   // reducer map — O(n) only when scores.size > 0, otherwise returns the same array.
   const files = useMergedFiles();
@@ -1969,6 +1989,18 @@ export function ThumbnailGrid() {
   const [faceThresholdOverrides, setFaceThresholdOverrides] = useState<Record<string, number>>({});
   const [reviewSprintMode, setReviewSprintMode] = useState(false);
   const [flatGridWidth, setFlatGridWidth] = useState(0);
+  useEffect(() => {
+    if (isPro) return;
+    if (!isSimpleFilterMode(filter)) {
+      dispatch({ type: 'SET_FILTER', filter: 'all' });
+    }
+    if (viewMode === 'compare') {
+      dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' });
+    }
+    setShowAdvancedTools(false);
+    setShowAiReviewStrip(false);
+    setGroupByFolder(false);
+  }, [dispatch, filter, isPro, viewMode]);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const toolbarDragState = useRef<{ startMouseX: number; startMouseY: number; startLeft: number; startTop: number } | null>(null);
   const lastClickedPathRef = useRef<string | null>(null);
@@ -5062,7 +5094,7 @@ export function ThumbnailGrid() {
           >
             Best
           </ActionButton>
-          {reviewStats.groupPhotos > 0 && (
+          {isPro && reviewStats.groupPhotos > 0 && (
             <ActionButton
               icon={Users}
               tone={filter === 'group-photos' ? 'primary' : 'neutral'}
@@ -5077,6 +5109,7 @@ export function ThumbnailGrid() {
           )}
         </ToolbarGroup>
 
+        {isPro && (
         <ToolbarGroup>
           <ActionButton
             icon={MoreHorizontal}
@@ -5102,11 +5135,12 @@ export function ThumbnailGrid() {
             </ActionButton>
           )}
         </ToolbarGroup>
+        )}
 
         <span className="shrink-0 text-[10px] text-text-faint">
-          Ctrl/Cmd+K for all commands
+          {isPro ? 'Ctrl/Cmd+K for all commands' : 'Simple mode'}
         </span>
-        {totalPhotoCount > 0 && (
+        {isPro && totalPhotoCount > 0 && (
           <button
             type="button"
             onClick={() => setShowAiReviewStrip((value) => !value)}
@@ -5120,7 +5154,7 @@ export function ThumbnailGrid() {
             AI {reviewStats.analyzed}/{reviewStats.total}{aiOverview.faceScanEta ? ` ETA ${aiOverview.faceScanEta.label}` : ''}
           </button>
         )}
-        {totalPhotoCount > 0 && (
+        {isPro && totalPhotoCount > 0 && (
           <button
             type="button"
             onClick={handleAutoSpeedToggle}
@@ -5458,15 +5492,15 @@ export function ThumbnailGrid() {
                 <option value="protected">Protected</option>
                 <option value="unrated">Unrated</option>
                 <option value="duplicates">Duplicates</option>
-                <option value="catalog-duplicates">Catalog matches</option>
                 <option value="best">Best shots</option>
-                <option value="faces">Faces detected</option>
-                <option value="face-groups">Face groups</option>
-                <option value="face-gallery">Face gallery</option>
-                <option value="group-photos">Group photos</option>
-                <option value="blur-risk">Blur risk</option>
-                <option value="near-duplicates">Similar photos</option>
-                <option value="review-needed">Second pass</option>
+                {isPro && <option value="catalog-duplicates">Catalog matches</option>}
+                {isPro && <option value="faces">Faces detected</option>}
+                {isPro && <option value="face-groups">Face groups</option>}
+                {isPro && <option value="face-gallery">Face gallery</option>}
+                {isPro && <option value="group-photos">Group photos</option>}
+                {isPro && <option value="blur-risk">Blur risk</option>}
+                {isPro && <option value="near-duplicates">Similar photos</option>}
+                {isPro && <option value="review-needed">Second pass</option>}
               </optgroup>
               <optgroup label="Type">
                 <option value="photos">Photos only</option>
@@ -5480,27 +5514,27 @@ export function ThumbnailGrid() {
                 <option value="rating-2">★★ and up</option>
                 <option value="rating-1">★ and up</option>
               </optgroup>
-              {metadataFilters.cameras.length > 1 && (
+              {isPro && metadataFilters.cameras.length > 1 && (
                 <optgroup label="Camera">
                   {metadataFilters.cameras.map((v) => <option key={v} value={`camera:${encodeURIComponent(v)}`}>{v}</option>)}
                 </optgroup>
               )}
-              {metadataFilters.lenses.length > 1 && (
+              {isPro && metadataFilters.lenses.length > 1 && (
                 <optgroup label="Lens">
                   {metadataFilters.lenses.map((v) => <option key={v} value={`lens:${encodeURIComponent(v)}`}>{v}</option>)}
                 </optgroup>
               )}
-              {metadataFilters.dates.length > 0 && (
+              {isPro && metadataFilters.dates.length > 0 && (
                 <optgroup label="Date">
                   {metadataFilters.dates.map((v) => <option key={v} value={`date:${encodeURIComponent(v)}`}>{v}</option>)}
                 </optgroup>
               )}
-              {metadataFilters.scenes.length > 0 && (
+              {isPro && metadataFilters.scenes.length > 0 && (
                 <optgroup label="Scene">
                   {metadataFilters.scenes.map((v) => <option key={v} value={`scene:${encodeURIComponent(v)}`}>{v}</option>)}
                 </optgroup>
               )}
-              {metadataFilters.exts.length > 1 && (
+              {isPro && metadataFilters.exts.length > 1 && (
                 <optgroup label="File type">
                   {metadataFilters.exts.map((v) => <option key={v} value={`ext:${encodeURIComponent(v)}`}>{v}</option>)}
                 </optgroup>
@@ -5531,22 +5565,26 @@ export function ThumbnailGrid() {
           <button onClick={() => { dispatch({ type: 'SET_VIEW_MODE', mode: 'single' }); if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0); }} className={`p-0.5 rounded transition-colors ${viewMode === 'single' ? 'text-text bg-surface-raised' : 'text-text-muted hover:text-text'}`} title="Detail view (double-click a photo)">
             <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M1 4.75C1 3.784 1.784 3 2.75 3h14.5c.966 0 1.75.784 1.75 1.75v10.515a1.75 1.75 0 01-1.75 1.75H2.75A1.75 1.75 0 011 15.265V4.75zm1.5 0a.25.25 0 01.25-.25h14.5a.25.25 0 01.25.25v10.515a.25.25 0 01-.25.25H2.75a.25.25 0 01-.25-.25V4.75z" clipRule="evenodd" /></svg>
           </button>
-          <button onClick={() => { dispatch({ type: 'SET_VIEW_MODE', mode: 'compare' }); if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0); }} className={`p-0.5 rounded transition-colors ${viewMode === 'compare' ? 'text-text bg-surface-raised' : 'text-text-muted hover:text-text'}`} title="Compare view (select 2+ photos, shows up to 4 at once)">
-            <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path d="M2 4.5A2.5 2.5 0 014.5 2h4A2.5 2.5 0 0111 4.5v11A2.5 2.5 0 018.5 18h-4A2.5 2.5 0 012 15.5v-11zM12 4.5A2.5 2.5 0 0114.5 2h1A2.5 2.5 0 0118 4.5v11a2.5 2.5 0 01-2.5 2.5h-1a2.5 2.5 0 01-2.5-2.5v-11z" /></svg>
-          </button>
-          <button
-            onClick={() => {
-              setGroupByFolder((v) => !v);
-              // Switch back to grid view if we're not already there
-              if (viewMode !== 'grid') dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' });
-            }}
-            className={`p-0.5 rounded transition-colors ${groupByFolder ? 'text-text bg-surface-raised' : 'text-text-muted hover:text-text'}`}
-            title="Folder view — group files by directory, ranked by ★ rating"
-          >
-            <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
-              <path fillRule="evenodd" d="M2 6a2 2 0 012-2h4l2 2h4a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" clipRule="evenodd" />
-            </svg>
-          </button>
+          {isPro && (
+            <>
+              <button onClick={() => { dispatch({ type: 'SET_VIEW_MODE', mode: 'compare' }); if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0); }} className={`p-0.5 rounded transition-colors ${viewMode === 'compare' ? 'text-text bg-surface-raised' : 'text-text-muted hover:text-text'}`} title="Compare view (select 2+ photos, shows up to 4 at once)">
+                <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path d="M2 4.5A2.5 2.5 0 014.5 2h4A2.5 2.5 0 0111 4.5v11A2.5 2.5 0 018.5 18h-4A2.5 2.5 0 012 15.5v-11zM12 4.5A2.5 2.5 0 0114.5 2h1A2.5 2.5 0 0118 4.5v11a2.5 2.5 0 01-2.5 2.5h-1a2.5 2.5 0 01-2.5-2.5v-11z" /></svg>
+              </button>
+              <button
+                onClick={() => {
+                  setGroupByFolder((v) => !v);
+                  // Switch back to grid view if we're not already there
+                  if (viewMode !== 'grid') dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' });
+                }}
+                className={`p-0.5 rounded transition-colors ${groupByFolder ? 'text-text bg-surface-raised' : 'text-text-muted hover:text-text'}`}
+                title="Folder view - group files by directory, ranked by star rating"
+              >
+                <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M2 6a2 2 0 012-2h4l2 2h4a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" clipRule="evenodd" />
+                </svg>
+              </button>
+            </>
+          )}
         </div>
 
       </div>

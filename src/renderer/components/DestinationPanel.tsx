@@ -171,9 +171,11 @@ export function DestinationPanel() {
     reviewFaceAnalysis, reviewFaceMatching, reviewPersonDetection, reviewVisualDuplicates,
     fastKeeperMode, autoSpeedMode,
     licenseStatus,
+    experienceMode,
   } = useAppState();
   const dispatch = useAppDispatch();
   const { startImport } = useImport();
+  const isPro = experienceMode === 'pro';
   const [freeBytes, setFreeBytes] = useState<number | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showTransforms, setShowTransforms] = useState(false);
@@ -190,6 +192,12 @@ export function DestinationPanel() {
   useEffect(() => {
     void window.electronAPI.getSettings().then((s) => setJobPresets(s.jobPresets ?? []));
   }, []);
+
+  useEffect(() => {
+    if (!isPro && outputMode !== 'import') {
+      setOutputMode('import');
+    }
+  }, [isPro, outputMode]);
 
   const handleChooseDestination = async () => {
     const folder = await window.electronAPI.selectFolder('Select Destination Folder');
@@ -432,6 +440,26 @@ export function DestinationPanel() {
     (watermarkMode === 'image' && watermarkImagePath.trim()) ||
     (watermarkMode !== 'image' && watermarkText.trim())
   );
+  const effectiveBackupDestRoot = isPro ? backupDestRoot : '';
+  const effectiveFtpDestEnabled = isPro && ftpDestEnabled;
+  const effectiveVerifyChecksums = isPro && verifyChecksums;
+  const effectiveMetadataExport = isPro ? metadataExport : FAST_RAW_METADATA_EXPORT;
+  const effectiveHasRenderableWatermark = isPro && hasRenderableWatermark;
+  const effectiveAutoStraighten = isPro && autoStraighten;
+  const effectiveHasWhiteBalance = isPro && hasWhiteBalance;
+  const proOnlySettingsActive = !isPro && Boolean(
+    backupDestRoot ||
+    ftpDestEnabled ||
+    verifyChecksums ||
+    metadataKeywords.trim() ||
+    metadataTitle.trim() ||
+    metadataCaption.trim() ||
+    metadataCreator.trim() ||
+    metadataCopyright.trim() ||
+    hasRenderableWatermark ||
+    autoStraighten ||
+    hasWhiteBalance
+  );
 
   // Selection priority mirrors `useImport.ts`:
   //   1. Explicit import override (used by Import Visible)
@@ -468,12 +496,12 @@ export function DestinationPanel() {
       selectedPaths: importFiles.map((file) => file.path),
       separateProtected,
       protectedFolderName,
-      backupDestRoot: backupDestRoot || undefined,
-      ftpDestEnabled,
-      ftpDestConfig: ftpDestEnabled ? ftpDestConfig : undefined,
-      verifyChecksums,
-      metadataExportFlags: metadataExport,
-      metadata: metadataKeywords.trim() || metadataTitle.trim() || metadataCaption.trim() || metadataCreator.trim() || metadataCopyright.trim()
+      backupDestRoot: effectiveBackupDestRoot || undefined,
+      ftpDestEnabled: effectiveFtpDestEnabled,
+      ftpDestConfig: effectiveFtpDestEnabled ? ftpDestConfig : undefined,
+      verifyChecksums: effectiveVerifyChecksums,
+      metadataExportFlags: effectiveMetadataExport,
+      metadata: isPro && (metadataKeywords.trim() || metadataTitle.trim() || metadataCaption.trim() || metadataCreator.trim() || metadataCopyright.trim())
         ? {
             keywords: metadataKeywords.split(/[\n,;]+/).map((value) => value.trim()).filter(Boolean),
             title: metadataTitle.trim() || undefined,
@@ -482,7 +510,7 @@ export function DestinationPanel() {
             copyright: metadataCopyright.trim() || undefined,
           }
         : undefined,
-      watermark: hasRenderableWatermark
+      watermark: effectiveHasRenderableWatermark
         ? {
             enabled: true,
             mode: watermarkMode,
@@ -494,8 +522,8 @@ export function DestinationPanel() {
             scale: watermarkScale,
           }
         : undefined,
-      autoStraighten,
-      whiteBalance: hasWhiteBalance
+      autoStraighten: effectiveAutoStraighten,
+      whiteBalance: effectiveHasWhiteBalance
         ? {
             temperature: wbTemperature,
             tint: wbTint,
@@ -505,7 +533,7 @@ export function DestinationPanel() {
     };
   };
 
-  const ftpReady = !ftpDestEnabled || (!!ftpDestConfig.host && !!ftpDestConfig.remotePath);
+  const ftpReady = !effectiveFtpDestEnabled || (!!ftpDestConfig.host && !!ftpDestConfig.remotePath);
   const licenseValid = !!licenseStatus?.valid;
   const canImport = licenseValid && selectedSource && destination && ftpReady && importFiles.length > 0 && phase === 'ready';
   const totalSize = importFiles.reduce((sum, f) => sum + f.size, 0);
@@ -539,12 +567,12 @@ export function DestinationPanel() {
   const normalizeLocalPath = (value: string | null | undefined) => String(value || '').replace(/[\\/]$/, '').toLowerCase();
   const normalizedSource = normalizeLocalPath(selectedSource);
   const normalizedDestination = normalizeLocalPath(destination);
-  const normalizedBackup = normalizeLocalPath(backupDestRoot);
+  const normalizedBackup = normalizeLocalPath(effectiveBackupDestRoot);
   const backupSameAsPrimary = !!normalizedBackup && !!normalizedDestination && normalizedBackup === normalizedDestination;
   const destinationSameAsSource = !!normalizedSource && !!normalizedDestination && normalizedDestination === normalizedSource;
   const backupSameAsSource = !!normalizedSource && !!normalizedBackup && normalizedBackup === normalizedSource;
   const outputPathBlocked = backupSameAsPrimary || destinationSameAsSource || backupSameAsSource;
-  const metadataFieldLabels = [
+  const metadataFieldLabels = isPro ? [
     metadataExport.keywords !== false && (metadataCount > 0 || activeEventKeywords.length > 0) ? `keywords (${metadataCount + activeEventKeywords.length})` : null,
     metadataExport.title !== false && metadataTitle.trim() ? 'title' : null,
     metadataExport.caption !== false && metadataCaption.trim() ? 'caption' : null,
@@ -552,16 +580,16 @@ export function DestinationPanel() {
     metadataExport.copyright !== false && metadataCopyright.trim() ? 'copyright' : null,
     locationCount > 0 ? 'GPS/location' : null,
     sceneCount > 0 ? 'scene buckets' : null,
-  ].filter(Boolean) as string[];
+  ].filter(Boolean) as string[] : [];
   const importBenchmark = useMemo(() => {
     const baseSpeed = sourceSpeedMbps(sourceProfile);
     const activeSlowdowns: Array<{ label: string; multiplier: number }> = [];
-    const conversionActive = saveFormat !== 'original' || exposureEditCount > 0 || hasWhiteBalance || hasRenderableWatermark || autoStraighten;
+    const conversionActive = saveFormat !== 'original' || exposureEditCount > 0 || effectiveHasWhiteBalance || effectiveHasRenderableWatermark || effectiveAutoStraighten;
     const sidecarsActive = metadataFieldLabels.length > 0;
     if (skipDuplicates) activeSlowdowns.push({ label: 'duplicate checks', multiplier: 0.88 });
-    if (verifyChecksums) activeSlowdowns.push({ label: 'checksum verification', multiplier: 0.72 });
-    if (backupDestRoot) activeSlowdowns.push({ label: 'backup copy', multiplier: 0.55 });
-    if (ftpDestEnabled) activeSlowdowns.push({ label: 'FTP upload', multiplier: 0.45 });
+    if (effectiveVerifyChecksums) activeSlowdowns.push({ label: 'checksum verification', multiplier: 0.72 });
+    if (effectiveBackupDestRoot) activeSlowdowns.push({ label: 'backup copy', multiplier: 0.55 });
+    if (effectiveFtpDestEnabled) activeSlowdowns.push({ label: 'FTP upload', multiplier: 0.45 });
     if (conversionActive) activeSlowdowns.push({ label: saveFormat === 'original' ? 'output edits need conversion' : `${saveFormat.toUpperCase()} conversion`, multiplier: 0.34 });
     if (sidecarsActive) activeSlowdowns.push({ label: 'metadata sidecars', multiplier: 0.92 });
     const multiplier = activeSlowdowns.reduce((value, item) => value * item.multiplier, 1);
@@ -580,12 +608,13 @@ export function DestinationPanel() {
       actualSpeed,
     };
   }, [
-    autoStraighten,
-    backupDestRoot,
+    effectiveAutoStraighten,
+    effectiveBackupDestRoot,
+    effectiveFtpDestEnabled,
+    effectiveHasRenderableWatermark,
+    effectiveHasWhiteBalance,
+    effectiveVerifyChecksums,
     exposureEditCount,
-    ftpDestEnabled,
-    hasRenderableWatermark,
-    hasWhiteBalance,
     importFiles.length,
     importResult,
     metadataFieldLabels.length,
@@ -593,7 +622,6 @@ export function DestinationPanel() {
     skipDuplicates,
     sourceProfile,
     totalSize,
-    verifyChecksums,
   ]);
 
   const activeSpeedProfileId: SpeedProfileId = fastKeeperMode || !reviewFaceAnalysis
@@ -735,6 +763,13 @@ export function DestinationPanel() {
     }
     return values;
   }, [destination, jobPresets]);
+  const outputModes: Array<readonly [OutputPanelMode, string]> = isPro
+    ? [
+        ['import', 'Import'],
+        ['speed', 'Speed'],
+        ['rules', 'Rules'],
+      ]
+    : [['import', 'Import']];
 
   return (
     <div className="flex flex-col h-full">
@@ -768,8 +803,8 @@ export function DestinationPanel() {
             duplicateCount={duplicateCount}
             protectedCount={protectedCount}
             folderCount={folders.length}
-            backupEnabled={!!backupDestRoot}
-            checksumEnabled={verifyChecksums}
+            backupEnabled={!!effectiveBackupDestRoot}
+            checksumEnabled={effectiveVerifyChecksums}
             metadataEnabled={metadataFieldLabels.length > 0}
             freeBytes={freeBytes}
             insufficientSpace={insufficientSpace}
@@ -779,12 +814,8 @@ export function DestinationPanel() {
       )}
 
       <div className="px-2.5 mb-2.5">
-        <div className="grid grid-cols-3 gap-1 rounded-md border border-border bg-surface p-1">
-          {([
-            ['import', 'Import'],
-            ['speed', 'Speed'],
-            ['rules', 'Rules'],
-          ] as const).map(([mode, label]) => (
+        <div className={`grid gap-1 rounded-md border border-border bg-surface p-1 ${isPro ? 'grid-cols-3' : 'grid-cols-1'}`}>
+          {outputModes.map(([mode, label]) => (
             <button
               key={mode}
               type="button"
@@ -806,6 +837,30 @@ export function DestinationPanel() {
             </button>
           ))}
         </div>
+        {!isPro && (
+          <div className="mt-2 rounded border border-border bg-surface-alt px-2 py-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[10px] text-text-muted">
+                Simple uses local source, duplicate check, format, destination, and import check only.
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  dispatch({ type: 'SET_EXPERIENCE_MODE', mode: 'pro' });
+                  void window.electronAPI.setSettings({ experienceMode: 'pro' });
+                }}
+                className="shrink-0 rounded bg-surface-raised px-2 py-1 text-[10px] text-text-secondary hover:bg-border"
+              >
+                Pro
+              </button>
+            </div>
+            {proOnlySettingsActive && (
+              <p className="mt-1 text-[10px] text-yellow-300">
+                Pro-only output settings are parked while Simple is active.
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
       {outputMode === 'rules' && (
@@ -855,7 +910,7 @@ export function DestinationPanel() {
         </div>
       )}
 
-      {outputMode === 'import' && files.length > 0 && (
+      {isPro && outputMode === 'import' && files.length > 0 && (
         <div className="px-2.5 mb-2.5">
           <div className={`rounded border px-2 py-2 ${
             secondPassFiles.length > 0
@@ -977,7 +1032,7 @@ export function DestinationPanel() {
         </div>
       )}
 
-      {outputMode === 'speed' && (
+      {isPro && outputMode === 'speed' && (
         <div className="px-2.5 mb-2.5">
           <div className="rounded border border-border bg-surface-alt px-2 py-2">
             <div className="mb-1.5 flex items-center justify-between gap-2">
@@ -1169,7 +1224,7 @@ export function DestinationPanel() {
       )}
 
       {/* Output edits */}
-      {outputMode === 'import' && (
+      {isPro && outputMode === 'import' && (
       <div className="px-2.5 mb-2.5">
         <button
           type="button"
@@ -1444,10 +1499,10 @@ export function DestinationPanel() {
             {exposureEditCount > 0 && saveFormat === 'original' && (
               <div className="text-[10px] text-yellow-500">Exposure edits need JPEG/TIFF/HEIC output.</div>
             )}
-            {(hasRenderableWatermark || autoStraighten) && saveFormat === 'original' && (
+            {(effectiveHasRenderableWatermark || effectiveAutoStraighten) && saveFormat === 'original' && (
               <div className="text-[10px] text-yellow-500">Watermark and auto-straighten need JPEG/TIFF/HEIC output.</div>
             )}
-            {hasWhiteBalance && saveFormat === 'original' && (
+            {effectiveHasWhiteBalance && saveFormat === 'original' && (
               <div className="text-[10px] text-yellow-500">White balance needs JPEG/TIFF/HEIC output.</div>
             )}
             {backupSameAsPrimary && (
@@ -1459,13 +1514,13 @@ export function DestinationPanel() {
             {backupSameAsSource && (
               <div className="text-[10px] text-red-400">Backup destination matches source. Choose a different backup folder.</div>
             )}
-            {backupDestRoot && !backupSameAsPrimary && (
+            {effectiveBackupDestRoot && !backupSameAsPrimary && (
               <div className="text-[10px] text-emerald-500">Backup copy enabled for this import.</div>
             )}
-            {ftpDestEnabled && !ftpReady && (
+            {effectiveFtpDestEnabled && !ftpReady && (
               <div className="text-[10px] text-red-400">FTP output needs host and remote folder.</div>
             )}
-            {ftpDestEnabled && ftpReady && (
+            {effectiveFtpDestEnabled && ftpReady && (
               <div className="text-[10px] text-emerald-500">FTP upload enabled.</div>
             )}
             {queuedRejectedCount > 0 && (
@@ -1488,31 +1543,31 @@ export function DestinationPanel() {
             {skipDuplicates && duplicateCount > 0 && (
               <span className="text-yellow-500/70"> &middot; {duplicateCount} already imported</span>
             )}
-            {(metadataCount > 0 || metadataTitle.trim() || metadataCaption.trim()) && (
+            {isPro && (metadataCount > 0 || metadataTitle.trim() || metadataCaption.trim()) && (
               <span className="text-sky-300/80"> &middot; metadata</span>
             )}
-            {eventMode !== 'general' && (
+            {isPro && eventMode !== 'general' && (
               <span className="text-violet-300/80"> &middot; {activeEventMode.label}</span>
             )}
-            {sceneCount > 0 && (
+            {isPro && sceneCount > 0 && (
               <span className="text-blue-300/80" title={sceneLabels.join(', ')}> &middot; Scene groups: {sceneSummary}</span>
             )}
-            {locationCount > 0 && (
+            {isPro && locationCount > 0 && (
               <span className="text-cyan-300/80"> &middot; GPS tags</span>
             )}
-            {hasRenderableWatermark && saveFormat !== 'original' && (
+            {effectiveHasRenderableWatermark && saveFormat !== 'original' && (
               <span className="text-orange-300/80"> &middot; watermark</span>
             )}
-            {autoStraighten && saveFormat !== 'original' && (
+            {effectiveAutoStraighten && saveFormat !== 'original' && (
               <span className="text-emerald-300/80"> &middot; upright</span>
             )}
             {importScopePriorityNotice && (
               <div className="mt-1 text-[10px] text-blue-300">{importScopePriorityNotice}</div>
             )}
-            {hasWhiteBalance && saveFormat !== 'original' && (
+            {effectiveHasWhiteBalance && saveFormat !== 'original' && (
               <span className="text-cyan-300/80"> &middot; WB</span>
             )}
-            {verifyChecksums && (
+            {effectiveVerifyChecksums && (
               <span className="text-emerald-300/80"> &middot; verify after copy</span>
             )}
           </div>
@@ -1524,7 +1579,7 @@ export function DestinationPanel() {
               : `Tight on space — ${formatSize(freeBytes)} free for ${formatSize(totalSize)} import`}
           </div>
         )}
-        {benchmarkOpen && files.length > 0 && (
+        {isPro && benchmarkOpen && files.length > 0 && (
           <div className="mb-2 rounded border border-blue-500/20 bg-blue-500/10 px-2 py-1.5">
             <div className="flex items-center justify-between gap-2">
               <div className="text-[10px] font-medium text-blue-200">Import benchmark</div>
@@ -1637,7 +1692,7 @@ export function DestinationPanel() {
             )}
           </div>
         )}
-        <div className="mb-1 grid grid-cols-3 gap-1">
+        <div className={`mb-1 grid gap-1 ${isPro ? 'grid-cols-3' : 'grid-cols-1'}`}>
           <button
             onClick={() => { void handlePreviewImport(); }}
             disabled={!destination || importFiles.length === 0}
@@ -1647,24 +1702,28 @@ export function DestinationPanel() {
           >
             Import Check
           </button>
-          <button
-            onClick={() => { void handleRunImportBenchmark(); }}
-            disabled={!destination || importFiles.length === 0 || benchmarkBusy}
-            className="py-1 rounded text-[10px] bg-surface-raised hover:bg-blue-500/10 text-blue-300 disabled:text-text-muted disabled:cursor-not-allowed"
-            title="Copy a small temporary sample into the destination to measure real raw disk speed, then compare it with current Keptra settings."
-            aria-label="Run import speed benchmark"
-          >
-            {benchmarkBusy ? 'Measuring' : 'Benchmark'}
-          </button>
-          <button
-            onClick={() => { void handleExportLightroomHandoff(); }}
-            disabled={files.length === 0 || handoffBusy}
-            className="py-1 rounded text-[10px] bg-surface-raised hover:bg-blue-500/10 text-blue-300 disabled:text-text-muted disabled:cursor-not-allowed"
-            title="Export selected, rejected, protected, second-pass, and catalog-match helper manifests for Lightroom."
-            aria-label="Export Lightroom handoff helpers for the current session"
-          >
-            {handoffBusy ? 'Exporting' : 'LR Handoff'}
-          </button>
+          {isPro && (
+            <>
+              <button
+                onClick={() => { void handleRunImportBenchmark(); }}
+                disabled={!destination || importFiles.length === 0 || benchmarkBusy}
+                className="py-1 rounded text-[10px] bg-surface-raised hover:bg-blue-500/10 text-blue-300 disabled:text-text-muted disabled:cursor-not-allowed"
+                title="Copy a small temporary sample into the destination to measure real raw disk speed, then compare it with current Keptra settings."
+                aria-label="Run import speed benchmark"
+              >
+                {benchmarkBusy ? 'Measuring' : 'Benchmark'}
+              </button>
+              <button
+                onClick={() => { void handleExportLightroomHandoff(); }}
+                disabled={files.length === 0 || handoffBusy}
+                className="py-1 rounded text-[10px] bg-surface-raised hover:bg-blue-500/10 text-blue-300 disabled:text-text-muted disabled:cursor-not-allowed"
+                title="Export selected, rejected, protected, second-pass, and catalog-match helper manifests for Lightroom."
+                aria-label="Export Lightroom handoff helpers for the current session"
+              >
+                {handoffBusy ? 'Exporting' : 'LR Handoff'}
+              </button>
+            </>
+          )}
         </div>
         <button
           onClick={() => { void startImport(); }}
@@ -1705,7 +1764,7 @@ export function DestinationPanel() {
             Clear Queue
           </button>
         )}
-        {phase === 'complete' && importResult && destination && (
+        {isPro && phase === 'complete' && importResult && destination && (
           <div className="mt-2 grid grid-cols-2 gap-1">
             <button
               onClick={handleOpenDestination}

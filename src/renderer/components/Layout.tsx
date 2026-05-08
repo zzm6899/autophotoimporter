@@ -76,7 +76,9 @@ export function Layout({ left, center, right }: LayoutProps) {
           <BrandMark className="h-4 w-4 shrink-0" />
           <div className="min-w-0">
             <div className="text-xs font-semibold leading-none text-text">Keptra</div>
-            <div className="mt-0.5 text-[9px] font-medium uppercase tracking-wider text-text-muted">V2 review workspace</div>
+            <div className="mt-0.5 text-[9px] font-medium uppercase tracking-wider text-text-muted">
+              {experienceMode === 'pro' ? 'Pro review workspace' : 'Simple import workflow'}
+            </div>
           </div>
         </div>
         <div className="pointer-events-none absolute inset-x-0 flex justify-center">

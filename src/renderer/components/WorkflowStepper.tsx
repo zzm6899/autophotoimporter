@@ -58,7 +58,9 @@ export function WorkflowStepper({ modelDownload }: { modelDownload: ModelDownloa
     selectedPaths,
     phase,
     ftpSyncStatus,
+    experienceMode,
   } = useAppState();
+  const isPro = experienceMode === 'pro';
   const sourceDone = !!selectedSource;
   const reviewDone = files.length > 0;
   const outputDone = !!destination;
@@ -133,7 +135,7 @@ export function WorkflowStepper({ modelDownload }: { modelDownload: ModelDownloa
         <WorkflowTile
           index={2}
           label="Review"
-          value={reviewDone ? `${files.length} files · ${reviewPct}% AI` : sourceDone ? 'Scanning will fill this lane' : 'Waiting for source'}
+          value={reviewDone ? (isPro ? `${files.length} files · ${reviewPct}% AI` : `${files.length} files ready`) : sourceDone ? 'Scanning will fill this lane' : 'Waiting for source'}
           icon={Images}
           tone={reviewDone ? 'done' : sourceDone ? 'active' : 'idle'}
         />
@@ -163,19 +165,19 @@ export function WorkflowStepper({ modelDownload }: { modelDownload: ModelDownloa
               {queuedPaths.length > 0 && <HealthPill tone="done">{queuedPaths.length} queued</HealthPill>}
               {rejectedCount > 0 && <HealthPill tone="blocked">{rejectedCount} rejected</HealthPill>}
               {protectedCount > 0 && <HealthPill tone="done">{protectedCount} protected</HealthPill>}
-              {faceCount > 0 && (
+              {isPro && faceCount > 0 && (
                 <HealthPill tone="active" title={estimatedFaceCount > 0 ? `${estimatedFaceCount} are estimated fallback detections` : 'Native face detections'}>
                   {faceCount} face photos
                 </HealthPill>
               )}
-              {faceGroupCount > 0 && <HealthPill tone="active">{faceGroupCount} people/groups</HealthPill>}
-              {blurCount > 0 && (
+              {isPro && faceGroupCount > 0 && <HealthPill tone="active">{faceGroupCount} people/groups</HealthPill>}
+              {isPro && blurCount > 0 && (
                 <HealthPill tone="blocked">
                   <AlertTriangle className="h-3 w-3" aria-hidden="true" />
                   {blurCount} blur risk
                 </HealthPill>
               )}
-              {reviewLeft > 0 && (
+              {isPro && reviewLeft > 0 && (
                 <HealthPill tone="idle">
                   <Gauge className="h-3 w-3" aria-hidden="true" />
                   AI {analyzedCount}/{photoCount}
@@ -183,7 +185,7 @@ export function WorkflowStepper({ modelDownload }: { modelDownload: ModelDownloa
               )}
             </>
           )}
-          {ftpSyncStatus.state === 'running' && (
+          {isPro && ftpSyncStatus.state === 'running' && (
             <HealthPill tone="active" title={ftpSyncStatus.message}>
               <span className="h-1.5 w-1.5 rounded-full bg-blue-300 animate-pulse" />
               FTP sync

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import {
   Activity,
@@ -83,6 +83,8 @@ const SETTINGS_TOPICS = [
   { id: 'account', label: 'Account' },
   { id: 'diagnostics', label: 'Diagnostics' },
 ] as const;
+
+const SIMPLE_SETTINGS_TOPIC_IDS = new Set(['general', 'account']);
 
 const FAST_RAW_METADATA_EXPORT: MetadataExportFlags = {
   keywords: false,
@@ -237,6 +239,12 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const [buyNameInput, setBuyNameInput] = useState('');
   const [buyEmailInput, setBuyEmailInput] = useState('');
   const [activeTopic, setActiveTopic] = useState<SettingsTopic>('general');
+  const visibleSettingsTopics = useMemo(
+    () => experienceMode === 'pro'
+      ? SETTINGS_TOPICS
+      : SETTINGS_TOPICS.filter((topic) => SIMPLE_SETTINGS_TOPIC_IDS.has(topic.id)),
+    [experienceMode],
+  );
   const settingsBodyRef = useRef<HTMLDivElement | null>(null);
   const performanceSectionRef = useRef<HTMLDivElement | null>(null);
   const settingsPatchRef = useRef<Record<string, unknown>>({});
@@ -339,6 +347,10 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
 
   useEffect(() => {
     const openPerformance = () => {
+      if (experienceMode !== 'pro') {
+        dispatch({ type: 'SET_EXPERIENCE_MODE', mode: 'pro' });
+        void window.electronAPI.setSettings({ experienceMode: 'pro' });
+      }
       setActiveTopic('workflow');
       window.setTimeout(() => {
         performanceSectionRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
@@ -346,11 +358,17 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     };
     window.addEventListener(OPEN_PERFORMANCE_EVENT, openPerformance);
     return () => window.removeEventListener(OPEN_PERFORMANCE_EVENT, openPerformance);
-  }, []);
+  }, [dispatch, experienceMode]);
 
   useEffect(() => {
     settingsBodyRef.current?.scrollTo({ top: 0, behavior: 'auto' });
   }, [activeTopic]);
+
+  useEffect(() => {
+    if (!visibleSettingsTopics.some((topic) => topic.id === activeTopic)) {
+      setActiveTopic('general');
+    }
+  }, [activeTopic, visibleSettingsTopics]);
 
   useEffect(() => {
     if (activeTopic !== 'diagnostics') return;
@@ -1006,7 +1024,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const expiryDaysRemaining = getDaysUntilExpiry(effectiveExpiresAt);
   const isTimedLicense = Boolean(effectiveExpiresAt);
   const showExpiryWarning = isTimedLicense && expiryDaysRemaining != null && expiryDaysRemaining <= 14;
-  const activeTopicMeta = SETTINGS_TOPICS.find((topic) => topic.id === activeTopic) ?? SETTINGS_TOPICS[0];
+  const activeTopicMeta = visibleSettingsTopics.find((topic) => topic.id === activeTopic) ?? visibleSettingsTopics[0] ?? SETTINGS_TOPICS[1];
   const settingsSummary = [
     {
       label: 'Account',
@@ -1130,7 +1148,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {inline && (
+          {inline && experienceMode === 'pro' && (
             <span className="hidden rounded border border-border bg-surface-alt px-2 py-1 text-[10px] text-text-muted sm:inline">
               Ctrl/Cmd+K opens every command
             </span>
@@ -1147,7 +1165,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
       <div ref={settingsBodyRef} className={`overflow-y-auto flex-1 space-y-4 ${inline ? 'px-5 py-3' : 'px-4 py-3'}`}>
           <div className="sticky top-0 z-10 -mx-1 border-b border-border bg-surface/95 px-1 pb-3 backdrop-blur">
             <div className="flex gap-1 overflow-x-auto">
-              {SETTINGS_TOPICS.map((topic) => {
+              {visibleSettingsTopics.map((topic) => {
                 const TopicIcon = SETTINGS_TOPIC_ICONS[topic.id];
                 return (
                   <button

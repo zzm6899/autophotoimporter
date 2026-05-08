@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useAppDispatch } from '../context/ImportContext';
+import { useAppDispatch, useAppState } from '../context/ImportContext';
 
 const OPEN_PERFORMANCE_EVENT = 'photo-importer:settings-performance';
 const PERFORMANCE_PROMPT_ID = 'ai-preview-performance-controls-v1';
@@ -25,11 +25,16 @@ function rememberPerformancePromptSeen(): void {
 
 export function SettingsOptimizationPrompt() {
   const dispatch = useAppDispatch();
+  const { experienceMode } = useAppState();
   const [show, setShow] = useState(false);
   const [summary, setSummary] = useState<string>('Checking this PC can tune GPU, CPU, preview cache, and face scan concurrency.');
 
   useEffect(() => {
     let cancelled = false;
+    if (experienceMode !== 'pro') {
+      setShow(false);
+      return () => { cancelled = true; };
+    }
 
     const checkPromptState = async () => {
       try {
@@ -46,7 +51,7 @@ export function SettingsOptimizationPrompt() {
           );
         }
 
-        if (!hasSeenPerformancePrompt(settings.performancePromptSeenVersion)) {
+        if ((settings.experienceMode ?? experienceMode) === 'pro' && !hasSeenPerformancePrompt(settings.performancePromptSeenVersion)) {
           setShow(true);
         }
       } catch {
@@ -62,7 +67,7 @@ export function SettingsOptimizationPrompt() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, []);
+  }, [experienceMode]);
 
   const markSeen = async () => {
     rememberPerformancePromptSeen();

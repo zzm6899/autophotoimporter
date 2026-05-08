@@ -65,6 +65,7 @@ export function SourcePanel() {
   const { volumes, selectedSource, files, phase, sourceKind, scanPaused, volumeImportQueue, experienceMode } = useAppState();
   const dispatch = useAppDispatch();
   const { startScan, pauseScan, resumeScan } = useFileScanner();
+  const isPro = experienceMode === 'pro';
 
   const [dragOver, setDragOver] = useState(false);
   const [showQuickHelp, setShowQuickHelp] = useState(false);
@@ -77,14 +78,26 @@ export function SourcePanel() {
     : 'Scan is running. Wait for it to finish before changing source.';
 
   useEffect(() => {
+    if (!isPro && sourceKind === 'ftp') {
+      dispatch({ type: 'SET_SOURCE_KIND', kind: 'volume' });
+    }
+  }, [dispatch, isPro, sourceKind]);
+
+  useEffect(() => {
     const openFtpSource = () => {
-      if (!sourceChangeLocked) dispatch({ type: 'SET_SOURCE_KIND', kind: 'ftp' });
+      if (isPro && !sourceChangeLocked) dispatch({ type: 'SET_SOURCE_KIND', kind: 'ftp' });
     };
     window.addEventListener('photo-importer:open-ftp-source', openFtpSource);
     return () => window.removeEventListener('photo-importer:open-ftp-source', openFtpSource);
-  }, [dispatch, sourceChangeLocked]);
+  }, [dispatch, isPro, sourceChangeLocked]);
 
   useEffect(() => {
+    if (!isPro) {
+      setCatalogStats(null);
+      setWatchFolders([]);
+      setWatchNotice(null);
+      return;
+    }
     let cancelled = false;
     void Promise.all([
       window.electronAPI.getCatalogStats?.().catch(() => null),
@@ -97,9 +110,10 @@ export function SourcePanel() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isPro]);
 
   useEffect(() => {
+    if (!isPro) return undefined;
     let noticeTimer: number | null = null;
     const unsub = window.electronAPI.onWatchFolderTriggered?.((trigger) => {
       const label = trigger.folder.label ?? trigger.folder.path;
@@ -122,7 +136,7 @@ export function SourcePanel() {
       if (noticeTimer != null) window.clearTimeout(noticeTimer);
       unsub?.();
     };
-  }, [dispatch, phase, startScan]);
+  }, [dispatch, isPro, phase, startScan]);
 
   const handleSelectVolume = (volumePath: string) => {
     if (sourceChangeLocked) return;
@@ -219,7 +233,7 @@ export function SourcePanel() {
           disabled={sourceChangeLocked}
           onClick={() => { void handleChooseFolder(); }}
         />
-        {experienceMode === 'pro' ? (
+        {isPro ? (
           <>
             <SourceCard
               icon={Server}
@@ -260,7 +274,7 @@ export function SourcePanel() {
             <div className="border-b border-border">
               <div className="px-2.5 pb-1.5 space-y-1">
                 <span className="text-[10px] text-text-secondary">Detected Devices</span>
-                {volumes.filter((v) => v.hasDcim).length >= 2 ? (
+                {isPro && volumes.filter((v) => v.hasDcim).length >= 2 ? (
                   <button
                     onClick={handleImportAllCards}
                     disabled={sourceChangeLocked}
@@ -313,9 +327,9 @@ export function SourcePanel() {
         </>
       )}
 
-      {sourceKind === 'ftp' && <FtpPanel />}
+      {isPro && sourceKind === 'ftp' && <FtpPanel />}
 
-      {(catalogStats || enabledWatchCount > 0 || watchNotice) && (
+      {isPro && (catalogStats || enabledWatchCount > 0 || watchNotice) && (
         <div className="mx-2.5 mb-2 rounded border border-border bg-surface-alt px-2 py-1.5 text-[10px] text-text-muted">
           <div className="flex items-center justify-between gap-2">
             <span>Local catalog</span>
