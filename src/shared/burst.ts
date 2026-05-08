@@ -59,7 +59,11 @@ export function groupBursts(files: MediaFile[], opts: BurstOptions): MediaFile[]
 
   let cluster: typeof candidates = [];
 
-  const cameraKey = (f: MediaFile) => `${f.cameraMake ?? ''}|${f.cameraModel ?? ''}`;
+  const cameraKey = (f: MediaFile): string | null => {
+    const make = f.cameraMake?.trim().toLowerCase() ?? '';
+    const model = f.cameraModel?.trim().toLowerCase() ?? '';
+    return make || model ? `${make}|${model}` : null;
+  };
 
   const flush = () => {
     if (cluster.length >= minSize) {
@@ -87,7 +91,9 @@ export function groupBursts(files: MediaFile[], opts: BurstOptions): MediaFile[]
     const prev = cluster[cluster.length - 1].file;
     const prevT = getTs(prev.dateTaken as string);
     const curT = getTs(c.file.dateTaken as string);
-    const sameCam = cameraKey(prev) === cameraKey(c.file);
+    const prevCamera = cameraKey(prev);
+    const currentCamera = cameraKey(c.file);
+    const sameCam = !!prevCamera && prevCamera === currentCamera;
     const inWindow = curT - prevT <= windowMs;
     if (sameCam && inWindow) {
       cluster.push(c);

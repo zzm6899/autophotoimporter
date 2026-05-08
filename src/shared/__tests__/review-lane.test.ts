@@ -25,6 +25,13 @@ describe('second pass review lane', () => {
     ]);
   });
 
+  it('does not label an analyzed zero score as unreviewed', () => {
+    expect(getSecondPassReasons(makeFile({ reviewScore: 0, blurRisk: 'high' }))).toEqual([
+      'blur-risk',
+      'unmarked',
+    ]);
+  });
+
   it('does not resurface approved or non-photo files', () => {
     expect(needsSecondPass(makeFile({ reviewApproved: true }))).toBe(false);
     expect(needsSecondPass(makeFile({ type: 'video', extension: '.mp4' }))).toBe(false);

@@ -3068,7 +3068,7 @@ export function ThumbnailGrid() {
   const BATCH_PAGE_SIZE = 120;
 
   const openBestOfBatch = useCallback((offset = 0) => {
-    const eligible = sortedFiles.filter((f) => f.type === 'photo' && f.pick !== 'rejected');
+    const eligible = sortedFiles.filter((f) => f.type === 'photo' && f.pick !== 'rejected' && (!skipDuplicates || !f.duplicate));
     if (eligible.length === 0) return;
     const clampedOffset = Math.max(0, Math.min(offset, eligible.length - 1));
     const candidates = eligible.slice(clampedOffset, clampedOffset + BATCH_PAGE_SIZE);
@@ -3086,14 +3086,14 @@ export function ThumbnailGrid() {
     });
     scanUnscannedPanelFiles(paths);
     setShowBestOfSelection(true);
-  }, [sortedFiles, scanUnscannedPanelFiles]);
+  }, [skipDuplicates, sortedFiles, scanUnscannedPanelFiles]);
 
   const openAdjacentBatch = useCallback((direction: 1 | -1) => {
-    const eligible = sortedFiles.filter((f) => f.type === 'photo' && f.pick !== 'rejected');
+    const eligible = sortedFiles.filter((f) => f.type === 'photo' && f.pick !== 'rejected' && (!skipDuplicates || !f.duplicate));
     const newOffset = batchOffset + direction * BATCH_PAGE_SIZE;
     const clamped = Math.max(0, Math.min(newOffset, eligible.length - 1));
     openBestOfBatch(clamped);
-  }, [batchOffset, openBestOfBatch, sortedFiles]);
+  }, [batchOffset, openBestOfBatch, skipDuplicates, sortedFiles]);
 
   const openAdjacentBurst = useCallback((direction: 1 | -1) => {
     if (files.length === 0) return;
@@ -5033,12 +5033,12 @@ export function ThumbnailGrid() {
                 if (!confirmBulkAction('Auto-cull grouped', groupedDecisionCount)) return;
                 dispatch({ type: 'AUTO_CULL_SAFE' });
               }}
-              disabled={!files.some((f) => (f.burstId && f.burstSize && f.burstSize > 1) || (f.visualGroupId && f.visualGroupSize && f.visualGroupSize > 1))}
-              title="Auto-reject clearly worse shots in bursts/similar groups when a strong keeper exists. Never touches protected, starred, or already-picked files. Undo: Ctrl+Z."
+              disabled={groupedDecisionCount === 0}
+              title="Auto-reject clearly worse shots in bursts, similar photos, and face groups when a strong keeper exists. Never touches protected, starred, or already-picked files. Undo: Ctrl+Z."
             >
               Safe Cull
             </ActionButton>
-            {burstGrouping && burstIds.size > 0 && (
+            {groupedDecisionCount > 0 && (
               <ActionButton
                 icon={Sparkles}
                 tone="warning"
@@ -5046,7 +5046,7 @@ export function ThumbnailGrid() {
                   if (!confirmBulkAction('Pick best and reject alternates in', groupedDecisionCount)) return;
                   dispatch({ type: 'PICK_BEST_IN_GROUPS' });
                 }}
-                title="Pick the top-scored shot in each burst/group and reject the rest."
+                title="Pick the top-scored shot in each burst, similar photo group, or face group and reject the rest."
               >
                 Pick Best
               </ActionButton>

@@ -443,54 +443,74 @@ export function scoreReview(input: ReviewScoreInput): ReviewScore {
 }
 
 export function groupByVisualHash(files: MediaFile[], threshold = 8): Record<string, string[]> {
-  const hashed = files.filter((f) => f.visualHash);
-  const visited = new Set<string>();
-  const groups: Record<string, string[]> = {};
-  let groupIndex = 1;
-
-  for (const file of hashed) {
-    if (visited.has(file.path) || !file.visualHash) continue;
-    const group = [file.path];
-    visited.add(file.path);
-
-    for (const other of hashed) {
-      if (visited.has(other.path) || !other.visualHash) continue;
-      if (hammingDistanceHex(file.visualHash, other.visualHash) <= threshold) {
-        visited.add(other.path);
-        group.push(other.path);
-      }
-    }
-
-    if (group.length > 1) {
-      groups[`visual-${groupIndex++}`] = group;
-    }
-  }
-
-  return groups;
+  return groupByHexSimilarity(
+    files.filter((f) => f.visualHash),
+    (file) => file.visualHash,
+    threshold,
+    'visual',
+  );
 }
 
 export function groupByFaceSignature(files: MediaFile[], threshold = 10): Record<string, string[]> {
-  const faceFiles = files.filter((f) => f.faceSignature && (f.faceCount ?? 0) > 0);
-  const visited = new Set<string>();
-  const groups: Record<string, string[]> = {};
-  let groupIndex = 1;
+  return groupByHexSimilarity(
+    files.filter((f) => f.faceSignature && (f.faceCount ?? 0) > 0),
+    (file) => file.faceSignature,
+    threshold,
+    'face',
+  );
+}
 
-  for (const file of faceFiles) {
-    if (visited.has(file.path) || !file.faceSignature) continue;
-    const group = [file.path];
-    visited.add(file.path);
+function groupByHexSimilarity(
+  files: MediaFile[],
+  hashFor: (file: MediaFile) => string | undefined,
+  threshold: number,
+  prefix: string,
+): Record<string, string[]> {
+  const hashed = files
+    .map((file, order) => ({ file, hash: hashFor(file), order }))
+    .filter((entry): entry is { file: MediaFile; hash: string; order: number } => !!entry.hash);
+  const parent = new Map<string, string>();
 
-    for (const other of faceFiles) {
-      if (visited.has(other.path) || !other.faceSignature) continue;
-      if (hammingDistanceHex(file.faceSignature, other.faceSignature) <= threshold) {
-        visited.add(other.path);
-        group.push(other.path);
+  const find = (path: string): string => {
+    const current = parent.get(path) ?? path;
+    if (current === path) return path;
+    const root = find(current);
+    parent.set(path, root);
+    return root;
+  };
+
+  const union = (a: string, b: string): void => {
+    const aRoot = find(a);
+    const bRoot = find(b);
+    if (aRoot !== bRoot) parent.set(bRoot, aRoot);
+  };
+
+  for (const entry of hashed) parent.set(entry.file.path, entry.file.path);
+  for (let i = 0; i < hashed.length; i++) {
+    for (let j = i + 1; j < hashed.length; j++) {
+      if (hammingDistanceHex(hashed[i].hash, hashed[j].hash) <= threshold) {
+        union(hashed[i].file.path, hashed[j].file.path);
       }
     }
+  }
 
-    if (group.length > 1) {
-      groups[`face-${groupIndex++}`] = group;
-    }
+  const connected = new Map<string, typeof hashed>();
+  for (const entry of hashed) {
+    const root = find(entry.file.path);
+    const group = connected.get(root);
+    if (group) group.push(entry);
+    else connected.set(root, [entry]);
+  }
+
+  const groups: Record<string, string[]> = {};
+  let groupIndex = 1;
+  const sortedGroups = [...connected.values()]
+    .map((group) => group.sort((a, b) => a.order - b.order))
+    .filter((group) => group.length > 1)
+    .sort((a, b) => a[0].order - b[0].order);
+
+  for (const group of sortedGroups) {
+    groups[`${prefix}-${groupIndex++}`] = group.map((entry) => entry.file.path);
   }
 
   return groups;

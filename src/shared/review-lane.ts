@@ -11,7 +11,7 @@ export function getSecondPassReasons(file: MediaFile): SecondPassReason[] {
   if (file.type !== 'photo' || file.reviewApproved) return [];
 
   const reasons: SecondPassReason[] = [];
-  if (!file.reviewScore) reasons.push('unreviewed');
+  if (typeof file.reviewScore !== 'number') reasons.push('unreviewed');
   if (file.blurRisk === 'high') reasons.push('blur-risk');
   if (file.pick === 'selected' && (file.reviewScore ?? 0) < 58) reasons.push('low-confidence-keeper');
   if (file.visualGroupId && !file.pick) reasons.push('near-duplicate');

@@ -35,6 +35,8 @@ export function summarizeImportLedger(ledger: ImportLedger | null) {
       actionableCount: 0,
       failedCount: 0,
       pendingCount: 0,
+      retryBytes: 0,
+      recoveryWorkloadLabel: 'No retry workload.',
       completionPercent: 0,
       statusMessage: 'No import history has been written yet.',
       recoveryMessage: 'Run an import to create a recovery ledger.',
@@ -43,6 +45,9 @@ export function summarizeImportLedger(ledger: ImportLedger | null) {
   }
   const failedCount = ledger.items.filter((item) => item.status === 'failed').length;
   const pendingCount = ledger.items.filter((item) => item.status === 'pending').length;
+  const retryBytes = ledger.items
+    .filter((item) => item.status === 'failed' || item.status === 'pending')
+    .reduce((total, item) => total + item.size, 0);
   const actionableCount = failedCount + pendingCount;
   const completed = ledger.imported + ledger.skipped + (ledger.verified ?? 0);
   const completionPercent = ledger.totalFiles > 0
@@ -60,6 +65,10 @@ export function summarizeImportLedger(ledger: ImportLedger | null) {
     actionableCount,
     failedCount,
     pendingCount,
+    retryBytes,
+    recoveryWorkloadLabel: actionableCount > 0
+      ? `${actionableCount} ${actionableCount === 1 ? 'file' : 'files'} (${formatRecoveryBytes(retryBytes)}) left to retry.`
+      : 'No retry workload.',
     completionPercent,
     statusMessage: actionableCount > 0
       ? `${completed} of ${ledger.totalFiles} ${ledger.totalFiles === 1 ? 'file is' : 'files are'} accounted for.`
@@ -88,6 +97,12 @@ function basename(pathValue?: string): string {
   if (!pathValue) return '';
   const parts = pathValue.split(/[/\\]/).filter(Boolean);
   return parts[parts.length - 1] || pathValue;
+}
+
+function formatRecoveryBytes(bytes: number): string {
+  if (bytes < 1_000) return `${bytes} B`;
+  if (bytes < 1_000_000) return `${(bytes / 1_000).toFixed(0)} KB`;
+  return formatSize(bytes);
 }
 
 export function ImportResumeView({ tone = 'panel' }: ImportResumeViewProps) {
@@ -209,6 +224,9 @@ export function ImportResumeView({ tone = 'panel' }: ImportResumeViewProps) {
       <div className="mt-2 rounded border border-border bg-surface-raised px-2 py-1.5">
         <p className="text-[10px] text-text-secondary">{summary.statusMessage}</p>
         <p className="mt-0.5 text-[10px] text-text-muted">{summary.recoveryMessage}</p>
+        {summary.actionableCount > 0 && (
+          <p className="mt-0.5 text-[10px] text-orange-200">{summary.recoveryWorkloadLabel}</p>
+        )}
       </div>
 
       {!currentSessionMatches && summary.actionableCount > 0 && (

@@ -3,7 +3,7 @@ import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, Sourc
 import { FOLDER_PRESETS, DEFAULT_KEYBINDS, DEFAULT_METADATA_EXPORT, DEFAULT_VIEW_OVERLAY_PREFERENCES } from '../../shared/types';
 import { groupBursts } from '../../shared/burst';
 import { clampStops, normalizeExposureStops } from '../../shared/exposure';
-import { FACE_GROUP_EMBEDDING_THRESHOLD, assignSceneBuckets, autoCullGroup, bestInGroup, groupByFaceSimilarity, groupByVisualHash, scoreReview } from '../../shared/review';
+import { FACE_GROUP_EMBEDDING_THRESHOLD, assignSceneBuckets, autoCullGroup, bestInGroup, groupByFaceSimilarity, groupByVisualHash, humanMomentQuality, rankBestShots, scoreReview } from '../../shared/review';
 
 export type AppPhase = 'idle' | 'scanning' | 'ready' | 'importing' | 'complete';
 export type ViewMode = 'grid' | 'single' | 'split' | 'compare' | 'settings';
@@ -236,9 +236,9 @@ export type Action =
   | { type: 'GROUP_VISUAL_DUPLICATES'; threshold?: number; files?: MediaFile[] }
   | { type: 'GROUP_FACE_SIMILAR'; threshold?: number; embeddingThreshold?: number; files?: MediaFile[] }
   | { type: 'GROUP_SCENE_BUCKETS' }
-  | { type: 'PICK_BEST_IN_GROUPS' }
+  | { type: 'PICK_BEST_IN_GROUPS'; files?: MediaFile[] }
   | { type: 'QUEUE_BEST' }
-  | { type: 'AUTO_CULL_SAFE' }
+  | { type: 'AUTO_CULL_SAFE'; files?: MediaFile[] }
   | { type: 'SYNC_EDITS_FROM_FOCUSED'; filePath?: string }
   | { type: 'REJECT_DUPLICATES' }
   | { type: 'UNDO_FILE_EDIT' }
@@ -436,7 +436,7 @@ function collectReviewGroups(files: MediaFile[], includeFace = true): Map<string
 
 function queueBestPaths(
   files: MediaFile[],
-  _options: { cullConfidence?: CullConfidence; groupPhotoEveryoneGood?: boolean; keeperQuota?: KeeperQuota } = {},
+  options: { cullConfidence?: CullConfidence; groupPhotoEveryoneGood?: boolean; keeperQuota?: KeeperQuota } = {},
 ): string[] {
   const eligible = files.filter((f) => f.type === 'photo' && f.pick !== 'rejected' && !f.duplicate);
   const groups = collectReviewGroups(eligible, false);
@@ -448,8 +448,29 @@ function queueBestPaths(
       groupedPaths.add(f.path);
       if (f.pick === 'selected' || f.isProtected || (f.rating ?? 0) > 0) queued.add(f.path);
     }
-    const best = bestInGroup(group);
+    const ranked = rankBestShots(group);
+    const best = ranked[0] ?? null;
     if (best) queued.add(best.path);
+
+    const quota = options.keeperQuota ?? 'best-1';
+    if (quota === 'top-2') {
+      for (const file of ranked.slice(0, 2)) queued.add(file.path);
+    } else if (quota === 'smile-and-sharp') {
+      const expressionScore = (file: MediaFile) => {
+        const boxes = file.faceBoxes ?? [];
+        if (boxes.length === 0) return 0;
+        return boxes.reduce((bestExpression, box) => Math.max(bestExpression, box.smileScore ?? box.expressionScore ?? 0.5), 0);
+      };
+      const smileBest = ranked.slice().sort((a, b) =>
+        expressionScore(b) - expressionScore(a) ||
+        humanMomentQuality(b) - humanMomentQuality(a),
+      )[0];
+      const sharpBest = ranked.slice().sort((a, b) =>
+        (b.subjectSharpnessScore ?? b.sharpnessScore ?? 0) - (a.subjectSharpnessScore ?? a.sharpnessScore ?? 0),
+      )[0];
+      if (smileBest) queued.add(smileBest.path);
+      if (sharpBest) queued.add(sharpBest.path);
+    }
   }
 
   for (const f of eligible) {
@@ -987,7 +1008,8 @@ export function reducer(state: State, action: Action): State {
     case 'GROUP_SCENE_BUCKETS':
       return { ...state, files: assignSceneBuckets(state.files, state.eventMode) };
     case 'PICK_BEST_IN_GROUPS': {
-      const groups = collectReviewGroups(state.files, true);
+      const groupFiles = action.files ?? state.files;
+      const groups = collectReviewGroups(groupFiles, true);
       const keepers = new Set<string>();
       for (const group of groups.values()) {
         const best = bestInGroup(group);
@@ -1010,7 +1032,8 @@ export function reducer(state: State, action: Action): State {
       return { ...state, queuedPaths: next, filter: next.length > 0 ? 'queue' : state.filter === 'queue' ? 'all' : state.filter };
     }
     case 'AUTO_CULL_SAFE': {
-      const groups = collectReviewGroups(state.files, true);
+      const groupFiles = action.files ?? state.files;
+      const groups = collectReviewGroups(groupFiles, true);
       const reject = new Set<string>();
       const keep = new Set<string>();
       for (const group of groups.values()) {
@@ -1359,10 +1382,14 @@ export function ImportProvider({ children }: { children: ReactNode }) {
       if (next.length > 0) rawDispatch({ type: 'SET_FILTER', filter: 'queue' });
       return;
     }
-    // Face and visual grouping also depend on AI data held in the overlay.
-    // Compute groups from merged files, then let the reducer write stable group
-    // ids back into state.files so filters, badges, and bulk actions all agree.
-    if (action.type === 'GROUP_FACE_SIMILAR' || action.type === 'GROUP_VISUAL_DUPLICATES') {
+    // Grouping and grouped bulk decisions depend on AI data held in the overlay.
+    // Compute from merged files, then let the reducer write stable state by path.
+    if (
+      action.type === 'GROUP_FACE_SIMILAR' ||
+      action.type === 'GROUP_VISUAL_DUPLICATES' ||
+      action.type === 'AUTO_CULL_SAFE' ||
+      action.type === 'PICK_BEST_IN_GROUPS'
+    ) {
       rawDispatch({
         ...action,
         files: mergeReviewScoreOverlay(stateRef.current.files, reviewScoresRef.current),

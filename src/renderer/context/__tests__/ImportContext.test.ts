@@ -647,6 +647,34 @@ describe('ImportContext reducer', () => {
       expect(next.fileHistory).toHaveLength(1);
     });
 
+    it('picks best in groups from supplied merged review files', () => {
+      const files = [
+        makeFile({ path: '/stale-best.jpg', visualGroupId: 'g1', visualGroupSize: 2, reviewScore: 90, sharpnessScore: 180 }),
+        makeFile({ path: '/fresh-best.jpg', visualGroupId: 'g1', visualGroupSize: 2, reviewScore: 20, sharpnessScore: 20 }),
+      ];
+      const mergedFiles = [
+        { ...files[0], reviewScore: 24, sharpnessScore: 35, subjectSharpnessScore: 20, blurRisk: 'high' as const },
+        { ...files[1], reviewScore: 94, sharpnessScore: 220, subjectSharpnessScore: 180, blurRisk: 'low' as const },
+      ];
+      const next = reducer(makeState({ files }), { type: 'PICK_BEST_IN_GROUPS', files: mergedFiles });
+      expect(next.files.find((f) => f.path === '/fresh-best.jpg')?.pick).toBe('selected');
+      expect(next.files.find((f) => f.path === '/stale-best.jpg')?.pick).toBe('rejected');
+    });
+
+    it('auto-culls groups from supplied merged review files', () => {
+      const files = [
+        makeFile({ path: '/stale-best.jpg', visualGroupId: 'g1', visualGroupSize: 2, reviewScore: 90, sharpnessScore: 180 }),
+        makeFile({ path: '/fresh-best.jpg', visualGroupId: 'g1', visualGroupSize: 2, reviewScore: 20, sharpnessScore: 20 }),
+      ];
+      const mergedFiles = [
+        { ...files[0], reviewScore: 18, sharpnessScore: 20, subjectSharpnessScore: 12, blurRisk: 'high' as const },
+        { ...files[1], reviewScore: 95, sharpnessScore: 220, subjectSharpnessScore: 180, blurRisk: 'low' as const },
+      ];
+      const next = reducer(makeState({ files }), { type: 'AUTO_CULL_SAFE', files: mergedFiles });
+      expect(next.files.find((f) => f.path === '/fresh-best.jpg')?.pick).toBe('selected');
+      expect(next.files.find((f) => f.path === '/stale-best.jpg')?.pick).toBe('rejected');
+    });
+
     it('queues every keepable standalone photo', () => {
       const files = [
         makeFile({ path: '/best.jpg', reviewScore: 80 }),
@@ -695,6 +723,56 @@ describe('ImportContext reducer', () => {
       ];
       const next = reducer(makeState({ files }), { type: 'QUEUE_BEST' });
       expect(next.queuedPaths).toEqual(['/starred.jpg']);
+    });
+
+    it('queues the configured top keeper quota for grouped photos', () => {
+      const files = [
+        makeFile({ path: '/burst-best.jpg', burstId: 'b1', burstSize: 3, burstIndex: 1, reviewScore: 94, sharpnessScore: 180, subjectSharpnessScore: 150 }),
+        makeFile({ path: '/burst-alt.jpg', burstId: 'b1', burstSize: 3, burstIndex: 2, reviewScore: 82, sharpnessScore: 160, subjectSharpnessScore: 132 }),
+        makeFile({ path: '/burst-soft.jpg', burstId: 'b1', burstSize: 3, burstIndex: 3, reviewScore: 28, sharpnessScore: 35, subjectSharpnessScore: 20, blurRisk: 'high' }),
+      ];
+      const next = reducer(makeState({ files, keeperQuota: 'top-2' }), { type: 'QUEUE_BEST' });
+      expect(next.queuedPaths).toEqual(['/burst-best.jpg', '/burst-alt.jpg']);
+    });
+
+    it('queues smile and sharpness alternates for grouped portraits', () => {
+      const files = [
+        makeFile({
+          path: '/overall.jpg',
+          burstId: 'b1',
+          burstSize: 3,
+          burstIndex: 1,
+          faceCount: 1,
+          faceBoxes: [{ x: 0.3, y: 0.2, width: 0.2, height: 0.22, eyeScore: 2, smileScore: 0.45, score: 0.94 }],
+          subjectSharpnessScore: 132,
+          sharpnessScore: 150,
+          reviewScore: 82,
+        }),
+        makeFile({
+          path: '/smile.jpg',
+          burstId: 'b1',
+          burstSize: 3,
+          burstIndex: 2,
+          faceCount: 1,
+          faceBoxes: [{ x: 0.3, y: 0.2, width: 0.2, height: 0.22, eyeScore: 2, smileScore: 1, score: 0.9 }],
+          subjectSharpnessScore: 92,
+          sharpnessScore: 110,
+          reviewScore: 72,
+        }),
+        makeFile({
+          path: '/sharp.jpg',
+          burstId: 'b1',
+          burstSize: 3,
+          burstIndex: 3,
+          faceCount: 1,
+          faceBoxes: [{ x: 0.3, y: 0.2, width: 0.2, height: 0.22, eyeScore: 1, smileScore: 0.3, score: 0.86 }],
+          subjectSharpnessScore: 175,
+          sharpnessScore: 190,
+          reviewScore: 68,
+        }),
+      ];
+      const next = reducer(makeState({ files, keeperQuota: 'smile-and-sharp' }), { type: 'QUEUE_BEST' });
+      expect(next.queuedPaths).toEqual(['/overall.jpg', '/smile.jpg', '/sharp.jpg']);
     });
 
     it('does not sync edits across the generic scene bucket', () => {

@@ -46,6 +46,70 @@ export function rankBestOfSelection(files: MediaFile[]): MediaFile[] {
   return rankBestShots(files);
 }
 
+function autoAcceptSummary(best: MediaFile, second: MediaFile | undefined, scoreGap: number): {
+  label: string;
+  tone: 'safe' | 'review' | 'manual';
+  detail: string;
+} {
+  if (best.blurRisk === 'high') {
+    return {
+      label: 'Manual review',
+      tone: 'manual',
+      detail: 'Top pick still has high blur risk, so compare before accepting.',
+    };
+  }
+  if (!second) {
+    return {
+      label: 'Safe to accept',
+      tone: 'safe',
+      detail: 'Only one candidate is in this set.',
+    };
+  }
+  const confidence = scoreGapConfidence(scoreGap);
+  if (confidence === 'high') {
+    return {
+      label: 'Safe to accept',
+      tone: 'safe',
+      detail: `Top pick is ${scoreGap} points ahead of #2.`,
+    };
+  }
+  if (confidence === 'medium') {
+    return {
+      label: 'Review #2',
+      tone: 'review',
+      detail: `Top pick leads by ${scoreGap} points; compare the runner-up before auto-accepting.`,
+    };
+  }
+  return {
+    label: 'Manual compare',
+    tone: 'manual',
+    detail: `Only ${Math.max(0, scoreGap)} points separate the top two.`,
+  };
+}
+
+function topPickEvidence(best: MediaFile, second: MediaFile | undefined, scoreGap: number): string[] {
+  const evidence: string[] = [];
+  if (best.isProtected) evidence.push('Protected file');
+  if ((best.rating ?? 0) > 0) evidence.push(`${best.rating}-star rating`);
+  if (second) evidence.push(`${scoreGap >= 0 ? '+' : ''}${scoreGap} vs #2`);
+
+  const bestSubject = best.subjectSharpnessScore ?? best.sharpnessScore;
+  const secondSubject = second ? second.subjectSharpnessScore ?? second.sharpnessScore : undefined;
+  if (typeof bestSubject === 'number' && typeof secondSubject === 'number') {
+    const subjectGap = Math.round(bestSubject - secondSubject);
+    if (subjectGap >= 12) evidence.push(`Sharper subject +${subjectGap}`);
+    else if (subjectGap <= -12) evidence.push(`Softer subject ${subjectGap}`);
+  } else if (typeof bestSubject === 'number') {
+    evidence.push(`Subject ${bestSubject}`);
+  }
+
+  const bestFaces = best.faceCount ?? best.faceBoxes?.length ?? 0;
+  const secondFaces = second ? second.faceCount ?? second.faceBoxes?.length ?? 0 : 0;
+  if (bestFaces > 0) evidence.push(second && bestFaces !== secondFaces ? `${bestFaces} faces vs ${secondFaces}` : `${bestFaces} face${bestFaces === 1 ? '' : 's'}`);
+  if (best.blurRisk && best.blurRisk !== 'low') evidence.push(`${best.blurRisk} blur risk`);
+  return evidence.slice(0, 4);
+}
+
 // Corrects face box positions for object-contain letterboxing.
 function LetterboxedFaceBoxes({
   boxes,
@@ -411,6 +475,8 @@ export function BestOfSelectionPanel({
   const bestScore = best ? Math.round(rankScore(best)) : 0;
   const scoreGap = best && second ? Math.round(rankScore(best) - rankScore(second)) : bestScore;
   const confidence = scoreGapConfidence(scoreGap);
+  const readiness = best ? autoAcceptSummary(best, second, scoreGap) : null;
+  const evidence = best ? topPickEvidence(best, second, scoreGap) : [];
   const panelStats = useMemo(() => {
     let analyzed = 0;
     let faceFiles = 0;
@@ -549,6 +615,39 @@ export function BestOfSelectionPanel({
               <div className="text-[10px] uppercase tracking-wider text-yellow-300 font-semibold">Top candidate</div>
               <div className="mt-1 text-sm text-text font-mono truncate" title={best.path}>{best.name}</div>
               <div className="mt-1 text-[11px] text-text-secondary">{explain(best)}</div>
+              {readiness && (
+                <div
+                  className={`mt-2 rounded border px-2.5 py-2 ${
+                    readiness.tone === 'safe'
+                      ? 'border-emerald-400/40 bg-emerald-500/10'
+                      : readiness.tone === 'review'
+                        ? 'border-yellow-400/40 bg-yellow-500/10'
+                        : 'border-red-400/40 bg-red-500/10'
+                  }`}
+                >
+                  <div
+                    className={`text-[11px] font-semibold ${
+                      readiness.tone === 'safe'
+                        ? 'text-emerald-300'
+                        : readiness.tone === 'review'
+                          ? 'text-yellow-300'
+                          : 'text-red-300'
+                    }`}
+                  >
+                    {readiness.label}
+                  </div>
+                  <div className="mt-0.5 text-[10px] text-text-secondary">{readiness.detail}</div>
+                  {evidence.length > 0 && (
+                    <div className="mt-1.5 flex flex-wrap gap-1">
+                      {evidence.map((item) => (
+                        <span key={item} className="px-1.5 py-0.5 rounded bg-surface/80 text-[9px] text-text-muted">
+                          {item}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
               <div className="mt-2 flex flex-wrap gap-1 text-[9px] text-text-muted">
                 <span className="px-1.5 py-0.5 rounded bg-surface" title="Protected files and star ratings are trusted first.">1 protected/rating</span>
                 <span className="px-1.5 py-0.5 rounded bg-surface" title="Face detector + eye-open landmarks + subject sharpness.">2 faces/eyes/subject</span>

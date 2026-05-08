@@ -61,6 +61,16 @@ describe('review utilities', () => {
     expect(Object.values(groups)).toEqual([['/a.jpg', '/b.jpg']]);
   });
 
+  it('keeps chained visual near-duplicates in one group', () => {
+    const groups = groupByVisualHash([
+      file('/a.jpg', '0000000000000000'),
+      file('/b.jpg', '000000000000000f'),
+      file('/c.jpg', '00000000000000ff'),
+      file('/d.jpg', 'ffffffffffffffff'),
+    ], 4);
+    expect(Object.values(groups)).toEqual([['/a.jpg', '/b.jpg', '/c.jpg']]);
+  });
+
   it('scores protected and rated files above soft unrated files', () => {
     const strong = scoreReview({ sharpnessScore: 120, rating: 4, isProtected: true });
     const weak = scoreReview({ sharpnessScore: 10 });
@@ -236,6 +246,16 @@ describe('review utilities', () => {
       file('/c.jpg', undefined, { faceCount: 1, faceSignature: 'ffffffffffffffff' }),
     ], 0.9, 2);
     expect(Object.values(groups)).toEqual([['/a.jpg', '/b.jpg']]);
+  });
+
+  it('keeps chained legacy face signatures in one fallback group', () => {
+    const groups = groupByFaceSimilarity([
+      file('/a.jpg', undefined, { faceCount: 1, faceSignature: '0000000000000000' }),
+      file('/b.jpg', undefined, { faceCount: 1, faceSignature: '000000000000000f' }),
+      file('/c.jpg', undefined, { faceCount: 1, faceSignature: '00000000000000ff' }),
+      file('/d.jpg', undefined, { faceCount: 1, faceSignature: 'ffffffffffffffff' }),
+    ], 0.9, 4);
+    expect(Object.values(groups)).toEqual([['/a.jpg', '/b.jpg', '/c.jpg']]);
   });
 
   it('still uses signature fallback for unembedded files when embeddings exist', () => {

@@ -39,8 +39,10 @@ describe('summarizeImportLedger', () => {
 
     expect(summary.failedCount).toBe(1);
     expect(summary.pendingCount).toBe(1);
+    expect(summary.retryBytes).toBe(150);
     expect(summary.statusMessage).toBe('2 of 4 files are accounted for.');
     expect(summary.recoveryMessage).toBe('Retry resumes pending files and re-attempts failed copies from this ledger.');
+    expect(summary.recoveryWorkloadLabel).toBe('2 files (150 B) left to retry.');
   });
 
   it('reports a clean ledger without recovery work', () => {
@@ -62,6 +64,7 @@ describe('summarizeImportLedger', () => {
 
     expect(summary.actionableCount).toBe(0);
     expect(summary.completionPercent).toBe(100);
+    expect(summary.recoveryWorkloadLabel).toBe('No retry workload.');
     expect(summary.recoveryMessage).toBe('No failed or pending files need attention.');
   });
 });
