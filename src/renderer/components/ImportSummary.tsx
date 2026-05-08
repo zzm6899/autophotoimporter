@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import { formatDuration, formatSize, formatSpeed } from '../utils/formatters';
 import { useImport } from '../hooks/useImport';
-import type { ImportResult } from '../../shared/types';
+import type { ImportResult, MediaFile } from '../../shared/types';
 
 export function summarizeImportResult(result: ImportResult) {
   const failedCount = result.ledgerItems?.filter((item) => item.status === 'failed').length ?? result.errors.length;
@@ -46,8 +46,56 @@ export function summarizeImportResult(result: ImportResult) {
   };
 }
 
+export function summarizeReviewImportVisibility(
+  result: ImportResult,
+  files: MediaFile[],
+  selectedCount = 0,
+  queuedCount = 0,
+) {
+  const pickedCount = files.filter((file) => file.pick === 'selected').length;
+  const rejectedCount = files.filter((file) => file.pick === 'rejected').length;
+  const accountedCount = result.imported + result.skipped;
+  const issueCount = (result.ledgerItems?.filter((item) => item.status === 'failed' || item.status === 'pending').length ?? result.errors.length);
+
+  const nextStep = issueCount > 0
+    ? 'Retry failed or pending files before handing this set off.'
+    : result.lightroomHandoff?.outputDir
+      ? 'Lightroom handoff is ready. Open the handoff folder or destination to continue.'
+      : 'Open the destination to review the delivered files, or export a Lightroom handoff if needed.';
+
+  if (selectedCount > 0) {
+    return {
+      sourceLabel: 'Manual selection',
+      sourceMessage: `${selectedCount} grid ${selectedCount === 1 ? 'selection was' : 'selections were'} sent to import. ${accountedCount} ${accountedCount === 1 ? 'file is' : 'files are'} accounted for.`,
+      nextStep,
+    };
+  }
+
+  if (queuedCount > 0) {
+    return {
+      sourceLabel: 'Review queue',
+      sourceMessage: `${queuedCount} queued ${queuedCount === 1 ? 'keeper was' : 'keepers were'} sent to import. ${accountedCount} ${accountedCount === 1 ? 'file is' : 'files are'} accounted for.`,
+      nextStep,
+    };
+  }
+
+  if (pickedCount > 0) {
+    return {
+      sourceLabel: 'Picked photos',
+      sourceMessage: `${pickedCount} picked ${pickedCount === 1 ? 'photo was' : 'photos were'} sent to import. ${rejectedCount} rejected ${rejectedCount === 1 ? 'photo was' : 'photos were'} left out.`,
+      nextStep,
+    };
+  }
+
+  return {
+    sourceLabel: 'Importable media',
+    sourceMessage: `${accountedCount} ${accountedCount === 1 ? 'file is' : 'files are'} accounted for from available, non-rejected media.`,
+    nextStep,
+  };
+}
+
 export function ImportSummary() {
-  const { phase, importResult, destination, files } = useAppState();
+  const { phase, importResult, destination, files, selectedPaths, queuedPaths } = useAppState();
   const dispatch = useAppDispatch();
   const { startImport } = useImport();
   const [handoffBusy, setHandoffBusy] = useState(false);
@@ -108,6 +156,7 @@ export function ImportSummary() {
   };
 
   const summary = summarizeImportResult(importResult);
+  const flowSummary = summarizeReviewImportVisibility(importResult, files, selectedPaths.length, queuedPaths.length);
   const issueItems = importResult.ledgerItems?.filter((item) => item.status === 'failed' || item.status === 'pending') ?? [];
   const displayedIssues = issueItems.length > 0
     ? issueItems.map((item) => ({
@@ -144,6 +193,19 @@ export function ImportSummary() {
           <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wider">Import report</h3>
           <p className="mt-1 text-sm text-text">{reportDetails.join(' · ')}</p>
           <p className="mt-1 text-xs text-text-muted">{summary.recoveryMessage}</p>
+        </div>
+
+        <div className="mb-6 rounded border border-border bg-surface px-3 py-2">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wider">Review to import</h3>
+            <span className="shrink-0 rounded bg-surface-raised px-2 py-0.5 text-[10px] font-medium text-text-secondary">
+              {flowSummary.sourceLabel}
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-text-secondary">{flowSummary.sourceMessage}</p>
+          <p className={`mt-1 text-xs ${summary.issueCount > 0 ? 'text-orange-200' : 'text-text-muted'}`}>
+            Next: {flowSummary.nextStep}
+          </p>
         </div>
 
         <div className="space-y-3 mb-6">

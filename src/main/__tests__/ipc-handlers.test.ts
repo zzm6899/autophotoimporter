@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { AppSession, ImportConfig, ImportResult, MediaFile } from '../../shared/types';
+import type { AppSession, ImportConfig, ImportLedger, ImportResult, MediaFile } from '../../shared/types';
 
 // Mocks
 const mockHandle = vi.fn();
@@ -106,11 +106,13 @@ vi.mock('../services/license', () => ({
 import { registerIpcHandlers } from '../ipc-handlers';
 import { importFiles } from '../services/import-engine';
 import { scanFiles } from '../services/file-scanner';
+import { isDuplicate } from '../services/duplicate-detector';
 import { checkForUpdate, fetchUpdateHistory } from '../services/update-checker';
 import { readFile, writeFile, chmod } from 'node:fs/promises';
 
 const mockImportFiles = vi.mocked(importFiles);
 const mockScanFiles = vi.mocked(scanFiles);
+const mockIsDuplicate = vi.mocked(isDuplicate);
 const mockReadFile = vi.mocked(readFile);
 const mockWriteFile = vi.mocked(writeFile);
 const mockChmod = vi.mocked(chmod);
@@ -131,6 +133,8 @@ describe('IPC Handlers', () => {
     mockOn.mockClear();
     mockOpenPath.mockClear();
     mockOpenExternal.mockClear();
+    mockImportFiles.mockReset();
+    mockScanFiles.mockReset();
     mockReadFile.mockReset();
     mockReadFile.mockRejectedValue(new Error('ENOENT'));
     mockWriteFile.mockClear();
@@ -140,6 +144,8 @@ describe('IPC Handlers', () => {
     mockCheckForUpdate.mockResolvedValue({ status: 'up-to-date', currentVersion: '1.1.0', latestVersion: '1.1.0' });
     mockFetchUpdateHistory.mockReset();
     mockFetchUpdateHistory.mockResolvedValue([]);
+    mockIsDuplicate.mockReset();
+    mockIsDuplicate.mockResolvedValue(false);
   });
 
   describe('IMPORT_START', () => {
@@ -236,6 +242,36 @@ describe('IPC Handlers', () => {
       );
     });
 
+    it('clears destination-only duplicate flags when rechecking a new destination', async () => {
+      mockReadFile.mockResolvedValue(JSON.stringify({ licenseKey: 'valid-key' }) as any);
+      const files: MediaFile[] = [
+        { path: '/src/keeper.jpg', name: 'keeper.jpg', size: 100, type: 'photo', extension: '.jpg', destPath: '2026/keeper.jpg' },
+      ];
+      mockScanFiles.mockImplementation(async (_sourcePath, onBatch: (batch: MediaFile[]) => void) => {
+        onBatch(files);
+        return files.length;
+      });
+      mockIsDuplicate.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+      mockImportFiles.mockResolvedValue({ imported: 1, skipped: 0, errors: [], totalBytes: 100, durationMs: 10 });
+
+      await getHandler('scan:start')({}, '/src');
+      await getHandler('scan:check-duplicates')({}, '/dest-a');
+      await getHandler('scan:check-duplicates')({}, '/dest-b');
+      await getHandler('import:start')({}, {
+        sourcePath: '/src',
+        destRoot: '/dest-b',
+        skipDuplicates: true,
+        saveFormat: 'original',
+        jpegQuality: 90,
+      });
+
+      expect(mockImportFiles).toHaveBeenLastCalledWith(
+        [expect.objectContaining({ path: '/src/keeper.jpg', duplicate: false })],
+        expect.any(Object),
+        expect.any(Function),
+      );
+    });
+
     it('sends progress events to renderer', async () => {
       mockReadFile.mockResolvedValue(JSON.stringify({ licenseKey: 'valid-key' }) as any);
       const mockWin = { webContents: { send: vi.fn() } };
@@ -250,6 +286,48 @@ describe('IPC Handlers', () => {
       await handler({}, { sourcePath: '/src', destRoot: '/dest', skipDuplicates: true, saveFormat: 'original', jpegQuality: 90 });
 
       expect(mockWin.webContents.send).toHaveBeenCalledWith('import:progress', expect.objectContaining({ currentFile: 'test.jpg' }));
+    });
+
+    it('returns an explicit recovery error when retry paths are not in the current scan', async () => {
+      const ledger: ImportLedger = {
+        id: 'ledger-1',
+        createdAt: '2026-05-08T00:00:00.000Z',
+        sourcePath: '/src',
+        destRoot: '/dest',
+        saveFormat: 'original',
+        totalFiles: 1,
+        imported: 0,
+        skipped: 0,
+        failed: 1,
+        pending: 0,
+        totalBytes: 100,
+        durationMs: 10,
+        items: [
+          { sourcePath: '/src/missing.jpg', name: 'missing.jpg', size: 100, status: 'failed', error: 'Disk full' },
+        ],
+      };
+      mockReadFile.mockImplementation(async (filePath) => {
+        const value = String(filePath);
+        if (value.endsWith('settings.json')) return JSON.stringify({ licenseKey: 'valid-key' }) as any;
+        if (value.endsWith('latest.json')) return JSON.stringify(ledger) as any;
+        throw new Error('ENOENT');
+      });
+
+      const result = await getHandler('import:retry-failed')({}, {
+        sourcePath: '/src',
+        destRoot: '/dest',
+        skipDuplicates: true,
+        saveFormat: 'original',
+        jpegQuality: 90,
+      }) as ImportResult;
+
+      expect(result.imported).toBe(0);
+      expect(result.recoveryCount).toBe(1);
+      expect(result.errors[0]).toEqual({
+        file: 'recovery',
+        error: 'Retry needs the previous source to be scanned first so failed and pending files can be matched.',
+      });
+      expect(mockImportFiles).not.toHaveBeenCalled();
     });
   });
 
@@ -306,6 +384,26 @@ describe('IPC Handlers', () => {
 
       expect(settings.faceConcurrency).toBeGreaterThanOrEqual(1);
       expect(settings.faceConcurrency).toBeLessThanOrEqual(8);
+    });
+
+    it('applies low-tier performance defaults when only perfTier is saved', async () => {
+      mockReadFile.mockResolvedValue(JSON.stringify({ perfTier: 'low' }) as any);
+      const handler = getHandler('settings:get');
+      const settings = await handler({}) as any;
+
+      expect(settings.cpuOptimization).toBe(true);
+      expect(settings.rawPreviewQuality).toBe(55);
+      expect(settings.faceConcurrency).toBe(1);
+    });
+
+    it('preserves explicit performance overrides on a saved tier', async () => {
+      mockReadFile.mockResolvedValue(JSON.stringify({ perfTier: 'low', cpuOptimization: false, rawPreviewQuality: 70 }) as any);
+      const handler = getHandler('settings:get');
+      const settings = await handler({}) as any;
+
+      expect(settings.cpuOptimization).toBe(false);
+      expect(settings.rawPreviewQuality).toBe(70);
+      expect(settings.faceConcurrency).toBe(1);
     });
 
     it('persists clamped face concurrency when settings are updated', async () => {

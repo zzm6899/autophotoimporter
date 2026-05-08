@@ -163,7 +163,7 @@ export type Action =
   | { type: 'DISMISS_SUMMARY' }
   | { type: 'SET_THUMBNAIL'; filePath: string; thumbnail: string }
   | { type: 'SET_THUMBNAILS'; thumbnails: Record<string, string> }
-  | { type: 'SET_DUPLICATE'; filePath: string; duplicateMemory?: MediaFile['duplicateMemory'] }
+  | { type: 'SET_DUPLICATE'; filePath: string; duplicate?: boolean; duplicateMemory?: MediaFile['duplicateMemory'] }
   | { type: 'CLEAR_DUPLICATES' }
   | { type: 'SET_PICK'; filePath: string; pick: 'selected' | 'rejected' | undefined }
   | { type: 'SET_PICK_BATCH'; filePaths: string[]; pick: 'selected' | 'rejected' | undefined }
@@ -436,9 +436,10 @@ function collectReviewGroups(files: MediaFile[], includeFace = true): Map<string
 
 function queueBestPaths(
   files: MediaFile[],
-  options: { cullConfidence?: CullConfidence; groupPhotoEveryoneGood?: boolean; keeperQuota?: KeeperQuota } = {},
+  options: { cullConfidence?: CullConfidence; groupPhotoEveryoneGood?: boolean; keeperQuota?: KeeperQuota; skipDuplicates?: boolean } = {},
 ): string[] {
-  const eligible = files.filter((f) => f.type === 'photo' && f.pick !== 'rejected' && !f.duplicate);
+  const skipDuplicates = options.skipDuplicates ?? true;
+  const eligible = files.filter((f) => f.type === 'photo' && f.pick !== 'rejected' && (!skipDuplicates || !f.duplicate));
   const groups = collectReviewGroups(eligible, false);
   const groupedPaths = new Set<string>();
   const queued = new Set<string>();
@@ -594,7 +595,9 @@ export function reducer(state: State, action: Action): State {
           f.path === action.filePath
             ? {
               ...f,
-              duplicate: action.duplicateMemory ? isDuplicateMemoryMatch(action.duplicateMemory) : true,
+              duplicate: action.duplicate === false
+                ? isDuplicateMemoryMatch(f.duplicateMemory)
+                : action.duplicateMemory ? isDuplicateMemoryMatch(action.duplicateMemory) : true,
               duplicateMemory: action.duplicateMemory ?? f.duplicateMemory,
             }
             : f,
@@ -1028,6 +1031,7 @@ export function reducer(state: State, action: Action): State {
         cullConfidence: state.cullConfidence,
         groupPhotoEveryoneGood: state.groupPhotoEveryoneGood,
         keeperQuota: state.keeperQuota,
+        skipDuplicates: state.skipDuplicates,
       });
       return { ...state, queuedPaths: next, filter: next.length > 0 ? 'queue' : state.filter === 'queue' ? 'all' : state.filter };
     }
@@ -1377,6 +1381,7 @@ export function ImportProvider({ children }: { children: ReactNode }) {
         cullConfidence: current.cullConfidence,
         groupPhotoEveryoneGood: current.groupPhotoEveryoneGood,
         keeperQuota: current.keeperQuota,
+        skipDuplicates: current.skipDuplicates,
       });
       rawDispatch({ type: 'QUEUE_SET_PATHS', paths: next });
       if (next.length > 0) rawDispatch({ type: 'SET_FILTER', filter: 'queue' });

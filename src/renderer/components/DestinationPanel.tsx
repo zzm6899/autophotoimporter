@@ -506,7 +506,11 @@ export function DestinationPanel() {
   const lowConfidenceCount = importFiles.filter((f) =>
     f.type === 'photo' &&
     (f.pick === 'selected' || queuedPaths.includes(f.path)) &&
-    (f.blurRisk === 'high' || (typeof f.reviewScore === 'number' && f.reviewScore < 58) || !f.reviewScore),
+    (
+      f.blurRisk === 'high' ||
+      (typeof f.reviewScore === 'number' && f.reviewScore < 58) ||
+      typeof f.reviewScore !== 'number'
+    ),
   ).length;
   const sceneLabels = [...new Set(importFiles
     .map((f) => f.sceneBucket)

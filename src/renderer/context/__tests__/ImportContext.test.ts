@@ -343,6 +343,33 @@ describe('ImportContext reducer', () => {
       expect(next.files[0].duplicate).toBe(true);
     });
 
+    it('clears destination duplicate flags while keeping catalog duplicate memory', () => {
+      const file = makeFile({
+        path: '/photo.jpg',
+        duplicate: true,
+        duplicateMemory: {
+          kind: 'previous-import',
+          matchedPath: '/archive/photo.jpg',
+          importedAt: '2026-05-01T00:00:00.000Z',
+        },
+      });
+      const state = makeState({ files: [file] });
+
+      const next = reducer(state, { type: 'SET_DUPLICATE', filePath: '/photo.jpg', duplicate: false });
+
+      expect(next.files[0].duplicate).toBe(true);
+      expect(next.files[0].duplicateMemory).toEqual(file.duplicateMemory);
+    });
+
+    it('clears destination-only duplicate flags', () => {
+      const file = makeFile({ path: '/photo.jpg', duplicate: true });
+      const state = makeState({ files: [file] });
+
+      const next = reducer(state, { type: 'SET_DUPLICATE', filePath: '/photo.jpg', duplicate: false });
+
+      expect(next.files[0].duplicate).toBe(false);
+    });
+
     it('stores catalog duplicate memory from scan events', () => {
       const file = makeFile({ path: '/photo.jpg' });
       const state = makeState({ files: [file] });
@@ -723,6 +750,15 @@ describe('ImportContext reducer', () => {
       ];
       const next = reducer(makeState({ files }), { type: 'QUEUE_BEST' });
       expect(next.queuedPaths).toEqual(['/starred.jpg']);
+    });
+
+    it('queues duplicate keepers when duplicate skipping is disabled', () => {
+      const files = [
+        makeFile({ path: '/duplicate-keeper.jpg', duplicate: true, reviewScore: 92, sharpnessScore: 220 }),
+      ];
+      const next = reducer(makeState({ files, skipDuplicates: false }), { type: 'QUEUE_BEST' });
+      expect(next.queuedPaths).toEqual(['/duplicate-keeper.jpg']);
+      expect(next.filter).toBe('queue');
     });
 
     it('queues the configured top keeper quota for grouped photos', () => {

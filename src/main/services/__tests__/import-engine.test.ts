@@ -133,6 +133,18 @@ describe('planImportFiles', () => {
     expect(plan.items[1].warnings).toEqual(expect.arrayContaining(['High blur risk', 'Low AI review score']));
   });
 
+  it('does not treat an analyzed zero review score as unreviewed', async () => {
+    mockStat.mockRejectedValue(Object.assign(new Error('missing'), { code: 'ENOENT' }));
+
+    const plan = await planImportFiles([
+      makeFile({ path: '/src/zero.jpg', name: 'zero.jpg', destPath: '2024/zero.jpg', pick: 'selected', reviewScore: 0 }),
+    ], makeConfig());
+
+    expect(plan.lowConfidence).toBe(1);
+    expect(plan.items[0].warnings).toContain('Low AI review score');
+    expect(plan.items[0].warnings).not.toContain('Selected before AI review completed');
+  });
+
   it('marks destination conflicts as skipped by default', async () => {
     mockStat.mockResolvedValue({ size: 1234 } as any);
 
@@ -162,6 +174,20 @@ describe('planImportFiles', () => {
       status: 'will-import',
       reason: 'Destination exists; will rename',
       destFullPath: expect.stringContaining('IMG_001 (1).jpg'),
+    }));
+  });
+
+  it('warns when the dry plan will overwrite existing destination files', async () => {
+    mockStat.mockResolvedValue({ size: 1234 } as any);
+
+    const plan = await planImportFiles([makeFile()], makeConfig({ conflictPolicy: 'overwrite' }));
+
+    expect(plan.willImport).toBe(1);
+    expect(plan.conflicts).toBe(1);
+    expect(plan.sessionWarnings).toContain('1 conflict will overwrite existing destination files.');
+    expect(plan.items[0]).toEqual(expect.objectContaining({
+      status: 'will-import',
+      reason: 'Destination exists; will overwrite',
     }));
   });
 

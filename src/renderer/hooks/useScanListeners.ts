@@ -85,8 +85,8 @@ export function useScanListeners() {
       scheduleThumbnailFlush();
     });
 
-    const unsubDuplicate = window.electronAPI.onScanDuplicate((filePath, duplicateMemory) => {
-      dispatch({ type: 'SET_DUPLICATE', filePath, duplicateMemory });
+    const unsubDuplicate = window.electronAPI.onScanDuplicate((filePath, duplicateMemory, duplicate) => {
+      dispatch({ type: 'SET_DUPLICATE', filePath, duplicateMemory, duplicate });
     });
 
     return () => {

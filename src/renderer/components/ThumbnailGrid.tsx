@@ -4239,7 +4239,7 @@ export function ThumbnailGrid() {
       if (
         file.type === 'photo' &&
         !file.pick &&
-        (!file.reviewScore || file.blurRisk === 'high' || !!file.visualGroupId || !!file.burstId)
+        (typeof file.reviewScore !== 'number' || file.blurRisk === 'high' || !!file.visualGroupId || !!file.burstId)
       ) {
         count++;
       }

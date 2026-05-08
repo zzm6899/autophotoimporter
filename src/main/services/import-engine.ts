@@ -36,7 +36,7 @@ function importPlanWarnings(file: MediaFile): string[] {
   const warnings: string[] = [];
   if (file.blurRisk === 'high') warnings.push('High blur risk');
   if (typeof file.reviewScore === 'number' && file.reviewScore < 58) warnings.push('Low AI review score');
-  if (file.pick === 'selected' && !file.reviewScore) warnings.push('Selected before AI review completed');
+  if (file.pick === 'selected' && typeof file.reviewScore !== 'number') warnings.push('Selected before AI review completed');
   return warnings;
 }
 
@@ -478,6 +478,7 @@ export async function planImportFiles(files: MediaFile[], config: ImportConfig):
       ...(files.length === 0 ? ['No importable files match the current selection.'] : []),
       ...(lowConfidence > 0 ? [`${lowConfidence} selected file${lowConfidence === 1 ? '' : 's'} should get a second-pass review.`] : []),
       ...(conflicts > 0 && conflictPolicyFor(config) === 'skip' ? [`${conflicts} conflict${conflicts === 1 ? '' : 's'} will be skipped.`] : []),
+      ...(conflicts > 0 && conflictPolicyFor(config) === 'overwrite' ? [`${conflicts} conflict${conflicts === 1 ? '' : 's'} will overwrite existing destination files.`] : []),
       ...(config.backupDestRoot ? [] : ['No backup destination is enabled for this import.']),
       ...(config.verifyChecksums ? [] : ['Checksum verification is off.']),
     ],

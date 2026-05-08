@@ -279,7 +279,7 @@ function ThumbnailCardInner({
             </div>
           )}
 
-          {(file.reviewScore || file.blurRisk === 'high' || file.visualGroupId || faceCount || personCount || groupBadge || showFaceGroupButton) && (
+          {(((file.reviewScore ?? 0) >= 70 && isBurstBest) || file.blurRisk === 'high' || file.visualGroupId || faceCount || personCount || groupBadge || showFaceGroupButton) && (
             <div className="absolute left-1.5 bottom-1.5 flex gap-0.5 z-20">
               {!!faceCount && (
                 <span className="bg-emerald-600/90 text-[9px] text-white px-1 py-0.5 rounded font-medium" title={`${faceCount} ${file.faceDetection === 'estimated' ? 'estimated ' : ''}face(s) detected`}>
@@ -363,7 +363,7 @@ function ThumbnailCardInner({
             </button>
           )}
 
-          {file.burstId && typeof file.sharpnessScore === 'number' && !file.reviewScore && (
+          {file.burstId && typeof file.sharpnessScore === 'number' && typeof file.reviewScore !== 'number' && (
             <div
               className="absolute bottom-1.5 left-1.5 bg-black/60 text-[9px] text-white/80 px-1 py-0.5 rounded font-mono z-20"
               title="Sharpness score used for burst keeper selection"

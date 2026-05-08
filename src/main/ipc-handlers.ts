@@ -38,6 +38,10 @@ function ipcError(code: string, message: string): IpcErrorResponse {
   return { ok: false, code, message };
 }
 
+function isDuplicateMemoryMatch(memory?: MediaFile['duplicateMemory']): boolean {
+  return memory?.kind === 'previous-import' || memory?.kind === 'same-visual';
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
@@ -1180,16 +1184,24 @@ async function loadSettings(): Promise<AppSettings> {
     setRawPreviewQuality(merged.rawPreviewQuality ?? 70);
     setFaceConcurrency(resolvedFaceConcurrency);
 
+    const manualPerformanceOverrides = {
+      ...(Object.prototype.hasOwnProperty.call(parsed, 'cpuOptimization') ? { cpuOptimization: merged.cpuOptimization } : {}),
+      ...(Object.prototype.hasOwnProperty.call(parsed, 'rawPreviewQuality') ? { rawPreviewQuality: merged.rawPreviewQuality } : {}),
+    };
+
     // Apply device-tier presets on first load (overridden by explicit user settings)
-    applyDeviceTier(profile, {
+    const appliedProfile = applyDeviceTier(profile, {
       setCpuOptimization: configureCpuOptimization,
       setRawPreviewQuality,
-    }, {
-      cpuOptimization: merged.cpuOptimization,
-      rawPreviewQuality: merged.rawPreviewQuality,
-    });
+    }, manualPerformanceOverrides);
 
-    return { ...merged, faceConcurrency: resolvedFaceConcurrency, licenseStatus };
+    return {
+      ...merged,
+      cpuOptimization: appliedProfile.cpuOptimization,
+      rawPreviewQuality: appliedProfile.rawPreviewQuality,
+      faceConcurrency: resolvedFaceConcurrency,
+      licenseStatus,
+    };
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
@@ -2094,6 +2106,9 @@ export function registerIpcHandlers(): void {
       if (dup) {
         file.duplicate = true;
         sendToRenderer(IPC.SCAN_DUPLICATE, file.path);
+      } else {
+        file.duplicate = isDuplicateMemoryMatch(file.duplicateMemory);
+        sendToRenderer(IPC.SCAN_DUPLICATE, file.path, undefined, false);
       }
     }
   });
@@ -2291,6 +2306,20 @@ export function registerIpcHandlers(): void {
     }
     const retryConfig: ImportConfig = { ...config, selectedPaths: retryPaths };
     const filesToImport = filterFilesForImport(scannedFiles, retryConfig);
+    if (filesToImport.length === 0) {
+      return {
+        imported: 0,
+        skipped: 0,
+        verified: 0,
+        errors: [{
+          file: 'recovery',
+          error: 'Retry needs the previous source to be scanned first so failed and pending files can be matched.',
+        }],
+        totalBytes: 0,
+        durationMs: 0,
+        recoveryCount: retryPaths.length,
+      } satisfies ImportResult;
+    }
     const result = await importFiles(filesToImport, retryConfig, (progress) => {
       sendToRenderer(IPC.IMPORT_PROGRESS, progress);
     });
