@@ -5,7 +5,9 @@ import type { MediaFile, ImportConfig, ImportProgress, WatermarkConfig } from '.
 vi.mock('node:fs/promises', () => ({
   copyFile: vi.fn(),
   mkdir: vi.fn(),
+  rename: vi.fn(),
   stat: vi.fn(),
+  unlink: vi.fn(),
 }));
 
 vi.mock('node:child_process', () => ({
@@ -20,14 +22,16 @@ vi.mock('../duplicate-detector', () => ({
   isDuplicate: vi.fn(),
 }));
 
-import { copyFile, mkdir, stat } from 'node:fs/promises';
+import { copyFile, mkdir, rename, stat, unlink } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { isDuplicate } from '../duplicate-detector';
 import { importFiles, cancelImport, convertedDestPath, planImportFiles, watermarkPositionForOrientation } from '../import-engine';
 
 const mockCopyFile = vi.mocked(copyFile);
 const mockMkdir = vi.mocked(mkdir);
+const mockRename = vi.mocked(rename);
 const mockStat = vi.mocked(stat);
+const mockUnlink = vi.mocked(unlink);
 const mockExecFile = vi.mocked(execFile);
 const mockIsDuplicate = vi.mocked(isDuplicate);
 
@@ -134,6 +138,25 @@ describe('planImportFiles', () => {
     }));
   });
 
+  it('marks a source that changed after scan as invalid in the dry plan', async () => {
+    mockStat.mockImplementation(async (target) => {
+      if (String(target) === '/src/IMG_001.jpg') return { size: 6000, mtimeMs: 2000 } as any;
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+    });
+
+    const plan = await planImportFiles([
+      makeFile({ sourceModifiedAtMs: 1000 }),
+    ], makeConfig());
+
+    expect(plan.willImport).toBe(0);
+    expect(plan.invalid).toBe(1);
+    expect(plan.items[0]).toEqual(expect.objectContaining({
+      status: 'invalid',
+      reason: expect.stringContaining('Source changed since scan'),
+    }));
+    expect(mockCopyFile).not.toHaveBeenCalled();
+  });
+
   it('flags duplicate and low-confidence files in the dry plan', async () => {
     mockIsDuplicate.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
     mockStat.mockRejectedValue(Object.assign(new Error('missing'), { code: 'ENOENT' }));
@@ -234,7 +257,9 @@ describe('importFiles', () => {
     onProgress = vi.fn();
     mockMkdir.mockResolvedValue(undefined);
     mockCopyFile.mockResolvedValue(undefined);
+    mockRename.mockResolvedValue(undefined);
     mockStat.mockResolvedValue({ size: 5000 } as any);
+    mockUnlink.mockResolvedValue(undefined);
     mockIsDuplicate.mockResolvedValue(false);
     mockExecFile.mockImplementation((_file: any, _args: any, _options: any, callback?: any) => {
       callback?.(null, '', '');
@@ -256,6 +281,93 @@ describe('importFiles', () => {
     ]);
     expect(mockMkdir).toHaveBeenCalledWith(expect.stringContaining('2024-01-15'), { recursive: true });
     expect(mockCopyFile).toHaveBeenCalledOnce();
+  });
+
+  it('defers importing a source that changed after scan', async () => {
+    mockStat.mockImplementation(async (target) => {
+      if (String(target) === '/src/IMG_001.jpg') return { size: 7000, mtimeMs: 2000 } as any;
+      return { size: 5000 } as any;
+    });
+
+    const result = await importFiles([
+      makeFile({ sourceModifiedAtMs: 1000 }),
+    ], makeConfig(), onProgress);
+
+    expect(result.imported).toBe(0);
+    expect(result.errors).toEqual([
+      { file: 'IMG_001.jpg', error: expect.stringContaining('Source changed since scan') },
+    ]);
+    expect(result.ledgerItems).toEqual([
+      expect.objectContaining({
+        sourcePath: '/src/IMG_001.jpg',
+        status: 'pending',
+        error: expect.stringContaining('Source changed since scan'),
+      }),
+    ]);
+    expect(mockCopyFile).not.toHaveBeenCalled();
+  });
+
+  it('removes the temp output when the source changes during copy', async () => {
+    let copied = false;
+    mockStat.mockImplementation(async (target) => {
+      const targetPath = String(target);
+      if (targetPath === '/src/IMG_001.jpg') {
+        return copied ? { size: 6500, mtimeMs: 2000 } as any : { size: 5000, mtimeMs: 1000 } as any;
+      }
+      if (targetPath.includes('.keptra-')) return { size: 5000 } as any;
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+    });
+    mockCopyFile.mockImplementation(async () => {
+      copied = true;
+    });
+
+    const result = await importFiles([
+      makeFile({ sourceModifiedAtMs: 1000 }),
+    ], makeConfig(), onProgress);
+
+    expect(result.imported).toBe(0);
+    expect(result.errors).toEqual([
+      { file: 'IMG_001.jpg', error: 'Source changed during import. Wait for it to finish writing, then retry.' },
+    ]);
+    expect(result.ledgerItems).toEqual([
+      expect.objectContaining({
+        sourcePath: '/src/IMG_001.jpg',
+        status: 'pending',
+        error: 'Source changed during import. Wait for it to finish writing, then retry.',
+      }),
+    ]);
+    expect(mockRename).not.toHaveBeenCalled();
+    expect(mockUnlink).toHaveBeenCalledWith(expect.stringContaining('.keptra-'));
+  });
+
+  it('commits stable scanned sources through a temp output rename', async () => {
+    let committed = false;
+    mockStat.mockImplementation(async (target) => {
+      const targetPath = String(target);
+      if (targetPath === '/src/IMG_001.jpg') return { size: 5000, mtimeMs: 1000 } as any;
+      if (targetPath.includes('.keptra-')) return { size: 5000 } as any;
+      if (targetPath.includes('IMG_001.jpg') && committed) return { size: 5000 } as any;
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+    });
+    mockRename.mockImplementation(async () => {
+      committed = true;
+    });
+
+    const result = await importFiles([
+      makeFile({ sourceModifiedAtMs: 1000 }),
+    ], makeConfig(), onProgress);
+
+    expect(result.imported).toBe(1);
+    expect(result.errors).toHaveLength(0);
+    expect(mockCopyFile).toHaveBeenCalledWith(
+      '/src/IMG_001.jpg',
+      expect.stringContaining('.keptra-'),
+      expect.any(Number),
+    );
+    expect(mockRename).toHaveBeenCalledWith(
+      expect.stringContaining('.keptra-'),
+      expect.stringContaining('IMG_001.jpg'),
+    );
   });
 
   it('dry-run records planned ledger items without writing files', async () => {

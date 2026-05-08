@@ -81,6 +81,7 @@ async function walkDirectory(
             path: fullPath,
             name: entry.name,
             size: fileStat.size,
+            sourceModifiedAtMs: fileStat.mtimeMs,
             type,
             extension: ext,
           });

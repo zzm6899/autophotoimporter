@@ -1,4 +1,4 @@
-import { copyFile, mkdir, stat, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { constants, createReadStream } from 'node:fs';
@@ -31,6 +31,12 @@ let currentJob: JobController | null = null;
 const RAW_COPY_CONCURRENCY = 6;
 const MIRRORED_COPY_CONCURRENCY = 3;
 const HEAVY_IMPORT_CONCURRENCY = 2;
+const SOURCE_MTIME_TOLERANCE_MS = 1;
+
+type SourceSnapshot = {
+  size: number;
+  mtimeMs?: number;
+};
 
 function importPlanWarnings(file: MediaFile): string[] {
   const warnings: string[] = [];
@@ -38,6 +44,53 @@ function importPlanWarnings(file: MediaFile): string[] {
   if (typeof file.reviewScore === 'number' && file.reviewScore < 58) warnings.push('Low AI review score');
   if (file.pick === 'selected' && typeof file.reviewScore !== 'number') warnings.push('Selected before AI review completed');
   return warnings;
+}
+
+function hasSourceSnapshot(file: MediaFile): boolean {
+  return typeof file.sourceModifiedAtMs === 'number' && Number.isFinite(file.sourceModifiedAtMs);
+}
+
+function sourceSnapshotChanged(before: SourceSnapshot, after: SourceSnapshot): boolean {
+  return before.size !== after.size ||
+    (
+      typeof before.mtimeMs === 'number' &&
+      typeof after.mtimeMs === 'number' &&
+      Math.abs(before.mtimeMs - after.mtimeMs) > SOURCE_MTIME_TOLERANCE_MS
+    );
+}
+
+async function readSourceSnapshot(sourcePath: string): Promise<SourceSnapshot> {
+  const sourceStat = await stat(sourcePath);
+  return { size: sourceStat.size, mtimeMs: sourceStat.mtimeMs };
+}
+
+function sourceSnapshotError(file: MediaFile, snapshot: SourceSnapshot): string | null {
+  if (snapshot.size !== file.size) {
+    return `Source changed since scan (size ${file.size} -> ${snapshot.size}). Wait for it to finish writing, then rescan or retry.`;
+  }
+  if (
+    typeof snapshot.mtimeMs === 'number' &&
+    typeof file.sourceModifiedAtMs === 'number' &&
+    Math.abs(snapshot.mtimeMs - file.sourceModifiedAtMs) > SOURCE_MTIME_TOLERANCE_MS
+  ) {
+    return 'Source changed since scan (modified time changed). Wait for it to finish writing, then rescan or retry.';
+  }
+  return null;
+}
+
+async function getStableSourceSnapshot(file: MediaFile): Promise<{ snapshot: SourceSnapshot | null; error: string | null }> {
+  if (!hasSourceSnapshot(file)) return { snapshot: null, error: null };
+  try {
+    const snapshot = await readSourceSnapshot(file.path);
+    return { snapshot, error: sourceSnapshotError(file, snapshot) };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Source file is unavailable';
+    return { snapshot: null, error: `Source file is unavailable: ${message}` };
+  }
+}
+
+async function sourceStabilityError(file: MediaFile): Promise<string | null> {
+  return (await getStableSourceSnapshot(file)).error;
 }
 
 function remoteJoin(...parts: string[]): string {
@@ -269,6 +322,21 @@ async function sha256File(filePath: string): Promise<string> {
   });
 }
 
+function tempOutputPath(destFullPath: string): string {
+  const parsed = path.parse(destFullPath);
+  const token = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return path.join(parsed.dir, `${parsed.name}.keptra-${token}.tmp${parsed.ext}`);
+}
+
+async function removeFileIfExists(filePath: string | null): Promise<void> {
+  if (!filePath) return;
+  try {
+    await unlink(filePath);
+  } catch {
+    // Best-effort cleanup for temp outputs; the import result should still report the root cause.
+  }
+}
+
 export function convertedDestPath(destPath: string, format: SaveFormat): string {
   if (format === 'original') return destPath;
   const ext = FORMAT_EXT[format];
@@ -435,6 +503,12 @@ export async function planImportFiles(files: MediaFile[], config: ImportConfig):
     if (paths.error) {
       invalid++;
       items.push({ ...base, status: 'invalid', reason: paths.error });
+      continue;
+    }
+    const unstableSource = await sourceStabilityError(file);
+    if (unstableSource) {
+      invalid++;
+      items.push({ ...base, status: 'invalid', reason: unstableSource });
       continue;
     }
     if (config.skipDuplicates && paths.destRelPath && await isDuplicate(config.destRoot, paths.destRelPath, file.size)) {
@@ -927,6 +1001,17 @@ export async function importFiles(
       return;
     }
 
+    let sourceBeforeCopy: SourceSnapshot | null = null;
+    if (!config.dryRun) {
+      const sourceCheck = await getStableSourceSnapshot(file);
+      if (sourceCheck.error) {
+        errors.push({ file: file.name, error: sourceCheck.error });
+        recordLedgerItem(file, { ...ledgerBase, status: 'pending', error: sourceCheck.error });
+        return;
+      }
+      sourceBeforeCopy = sourceCheck.snapshot;
+    }
+
     if (config.skipDuplicates) {
       const dup = plannedPaths.destRelPath
         ? await isDuplicate(config.destRoot, plannedPaths.destRelPath, file.size)
@@ -938,7 +1023,7 @@ export async function importFiles(
       }
     }
 
-    const resolvedPaths = (config.dryRun || config.conflictPolicy)
+    const resolvedPaths = (config.dryRun || config.conflictPolicy || sourceBeforeCopy)
       ? await resolveImportDestPaths(file, config)
       : { ...plannedPaths, conflict: false, policy: conflictPolicyFor(config) };
     const resolvedLedgerBase: ImportLedgerItem = {
@@ -977,16 +1062,19 @@ export async function importFiles(
       return;
     }
 
+    let primaryTempPath: string | null = null;
     try {
       await ensureDir(path.dirname(destFullPath));
+      primaryTempPath = sourceBeforeCopy ? tempOutputPath(destFullPath) : null;
+      const primaryWritePath = primaryTempPath ?? destFullPath;
 
       if (saveFormat === 'original') {
-        await copyFile(file.path, destFullPath, copyMode);
+        await copyFile(file.path, primaryWritePath, primaryTempPath ? constants.COPYFILE_EXCL : copyMode);
       } else {
         const brightness = brightnessFor(file);
         const whiteBalance = whiteBalanceFor(file);
         const { normalized, watermarked, straightened, whiteBalanced } = await convertAndCopy(
-          file.path, destFullPath, saveFormat, jpegQuality, brightness, whiteBalance, file.orientation, config.watermark, config.autoStraighten,
+          file.path, primaryWritePath, saveFormat, jpegQuality, brightness, whiteBalance, file.orientation, config.watermark, config.autoStraighten,
         );
         if (normalizeActive && Math.abs(brightness - 1) > 0.001 && !normalized) {
           normalizationMissing++;
@@ -1000,6 +1088,50 @@ export async function importFiles(
         if (hasWhiteBalanceAdjustment(whiteBalance) && !whiteBalanced) {
           whiteBalanceMissing++;
         }
+      }
+
+      if (sourceBeforeCopy && primaryTempPath) {
+        let sourceAfterCopy: SourceSnapshot;
+        try {
+          sourceAfterCopy = await readSourceSnapshot(file.path);
+        } catch (sourceErr) {
+          const message = sourceErr instanceof Error ? sourceErr.message : 'Source file became unavailable during import';
+          const error = `Source file changed during import: ${message}. Wait for it to finish writing, then retry.`;
+          await removeFileIfExists(primaryTempPath);
+          primaryTempPath = null;
+          errors.push({ file: file.name, error });
+          recordLedgerItem(file, { ...resolvedLedgerBase, status: 'pending', error });
+          return;
+        }
+
+        if (sourceSnapshotChanged(sourceBeforeCopy, sourceAfterCopy)) {
+          const error = 'Source changed during import. Wait for it to finish writing, then retry.';
+          await removeFileIfExists(primaryTempPath);
+          primaryTempPath = null;
+          errors.push({ file: file.name, error });
+          recordLedgerItem(file, { ...resolvedLedgerBase, status: 'pending', error });
+          return;
+        }
+
+        if (saveFormat === 'original') {
+          const tempStat = await stat(primaryTempPath);
+          if (tempStat.size !== sourceAfterCopy.size) {
+            const error = `Copied file size mismatch (${tempStat.size} != ${sourceAfterCopy.size}). Wait for the source to settle, then retry.`;
+            await removeFileIfExists(primaryTempPath);
+            primaryTempPath = null;
+            errors.push({ file: file.name, error });
+            recordLedgerItem(file, { ...resolvedLedgerBase, status: 'pending', error });
+            return;
+          }
+        }
+      }
+
+      if (primaryTempPath) {
+        if (conflictPolicyFor(config) !== 'overwrite' && await destinationExists(destFullPath)) {
+          throw Object.assign(new Error('Destination already exists'), { code: 'EEXIST' });
+        }
+        await rename(primaryTempPath, destFullPath);
+        primaryTempPath = null;
       }
 
       const flags = resolveFlags(config.metadataExportFlags);
@@ -1074,6 +1206,7 @@ export async function importFiles(
       bytesTransferred += file.size;
       recordLedgerItem(file, { ...resolvedLedgerBase, status: finalStatus });
     } catch (err: unknown) {
+      await removeFileIfExists(primaryTempPath);
       const error = err as NodeJS.ErrnoException;
 
       if (error.code === 'ENOSPC') {

@@ -56,12 +56,13 @@ describe('scanFiles', () => {
       makeDirent('photo.jpg', false, true),
       makeDirent('video.mp4', false, true),
     ] as any);
-    mockStat.mockResolvedValue({ size: 1000 } as any);
+    mockStat.mockResolvedValue({ size: 1000, mtimeMs: 12345 } as any);
 
     const total = await scanFiles('/source', onBatch, onThumbnail);
 
     expect(total).toBe(2);
     expect(onBatch).toHaveBeenCalled();
+    expect(onBatch.mock.calls[0][0][0]).toEqual(expect.objectContaining({ sourceModifiedAtMs: 12345 }));
   });
 
   it('filters non-media extensions', async () => {

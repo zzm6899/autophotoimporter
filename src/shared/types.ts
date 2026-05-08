@@ -13,6 +13,8 @@ export interface MediaFile {
   path: string;
   name: string;
   size: number;
+  /** Source file modification time captured during scan, used to avoid importing files still being written. */
+  sourceModifiedAtMs?: number;
   type: 'photo' | 'video';
   extension: string;
   dateTaken?: string;
