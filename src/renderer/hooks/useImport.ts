@@ -44,7 +44,11 @@ export function resolveImportPaths({
   }
 
   const pickedFiles = files.filter((file) => file.pick === 'selected');
-  return pickedFiles.length > 0 ? pickedFiles.filter(isImportableFile).map((file) => file.path) : undefined;
+  if (pickedFiles.length > 0) {
+    return pickedFiles.filter(isImportableFile).map((file) => file.path);
+  }
+
+  return files.filter(isImportableFile).map((file) => file.path);
 }
 
 export function useImport() {

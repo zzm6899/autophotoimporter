@@ -3,6 +3,7 @@ import type { ImportHealthSummary } from '../../shared/types';
 import { formatDuration, formatSize } from '../utils/formatters';
 
 type HealthTone = 'neutral' | 'good' | 'warn' | 'bad';
+export type RetryCopyState = 'idle' | 'copied' | 'failed';
 
 function pathName(filePath: string): string {
   return filePath.split(/[/\\]/).filter(Boolean).pop() || filePath;
@@ -50,6 +51,16 @@ export function getImportHealthHeadline(summary: ImportHealthSummary): string {
   return issues > 0 ? `${issues} health ${issues === 1 ? 'note' : 'notes'}` : 'Last import is healthy';
 }
 
+export function formatRetryableClipboardList(items: ImportHealthSummary['retryableItems']): string {
+  return items.map((item) => `${item.sourcePath}: ${item.error ?? item.status}`).join('\n');
+}
+
+export function getRetryCopyLabel(state: RetryCopyState, count: number): string {
+  if (state === 'failed') return 'Copy failed';
+  if (state === 'copied') return `Copied ${count} path${count === 1 ? '' : 's'}`;
+  return 'Copy list';
+}
+
 function StatusPill({ status }: { status: string }) {
   return (
     <span className={`rounded border px-2 py-0.5 text-[10px] font-medium ${toneClass(statusTone(status))}`}>
@@ -71,6 +82,7 @@ export function ImportHealthDashboard() {
   const [summary, setSummary] = useState<ImportHealthSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [retryCopyState, setRetryCopyState] = useState<RetryCopyState>('idle');
 
   const refresh = async () => {
     setLoading(true);
@@ -101,14 +113,31 @@ export function ImportHealthDashboard() {
     return () => { cancelled = true; };
   }, []);
 
+  useEffect(() => {
+    setRetryCopyState('idle');
+  }, [summary?.generatedAt, summary?.retryableItems.length]);
+
+  useEffect(() => {
+    if (retryCopyState === 'idle') return;
+    const timeout = window.setTimeout(
+      () => setRetryCopyState('idle'),
+      retryCopyState === 'copied' ? 1500 : 2500,
+    );
+    return () => window.clearTimeout(timeout);
+  }, [retryCopyState]);
+
   const retryablePreview = useMemo(() => summary?.retryableItems.slice(0, 8) ?? [], [summary]);
   const headline = summary ? getImportHealthHeadline(summary) : 'Loading import health';
   const issueCount = summary ? getImportHealthIssueCount(summary) : 0;
 
-  const copyRetryList = () => {
+  const copyRetryList = async () => {
     if (!summary) return;
-    const lines = summary.retryableItems.map((item) => `${item.sourcePath}: ${item.error ?? item.status}`);
-    void navigator.clipboard.writeText(lines.join('\n')).catch(() => undefined);
+    try {
+      await navigator.clipboard.writeText(formatRetryableClipboardList(summary.retryableItems));
+      setRetryCopyState('copied');
+    } catch {
+      setRetryCopyState('failed');
+    }
   };
 
   return (
@@ -219,13 +248,17 @@ export function ImportHealthDashboard() {
               {summary.retryableItems.length > 0 && (
                 <button
                   type="button"
-                  onClick={copyRetryList}
+                  onClick={() => { void copyRetryList(); }}
+                  title="Copy full source paths and latest error/status for retryable files."
                   className="rounded border border-surface-border bg-surface-raised px-2 py-0.5 text-[10px] text-text-secondary transition-colors hover:border-text-secondary hover:text-text"
                 >
-                  Copy list
+                  {getRetryCopyLabel(retryCopyState, summary.retryableItems.length)}
                 </button>
               )}
             </div>
+            {retryCopyState === 'failed' && (
+              <p className="mb-2 text-[10px] text-red-300">Could not copy retry list. Try again or open the ledger.</p>
+            )}
             {summary.retryableItems.length === 0 ? (
               <p className="text-[11px] text-text-muted">No failed or pending files in the latest ledger.</p>
             ) : (

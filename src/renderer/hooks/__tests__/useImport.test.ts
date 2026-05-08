@@ -51,4 +51,34 @@ describe('resolveImportPaths', () => {
       ],
     })).toEqual(['/photos/ok.jpg']);
   });
+
+  it('falls back to explicit non-rejected importable paths when nothing is selected, queued, or picked', () => {
+    const files = [
+      file({ path: '/photos/ok.jpg', destPath: '/dest/ok.jpg' }),
+      file({ path: '/photos/rejected.jpg', destPath: '/dest/rejected.jpg', pick: 'rejected' }),
+      file({ path: '/photos/duplicate.jpg', destPath: '/dest/duplicate.jpg', duplicate: true }),
+      file({ path: '/photos/no-dest.jpg', destPath: undefined }),
+    ];
+
+    expect(resolveImportPaths({
+      files,
+      selectedPaths: [],
+      queuedPaths: [],
+      skipDuplicates: true,
+    })).toEqual(['/photos/ok.jpg']);
+  });
+
+  it('keeps picked files as the fallback priority over unpicked importable files', () => {
+    const files = [
+      file({ path: '/photos/picked.jpg', destPath: '/dest/picked.jpg', pick: 'selected' }),
+      file({ path: '/photos/unpicked.jpg', destPath: '/dest/unpicked.jpg' }),
+    ];
+
+    expect(resolveImportPaths({
+      files,
+      selectedPaths: [],
+      queuedPaths: [],
+      skipDuplicates: true,
+    })).toEqual(['/photos/picked.jpg']);
+  });
 });

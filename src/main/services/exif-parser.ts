@@ -92,8 +92,19 @@ export function clearThumbnailMemCache(): void {
 
 // Settings-driven overrides (will be set at runtime by ipc-handlers)
 let rawPreviewQuality = PREVIEW_QUALITY;  // Can be overridden by user settings
+let rawPreviewCacheEnabled = true;
+const rawPreviewCacheCounters = {
+  hits: 0,
+  misses: 0,
+  transientGenerations: 0,
+  embeddedFallbacks: 0,
+  platformResizes: 0,
+  failures: 0,
+  cleanups: 0,
+};
 
 let thumbDir: string | null = null;
+const PREVIEW_CACHE_SCHEMA_VERSION = 'preview-v2';
 
 async function getThumbDir(): Promise<string> {
   if (!thumbDir) {
@@ -106,6 +117,28 @@ async function getThumbDir(): Promise<string> {
 export function setRawPreviewQuality(quality: number): void {
   const requested = typeof quality === 'number' && Number.isFinite(quality) ? quality : PREVIEW_QUALITY;
   rawPreviewQuality = Math.max(30, Math.min(100, requested));
+}
+
+export function setRawPreviewCache(enabled: boolean): void {
+  rawPreviewCacheEnabled = enabled;
+}
+
+export function getRawPreviewCacheDiagnostics() {
+  return {
+    enabled: rawPreviewCacheEnabled,
+    quality: rawPreviewQuality,
+    ...rawPreviewCacheCounters,
+  };
+}
+
+export function resetRawPreviewCacheDiagnostics(): void {
+  rawPreviewCacheCounters.hits = 0;
+  rawPreviewCacheCounters.misses = 0;
+  rawPreviewCacheCounters.transientGenerations = 0;
+  rawPreviewCacheCounters.embeddedFallbacks = 0;
+  rawPreviewCacheCounters.platformResizes = 0;
+  rawPreviewCacheCounters.failures = 0;
+  rawPreviewCacheCounters.cleanups = 0;
 }
 
 async function isFileProtected(filePath: string): Promise<boolean> {
@@ -608,47 +641,88 @@ async function cacheKeyFor(filePath: string): Promise<string> {
   }
 }
 
+async function previewCacheKeyFor(
+  filePath: string,
+  variant: 'preview' | 'detail',
+  width: number,
+  quality: number,
+): Promise<string> {
+  const fileIdentity = await cacheKeyFor(filePath);
+  return crypto
+    .createHash('md5')
+    .update(`${PREVIEW_CACHE_SCHEMA_VERSION}|${fileIdentity}|${variant}|w${width}|q${quality}`)
+    .digest('hex')
+    .slice(0, 16);
+}
+
 const inflightPreviews = new Map<string, Promise<string | undefined>>();
 
 export async function generatePreview(
   filePath: string,
   variant: 'preview' | 'detail' = 'preview',
 ): Promise<string | undefined> {
-  const inflightKey = `${filePath}|${variant}`;
+  const ext = path.extname(filePath).toLowerCase();
+  const isRawPreview = RAW_EXTENSIONS.has(ext);
+  const cacheEnabled = rawPreviewCacheEnabled || !isRawPreview;
+  const width = variant === 'detail' ? DETAIL_PREVIEW_WIDTH : PREVIEW_WIDTH;
+  const quality = variant === 'detail' ? DETAIL_PREVIEW_QUALITY : rawPreviewQuality;
+  const inflightKey = `${filePath}|${variant}|q${quality}|${cacheEnabled ? 'cache' : 'nocache'}`;
   const existing = inflightPreviews.get(inflightKey);
   if (existing) return existing;
 
   const promise = (async () => {
+    let outPath: string | null = null;
     try {
       const dir = await getThumbDir();
-      const key = await cacheKeyFor(filePath);
-      const width = variant === 'detail' ? DETAIL_PREVIEW_WIDTH : PREVIEW_WIDTH;
-      const quality = variant === 'detail' ? DETAIL_PREVIEW_QUALITY : rawPreviewQuality;
+      const key = cacheEnabled
+        ? await previewCacheKeyFor(filePath, variant, width, quality)
+        : crypto.createHash('md5').update(`${filePath}|${variant}|${quality}`).digest('hex').slice(0, 16);
       const suffix = variant === 'detail' ? 'detail' : 'preview';
-      const outPath = path.join(dir, `${key}_${suffix}.jpg`);
-      const ext = path.extname(filePath).toLowerCase();
+      outPath = cacheEnabled
+        ? path.join(dir, `${key}_${suffix}.jpg`)
+        : path.join(dir, `${key}_${suffix}_${process.pid}_${Date.now()}.jpg`);
+      if (!cacheEnabled && isRawPreview) rawPreviewCacheCounters.transientGenerations++;
 
-      try {
-        await stat(outPath);
-        const cached = await readFile(outPath);
-        return `data:image/jpeg;base64,${cached.toString('base64')}`;
-      } catch {
-        // not cached
+      if (cacheEnabled) {
+        try {
+          await stat(outPath);
+          const cached = await readFile(outPath);
+          if (isRawPreview) rawPreviewCacheCounters.hits++;
+          return `data:image/jpeg;base64,${cached.toString('base64')}`;
+        } catch {
+          if (isRawPreview) rawPreviewCacheCounters.misses++;
+          // not cached
+        }
       }
 
-      if (RAW_EXTENSIONS.has(ext) && process.platform !== 'darwin') {
+      if (isRawPreview && process.platform !== 'darwin') {
         const fallback = await embeddedFallback(filePath, ext, width, quality, outPath);
-        if (fallback) return fallback;
+        if (fallback) {
+          rawPreviewCacheCounters.embeddedFallbacks++;
+          return fallback;
+        }
       }
 
       try {
         await platformResize(filePath, outPath, width, quality, 30000);
-        return readJpegDataUri(outPath);
+        const preview = await readJpegDataUri(outPath);
+        if (isRawPreview) rawPreviewCacheCounters.platformResizes++;
+        return preview;
       } catch {
-        return embeddedFallback(filePath, ext, width, quality, outPath);
+        const fallback = await embeddedFallback(filePath, ext, width, quality, outPath);
+        if (fallback && isRawPreview) rawPreviewCacheCounters.embeddedFallbacks++;
+        if (!fallback && isRawPreview) rawPreviewCacheCounters.failures++;
+        return fallback;
       }
     } catch {
+      if (isRawPreview) rawPreviewCacheCounters.failures++;
       return undefined;
+    } finally {
+      if (!cacheEnabled && outPath) {
+        await unlink(outPath)
+          .then(() => { if (isRawPreview) rawPreviewCacheCounters.cleanups++; })
+          .catch(() => undefined);
+      }
     }
   })();
 

@@ -13,6 +13,8 @@ vi.mock('node:fs/promises', () => ({
   stat: vi.fn(),
   readFile: vi.fn(),
   mkdir: vi.fn(),
+  writeFile: vi.fn(),
+  unlink: vi.fn(),
 }));
 
 vi.mock('node:child_process', () => ({
@@ -30,15 +32,16 @@ vi.mock('electron', () => ({
 }));
 
 import exifr from 'exifr';
-import { stat, readFile } from 'node:fs/promises';
+import { stat, readFile, unlink } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { resolvePattern } from '../../../shared/types';
-import { parseExifDate, extractEmbeddedThumbnail, generatePreview, generateThumbnail } from '../exif-parser';
+import { parseExifDate, extractEmbeddedThumbnail, generatePreview, generateThumbnail, getRawPreviewCacheDiagnostics, resetRawPreviewCacheDiagnostics, setRawPreviewCache, setRawPreviewQuality } from '../exif-parser';
 
 const mockExifrParse = vi.mocked(exifr.parse);
 const mockExifrThumbnail = vi.mocked(exifr.thumbnail);
 const mockStat = vi.mocked(stat);
 const mockReadFile = vi.mocked(readFile);
+const mockUnlink = vi.mocked(unlink);
 const mockExecFile = vi.mocked(execFile);
 
 function makeFile(overrides: Partial<MediaFile> = {}): MediaFile {
@@ -271,6 +274,89 @@ describe('extractEmbeddedThumbnail', () => {
     mockExifrThumbnail.mockRejectedValue(new Error('corrupt'));
     const result = await extractEmbeddedThumbnail('/photo.jpg', '.jpg');
     expect(result).toBeUndefined();
+  });
+});
+
+describe('generatePreview RAW cache setting', () => {
+  beforeEach(() => {
+    setRawPreviewCache(true);
+    setRawPreviewQuality(70);
+    resetRawPreviewCacheDiagnostics();
+    mockStat.mockReset();
+    mockReadFile.mockReset();
+    mockUnlink.mockReset();
+    mockUnlink.mockResolvedValue(undefined);
+    mockExifrThumbnail.mockReset();
+  });
+
+  it('uses cached RAW previews when the cache setting is enabled', async () => {
+    mockStat.mockResolvedValue({ mtimeMs: 1, size: 100 } as any);
+    mockReadFile.mockResolvedValue(Buffer.from('cached-preview'));
+
+    const result = await generatePreview('/photos/card/IMG_0001.cr3');
+
+    expect(result).toBe(`data:image/jpeg;base64,${Buffer.from('cached-preview').toString('base64')}`);
+    expect(mockReadFile).toHaveBeenCalledTimes(1);
+    expect(getRawPreviewCacheDiagnostics()).toMatchObject({
+      enabled: true,
+      hits: 1,
+      misses: 0,
+    });
+  });
+
+  it('skips RAW preview cache reads and removes transient files when disabled', async () => {
+    setRawPreviewCache(false);
+    mockStat.mockResolvedValue({ mtimeMs: 1, size: 100 } as any);
+    mockReadFile.mockResolvedValue(Buffer.from('cached-preview'));
+    mockExifrThumbnail.mockResolvedValue(Buffer.from('embedded-preview'));
+
+    const result = await generatePreview('/photos/card/IMG_0002.cr3');
+
+    expect(result).toBe(`data:image/jpeg;base64,${Buffer.from('embedded-preview').toString('base64')}`);
+    expect(mockReadFile).not.toHaveBeenCalled();
+    expect(mockUnlink).toHaveBeenCalled();
+    expect(getRawPreviewCacheDiagnostics()).toMatchObject({
+      enabled: false,
+      transientGenerations: 1,
+      embeddedFallbacks: 1,
+      cleanups: 1,
+      hits: 0,
+    });
+  });
+
+  it('does not reuse a stale cached RAW preview after quality changes', async () => {
+    const sourcePath = '/photos/card/IMG_0003.cr3';
+    const sourceStat = { mtimeMs: 1, size: 100 } as any;
+    setRawPreviewQuality(55);
+    mockStat.mockImplementation(async (filePath) => {
+      if (String(filePath) === sourcePath) return sourceStat;
+      throw new Error('cache miss');
+    });
+    mockExifrThumbnail.mockResolvedValue(Buffer.from('first-embedded-preview'));
+
+    await generatePreview(sourcePath);
+    const staleCachePath = mockStat.mock.calls
+      .map(([filePath]) => String(filePath))
+      .find((filePath) => filePath.includes('photo-importer-thumbs') && filePath.includes('_preview.jpg'));
+    expect(staleCachePath).toBeDefined();
+
+    setRawPreviewQuality(80);
+    mockStat.mockReset();
+    mockReadFile.mockReset();
+    mockExifrThumbnail.mockReset();
+    mockStat.mockImplementation(async (filePath) => {
+      const normalized = String(filePath);
+      if (normalized === sourcePath) return sourceStat;
+      if (normalized === staleCachePath) return { mtimeMs: 2, size: 200 } as any;
+      throw new Error('cache miss');
+    });
+    mockReadFile.mockResolvedValue(Buffer.from('stale-cache-preview'));
+    mockExifrThumbnail.mockResolvedValue(Buffer.from('fresh-embedded-preview'));
+
+    const result = await generatePreview(sourcePath);
+
+    expect(result).toBe(`data:image/jpeg;base64,${Buffer.from('fresh-embedded-preview').toString('base64')}`);
+    expect(mockReadFile).not.toHaveBeenCalled();
   });
 });
 

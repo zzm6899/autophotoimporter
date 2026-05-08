@@ -16,8 +16,8 @@ import { probeFtp, mirrorFtp } from './services/ftp-source';
 import { activateLicenseInput, checkHostedLicenseStatus, validateLicenseKey } from './services/license';
 import { analyzeFaces, faceModelsAvailable, serializeEmbedding, isGpuAvailable, getActualExecutionProvider, getFaceFeatureOptions, getFaceProviderDiagnostics, configureGpuAcceleration, configureGpuDevice, configureCpuOptimization, configureFaceFeatureOptions, configureFaceThroughput, clearImageDecodeCache, diagnoseFaceEngine, runFaceGpuStressTest } from './services/face-engine';
 import { getCachedFaceResult, setCachedFaceResult, clearFaceCache } from './services/face-cache';
-import { detectDeviceTier, applyDeviceTier } from './services/device-tier';
-import { setRawPreviewQuality } from './services/exif-parser';
+import { detectDeviceTier } from './services/device-tier';
+import { getRawPreviewCacheDiagnostics, setRawPreviewCache, setRawPreviewQuality } from './services/exif-parser';
 import { openCatalog, type CatalogService } from './services/catalog';
 import { openSessionStore, type SessionStoreService } from './services/session-store';
 import { normalizeWatchFolders, WatchFolderManager, type WatchFolderTrigger } from './services/watch-folders';
@@ -1117,6 +1117,20 @@ function clampRawPreviewQuality(n: unknown, fallback = DEFAULT_SETTINGS.rawPrevi
   return Math.max(30, Math.min(100, Math.round(requested)));
 }
 
+function applyRuntimeSettings(settings: AppSettings): void {
+  configureGpuAcceleration(settings.gpuFaceAcceleration ?? true);
+  configureGpuDevice(settings.gpuDeviceId);
+  configureCpuOptimization(settings.cpuOptimization ?? false);
+  configureFaceFeatureOptions({
+    faceMatching: settings.reviewFaceMatching ?? true,
+    personDetection: settings.reviewPersonDetection ?? true,
+  });
+  setRawPreviewQuality(clampRawPreviewQuality(settings.rawPreviewQuality));
+  setRawPreviewCache(settings.rawPreviewCache ?? true);
+  setFaceConcurrency(settings.faceConcurrency ?? 1);
+  setPreviewConcurrency(settings.previewConcurrency ?? 2);
+}
+
 function resolvePreviewConcurrency(
   settings: Pick<AppSettings, 'perfTier' | 'previewConcurrency'>,
   profile = detectDeviceTier(settings.perfTier && settings.perfTier !== 'auto' ? settings.perfTier : undefined),
@@ -1233,49 +1247,44 @@ async function loadSettings(): Promise<AppSettings> {
     const profile = detectDeviceTier(
       merged.perfTier && merged.perfTier !== 'auto' ? merged.perfTier : undefined
     );
-    const resolvedFaceConcurrency = resolveFaceConcurrency(merged, profile);
+    const faceSettings = Object.prototype.hasOwnProperty.call(parsed, 'faceConcurrency')
+      ? merged
+      : { ...merged, faceConcurrency: undefined };
+    const resolvedFaceConcurrency = resolveFaceConcurrency(faceSettings, profile);
     const previewSettings = Object.prototype.hasOwnProperty.call(parsed, 'previewConcurrency')
       ? merged
       : { ...merged, previewConcurrency: undefined };
     const resolvedPreviewConcurrency = resolvePreviewConcurrency(previewSettings, profile);
     const resolvedRawPreviewQuality = clampRawPreviewQuality(merged.rawPreviewQuality);
 
-    // Apply performance settings immediately
-    configureGpuAcceleration(merged.gpuFaceAcceleration ?? true);
-    configureGpuDevice(merged.gpuDeviceId);
-    configureCpuOptimization(merged.cpuOptimization ?? false);
-    configureFaceFeatureOptions({
-      faceMatching: merged.reviewFaceMatching ?? true,
-      personDetection: merged.reviewPersonDetection ?? true,
-    });
-    setRawPreviewQuality(resolvedRawPreviewQuality);
-    setFaceConcurrency(resolvedFaceConcurrency);
-    setPreviewConcurrency(resolvedPreviewConcurrency);
-
     const manualPerformanceOverrides = {
       ...(Object.prototype.hasOwnProperty.call(parsed, 'cpuOptimization') ? { cpuOptimization: merged.cpuOptimization } : {}),
       ...(isNumber(parsed.rawPreviewQuality) ? { rawPreviewQuality: resolvedRawPreviewQuality } : {}),
     };
 
-    // Apply device-tier presets on first load (overridden by explicit user settings)
-    const appliedProfile = applyDeviceTier(profile, {
-      setCpuOptimization: configureCpuOptimization,
-      setRawPreviewQuality,
-    }, manualPerformanceOverrides);
-
-    return {
+    const resolvedSettings = {
       ...merged,
-      cpuOptimization: appliedProfile.cpuOptimization,
-      rawPreviewQuality: appliedProfile.rawPreviewQuality,
+      cpuOptimization: manualPerformanceOverrides.cpuOptimization ?? profile.cpuOptimization,
+      rawPreviewQuality: manualPerformanceOverrides.rawPreviewQuality ?? profile.rawPreviewQuality,
       previewConcurrency: resolvedPreviewConcurrency,
       faceConcurrency: resolvedFaceConcurrency,
       licenseStatus,
     };
+    applyRuntimeSettings(resolvedSettings);
+    return resolvedSettings;
   } catch {
     const profile = detectDeviceTier();
     const resolvedPreviewConcurrency = resolvePreviewConcurrency({ ...DEFAULT_SETTINGS, previewConcurrency: undefined }, profile);
-    setPreviewConcurrency(resolvedPreviewConcurrency);
-    return { ...DEFAULT_SETTINGS, previewConcurrency: resolvedPreviewConcurrency };
+    const resolvedFaceConcurrency = resolveFaceConcurrency({ ...DEFAULT_SETTINGS, faceConcurrency: undefined }, profile);
+    const resolvedSettings = {
+      ...DEFAULT_SETTINGS,
+      cpuOptimization: profile.cpuOptimization,
+      rawPreviewQuality: profile.rawPreviewQuality,
+      previewConcurrency: resolvedPreviewConcurrency,
+      faceConcurrency: resolvedFaceConcurrency,
+    };
+    applyRuntimeSettings(resolvedSettings);
+    return resolvedSettings;
   }
 }
 
@@ -1306,25 +1315,35 @@ async function saveSettings(settings: Partial<AppSettings>): Promise<void> {
     : Object.prototype.hasOwnProperty.call(settings, 'perfTier')
       ? { ...merged, previewConcurrency: undefined }
       : merged;
+  const faceSettings = Object.prototype.hasOwnProperty.call(settings, 'faceConcurrency')
+    ? merged
+    : Object.prototype.hasOwnProperty.call(settings, 'perfTier')
+      ? { ...merged, faceConcurrency: undefined }
+      : merged;
+  const tierPerformanceDefaults = Object.prototype.hasOwnProperty.call(settings, 'perfTier')
+    ? {
+        cpuOptimization: Object.prototype.hasOwnProperty.call(settings, 'cpuOptimization')
+          ? merged.cpuOptimization
+          : profile.cpuOptimization,
+        rawPreviewQuality: Object.prototype.hasOwnProperty.call(settings, 'rawPreviewQuality')
+          ? clampRawPreviewQuality(merged.rawPreviewQuality)
+          : profile.rawPreviewQuality,
+      }
+    : {
+        cpuOptimization: merged.cpuOptimization,
+        rawPreviewQuality: clampRawPreviewQuality(merged.rawPreviewQuality),
+      };
   const normalized: AppSettings = {
     ...merged,
-    rawPreviewQuality: clampRawPreviewQuality(merged.rawPreviewQuality),
+    cpuOptimization: tierPerformanceDefaults.cpuOptimization,
+    rawPreviewQuality: tierPerformanceDefaults.rawPreviewQuality,
     previewConcurrency: resolvePreviewConcurrency(previewSettings, profile),
-    faceConcurrency: resolveFaceConcurrency(merged, profile),
+    faceConcurrency: resolveFaceConcurrency(faceSettings, profile),
   };
   await writeSettingsFile(normalized);
   
   // Reapply settings to running services
-  configureGpuAcceleration(normalized.gpuFaceAcceleration ?? true);
-  configureGpuDevice(normalized.gpuDeviceId);
-  configureCpuOptimization(normalized.cpuOptimization ?? false);
-  configureFaceFeatureOptions({
-    faceMatching: normalized.reviewFaceMatching ?? true,
-    personDetection: normalized.reviewPersonDetection ?? true,
-  });
-  setRawPreviewQuality(normalized.rawPreviewQuality ?? 70);
-  setPreviewConcurrency(normalized.previewConcurrency ?? 2);
-  setFaceConcurrency(normalized.faceConcurrency ?? 1);
+  applyRuntimeSettings(normalized);
   watchFolderManager?.update(normalized.watchFolders ?? []);
   };
 
@@ -1607,6 +1626,7 @@ async function buildDiagnosticsSnapshot(): Promise<AppDiagnosticsSnapshot> {
         slots: faceSemaphoreSlots,
       },
       previewQueue: getPreviewQueueDiagnostics(),
+      rawPreviewCache: getRawPreviewCacheDiagnostics(),
     },
   };
 }
@@ -2518,6 +2538,7 @@ export function registerIpcHandlers(): void {
           slots: faceSemaphoreSlots,
         },
         previewQueue: getPreviewQueueDiagnostics(),
+        rawPreviewCache: getRawPreviewCacheDiagnostics(),
       },
       faceQueue: {
         active: faceActiveCount,

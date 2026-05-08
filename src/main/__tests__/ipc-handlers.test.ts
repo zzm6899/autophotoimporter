@@ -59,6 +59,18 @@ vi.mock('../services/duplicate-detector', () => ({
 vi.mock('../services/exif-parser', () => ({
   generatePreview: vi.fn(),
   setRawPreviewQuality: vi.fn(),
+  setRawPreviewCache: vi.fn(),
+  getRawPreviewCacheDiagnostics: vi.fn(() => ({
+    enabled: true,
+    quality: 70,
+    hits: 0,
+    misses: 0,
+    transientGenerations: 0,
+    embeddedFallbacks: 0,
+    platformResizes: 0,
+    failures: 0,
+    cleanups: 0,
+  })),
 }));
 
 vi.mock('../services/ftp-source', () => ({
@@ -107,7 +119,7 @@ import { registerIpcHandlers } from '../ipc-handlers';
 import { importFiles } from '../services/import-engine';
 import { scanFiles } from '../services/file-scanner';
 import { isDuplicate } from '../services/duplicate-detector';
-import { generatePreview } from '../services/exif-parser';
+import { generatePreview, setRawPreviewCache, setRawPreviewQuality } from '../services/exif-parser';
 import { checkForUpdate, fetchUpdateHistory, readLastKnownGoodUpdateMetadata } from '../services/update-checker';
 import { readFile, writeFile, chmod } from 'node:fs/promises';
 
@@ -115,6 +127,8 @@ const mockImportFiles = vi.mocked(importFiles);
 const mockScanFiles = vi.mocked(scanFiles);
 const mockIsDuplicate = vi.mocked(isDuplicate);
 const mockGeneratePreview = vi.mocked(generatePreview);
+const mockSetRawPreviewCache = vi.mocked(setRawPreviewCache);
+const mockSetRawPreviewQuality = vi.mocked(setRawPreviewQuality);
 const mockReadFile = vi.mocked(readFile);
 const mockWriteFile = vi.mocked(writeFile);
 const mockChmod = vi.mocked(chmod);
@@ -153,6 +167,8 @@ describe('IPC Handlers', () => {
     mockIsDuplicate.mockResolvedValue(false);
     mockGeneratePreview.mockReset();
     mockGeneratePreview.mockResolvedValue('data:image/jpeg;base64,preview');
+    mockSetRawPreviewCache.mockClear();
+    mockSetRawPreviewQuality.mockClear();
   });
 
   describe('IMPORT_START', () => {
@@ -543,6 +559,15 @@ describe('IPC Handlers', () => {
       expect(settings.faceConcurrency).toBeLessThanOrEqual(8);
     });
 
+    it('uses profile face concurrency when no persisted face override exists', async () => {
+      mockReadFile.mockResolvedValue(JSON.stringify({ perfTier: 'high' }) as any);
+      const handler = getHandler('settings:get');
+      const settings = await handler({}) as any;
+
+      expect(settings.faceConcurrency).toBeGreaterThanOrEqual(4);
+      expect(settings.faceConcurrency).toBeLessThanOrEqual(8);
+    });
+
     it('clamps saved preview concurrency to the renderer-supported maximum', async () => {
       mockReadFile.mockResolvedValue(JSON.stringify({ previewConcurrency: 24 }) as any);
       const handler = getHandler('settings:get');
@@ -624,6 +649,36 @@ describe('IPC Handlers', () => {
       expect(written.previewConcurrency).toBe(1);
     });
 
+    it('applies tier face and RAW defaults when tier changes without explicit overrides', async () => {
+      mockReadFile.mockResolvedValue(JSON.stringify({
+        perfTier: 'balanced',
+        faceConcurrency: 2,
+        rawPreviewQuality: 70,
+        cpuOptimization: false,
+      }) as any);
+      const handler = getHandler('settings:set');
+
+      await handler({}, { perfTier: 'low' });
+      const written = JSON.parse(String(mockWriteFile.mock.calls[0][1]));
+
+      expect(written.faceConcurrency).toBe(1);
+      expect(written.rawPreviewQuality).toBe(55);
+      expect(written.cpuOptimization).toBe(true);
+    });
+
+    it('applies first-run defaults to runtime queues and RAW preview services', async () => {
+      mockReadFile.mockRejectedValue(new Error('ENOENT'));
+      const settings = await getHandler('settings:get')({}) as any;
+
+      expect(mockSetRawPreviewQuality).toHaveBeenLastCalledWith(settings.rawPreviewQuality);
+      expect(mockSetRawPreviewCache).toHaveBeenLastCalledWith(settings.rawPreviewCache);
+
+      const snapshot = await getHandler('diagnostics:snapshot')({}) as any;
+
+      expect(snapshot.performance.previewQueue.preview.slots).toBe(settings.previewConcurrency);
+      expect(snapshot.performance.faceQueue.slots).toBe(settings.faceConcurrency);
+    });
+
     it('returns defaults on JSON parse error', async () => {
       mockReadFile.mockResolvedValue('not-json' as any);
       const handler = getHandler('settings:get');
@@ -697,6 +752,12 @@ describe('IPC Handlers', () => {
       expect(snapshot.performance.previewQueue.preview.active).toBe(0);
       expect(snapshot.performance.previewQueue.preview.queued).toBe(0);
       expect(snapshot.performance.faceQueue.slots).toBe(4);
+      expect(snapshot.performance.rawPreviewCache).toEqual(expect.objectContaining({
+        enabled: true,
+        quality: 70,
+        hits: 0,
+        misses: 0,
+      }));
     });
   });
 

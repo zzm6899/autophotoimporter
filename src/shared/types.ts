@@ -1109,6 +1109,17 @@ export interface AppDiagnosticsSnapshot {
         slots: number;
       };
     };
+    rawPreviewCache: {
+      enabled: boolean;
+      quality: number;
+      hits: number;
+      misses: number;
+      transientGenerations: number;
+      embeddedFallbacks: number;
+      platformResizes: number;
+      failures: number;
+      cleanups: number;
+    };
   };
 }
 

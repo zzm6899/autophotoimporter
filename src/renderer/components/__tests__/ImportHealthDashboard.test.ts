@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getImportHealthHeadline, getImportHealthIssueCount } from '../ImportHealthDashboard';
+import { formatRetryableClipboardList, getImportHealthHeadline, getImportHealthIssueCount, getRetryCopyLabel } from '../ImportHealthDashboard';
 import type { ImportHealthSummary } from '../../../shared/types';
 
 type SummaryOverrides = Partial<Omit<ImportHealthSummary, 'lastImport' | 'checksum' | 'backup' | 'ftp' | 'watchFolders'>> & {
@@ -114,5 +114,23 @@ describe('ImportHealthDashboard helpers', () => {
     });
 
     expect(getImportHealthHeadline(summary)).toBe('No import ledger yet');
+  });
+
+  it('formats retryable files for clipboard copy', () => {
+    const summary = makeSummary({
+      retryableItems: [
+        { sourcePath: '/src/a.jpg', name: 'a.jpg', size: 100, status: 'failed', error: 'Disk full' },
+        { sourcePath: '/src/b.jpg', name: 'b.jpg', size: 100, status: 'pending' },
+      ],
+    });
+
+    expect(formatRetryableClipboardList(summary.retryableItems)).toBe('/src/a.jpg: Disk full\n/src/b.jpg: pending');
+  });
+
+  it('labels retry-list copy outcomes', () => {
+    expect(getRetryCopyLabel('idle', 2)).toBe('Copy list');
+    expect(getRetryCopyLabel('copied', 1)).toBe('Copied 1 path');
+    expect(getRetryCopyLabel('copied', 2)).toBe('Copied 2 paths');
+    expect(getRetryCopyLabel('failed', 2)).toBe('Copy failed');
   });
 });

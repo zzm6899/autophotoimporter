@@ -1621,6 +1621,11 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                     </span>
                   </div>
                   <div>
+                    RAW previews: <span className="text-text-secondary">
+                      {diagnosticsSnapshot.performance.rawPreviewCache.enabled ? 'cache on' : 'cache off'} · {diagnosticsSnapshot.performance.rawPreviewCache.quality}% · {diagnosticsSnapshot.performance.rawPreviewCache.hits}/{diagnosticsSnapshot.performance.rawPreviewCache.misses} hit/miss · {diagnosticsSnapshot.performance.rawPreviewCache.transientGenerations} transient · {diagnosticsSnapshot.performance.rawPreviewCache.embeddedFallbacks} fallback · {diagnosticsSnapshot.performance.rawPreviewCache.failures} failed
+                    </span>
+                  </div>
+                  <div>
                     Queues: <span className="text-text-secondary">
                       preview {diagnosticsSnapshot.performance.previewQueue.preview.active}/{diagnosticsSnapshot.performance.previewQueue.preview.queued} · detail {diagnosticsSnapshot.performance.previewQueue.detail.active}/{diagnosticsSnapshot.performance.previewQueue.detail.queued} · face {diagnosticsSnapshot.performance.faceQueue.active}/{diagnosticsSnapshot.performance.faceQueue.queued}
                     </span>
