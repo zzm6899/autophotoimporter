@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { summarizeBestOfActions } from '../BestOfSelectionPanel';
+import { rankBestOfSelection, summarizeBestOfActions } from '../BestOfSelectionPanel';
 import type { MediaFile } from '../../../shared/types';
 
 function photo(name: string, pick?: MediaFile['pick']): MediaFile {
@@ -44,5 +44,24 @@ describe('summarizeBestOfActions', () => {
 
     expect(summary?.pickLabel).toBe('Pick Best changes solo.jpg from rejected to picked.');
     expect(summary?.rejectRestLabel).toBe('Reject Rest keeps solo.jpg picked because it is the only candidate.');
+  });
+
+  it('ranks the quality-best photo above a weaker manual pick', () => {
+    const ranked = rankBestOfSelection([
+      {
+        ...photo('manual-pick.jpg', 'selected'),
+        subjectSharpnessScore: 70,
+        sharpnessScore: 70,
+        reviewScore: 50,
+      },
+      {
+        ...photo('quality-best.jpg'),
+        subjectSharpnessScore: 95,
+        sharpnessScore: 95,
+        reviewScore: 70,
+      },
+    ]);
+
+    expect(ranked[0].name).toBe('quality-best.jpg');
   });
 });

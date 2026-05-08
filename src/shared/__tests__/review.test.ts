@@ -295,6 +295,33 @@ describe('review utilities', () => {
     expect(chosen?.path).toBe('/protected.jpg');
   });
 
+  it('keeps manually rejected rated files below viable best-shot candidates', () => {
+    const ranked = rankBestShots([
+      file('/rejected-star.jpg', undefined, {
+        pick: 'rejected',
+        rating: 5,
+        subjectSharpnessScore: 220,
+        sharpnessScore: 240,
+        reviewScore: 98,
+      }),
+      file('/picked.jpg', undefined, {
+        pick: 'selected',
+        subjectSharpnessScore: 88,
+        sharpnessScore: 95,
+        reviewScore: 58,
+      }),
+      file('/clean.jpg', undefined, {
+        subjectSharpnessScore: 160,
+        sharpnessScore: 170,
+        reviewScore: 82,
+      }),
+    ]);
+
+    expect(ranked[0].path).toBe('/clean.jpg');
+    expect(ranked[ranked.length - 1].path).toBe('/rejected-star.jpg');
+    expect(bestInGroup(ranked)?.path).toBe('/clean.jpg');
+  });
+
   it('ranks burst keepers by face, eye, and subject quality', () => {
     const ranked = rankBestShots([
       file('/soft.jpg', undefined, { faceCount: 1, faceBoxes: [{ x: 0.2, y: 0.2, width: 0.2, height: 0.2, eyeScore: 0, score: 0.65 }], subjectSharpnessScore: 32, sharpnessScore: 120, reviewScore: 54 }),
@@ -372,6 +399,78 @@ describe('review utilities', () => {
     expect(decision.best?.path).toBe('/best.jpg');
     expect(decision.keep).toContain('/keeper.jpg');
     expect(decision.reject).toContain('/reject.jpg');
+  });
+
+  it('keeps manual picks without making them the automatic best reference', () => {
+    const decision = autoCullGroup([
+      file('/manual-pick.jpg', undefined, {
+        pick: 'selected',
+        subjectSharpnessScore: 70,
+        sharpnessScore: 70,
+        reviewScore: 50,
+      }),
+      file('/quality-best.jpg', undefined, {
+        subjectSharpnessScore: 95,
+        sharpnessScore: 95,
+        reviewScore: 70,
+      }),
+    ]);
+
+    expect(decision.best?.path).toBe('/quality-best.jpg');
+    expect(decision.keep).toContain('/manual-pick.jpg');
+    expect(decision.keep).toContain('/quality-best.jpg');
+  });
+
+  it('does not resurrect manual rejects as automatic keepers', () => {
+    const decision = autoCullGroup([
+      file('/rejected-star.jpg', undefined, {
+        pick: 'rejected',
+        rating: 5,
+        faceCount: 1,
+        faceBoxes: [{ x: 0.25, y: 0.2, width: 0.24, height: 0.24, eyeScore: 2, score: 0.98 }],
+        subjectSharpnessScore: 180,
+        sharpnessScore: 210,
+        reviewScore: 96,
+      }),
+      file('/viable.jpg', undefined, {
+        faceCount: 1,
+        faceBoxes: [{ x: 0.25, y: 0.2, width: 0.23, height: 0.23, eyeScore: 2, score: 0.92 }],
+        subjectSharpnessScore: 110,
+        sharpnessScore: 130,
+        reviewScore: 70,
+      }),
+    ]);
+
+    expect(decision.best?.path).toBe('/viable.jpg');
+    expect(decision.keep).toContain('/viable.jpg');
+    expect(decision.keep).not.toContain('/rejected-star.jpg');
+    expect(decision.reject).toContain('/rejected-star.jpg');
+    expect(decision.reasons['/rejected-star.jpg']).toEqual(['manual reject']);
+  });
+
+  it('excludes manual rejects from keeper quota alternates', () => {
+    const decision = autoCullGroup([
+      file('/best.jpg', undefined, {
+        subjectSharpnessScore: 130,
+        sharpnessScore: 150,
+        reviewScore: 82,
+      }),
+      file('/rejected-alt.jpg', undefined, {
+        pick: 'rejected',
+        rating: 5,
+        subjectSharpnessScore: 220,
+        sharpnessScore: 240,
+        reviewScore: 98,
+      }),
+      file('/second.jpg', undefined, {
+        subjectSharpnessScore: 120,
+        sharpnessScore: 135,
+        reviewScore: 76,
+      }),
+    ], { keeperQuota: 'top-2' });
+
+    expect(decision.keep).toEqual(['/best.jpg', '/second.jpg']);
+    expect(decision.reject).toContain('/rejected-alt.jpg');
   });
 
   it('supports conservative vs aggressive cull confidence', () => {

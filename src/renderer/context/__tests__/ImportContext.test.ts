@@ -710,6 +710,28 @@ describe('ImportContext reducer', () => {
       expect(next.fileHistory).toHaveLength(1);
     });
 
+    it('does not promote a manually rejected rated file when picking best in groups', () => {
+      const files = [
+        makeFile({ path: '/rejected-star.jpg', visualGroupId: 'g1', visualGroupSize: 2, pick: 'rejected', rating: 5, reviewScore: 96, sharpnessScore: 220, subjectSharpnessScore: 180 }),
+        makeFile({ path: '/usable.jpg', visualGroupId: 'g1', visualGroupSize: 2, reviewScore: 70, sharpnessScore: 130, subjectSharpnessScore: 110 }),
+      ];
+      const next = reducer(makeState({ files }), { type: 'PICK_BEST_IN_GROUPS' });
+
+      expect(next.files.find((f) => f.path === '/usable.jpg')?.pick).toBe('selected');
+      expect(next.files.find((f) => f.path === '/rejected-star.jpg')?.pick).toBe('rejected');
+    });
+
+    it('keeps manual picks from overriding a stronger group best', () => {
+      const files = [
+        makeFile({ path: '/manual-pick.jpg', visualGroupId: 'g1', visualGroupSize: 2, pick: 'selected', reviewScore: 50, sharpnessScore: 70, subjectSharpnessScore: 70 }),
+        makeFile({ path: '/quality-best.jpg', visualGroupId: 'g1', visualGroupSize: 2, reviewScore: 70, sharpnessScore: 95, subjectSharpnessScore: 95 }),
+      ];
+      const next = reducer(makeState({ files }), { type: 'PICK_BEST_IN_GROUPS' });
+
+      expect(next.files.find((f) => f.path === '/quality-best.jpg')?.pick).toBe('selected');
+      expect(next.files.find((f) => f.path === '/manual-pick.jpg')?.pick).toBe('rejected');
+    });
+
     it('picks best in groups from supplied merged review files', () => {
       const files = [
         makeFile({ path: '/stale-best.jpg', visualGroupId: 'g1', visualGroupSize: 2, reviewScore: 90, sharpnessScore: 180 }),

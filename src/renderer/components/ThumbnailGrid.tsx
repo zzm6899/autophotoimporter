@@ -68,6 +68,55 @@ function formatFaceScanRate(ratePerSecond: number): string {
   return `${perMinute >= 10 ? Math.round(perMinute) : perMinute.toFixed(1)}/min`;
 }
 
+export interface ReviewFlowNextStepSummary {
+  nextStep: string;
+  nextStepTitle?: string;
+}
+
+function queuedLabel(count: number): string {
+  return `${count} queued`;
+}
+
+export function summarizeReviewFlowNextStep({
+  queuedCount,
+  queuedImportableCount,
+  hasDestination,
+  pendingCount,
+}: {
+  queuedCount: number;
+  queuedImportableCount: number;
+  hasDestination: boolean;
+  pendingCount: number;
+}): ReviewFlowNextStepSummary {
+  if (queuedCount > 0) {
+    const importableCount = Math.max(0, Math.min(queuedImportableCount, queuedCount));
+    if (!hasDestination) {
+      return {
+        nextStep: `Choose destination for ${queuedLabel(queuedCount)}`,
+        nextStepTitle: 'Choose a destination folder before importing queued files.',
+      };
+    }
+    if (importableCount === queuedCount) {
+      return { nextStep: `Import ${queuedLabel(queuedCount)}` };
+    }
+    const blockedCount = queuedCount - importableCount;
+    const blockedReason = `${blockedCount} queued ${blockedCount === 1 ? 'file will not import' : 'files will not import'} because ${blockedCount === 1 ? 'it is' : 'they are'} rejected, duplicates, or missing destination paths.`;
+    if (importableCount > 0) {
+      return {
+        nextStep: `Import ${importableCount}/${queuedCount} queued`,
+        nextStepTitle: blockedReason,
+      };
+    }
+    return {
+      nextStep: `Fix ${queuedLabel(queuedCount)}`,
+      nextStepTitle: blockedReason,
+    };
+  }
+
+  if (pendingCount > 0) return { nextStep: `${pendingCount} left to decide` };
+  return { nextStep: hasDestination ? 'Ready to import' : 'Choose destination' };
+}
+
 type MediaFaceBox = NonNullable<MediaFile['faceBoxes']>[number];
 
 const FACE_GROUP_SENSITIVITY_OPTIONS = [
@@ -4328,13 +4377,12 @@ export function ThumbnailGrid() {
                         : filter === 'all'
                           ? 'All photos'
                           : filter;
-    const nextStep = queuedPaths.length > 0
-      ? `Import ${queuedPaths.length} queued`
-      : reviewStats.pending > 0
-        ? `${reviewStats.pending} left to decide`
-        : destination
-          ? 'Ready to import'
-          : 'Choose destination';
+    const nextStep = summarizeReviewFlowNextStep({
+      queuedCount: queuedPaths.length,
+      queuedImportableCount: queuedImportablePaths.length,
+      hasDestination: !!destination,
+      pendingCount: reviewStats.pending,
+    });
     const health = reviewStats.blur > 0
       ? `${reviewStats.blur} blur risk`
       : catalogMatchCount > 0
@@ -4344,8 +4392,8 @@ export function ThumbnailGrid() {
           : reviewStats.faceGroups > 0
             ? `${reviewStats.faceGroups} face groups`
             : 'Clean review lane';
-    return { filterLabel, nextStep, health };
-  }, [catalogMatchCount, destination, filter, queuedPaths.length, reviewStats.blur, reviewStats.faceGroups, reviewStats.groupPhotos, reviewStats.pending]);
+    return { filterLabel, nextStep: nextStep.nextStep, nextStepTitle: nextStep.nextStepTitle, health };
+  }, [catalogMatchCount, destination, filter, queuedImportablePaths.length, queuedPaths.length, reviewStats.blur, reviewStats.faceGroups, reviewStats.groupPhotos, reviewStats.pending]);
 
   const handleNormalizeToggle = useCallback(() => {
     if (normalizeTargetPaths.length === 0) return;
@@ -5457,7 +5505,7 @@ export function ThumbnailGrid() {
             <span className="rounded bg-surface-raised px-1.5 py-0.5 text-text-secondary">{reviewFlow.filterLabel}</span>
             {searchText.trim() && <span className="rounded bg-blue-500/10 px-1.5 py-0.5 text-blue-300">search</span>}
             <span className="text-text-secondary">/</span>
-            <span className="text-text-secondary">{reviewFlow.nextStep}</span>
+            <span className="text-text-secondary" title={reviewFlow.nextStepTitle}>{reviewFlow.nextStep}</span>
             <button
               type="button"
               onClick={() => dispatch({ type: 'SET_FILTER', filter: reviewStats.blur > 0 ? 'blur-risk' : catalogMatchCount > 0 ? 'catalog-duplicates' : reviewStats.groupPhotos > 0 ? 'group-photos' : reviewStats.faceGroups > 0 ? 'face-gallery' : 'all' })}

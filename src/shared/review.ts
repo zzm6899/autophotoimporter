@@ -173,7 +173,6 @@ export function bestShotScore(file: MediaFile): number {
     Math.min(60, wholeSharp / 4.5) +
     Math.min(70, review * 1.05);
 
-  if (file.pick === 'selected') score += 70;
   if (file.pick === 'rejected') score -= 140;
   if (typeof file.exposureValue === 'number') score += 8;
   if (file.blurRisk === 'high') score -= hasFaces ? 150 : 115;
@@ -181,6 +180,15 @@ export function bestShotScore(file: MediaFile): number {
   if (hasFaces && subjectSharp > 0 && subjectSharp < 38) score -= 55;
   if (!hasFaces && subjectSharp > 0 && subjectSharp < 28) score -= 25;
   return Math.round(score);
+}
+
+function manualPickRank(file: MediaFile): number {
+  if (file.pick === 'rejected') return 0;
+  return 1;
+}
+
+function isAutoBestCandidate(file: MediaFile): boolean {
+  return file.pick !== 'rejected';
 }
 
 export function isDetailStoryKeeper(file: MediaFile): boolean {
@@ -229,6 +237,7 @@ export function assignSceneBuckets(files: MediaFile[], eventMode: EventMode = 'g
 
 export function rankBestShots(files: MediaFile[]): MediaFile[] {
   return files.slice().sort((a, b) =>
+    manualPickRank(b) - manualPickRank(a) ||
     Number(!!b.isProtected) - Number(!!a.isProtected) ||
     (b.rating ?? 0) - (a.rating ?? 0) ||
     bestShotScore(b) - bestShotScore(a) ||
@@ -273,11 +282,12 @@ function weakestFaceSignal(file: MediaFile): number {
 }
 
 function addQuotaKeepers(ranked: MediaFile[], keep: Set<string>, options: AutoCullOptions): void {
+  const candidates = ranked.filter(isAutoBestCandidate);
   const quota = options.keeperQuota ?? 'best-1';
   if (quota === 'top-2') {
-    for (const file of ranked.slice(0, 2)) keep.add(file.path);
+    for (const file of candidates.slice(0, 2)) keep.add(file.path);
   } else if (quota === 'all-rated') {
-    for (const file of ranked) {
+    for (const file of candidates) {
       if (file.isProtected || (file.rating ?? 0) > 0 || file.pick === 'selected') keep.add(file.path);
     }
   } else if (quota === 'smile-and-sharp') {
@@ -286,11 +296,11 @@ function addQuotaKeepers(ranked: MediaFile[], keep: Set<string>, options: AutoCu
       if (boxes.length === 0) return 0;
       return boxes.reduce((best, box) => Math.max(best, clamp01(box.smileScore ?? box.expressionScore, 0.5)), 0);
     };
-    const smileBest = ranked.slice().sort((a, b) =>
+    const smileBest = candidates.slice().sort((a, b) =>
       expressionScore(b) - expressionScore(a) ||
       humanMomentQuality(b) - humanMomentQuality(a),
     )[0];
-    const sharpBest = ranked.slice().sort((a, b) =>
+    const sharpBest = candidates.slice().sort((a, b) =>
       (b.subjectSharpnessScore ?? b.sharpnessScore ?? 0) - (a.subjectSharpnessScore ?? a.sharpnessScore ?? 0),
     )[0];
     if (smileBest) keep.add(smileBest.path);
@@ -300,7 +310,7 @@ function addQuotaKeepers(ranked: MediaFile[], keep: Set<string>, options: AutoCu
 
 export function autoCullGroup(files: MediaFile[], options: AutoCullOptions = {}): AutoCullDecision {
   const ranked = rankBestShots(files);
-  const best = ranked[0] ?? null;
+  const best = ranked.find(isAutoBestCandidate) ?? null;
   const keep = new Set<string>();
   const reject = new Set<string>();
   const reasons: Record<string, string[]> = {};
@@ -310,7 +320,8 @@ export function autoCullGroup(files: MediaFile[], options: AutoCullOptions = {})
   addQuotaKeepers(ranked, keep, options);
   for (const path of keep) reasons[path] = path === best.path ? ['best shot'] : ['quota keeper'];
   const bestScore = bestShotScore(best);
-  const secondScore = ranked[1] ? bestShotScore(ranked[1]) : 0;
+  const second = ranked.find((file) => file.path !== best.path && isAutoBestCandidate(file));
+  const secondScore = second ? bestShotScore(second) : 0;
   const gap = bestScore - secondScore;
   const confidence = options.confidence ?? 'balanced';
   const requiredReasons = confidence === 'conservative' ? 4 : confidence === 'aggressive' ? 1 : 2;
@@ -323,6 +334,11 @@ export function autoCullGroup(files: MediaFile[], options: AutoCullOptions = {})
 
   for (const file of files) {
     if (file.path === best.path) continue;
+    if (file.pick === 'rejected') {
+      reject.add(file.path);
+      reasons[file.path] = ['manual reject'];
+      continue;
+    }
     if (file.isProtected || (file.rating ?? 0) > 0 || file.pick === 'selected') {
       keep.add(file.path);
       reasons[file.path] = ['manual keeper'];
@@ -918,5 +934,5 @@ export function groupByFaceSimilarity(files: MediaFile[], embeddingThreshold = 0
 
 export function bestInGroup(files: MediaFile[]): MediaFile | null {
   if (files.length === 0) return null;
-  return rankBestShots(files)[0];
+  return rankBestShots(files).find(isAutoBestCandidate) ?? null;
 }
