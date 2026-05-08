@@ -22,6 +22,7 @@ interface BestOfSelectionPanelProps {
   onQueueBest: (file: MediaFile) => void;
   onQueueBestAndNext?: (file: MediaFile) => void;
   onRejectRest: (best: MediaFile) => void;
+  onRejectRestAndNext?: (best: MediaFile) => void;
   queuedPaths?: string[];
 }
 
@@ -108,6 +109,8 @@ interface BestOfActionSummary {
   queueAndNextLabel?: string;
   rejectRestButtonLabel: string;
   rejectRestLabel: string;
+  acceptAndNextButtonLabel?: string;
+  acceptAndNextLabel?: string;
   queueState: 'queued' | 'ready';
 }
 
@@ -164,6 +167,12 @@ export function summarizeBestOfActions(
     ? `Reject Rest marks ${topName} picked and rejects ${otherCandidates} in this panel.`
     : `Reject Rest keeps ${topName} picked because it is the only candidate.`;
   const rejectRestButtonLabel = scope === 'batch' ? 'Reject Page Rest' : 'Reject Rest';
+  const acceptAndNextButtonLabel = scope === 'batch' ? 'Accept + Next' : undefined;
+  const acceptAndNextLabel = scope === 'batch'
+    ? restCount > 0
+      ? `Accept + Next marks ${topName} picked, rejects ${otherCandidates} in this page, and opens the following batch page.`
+      : `Accept + Next marks ${topName} picked and opens the following batch page.`
+    : undefined;
 
   return {
     scopeLabel,
@@ -175,6 +184,8 @@ export function summarizeBestOfActions(
     queueAndNextLabel,
     rejectRestButtonLabel,
     rejectRestLabel,
+    acceptAndNextButtonLabel,
+    acceptAndNextLabel,
     queueState,
   };
 }
@@ -540,6 +551,7 @@ export function BestOfSelectionPanel({
   onQueueBest,
   onQueueBestAndNext,
   onRejectRest,
+  onRejectRestAndNext,
   queuedPaths = [],
 }: BestOfSelectionPanelProps) {
   const ranked = useMemo(() => rankBestOfSelection(files).slice(0, 6), [files]);
@@ -724,6 +736,24 @@ export function BestOfSelectionPanel({
           >
             {actionSummary?.rejectRestButtonLabel ?? 'Reject Rest'}
           </button>
+          {isBatch && onRejectRestAndNext && (
+            <button
+              onClick={() => {
+                if (!nextBatchDisabled) onRejectRestAndNext(best);
+              }}
+              disabled={nextBatchDisabled}
+              title={nextBatchDisabled
+                ? 'Reject Page Rest is available; there is no next batch page.'
+                : actionTitle(actionSummary?.acceptAndNextLabel, 'Pick the top-ranked candidate, reject the rest, and open the next batch page.')}
+              className={`px-2.5 py-1 text-[11px] rounded ${
+                nextBatchDisabled
+                  ? 'bg-surface text-text-muted cursor-not-allowed opacity-60'
+                  : 'bg-red-500/10 text-red-300 hover:bg-red-500/20'
+              }`}
+            >
+              {actionSummary?.acceptAndNextButtonLabel ?? 'Accept + Next'}
+            </button>
+          )}
           <button onClick={onClose} className="px-2 py-1 text-[11px] rounded bg-surface-raised text-text-secondary hover:bg-border">
             Close
           </button>

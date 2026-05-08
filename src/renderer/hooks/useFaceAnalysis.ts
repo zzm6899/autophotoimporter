@@ -49,17 +49,29 @@ interface UseFaceAnalysisReturn {
   cancel: () => void;
 }
 
-function resolveBatchSize(): number {
+export function resolveFaceAnalysisBatchSize(input: {
+  hardwareConcurrency?: number;
+  deviceMemory?: number;
+} = {}): number {
   // Renderer can safely pipeline multiple IPC calls because the main process
   // applies its own semaphore cap. This lets high-end systems stay saturated
   // while low-end devices remain conservative.
-  const cores = Math.max(1, Math.floor((navigator.hardwareConcurrency || 4)));
-  const nav = navigator as Navigator & { deviceMemory?: number };
-  const mem = typeof nav.deviceMemory === 'number' ? nav.deviceMemory : 4;
+  const cores = Math.max(1, Math.floor(input.hardwareConcurrency ?? 4));
+  const mem = typeof input.deviceMemory === 'number' && Number.isFinite(input.deviceMemory)
+    ? input.deviceMemory
+    : null;
 
-  if (cores <= 4 || mem <= 4) return 1;
-  if (cores <= 8 || mem <= 8) return 2;
+  if (cores <= 4 || (mem !== null && mem <= 4)) return 1;
+  if (cores <= 8 || (mem !== null && mem <= 8)) return 2;
   return 4;
+}
+
+function resolveBatchSize(): number {
+  const nav = navigator as Navigator & { deviceMemory?: number };
+  return resolveFaceAnalysisBatchSize({
+    hardwareConcurrency: navigator.hardwareConcurrency,
+    deviceMemory: nav.deviceMemory,
+  });
 }
 
 export function useFaceAnalysis(): UseFaceAnalysisReturn {

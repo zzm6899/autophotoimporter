@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { alignBestOfBatchOffset, sliceBestOfBatchPathPage, summarizeBestOfBatchPage, summarizeReviewFlowNextStep } from '../ThumbnailGrid';
+import { alignBestOfBatchOffset, shouldQueueVisibleImportablePaths, sliceBestOfBatchPathPage, summarizeBestOfBatchPage, summarizeReviewFlowNextStep } from '../ThumbnailGrid';
 
 describe('summarizeReviewFlowNextStep', () => {
   it('shows the importable count when some queued files are blocked', () => {
@@ -119,5 +119,12 @@ describe('sliceBestOfBatchPathPage', () => {
 
     expect(sliceBestOfBatchPathPage(original, 120, 120).paths).toEqual(original.slice(120, 240));
     expect(sliceBestOfBatchPathPage(afterRejectingFirstPage, 120, 120).paths).not.toEqual(original.slice(120, 240));
+  });
+});
+
+describe('shouldQueueVisibleImportablePaths', () => {
+  it('blocks queue-visible commands that have no importable visible files', () => {
+    expect(shouldQueueVisibleImportablePaths([])).toBe(false);
+    expect(shouldQueueVisibleImportablePaths(['/photos/keeper.jpg'])).toBe(true);
   });
 });

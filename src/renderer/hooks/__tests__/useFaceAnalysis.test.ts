@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clusterFaces } from '../useFaceAnalysis';
+import { clusterFaces, resolveFaceAnalysisBatchSize } from '../useFaceAnalysis';
 
 function embeddingHex(values: number[]): string {
   const array = new Float32Array(values);
@@ -47,5 +47,22 @@ describe('clusterFaces', () => {
     ]), deserializeEmbedding);
 
     expect(groups.size).toBe(0);
+  });
+});
+
+describe('resolveFaceAnalysisBatchSize', () => {
+  it('keeps low-end CPUs and memory-starved devices on a single in-flight batch', () => {
+    expect(resolveFaceAnalysisBatchSize({ hardwareConcurrency: 2, deviceMemory: 16 })).toBe(1);
+    expect(resolveFaceAnalysisBatchSize({ hardwareConcurrency: 12, deviceMemory: 4 })).toBe(1);
+  });
+
+  it('does not force high-core desktops into low-end mode when device memory is unavailable', () => {
+    expect(resolveFaceAnalysisBatchSize({ hardwareConcurrency: 8 })).toBe(2);
+    expect(resolveFaceAnalysisBatchSize({ hardwareConcurrency: 16 })).toBe(4);
+  });
+
+  it('uses memory pressure to hold balanced machines back when memory is known', () => {
+    expect(resolveFaceAnalysisBatchSize({ hardwareConcurrency: 16, deviceMemory: 8 })).toBe(2);
+    expect(resolveFaceAnalysisBatchSize({ hardwareConcurrency: 16, deviceMemory: 16 })).toBe(4);
   });
 });

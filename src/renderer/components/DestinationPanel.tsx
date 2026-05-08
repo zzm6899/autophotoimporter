@@ -5,6 +5,7 @@ import { ImportResumeView } from './ImportResumeView';
 import type { AppSettings, EventMode, SaveFormat, JobPreset, ImportConfig, ImportPreflight, ImportBenchmarkResult, ImportConflictPolicy, MetadataExportFlags, SourceProfile } from '../../shared/types';
 import { DEFAULT_METADATA_EXPORT, EVENT_MODE_PRESETS, FOLDER_PRESETS, eventModeKeywords, resolvePattern } from '../../shared/types';
 import { formatSize } from '../utils/formatters';
+import { summarizeImportScopePriority } from '../utils/importScopeSummary';
 import { formatWhiteBalanceKelvin, kelvinToWhiteBalanceTemperature, WHITE_BALANCE_MAX_KELVIN, WHITE_BALANCE_MIN_KELVIN, whiteBalanceTemperatureToKelvin } from '../../shared/exposure';
 import { getSecondPassReasons, needsSecondPass } from '../../shared/review-lane';
 
@@ -501,6 +502,11 @@ export function DestinationPanel() {
   const licenseValid = !!licenseStatus?.valid;
   const canImport = licenseValid && selectedSource && destination && ftpReady && importFiles.length > 0 && phase === 'ready';
   const totalSize = importFiles.reduce((sum, f) => sum + f.size, 0);
+  const importScopePriorityNotice = summarizeImportScopePriority({
+    selectedPathCount: selectedPaths.length,
+    queuedPathCount: queuedPaths.length,
+    importingCount: importFiles.length,
+  });
   const exposureEditCount = importFiles.filter((f) => f.normalizeToAnchor || f.exposureAdjustmentStops).length;
   const queuedRejectedCount = importFiles.filter((f) => f.pick === 'rejected').length;
   const lowConfidenceCount = importFiles.filter((f) =>
@@ -1468,6 +1474,9 @@ export function DestinationPanel() {
             )}
             {autoStraighten && saveFormat !== 'original' && (
               <span className="text-emerald-300/80"> &middot; upright</span>
+            )}
+            {importScopePriorityNotice && (
+              <div className="mt-1 text-[10px] text-blue-300">{importScopePriorityNotice}</div>
             )}
             {hasWhiteBalance && saveFormat !== 'original' && (
               <span className="text-cyan-300/80"> &middot; WB</span>

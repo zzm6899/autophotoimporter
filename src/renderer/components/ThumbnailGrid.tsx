@@ -139,6 +139,10 @@ export function sliceBestOfBatchPathPage(
   };
 }
 
+export function shouldQueueVisibleImportablePaths(paths: readonly string[]): boolean {
+  return paths.length > 0;
+}
+
 export function summarizeReviewFlowNextStep({
   queuedCount,
   queuedImportableCount,
@@ -3305,6 +3309,7 @@ export function ThumbnailGrid() {
           enterQueueKeepersMode();
           return;
         case 'queue.visible':
+          if (!shouldQueueVisibleImportablePaths(visibleImportablePaths)) return;
           queuePaths(visibleImportablePaths);
           dispatch({ type: 'SET_FILTER', filter: 'queue' });
           dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' });
@@ -4096,6 +4101,14 @@ export function ThumbnailGrid() {
     return bestScope.paths.map((p) => byPath.get(p)).filter((f): f is NonNullable<typeof f> => !!f);
   }, [bestScope, files, selectedFiles]);
   const bestOfSelection = bestPanelFiles.length > 0 ? rankBestOfSelection(bestPanelFiles)[0] : null;
+  const rejectBestPanelRest = useCallback((best: MediaFile) => {
+    dispatch({
+      type: 'SET_PICK_BATCH',
+      filePaths: bestPanelFiles.filter((f) => f.path !== best.path).map((f) => f.path),
+      pick: 'rejected',
+    });
+    dispatch({ type: 'SET_PICK', filePath: best.path, pick: 'selected' });
+  }, [bestPanelFiles, dispatch]);
   const forceVisibleThumbnails = useCallback((index: number, filePath: string) => {
     if (selectedIndices.has(index) || queuedSet.has(filePath) || index === focusedIndex) return true;
     if (sortedFiles.length <= 72) return true;
@@ -5243,13 +5256,10 @@ export function ThumbnailGrid() {
               openAdjacentBatch(1);
             }
           }}
-          onRejectRest={(best) => {
-            dispatch({
-              type: 'SET_PICK_BATCH',
-              filePaths: bestPanelFiles.filter((f) => f.path !== best.path).map((f) => f.path),
-              pick: 'rejected',
-            });
-            dispatch({ type: 'SET_PICK', filePath: best.path, pick: 'selected' });
+          onRejectRest={rejectBestPanelRest}
+          onRejectRestAndNext={(best) => {
+            rejectBestPanelRest(best);
+            if (bestScope?.canNextBatch) openAdjacentBatch(1);
           }}
         />
       )}

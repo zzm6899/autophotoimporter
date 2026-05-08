@@ -30,17 +30,21 @@ describe('summarizeBestOfActions', () => {
     expect(summary?.queueAndNextButtonLabel).toBe('Queue + Next');
     expect(summary?.queueAndNextLabel).toBe('Queue + Next adds keeper.jpg to the import queue and opens the following batch page.');
     expect(summary?.rejectRestButtonLabel).toBe('Reject Page Rest');
+    expect(summary?.acceptAndNextButtonLabel).toBe('Accept + Next');
+    expect(summary?.acceptAndNextLabel).toBe('Accept + Next marks keeper.jpg picked, rejects 2 other candidates in this page, and opens the following batch page.');
     expect(summary?.pickLabel).toBe('Pick Best marks keeper.jpg as picked; 2 other candidates stay unchanged.');
     expect(summary?.rejectRestLabel).toBe('Reject Rest marks keeper.jpg picked and rejects 2 other candidates in this panel.');
   });
 
-  it('keeps Queue + Next scoped to batch summaries', () => {
+  it('keeps page-and-next shortcuts scoped to batch summaries', () => {
     const best = photo('keeper.jpg');
     const summary = summarizeBestOfActions([best, photo('other.jpg')], best);
 
     expect(summary?.queueButtonLabel).toBe('Queue Best');
     expect(summary?.queueAndNextButtonLabel).toBeUndefined();
     expect(summary?.queueAndNextLabel).toBeUndefined();
+    expect(summary?.acceptAndNextButtonLabel).toBeUndefined();
+    expect(summary?.acceptAndNextLabel).toBeUndefined();
   });
 
   it('surfaces an already queued top candidate without changing flags', () => {
