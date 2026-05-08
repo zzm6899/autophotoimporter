@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { autoCullGroup, bestInGroup, buildFaceIdentityGroups, explainBestShotSelection, faceSignalConfidence, groupByFaceEmbedding, groupByFaceSimilarity, groupByVisualHash, hammingDistanceHex, humanMomentQuality, rankBestShots, scoreReview, subjectPresenceQuality } from '../review';
+import { autoCullGroup, bestInGroup, bestShotScore, buildFaceIdentityGroups, explainBestShotSelection, faceSignalConfidence, groupByFaceEmbedding, groupByFaceSimilarity, groupByVisualHash, hammingDistanceHex, humanMomentQuality, rankBestShots, scoreReview, subjectPresenceQuality } from '../review';
 import type { MediaFile } from '../types';
 
 function file(path: string, hash?: string, overrides: Partial<MediaFile> = {}): MediaFile {
@@ -512,6 +512,88 @@ describe('review utilities', () => {
       }),
     ]);
     expect(ranked[0].path).toBe('/full-group.jpg');
+  });
+
+  it('penalizes weak group faces even when that frame is technically sharper', () => {
+    const ranked = rankBestShots([
+      file('/sharp-weak-group.jpg', undefined, {
+        faceCount: 3,
+        personCount: 3,
+        faceBoxes: [
+          { x: 0.18, y: 0.17, width: 0.13, height: 0.16, eyeScore: 2, smileScore: 0.65, score: 0.92 },
+          { x: 0.43, y: 0.18, width: 0.13, height: 0.16, eyeScore: 0, smileScore: 0.25, score: 0.82 },
+          { x: 0.67, y: 0.19, width: 0.12, height: 0.15, eyeScore: 0, smileScore: 0.25, score: 0.78 },
+        ],
+        personBoxes: [
+          { x: 0.12, y: 0.1, width: 0.22, height: 0.8, score: 0.92 },
+          { x: 0.39, y: 0.1, width: 0.22, height: 0.8, score: 0.92 },
+          { x: 0.64, y: 0.1, width: 0.22, height: 0.8, score: 0.9 },
+        ],
+        subjectSharpnessScore: 185,
+        sharpnessScore: 210,
+        reviewScore: 90,
+      }),
+      file('/usable-group.jpg', undefined, {
+        faceCount: 3,
+        personCount: 3,
+        faceBoxes: [
+          { x: 0.18, y: 0.17, width: 0.13, height: 0.16, eyeScore: 2, smileScore: 0.65, score: 0.9 },
+          { x: 0.43, y: 0.18, width: 0.13, height: 0.16, eyeScore: 2, smileScore: 0.65, score: 0.9 },
+          { x: 0.67, y: 0.19, width: 0.12, height: 0.15, eyeScore: 2, smileScore: 0.6, score: 0.88 },
+        ],
+        personBoxes: [
+          { x: 0.12, y: 0.1, width: 0.22, height: 0.8, score: 0.92 },
+          { x: 0.39, y: 0.1, width: 0.22, height: 0.8, score: 0.92 },
+          { x: 0.64, y: 0.1, width: 0.22, height: 0.8, score: 0.9 },
+        ],
+        subjectSharpnessScore: 135,
+        sharpnessScore: 150,
+        reviewScore: 76,
+      }),
+    ]);
+
+    expect(ranked[0].path).toBe('/usable-group.jpg');
+    expect(bestShotScore(ranked[0])).toBeGreaterThan(bestShotScore(ranked[1]));
+  });
+
+  it('does not let a weak estimated face detection beat a sharp detail frame', () => {
+    const ranked = rankBestShots([
+      file('/false-face.jpg', undefined, {
+        faceCount: 1,
+        faceDetection: 'estimated',
+        faceBoxes: [{ x: 0.07, y: 0.08, width: 0.05, height: 0.05, eyeScore: 0, smileScore: 0.2, score: 0.38 }],
+        subjectSharpnessScore: 74,
+        sharpnessScore: 115,
+        reviewScore: 74,
+      }),
+      file('/sharp-detail.jpg', undefined, {
+        subjectSharpnessScore: 126,
+        sharpnessScore: 175,
+        reviewScore: 70,
+      }),
+    ]);
+
+    expect(ranked[0].path).toBe('/sharp-detail.jpg');
+  });
+
+  it('still keeps real portraits ahead of non-face details when the face signal is strong', () => {
+    const ranked = rankBestShots([
+      file('/portrait.jpg', undefined, {
+        faceCount: 1,
+        faceDetection: 'native',
+        faceBoxes: [{ x: 0.32, y: 0.18, width: 0.22, height: 0.25, eyeScore: 2, smileScore: 0.72, score: 0.96 }],
+        subjectSharpnessScore: 124,
+        sharpnessScore: 135,
+        reviewScore: 74,
+      }),
+      file('/detail.jpg', undefined, {
+        subjectSharpnessScore: 145,
+        sharpnessScore: 185,
+        reviewScore: 76,
+      }),
+    ]);
+
+    expect(ranked[0].path).toBe('/portrait.jpg');
   });
 
   it('auto cull keeps manual picks and rejects only clear losers', () => {

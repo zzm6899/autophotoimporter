@@ -160,23 +160,32 @@ export function bestShotScore(file: MediaFile): number {
   const wholeSharp = file.sharpnessScore ?? 0;
   const review = file.reviewScore ?? 0;
   const hasFaces = (file.faceCount ?? file.faceBoxes?.length ?? 0) > 0;
+  const hasPeople = (file.personCount ?? file.personBoxes?.length ?? 0) > 0;
   const humanMoment = humanMomentQuality(file);
   const faceReliability = file.faceDetection === 'estimated' ? 0.82 : 1;
+  const subjectFocus = boundedScore(subjectSharp, hasFaces || hasPeople ? 7.8 : 6.3, 112);
+  const wholeFrameFocus = boundedScore(wholeSharp, hasFaces || hasPeople ? 3.7 : 4.7, 62);
+  const groupCoverage = groupCoverageQuality(file);
+  const detailStory = detailStoryQuality(file);
+  const weakFace = weakFacePenalty(file);
 
   let score =
     (file.isProtected ? 220 : 0) +
     (file.rating ?? 0) * 55 +
-    subject * 1.2 +
-    face * (hasFaces ? 1.25 * faceReliability : 0.35) +
-    humanMoment * 1.35 +
-    Math.min(95, subjectSharp / 1.7) +
-    Math.min(60, wholeSharp / 4.5) +
-    Math.min(70, review * 1.05);
+    subject * (hasFaces || hasPeople ? 1.08 : 0.45) +
+    face * (hasFaces ? 1.18 * faceReliability : 0.18) +
+    humanMoment * (hasFaces ? 1.62 : hasPeople ? 1.2 : 0.25) +
+    groupCoverage * 1.35 +
+    subjectFocus +
+    wholeFrameFocus +
+    detailStory +
+    Math.min(74, review * (hasFaces || hasPeople ? 0.92 : 0.82));
 
   if (file.pick === 'rejected') score -= 140;
   if (typeof file.exposureValue === 'number') score += 8;
   if (file.blurRisk === 'high') score -= hasFaces ? 150 : 115;
   if (file.blurRisk === 'medium') score -= 44;
+  score -= weakFace;
   if (hasFaces && subjectSharp > 0 && subjectSharp < 38) score -= 55;
   if (!hasFaces && subjectSharp > 0 && subjectSharp < 28) score -= 25;
   return Math.round(score);
@@ -291,6 +300,80 @@ function pushUnique(values: string[], value: string): void {
   if (!values.includes(value)) values.push(value);
 }
 
+function boundedScore(value: number | undefined, scale: number, cap: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return 0;
+  return Math.min(cap, Math.sqrt(value) * scale);
+}
+
+function expressionSignal(box: NonNullable<MediaFile['faceBoxes']>[number]): number {
+  return clamp01(box.smileScore ?? box.expressionScore, 0.5);
+}
+
+function faceUsabilityScore(file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'faceDetection' | 'subjectSharpnessScore'>): number {
+  const boxes = file.faceBoxes ?? [];
+  const faceCount = file.faceCount ?? boxes.length;
+  if (faceCount <= 0) return 0;
+  if (boxes.length === 0) return file.faceDetection === 'estimated' ? 0.42 : 0.58;
+
+  const usable = boxes.reduce((sum, box) => {
+    const eye = clamp01((box.eyeScore ?? 0) / 2);
+    const detection = clamp01(box.score, file.faceDetection === 'estimated' ? 0.45 : 0.78);
+    const expression = expressionSignal(box);
+    const size = clamp01((box.width * box.height) / 0.028);
+    return sum + eye * 0.45 + detection * 0.3 + expression * 0.12 + size * 0.13;
+  }, 0) / boxes.length;
+  return clamp01(usable, file.faceDetection === 'estimated' ? 0.42 : 0.55);
+}
+
+function groupCoverageQuality(file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'faceDetection' | 'personCount' | 'personBoxes' | 'subjectSharpnessScore'>): number {
+  const faceBoxes = file.faceBoxes ?? [];
+  const personBoxes = file.personBoxes ?? [];
+  const faceCount = file.faceCount ?? faceBoxes.length;
+  const personCount = file.personCount ?? personBoxes.length;
+  if (faceCount < 2 && personCount < 2) return 0;
+
+  const usableFaces = faceBoxes.filter((box) =>
+    clamp01((box.eyeScore ?? 0) / 2) >= 0.5 &&
+    clamp01(box.score, file.faceDetection === 'estimated' ? 0.45 : 0.78) >= 0.68,
+  ).length;
+  const usableRatio = faceCount > 0
+    ? clamp01(usableFaces / faceCount, faceBoxes.length > 0 ? 0.45 : 0.62)
+    : 0;
+  const coverageRatio = personCount > 0
+    ? clamp01(faceCount / personCount, faceCount > 0 ? 0.55 : 0)
+    : clamp01(faceCount / 3);
+  const countSignal = Math.min(34, Math.max(faceCount, personCount) * 7 + Math.min(faceCount, personCount) * 3);
+
+  return Math.round(countSignal * (0.36 + coverageRatio * 0.34 + usableRatio * 0.3));
+}
+
+function weakFacePenalty(file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'faceDetection' | 'subjectSharpnessScore'>): number {
+  const boxes = file.faceBoxes ?? [];
+  const faceCount = file.faceCount ?? boxes.length;
+  if (faceCount <= 0) return 0;
+  const weakest = weakestFaceSignal(file);
+  const usability = faceUsabilityScore(file);
+  let penalty = 0;
+  if (weakest < 0.24) penalty += faceCount >= 2 ? 72 : 48;
+  else if (weakest < 0.42) penalty += faceCount >= 2 ? 42 : 26;
+  if (usability < 0.44) penalty += file.faceDetection === 'estimated' ? 22 : 12;
+  if (file.faceDetection === 'estimated' && faceSignalConfidence(file) < 0.5) penalty += 16;
+  return penalty;
+}
+
+function detailStoryQuality(file: MediaFile): number {
+  const hasFaces = (file.faceCount ?? file.faceBoxes?.length ?? 0) > 0;
+  const hasPeople = (file.personCount ?? file.personBoxes?.length ?? 0) > 0;
+  if (hasFaces || hasPeople || file.type !== 'photo') return 0;
+  const sharp = Math.max(file.sharpnessScore ?? 0, file.subjectSharpnessScore ?? 0);
+  const review = file.reviewScore ?? 0;
+  if (sharp < 70 && review < 50) return 0;
+  return Math.round(
+    Math.min(42, boundedScore(sharp, 3.2, 34) + Math.min(12, review / 8)) +
+    (isDetailStoryKeeper(file) ? 14 : 0),
+  );
+}
+
 export function explainBestShotSelection(files: MediaFile[]): BestShotExplanation | null {
   const ranked = rankBestShots(files).filter(isAutoBestCandidate);
   const best = ranked[0];
@@ -342,10 +425,19 @@ export function explainBestShotSelection(files: MediaFile[]): BestShotExplanatio
       ? `${bestFaces} faces vs ${runnerFaces}`
       : `${bestFaces} face${bestFaces === 1 ? '' : 's'}`);
   }
+  const bestCoverage = groupCoverageQuality(best);
+  const runnerCoverage = runnerUp ? groupCoverageQuality(runnerUp) : 0;
+  if (runnerUp && bestCoverage - runnerCoverage >= 10) pushUnique(wins, `Better group coverage +${bestCoverage - runnerCoverage}`);
+  const bestWeakPenalty = weakFacePenalty(best);
+  const runnerWeakPenalty = runnerUp ? weakFacePenalty(runnerUp) : 0;
+  if (runnerUp && runnerWeakPenalty - bestWeakPenalty >= 18) pushUnique(wins, 'Cleaner face/eye reliability');
+  const bestDetail = detailStoryQuality(best);
+  if (bestDetail >= 34 && bestFaces === 0) pushUnique(wins, 'Strong detail/story frame');
 
   if (runnerUp && blurRank(best) < blurRank(runnerUp)) pushUnique(wins, 'Lower blur risk');
   if (best.blurRisk === 'high') pushUnique(cautions, 'Top pick still has high blur risk');
   else if (best.blurRisk === 'medium') pushUnique(cautions, 'Top pick has medium blur risk');
+  if (bestWeakPenalty >= 42) pushUnique(cautions, 'Top pick has weak face/eye signal');
   if (runnerUp && confidence === 'low') pushUnique(cautions, 'Close score gap, compare runner-up');
 
   return {
@@ -373,7 +465,7 @@ export interface AutoCullOptions {
   keeperQuota?: KeeperQuota;
 }
 
-function weakestFaceSignal(file: MediaFile): number {
+function weakestFaceSignal(file: Pick<MediaFile, 'faceBoxes'>): number {
   const boxes = file.faceBoxes ?? [];
   if (boxes.length === 0) return 1;
   return Math.min(...boxes.map((box) => {
