@@ -3077,7 +3077,7 @@ export function registerIpcHandlers(): void {
  * Files with no destPath computed are always dropped (date parse failed).
  */
 function filterFilesForImport(all: MediaFile[], config: ImportConfig): MediaFile[] {
-  const selected = Array.isArray(config.selectedPaths)
+  const selected = Array.isArray(config.selectedPaths) && config.selectedPaths.length > 0
     ? new Set(config.selectedPaths)
     : null;
   return all.filter((f) => {

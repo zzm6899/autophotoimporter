@@ -2669,15 +2669,14 @@ export function ThumbnailGrid() {
           return [f.path, patch];
         } catch (err) {
           console.error(`[review-loop] file error: ${f.path}`, err);
-          // On failure dispatch what we have so the file exits the candidate pool
-          // (sharpnessScore becomes a number → no longer selected as unanalyzed).
-          // Keep faceBoxes as-is (undefined → retryable on next Re-scan AI).
+          // On failure dispatch what we have so the file exits the candidate pool.
+          // Re-scan AI clears face data explicitly, so it can still retry later.
           const patch: Partial<MediaFile> = {
             sharpnessScore: f.sharpnessScore ?? 0,
             subjectSharpnessScore: f.subjectSharpnessScore ?? 0,
             visualHash: f.visualHash ?? failureTag,
             faceCount: f.faceCount ?? 0,
-            faceBoxes: f.faceBoxes,       // keep undefined → retryable via Re-scan AI
+            faceBoxes: f.faceBoxes ?? [],
             faceDetection: f.faceDetection,
             faceSignature: f.faceSignature ?? ((f.faceCount ?? 0) > 0 ? failureTag : undefined),
             personCount: f.personCount ?? 0,
@@ -5086,6 +5085,7 @@ export function ThumbnailGrid() {
           isBatch={bestScope?.title === 'Best of Batch'}
           onPrevBatch={() => openAdjacentBatch(-1)}
           onNextBatch={() => openAdjacentBatch(1)}
+          queuedPaths={queuedPaths}
           onClose={() => {
             setShowBestOfSelection(false);
             setBestScope(null);

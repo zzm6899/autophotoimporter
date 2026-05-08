@@ -434,6 +434,18 @@ function collectReviewGroups(files: MediaFile[], includeFace = true): Map<string
   return groups;
 }
 
+function normalizeKnownPaths(files: MediaFile[], paths: string[]): string[] {
+  const valid = new Set(files.map((file) => file.path));
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const path of paths) {
+    if (!valid.has(path) || seen.has(path)) continue;
+    seen.add(path);
+    normalized.push(path);
+  }
+  return normalized;
+}
+
 function queueBestPaths(
   files: MediaFile[],
   options: { cullConfidence?: CullConfidence; groupPhotoEveryoneGood?: boolean; keeperQuota?: KeeperQuota; skipDuplicates?: boolean } = {},
@@ -452,6 +464,15 @@ function queueBestPaths(
     const ranked = rankBestShots(group);
     const best = ranked[0] ?? null;
     if (best) queued.add(best.path);
+
+    if (options.cullConfidence === 'conservative') {
+      const decision = autoCullGroup(group, {
+        confidence: options.cullConfidence,
+        groupPhotoEveryoneGood: options.groupPhotoEveryoneGood,
+        keeperQuota: options.keeperQuota,
+      });
+      for (const path of decision.keep) queued.add(path);
+    }
 
     const quota = options.keeperQuota ?? 'best-1';
     if (quota === 'top-2') {
@@ -675,7 +696,7 @@ export function reducer(state: State, action: Action): State {
     case 'TOGGLE_CULL_MODE':
       return { ...state, cullMode: !state.cullMode, viewMode: !state.cullMode ? 'single' : 'grid' };
     case 'SET_SELECTED_PATHS':
-      return { ...state, selectedPaths: action.paths };
+      return { ...state, selectedPaths: normalizeKnownPaths(state.files, action.paths) };
     case 'QUEUE_ADD_PATHS': {
       const valid = new Set(state.files.map((f) => f.path));
       const next = new Set(state.queuedPaths);
@@ -1247,21 +1268,30 @@ export function reducer(state: State, action: Action): State {
         },
       };
     case 'RESTORE_SESSION': {
-      const focusedPath = action.session.focusedPath ?? null;
+      const restoredFiles = action.session.files;
+      const validPaths = new Set(restoredFiles.map((file) => file.path));
+      const focusedPath = action.session.focusedPath && validPaths.has(action.session.focusedPath)
+        ? action.session.focusedPath
+        : null;
       const focusedIndex = focusedPath
-        ? action.session.files.findIndex((file) => file.path === focusedPath)
+        ? restoredFiles.findIndex((file) => file.path === focusedPath)
         : -1;
+      const selectedPaths = normalizeKnownPaths(restoredFiles, action.session.selectedPaths ?? []);
+      const queuedPaths = normalizeKnownPaths(restoredFiles, action.session.queuedPaths ?? []);
+      const filter = action.session.filter === 'queue' && queuedPaths.length === 0
+        ? 'all'
+        : action.session.filter as FilterMode;
       return {
         ...state,
         selectedSource: action.session.sourcePath,
         destination: action.session.destRoot,
-        files: action.session.files,
-        selectedPaths: action.session.selectedPaths,
-        queuedPaths: action.session.queuedPaths,
-        filter: action.session.filter as FilterMode,
+        files: restoredFiles,
+        selectedPaths,
+        queuedPaths,
+        filter,
         focusedIndex,
         focusedPath,
-        phase: action.session.files.length > 0 ? 'ready' : 'idle',
+        phase: restoredFiles.length > 0 ? 'ready' : 'idle',
         importProgress: null,
         importResult: null,
         lastSessionId: action.session.id,

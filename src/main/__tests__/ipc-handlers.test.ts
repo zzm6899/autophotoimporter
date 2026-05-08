@@ -214,16 +214,17 @@ describe('IPC Handlers', () => {
       );
     });
 
-    it('treats an explicit empty selected path list as importing no files', async () => {
+    it('falls back to pick/reject filtering when selected path list is empty', async () => {
       mockReadFile.mockResolvedValue(JSON.stringify({ licenseKey: 'valid-key' }) as any);
       const files: MediaFile[] = [
         { path: '/src/keep.jpg', name: 'keep.jpg', size: 100, type: 'photo', extension: '.jpg', destPath: '2026/keep.jpg' },
+        { path: '/src/rejected.jpg', name: 'rejected.jpg', size: 100, type: 'photo', extension: '.jpg', destPath: '2026/rejected.jpg', pick: 'rejected' },
       ];
       mockScanFiles.mockImplementation(async (_sourcePath, onBatch: (batch: MediaFile[]) => void) => {
         onBatch(files);
         return files.length;
       });
-      mockImportFiles.mockResolvedValue({ imported: 0, skipped: 0, errors: [], totalBytes: 0, durationMs: 10 });
+      mockImportFiles.mockResolvedValue({ imported: 1, skipped: 0, errors: [], totalBytes: 100, durationMs: 10 });
 
       await getHandler('scan:start')({}, '/src');
       await getHandler('import:start')({}, {
@@ -236,7 +237,7 @@ describe('IPC Handlers', () => {
       });
 
       expect(mockImportFiles).toHaveBeenLastCalledWith(
-        [],
+        [files[0]],
         expect.any(Object),
         expect.any(Function),
       );

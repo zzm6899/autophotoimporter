@@ -4,8 +4,11 @@ import type { MediaFile } from './types';
  * Burst grouping heuristic.
  *
  * We consider two shots part of the same burst when they are:
- *   1) taken by the same camera body (Make + Model), AND
- *   2) within `windowSec` of the previous shot in the burst.
+ *   1) taken by the same known camera model (Make + Model when available), AND
+ *   2) within `windowSec` of the previous shot from that camera.
+ *
+ * Camera streams are clustered independently so interleaved photos from a
+ * second body do not split a real burst from the first body.
  *
  * Videos are never in a burst. Photos without a parseable `dateTaken` are
  * never in a burst (we'd just be grouping random files).
@@ -43,34 +46,36 @@ export function groupBursts(files: MediaFile[], opts: BurstOptions): MediaFile[]
     return t;
   };
 
-  const candidates = files
-    .map((f, idx) => ({ file: f, idx }))
-    .filter(({ file }) => file.type === 'photo' && file.dateTaken)
-    .sort((a, b) => {
-      const ta = getTs(a.file.dateTaken as string);
-      const tb = getTs(b.file.dateTaken as string);
-      if (ta !== tb) return ta - tb;
-      // Tiebreak by path so the order is deterministic.
-      return a.file.path.localeCompare(b.file.path);
-    });
+  const cameraKey = (f: MediaFile): string | null => {
+    const make = f.cameraMake?.trim().toLowerCase() ?? '';
+    const model = f.cameraModel?.trim().toLowerCase() ?? '';
+    if (!model) return null;
+    return `${make}|${model}`;
+  };
+
+  type Candidate = { file: MediaFile; idx: number; ts: number };
+  const candidatesByCamera = new Map<string, Candidate[]>();
+  files.forEach((file, idx) => {
+    if (file.type !== 'photo' || !file.dateTaken) return;
+    const ts = getTs(file.dateTaken);
+    if (!Number.isFinite(ts)) return;
+    const key = cameraKey(file);
+    if (!key) return;
+    const candidate = { file, idx, ts };
+    const cameraCandidates = candidatesByCamera.get(key);
+    if (cameraCandidates) cameraCandidates.push(candidate);
+    else candidatesByCamera.set(key, [candidate]);
+  });
 
   // Map from original index → { burstId, burstIndex, burstSize }.
   const annotations = new Map<number, { burstId: string; burstIndex: number; burstSize: number }>();
 
-  let cluster: typeof candidates = [];
-
-  const cameraKey = (f: MediaFile): string | null => {
-    const make = f.cameraMake?.trim().toLowerCase() ?? '';
-    const model = f.cameraModel?.trim().toLowerCase() ?? '';
-    return make || model ? `${make}|${model}` : null;
-  };
-
+  let cluster: Candidate[] = [];
   const flush = () => {
     if (cluster.length >= minSize) {
-      const first = cluster[0].file;
-      // Stable ID: YYYYMMDDHHMMSS + short hash-ish of the first path.
-      const t = getTs(first.dateTaken as string);
-      const burstId = `burst_${t}_${hash32(first.path)}`;
+      const first = cluster[0];
+      // Stable ID: capture timestamp + short hash-ish of the first path.
+      const burstId = `burst_${first.ts}_${hash32(first.file.path)}`;
       const size = cluster.length;
       cluster.forEach((entry, i) => {
         annotations.set(entry.idx, {
@@ -83,26 +88,30 @@ export function groupBursts(files: MediaFile[], opts: BurstOptions): MediaFile[]
     cluster = [];
   };
 
-  for (const c of candidates) {
-    if (cluster.length === 0) {
-      cluster.push(c);
-      continue;
+  for (const candidates of candidatesByCamera.values()) {
+    candidates.sort((a, b) => {
+      if (a.ts !== b.ts) return a.ts - b.ts;
+      // Tiebreak by path so the order is deterministic.
+      return a.file.path.localeCompare(b.file.path);
+    });
+
+    cluster = [];
+    for (const c of candidates) {
+      if (cluster.length === 0) {
+        cluster.push(c);
+        continue;
+      }
+      const prev = cluster[cluster.length - 1];
+      const inWindow = c.ts - prev.ts <= windowMs;
+      if (inWindow) {
+        cluster.push(c);
+      } else {
+        flush();
+        cluster.push(c);
+      }
     }
-    const prev = cluster[cluster.length - 1].file;
-    const prevT = getTs(prev.dateTaken as string);
-    const curT = getTs(c.file.dateTaken as string);
-    const prevCamera = cameraKey(prev);
-    const currentCamera = cameraKey(c.file);
-    const sameCam = !!prevCamera && prevCamera === currentCamera;
-    const inWindow = curT - prevT <= windowMs;
-    if (sameCam && inWindow) {
-      cluster.push(c);
-    } else {
-      flush();
-      cluster.push(c);
-    }
+    flush();
   }
-  flush();
 
   if (annotations.size === 0) {
     // Either no bursts detected or we need to still strip prior burst data.

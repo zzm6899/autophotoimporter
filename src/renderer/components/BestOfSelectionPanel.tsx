@@ -19,6 +19,7 @@ interface BestOfSelectionPanelProps {
   onPickBest: (file: MediaFile) => void;
   onQueueBest: (file: MediaFile) => void;
   onRejectRest: (best: MediaFile) => void;
+  queuedPaths?: string[];
 }
 
 function explain(file: MediaFile): string {
@@ -108,6 +109,64 @@ function topPickEvidence(best: MediaFile, second: MediaFile | undefined, scoreGa
   if (bestFaces > 0) evidence.push(second && bestFaces !== secondFaces ? `${bestFaces} faces vs ${secondFaces}` : `${bestFaces} face${bestFaces === 1 ? '' : 's'}`);
   if (best.blurRisk && best.blurRisk !== 'low') evidence.push(`${best.blurRisk} blur risk`);
   return evidence.slice(0, 4);
+}
+
+type BestOfActionScope = 'batch' | 'burst' | 'selection';
+
+interface BestOfActionSummary {
+  scopeLabel: string;
+  pickLabel: string;
+  queueLabel: string;
+  rejectRestLabel: string;
+  queueState: 'queued' | 'ready';
+}
+
+function pluralize(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+export function summarizeBestOfActions(
+  files: MediaFile[],
+  best: MediaFile | undefined,
+  queuedPaths: Iterable<string> = [],
+  scope: BestOfActionScope = 'selection',
+): BestOfActionSummary | null {
+  if (!best) return null;
+
+  const queuedSet = queuedPaths instanceof Set ? queuedPaths : new Set(queuedPaths);
+  const topName = best.name || 'top candidate';
+  const total = files.length;
+  const restCount = files.filter((file) => file.path !== best.path).length;
+  const otherCandidates = pluralize(restCount, 'other candidate');
+  const scopePrefix =
+    scope === 'batch'
+      ? `Current batch page: ${pluralize(total, 'candidate')}.`
+      : scope === 'burst'
+        ? `Current burst: ${pluralize(total, 'candidate')}.`
+        : `Current review set: ${pluralize(total, 'candidate')}.`;
+  const scopeLabel = scope === 'batch'
+    ? `${scopePrefix} Next/Prev page changes which candidates these actions affect.`
+    : `${scopePrefix} Actions apply only to this panel.`;
+
+  const pickStart = best.pick === 'selected'
+    ? `${topName} is already picked`
+    : best.pick === 'rejected'
+      ? `Pick Best changes ${topName} from rejected to picked`
+      : `Pick Best marks ${topName} as picked`;
+  const pickLabel = restCount > 0
+    ? `${pickStart}; ${otherCandidates} ${restCount === 1 ? 'stays' : 'stay'} unchanged.`
+    : `${pickStart}.`;
+
+  const queueState = queuedSet.has(best.path) ? 'queued' : 'ready';
+  const queueLabel = queueState === 'queued'
+    ? `${topName} is already in the import queue; pick/reject flags stay unchanged.`
+    : `Queue Best adds ${topName} to the import queue; pick/reject flags stay unchanged.`;
+
+  const rejectRestLabel = restCount > 0
+    ? `Reject Rest marks ${topName} picked and rejects ${otherCandidates} in this panel.`
+    : `Reject Rest keeps ${topName} picked because it is the only candidate.`;
+
+  return { scopeLabel, pickLabel, queueLabel, rejectRestLabel, queueState };
 }
 
 // Corrects face box positions for object-contain letterboxing.
@@ -468,6 +527,7 @@ export function BestOfSelectionPanel({
   onPickBest,
   onQueueBest,
   onRejectRest,
+  queuedPaths = [],
 }: BestOfSelectionPanelProps) {
   const ranked = useMemo(() => rankBestOfSelection(files).slice(0, 6), [files]);
   const best = ranked[0];
@@ -477,6 +537,14 @@ export function BestOfSelectionPanel({
   const confidence = scoreGapConfidence(scoreGap);
   const readiness = best ? autoAcceptSummary(best, second, scoreGap) : null;
   const evidence = best ? topPickEvidence(best, second, scoreGap) : [];
+  const actionSummary = summarizeBestOfActions(
+    files,
+    best,
+    queuedPaths,
+    isBatch ? 'batch' : isBurst ? 'burst' : 'selection',
+  );
+  const actionTitle = (detail: string | undefined, fallback: string) =>
+    actionSummary ? `${actionSummary.scopeLabel} ${detail ?? fallback}` : fallback;
   const panelStats = useMemo(() => {
     let analyzed = 0;
     let faceFiles = 0;
@@ -551,7 +619,7 @@ export function BestOfSelectionPanel({
           </div>
           <button
             onClick={() => onPickBest(best)}
-            title="Mark only the top-ranked candidate as picked."
+            title={actionTitle(actionSummary?.pickLabel, 'Mark the top-ranked candidate as picked.')}
             className="px-2.5 py-1 text-[11px] rounded bg-yellow-500/15 text-yellow-300 hover:bg-yellow-500/25"
           >
             Pick Best
@@ -594,12 +662,14 @@ export function BestOfSelectionPanel({
           )}
           <button
             onClick={() => onQueueBest(best)}
+            title={actionTitle(actionSummary?.queueLabel, 'Add the top-ranked candidate to the import queue.')}
             className="px-2.5 py-1 text-[11px] rounded bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25"
           >
             Queue Best
           </button>
           <button
             onClick={() => onRejectRest(best)}
+            title={actionTitle(actionSummary?.rejectRestLabel, 'Pick the top-ranked candidate and reject the rest in this panel.')}
             className="px-2.5 py-1 text-[11px] rounded bg-red-500/10 text-red-300 hover:bg-red-500/20"
           >
             Reject Rest

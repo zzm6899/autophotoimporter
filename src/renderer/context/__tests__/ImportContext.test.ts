@@ -265,6 +265,32 @@ describe('ImportContext reducer', () => {
       expect(next.lastSessionId).toBe('session-1');
     });
 
+    it('drops stale selection, queue, and focus paths when restoring a session', () => {
+      const file = makeFile({ path: '/photos/IMG_002.jpg', pick: 'selected' });
+      const next = reducer(makeState(), {
+        type: 'RESTORE_SESSION',
+        session: {
+          id: 'session-1',
+          updatedAt: '2026-05-02T00:00:00.000Z',
+          sourcePath: '/photos',
+          destRoot: '/dest',
+          files: [file],
+          selectedPaths: [file.path, '/missing.jpg', file.path],
+          queuedPaths: ['/missing.jpg'],
+          filter: 'queue',
+          focusedPath: '/missing.jpg',
+          importLedgerId: 'ledger-1',
+          stats: { totalFiles: 1, picked: 1, rejected: 0, queued: 1, reviewed: 1 },
+        },
+      });
+
+      expect(next.selectedPaths).toEqual([file.path]);
+      expect(next.queuedPaths).toEqual([]);
+      expect(next.filter).toBe('all');
+      expect(next.focusedIndex).toBe(-1);
+      expect(next.focusedPath).toBeNull();
+    });
+
     it('applies conservative concurrency for NAS sources', () => {
       const next = reducer(makeState({ previewConcurrency: 4, faceConcurrency: 3, rawPreviewQuality: 80 }), {
         type: 'SET_SOURCE_PROFILE',
@@ -514,6 +540,16 @@ describe('ImportContext reducer', () => {
   });
 
   describe('selection sets', () => {
+    it('normalizes direct batch selections to known unique file paths', () => {
+      const files = [makeFile({ path: '/a.jpg' }), makeFile({ path: '/b.jpg' })];
+      const next = reducer(makeState({ files }), {
+        type: 'SET_SELECTED_PATHS',
+        paths: ['/a.jpg', '/missing.jpg', '/a.jpg', '/b.jpg'],
+      });
+
+      expect(next.selectedPaths).toEqual(['/a.jpg', '/b.jpg']);
+    });
+
     it('saves a named selection set with valid paths only', () => {
       const files = [makeFile({ path: '/a.jpg' }), makeFile({ path: '/b.jpg' })];
       const state = makeState({ files });
@@ -809,6 +845,31 @@ describe('ImportContext reducer', () => {
       ];
       const next = reducer(makeState({ files, keeperQuota: 'smile-and-sharp' }), { type: 'QUEUE_BEST' });
       expect(next.queuedPaths).toEqual(['/overall.jpg', '/smile.jpg', '/sharp.jpg']);
+    });
+
+    it('keeps safe detail alternates when queueing keepers in conservative mode', () => {
+      const files = [
+        makeFile({
+          path: '/portrait.jpg',
+          visualGroupId: 'g1',
+          visualGroupSize: 2,
+          faceCount: 1,
+          faceBoxes: [{ x: 0.3, y: 0.2, width: 0.2, height: 0.22, eyeScore: 2, score: 0.96 }],
+          subjectSharpnessScore: 155,
+          sharpnessScore: 190,
+          reviewScore: 88,
+        }),
+        makeFile({
+          path: '/detail.jpg',
+          visualGroupId: 'g1',
+          visualGroupSize: 2,
+          sharpnessScore: 175,
+          reviewScore: 72,
+          blurRisk: 'low',
+        }),
+      ];
+      const next = reducer(makeState({ files, cullConfidence: 'conservative' }), { type: 'QUEUE_BEST' });
+      expect(next.queuedPaths).toEqual(['/portrait.jpg', '/detail.jpg']);
     });
 
     it('does not sync edits across the generic scene bucket', () => {
