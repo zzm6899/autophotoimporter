@@ -39,6 +39,22 @@ describe('detectDeviceTier', () => {
     });
   });
 
+  it('keeps memory-starved multi-core PCs conservative', () => {
+    setHardware(8, 3.5);
+
+    const profile = detectDeviceTier();
+
+    expect(profile).toEqual({
+      tier: 'low',
+      cpuCores: 8,
+      totalMemGB: 3.5,
+      previewConcurrency: 1,
+      faceConcurrency: 1,
+      cpuOptimization: true,
+      rawPreviewQuality: 55,
+    });
+  });
+
   it('uses high-end concurrency without exceeding the built-in caps', () => {
     setHardware(24, 32);
 

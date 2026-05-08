@@ -25,6 +25,9 @@ describe('summarizeBestOfActions', () => {
 
     expect(summary?.scopeLabel).toContain('Current batch page: 3 candidates.');
     expect(summary?.scopeLabel).toContain('Next/Prev page changes which candidates these actions affect.');
+    expect(summary?.pickButtonLabel).toBe('Pick Page Best');
+    expect(summary?.queueButtonLabel).toBe('Queue Page Best');
+    expect(summary?.rejectRestButtonLabel).toBe('Reject Page Rest');
     expect(summary?.pickLabel).toBe('Pick Best marks keeper.jpg as picked; 2 other candidates stay unchanged.');
     expect(summary?.rejectRestLabel).toBe('Reject Rest marks keeper.jpg picked and rejects 2 other candidates in this panel.');
   });

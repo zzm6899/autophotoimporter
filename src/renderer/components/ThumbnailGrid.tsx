@@ -73,8 +73,18 @@ export interface ReviewFlowNextStepSummary {
   nextStepTitle?: string;
 }
 
+export const BEST_OF_BATCH_PAGE_SIZE = 120;
+
 function queuedLabel(count: number): string {
   return `${count} queued`;
+}
+
+export function alignBestOfBatchOffset(offset: number, totalCount: number, pageSize = BEST_OF_BATCH_PAGE_SIZE): number {
+  if (totalCount <= 0 || pageSize <= 0) return 0;
+  const safeOffset = Math.max(0, Math.floor(offset));
+  const lastPageStart = Math.floor((totalCount - 1) / pageSize) * pageSize;
+  const pageStart = Math.floor(safeOffset / pageSize) * pageSize;
+  return Math.min(pageStart, lastPageStart);
 }
 
 export function summarizeReviewFlowNextStep({
@@ -3084,7 +3094,10 @@ export function ThumbnailGrid() {
   const openBestOfSelection = useCallback(() => {
     const focused = focusedIndex >= 0 && focusedIndex < sortedFiles.length ? sortedFiles[focusedIndex] : null;
     let panelPaths: string[] = [];
-    if (focused?.burstId) {
+    if (selectedPaths.length >= 2) {
+      panelPaths = selectedPaths;
+      setBestScope({ paths: panelPaths, title: 'Best of Selection' });
+    } else if (focused?.burstId) {
       const burstFiles = files
         .filter((f) => f.burstId === focused.burstId)
         .sort((a, b) => (a.burstIndex ?? 0) - (b.burstIndex ?? 0));
@@ -3100,9 +3113,6 @@ export function ThumbnailGrid() {
         .sort((a, b) => mediaDateSortMs(a) - mediaDateSortMs(b));
       panelPaths = faceFiles.map((f) => f.path);
       setBestScope({ paths: panelPaths, title: 'Best Face Group', subtitle: `${faceFiles.length} similar face shots` });
-    } else if (selectedPaths.length >= 2) {
-      panelPaths = selectedPaths;
-      setBestScope({ paths: panelPaths, title: 'Best of Selection' });
     } else if (sortedFiles.length > 0) {
       const start = Math.max(0, focusedIndex);
       const windowFiles = sortedFiles.slice(start, Math.min(sortedFiles.length, start + 8));
@@ -3113,18 +3123,16 @@ export function ThumbnailGrid() {
     setShowBestOfSelection(true);
   }, [files, focusedIndex, selectedPaths, sortedFiles, scanUnscannedPanelFiles]);
 
-  const BATCH_PAGE_SIZE = 120;
-
   const openBestOfBatch = useCallback((offset = 0) => {
     const eligible = sortedFiles.filter((f) => f.type === 'photo' && f.pick !== 'rejected' && (!skipDuplicates || !f.duplicate));
     if (eligible.length === 0) return;
-    const clampedOffset = Math.max(0, Math.min(offset, eligible.length - 1));
-    const candidates = eligible.slice(clampedOffset, clampedOffset + BATCH_PAGE_SIZE);
+    const clampedOffset = alignBestOfBatchOffset(offset, eligible.length);
+    const candidates = eligible.slice(clampedOffset, clampedOffset + BEST_OF_BATCH_PAGE_SIZE);
     if (candidates.length === 0) return;
     const paths = candidates.map((f) => f.path);
     setBatchOffset(clampedOffset);
-    const totalPages = Math.ceil(eligible.length / BATCH_PAGE_SIZE);
-    const currentPage = Math.floor(clampedOffset / BATCH_PAGE_SIZE) + 1;
+    const totalPages = Math.ceil(eligible.length / BEST_OF_BATCH_PAGE_SIZE);
+    const currentPage = Math.floor(clampedOffset / BEST_OF_BATCH_PAGE_SIZE) + 1;
     setBestScope({
       paths,
       title: 'Best of Batch',
@@ -3138,8 +3146,8 @@ export function ThumbnailGrid() {
 
   const openAdjacentBatch = useCallback((direction: 1 | -1) => {
     const eligible = sortedFiles.filter((f) => f.type === 'photo' && f.pick !== 'rejected' && (!skipDuplicates || !f.duplicate));
-    const newOffset = batchOffset + direction * BATCH_PAGE_SIZE;
-    const clamped = Math.max(0, Math.min(newOffset, eligible.length - 1));
+    const newOffset = batchOffset + direction * BEST_OF_BATCH_PAGE_SIZE;
+    const clamped = alignBestOfBatchOffset(newOffset, eligible.length);
     openBestOfBatch(clamped);
   }, [batchOffset, openBestOfBatch, skipDuplicates, sortedFiles]);
 
@@ -5015,7 +5023,7 @@ export function ThumbnailGrid() {
             <ActionButton
               icon={Wand2}
               onClick={() => openBestOfBatch(0)}
-              title={`Rank all visible photos together and show the top candidates. AI: ${reviewStats.analyzed}/${reviewStats.total}, faces: ${reviewStats.faces}.`}
+              title={`Rank eligible visible photos in pages of ${BEST_OF_BATCH_PAGE_SIZE}; actions affect the current page. AI: ${reviewStats.analyzed}/${reviewStats.total}, faces: ${reviewStats.faces}.`}
             >
               Batch
             </ActionButton>

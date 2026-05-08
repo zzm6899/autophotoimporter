@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { summarizeReviewFlowNextStep } from '../ThumbnailGrid';
+import { alignBestOfBatchOffset, summarizeReviewFlowNextStep } from '../ThumbnailGrid';
 
 describe('summarizeReviewFlowNextStep', () => {
   it('shows the importable count when some queued files are blocked', () => {
@@ -54,5 +54,21 @@ describe('summarizeReviewFlowNextStep', () => {
       hasDestination: true,
       pendingCount: 0,
     })).toEqual({ nextStep: 'Import 3 queued' });
+  });
+});
+
+describe('alignBestOfBatchOffset', () => {
+  it('keeps adjacent navigation on page starts instead of one-photo tail offsets', () => {
+    expect(alignBestOfBatchOffset(239, 240, 120)).toBe(120);
+    expect(alignBestOfBatchOffset(240, 240, 120)).toBe(120);
+  });
+
+  it('allows a real partial final page when the batch has remaining photos', () => {
+    expect(alignBestOfBatchOffset(240, 241, 120)).toBe(240);
+  });
+
+  it('clamps negative and empty inputs safely', () => {
+    expect(alignBestOfBatchOffset(-20, 240, 120)).toBe(0);
+    expect(alignBestOfBatchOffset(120, 0, 120)).toBe(0);
   });
 });

@@ -54,9 +54,32 @@ describe('summarizeImportLedger', () => {
     expect(summary.failedCount).toBe(1);
     expect(summary.pendingCount).toBe(1);
     expect(summary.retryBytes).toBe(150);
+    expect(summary.completedCount).toBe(2);
     expect(summary.statusMessage).toBe('2 of 4 files are accounted for.');
     expect(summary.recoveryMessage).toBe('Retry resumes pending files and re-attempts failed copies from this ledger.');
     expect(summary.recoveryWorkloadLabel).toBe('2 files (150 B) left to retry.');
+  });
+
+  it('does not double-count verified files as separate completed imports', () => {
+    const summary = summarizeImportLedger({
+      ...baseLedger,
+      totalFiles: 4,
+      imported: 2,
+      skipped: 1,
+      failed: 1,
+      pending: 0,
+      verified: 2,
+      items: [
+        { sourcePath: 'E:\\DCIM\\ok-1.jpg', name: 'ok-1.jpg', size: 100, status: 'verified' },
+        { sourcePath: 'E:\\DCIM\\ok-2.jpg', name: 'ok-2.jpg', size: 100, status: 'imported' },
+        { sourcePath: 'E:\\DCIM\\skip.jpg', name: 'skip.jpg', size: 50, status: 'skipped' },
+        { sourcePath: 'E:\\DCIM\\bad.jpg', name: 'bad.jpg', size: 75, status: 'failed', error: 'Disk full' },
+      ],
+    });
+
+    expect(summary.completedCount).toBe(3);
+    expect(summary.completionPercent).toBe(75);
+    expect(summary.statusMessage).toBe('3 of 4 files are accounted for.');
   });
 
   it('reports a clean ledger without recovery work', () => {

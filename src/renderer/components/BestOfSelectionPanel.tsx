@@ -115,8 +115,11 @@ type BestOfActionScope = 'batch' | 'burst' | 'selection';
 
 interface BestOfActionSummary {
   scopeLabel: string;
+  pickButtonLabel: string;
   pickLabel: string;
+  queueButtonLabel: string;
   queueLabel: string;
+  rejectRestButtonLabel: string;
   rejectRestLabel: string;
   queueState: 'queued' | 'ready';
 }
@@ -156,17 +159,20 @@ export function summarizeBestOfActions(
   const pickLabel = restCount > 0
     ? `${pickStart}; ${otherCandidates} ${restCount === 1 ? 'stays' : 'stay'} unchanged.`
     : `${pickStart}.`;
+  const pickButtonLabel = scope === 'batch' ? 'Pick Page Best' : 'Pick Best';
 
   const queueState = queuedSet.has(best.path) ? 'queued' : 'ready';
   const queueLabel = queueState === 'queued'
     ? `${topName} is already in the import queue; pick/reject flags stay unchanged.`
     : `Queue Best adds ${topName} to the import queue; pick/reject flags stay unchanged.`;
+  const queueButtonLabel = scope === 'batch' ? 'Queue Page Best' : 'Queue Best';
 
   const rejectRestLabel = restCount > 0
     ? `Reject Rest marks ${topName} picked and rejects ${otherCandidates} in this panel.`
     : `Reject Rest keeps ${topName} picked because it is the only candidate.`;
+  const rejectRestButtonLabel = scope === 'batch' ? 'Reject Page Rest' : 'Reject Rest';
 
-  return { scopeLabel, pickLabel, queueLabel, rejectRestLabel, queueState };
+  return { scopeLabel, pickButtonLabel, pickLabel, queueButtonLabel, queueLabel, rejectRestButtonLabel, rejectRestLabel, queueState };
 }
 
 // Corrects face box positions for object-contain letterboxing.
@@ -622,7 +628,7 @@ export function BestOfSelectionPanel({
             title={actionTitle(actionSummary?.pickLabel, 'Mark the top-ranked candidate as picked.')}
             className="px-2.5 py-1 text-[11px] rounded bg-yellow-500/15 text-yellow-300 hover:bg-yellow-500/25"
           >
-            Pick Best
+            {actionSummary?.pickButtonLabel ?? 'Pick Best'}
           </button>
           {isBurst && (
             <>
@@ -665,14 +671,14 @@ export function BestOfSelectionPanel({
             title={actionTitle(actionSummary?.queueLabel, 'Add the top-ranked candidate to the import queue.')}
             className="px-2.5 py-1 text-[11px] rounded bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25"
           >
-            Queue Best
+            {actionSummary?.queueButtonLabel ?? 'Queue Best'}
           </button>
           <button
             onClick={() => onRejectRest(best)}
             title={actionTitle(actionSummary?.rejectRestLabel, 'Pick the top-ranked candidate and reject the rest in this panel.')}
             className="px-2.5 py-1 text-[11px] rounded bg-red-500/10 text-red-300 hover:bg-red-500/20"
           >
-            Reject Rest
+            {actionSummary?.rejectRestButtonLabel ?? 'Reject Rest'}
           </button>
           <button onClick={onClose} className="px-2 py-1 text-[11px] rounded bg-surface-raised text-text-secondary hover:bg-border">
             Close

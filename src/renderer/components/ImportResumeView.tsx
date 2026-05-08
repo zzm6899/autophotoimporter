@@ -50,7 +50,9 @@ export function summarizeImportLedger(ledger: ImportLedger | null) {
     .filter((item) => item.status === 'failed' || item.status === 'pending')
     .reduce((total, item) => total + item.size, 0);
   const actionableCount = failedCount + pendingCount;
-  const completed = ledger.imported + ledger.skipped + (ledger.verified ?? 0);
+  const completed = ledger.items.length > 0
+    ? ledger.items.filter((item) => item.status === 'imported' || item.status === 'verified' || item.status === 'skipped').length
+    : ledger.imported + ledger.skipped;
   const completionPercent = ledger.totalFiles > 0
     ? Math.min(100, Math.round((completed / ledger.totalFiles) * 100))
     : 0;
@@ -72,6 +74,7 @@ export function summarizeImportLedger(ledger: ImportLedger | null) {
     failedCount,
     pendingCount,
     retryBytes,
+    completedCount: completed,
     nextRecoveryTarget,
     recoveryWorkloadLabel: actionableCount > 0
       ? `${actionableCount} ${actionableCount === 1 ? 'file' : 'files'} (${formatRecoveryBytes(retryBytes)}) left to retry.`

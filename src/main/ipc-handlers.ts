@@ -3069,15 +3069,16 @@ export function registerIpcHandlers(): void {
 /**
  * Apply the renderer's intent to the current scan.
  *
- *   1. If config.selectedPaths is non-empty, keep only those files — this is
+ *   1. If config.selectedPaths is an array, keep only those files — this is
  *      the "I Cmd+clicked 40 thumbnails and hit Import" case — while still
- *      respecting duplicate skipping when enabled.
+ *      respecting duplicate skipping when enabled. An empty array is an
+ *      explicit empty scope, not a request to fall back to every file.
  *   2. Else, drop rejected files. If skipDuplicates, also drop known dupes.
  *
  * Files with no destPath computed are always dropped (date parse failed).
  */
 function filterFilesForImport(all: MediaFile[], config: ImportConfig): MediaFile[] {
-  const selected = Array.isArray(config.selectedPaths) && config.selectedPaths.length > 0
+  const selected = Array.isArray(config.selectedPaths)
     ? new Set(config.selectedPaths)
     : null;
   return all.filter((f) => {

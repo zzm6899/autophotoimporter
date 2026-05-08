@@ -68,7 +68,7 @@ export function useImport() {
       !!file.destPath && file.pick !== 'rejected' && (!skipDuplicates || !file.duplicate);
     const importablePathSet = new Set(files.filter(isImportableFile).map((file) => file.path));
     const filterImportablePaths = (paths: string[]) => paths.filter((path) => importablePathSet.has(path));
-    if (options?.selectedPathsOverride?.length) {
+    if (Array.isArray(options?.selectedPathsOverride)) {
       pathsToImport = filterImportablePaths(options.selectedPathsOverride);
     } else if (selectedPaths.length > 0) {
       pathsToImport = filterImportablePaths(selectedPaths);
