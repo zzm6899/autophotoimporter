@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { alignBestOfBatchOffset, shouldOpenBestOfSelectionPanel, shouldQueueVisibleImportablePaths, sliceBestOfBatchPathPage, summarizeBestOfBatchPage, summarizeReviewFlowNextStep } from '../ThumbnailGrid';
+import { alignBestOfBatchOffset, shouldOpenBestOfSelectionPanel, shouldQueueVisibleImportablePaths, sliceBestOfBatchPathPage, summarizeBestOfBatchPage, summarizeReviewFlowHealth, summarizeReviewFlowNextStep } from '../ThumbnailGrid';
 
 describe('summarizeReviewFlowNextStep', () => {
   it('shows the importable count when some queued files are blocked', () => {
@@ -54,6 +54,55 @@ describe('summarizeReviewFlowNextStep', () => {
       hasDestination: true,
       pendingCount: 0,
     })).toEqual({ nextStep: 'Import 3 queued' });
+  });
+});
+
+describe('summarizeReviewFlowHealth', () => {
+  it('renders clean scans as passive health instead of a filter target', () => {
+    expect(summarizeReviewFlowHealth({
+      blurCount: 0,
+      catalogMatchCount: 0,
+      groupPhotosCount: 0,
+      faceGroupsCount: 0,
+    })).toEqual({
+      label: 'No review issues',
+      title: 'No blur risk, catalog matches, group photos, or face groups need attention.',
+      targetFilter: null,
+    });
+  });
+
+  it('prioritizes blur risk before other health filters', () => {
+    expect(summarizeReviewFlowHealth({
+      blurCount: 3,
+      catalogMatchCount: 2,
+      groupPhotosCount: 4,
+      faceGroupsCount: 5,
+    })).toEqual({
+      label: '3 blur risk',
+      title: 'Show blur-risk photos.',
+      targetFilter: 'blur-risk',
+    });
+  });
+
+  it('maps remaining health states to their filter targets', () => {
+    expect(summarizeReviewFlowHealth({
+      blurCount: 0,
+      catalogMatchCount: 2,
+      groupPhotosCount: 0,
+      faceGroupsCount: 0,
+    }).targetFilter).toBe('catalog-duplicates');
+    expect(summarizeReviewFlowHealth({
+      blurCount: 0,
+      catalogMatchCount: 0,
+      groupPhotosCount: 4,
+      faceGroupsCount: 0,
+    }).targetFilter).toBe('group-photos');
+    expect(summarizeReviewFlowHealth({
+      blurCount: 0,
+      catalogMatchCount: 0,
+      groupPhotosCount: 0,
+      faceGroupsCount: 5,
+    }).targetFilter).toBe('face-gallery');
   });
 });
 

@@ -1,6 +1,7 @@
 import { readdirSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
+import os from 'node:os';
 
 const root = process.cwd();
 const fixtureDir = path.join(root, 'fixtures', 'smoke');
@@ -37,6 +38,24 @@ const mark = (phase, status, extra = {}) => {
 
 const start = performance.now();
 mark('run', 'started');
+
+const cpuCores = os.cpus().length || 1;
+const totalMemoryGB = os.totalmem() / 1024 / 1024 / 1024;
+const detectedTier = totalMemoryGB < 6 || cpuCores <= 4
+  ? 'low'
+  : totalMemoryGB >= 16 && cpuCores >= 12
+    ? 'high'
+    : 'balanced';
+const previewConcurrency = detectedTier === 'low'
+  ? 1
+  : detectedTier === 'high'
+    ? Math.min(6, Math.max(3, Math.floor(cpuCores / 3)))
+    : Math.min(3, Math.max(2, Math.floor(cpuCores / 4)));
+const faceConcurrency = detectedTier === 'low'
+  ? 1
+  : detectedTier === 'high'
+    ? Math.min(8, Math.max(4, Math.floor(cpuCores / 4)))
+    : 2;
 
 const discoverStart = performance.now();
 const files = walk(fixtureDir).map((file) => {
@@ -75,9 +94,12 @@ const record = {
   p50Ms: roundMs(elapsedMs),
   p95Ms: roundMs(elapsedMs),
   cacheHitRate: null,
-  provider: null,
-  faceConcurrency: null,
-  previewConcurrency: null,
+  provider: process.platform === 'win32' ? 'dml-or-cpu' : 'cpu',
+  deviceTier: detectedTier,
+  cpuCores,
+  totalMemoryGB: Math.round(totalMemoryGB * 10) / 10,
+  faceConcurrency,
+  previewConcurrency,
 };
 mark('run', 'completed', {
   files: record.files,

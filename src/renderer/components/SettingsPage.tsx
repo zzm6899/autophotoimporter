@@ -1615,6 +1615,16 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                   <div className="truncate" title={diagnosticsSnapshot.updateMetadataPath}>Update metadata: <span className="font-mono text-text-secondary">{diagnosticsSnapshot.updateMetadataPath}</span></div>
                   <div>Stored license key: <span className="text-text-secondary">{diagnosticsSnapshot.license.hasStoredKey ? 'yes' : 'no'}</span></div>
                   <div>Activation code: <span className="text-text-secondary">{diagnosticsSnapshot.license.hasActivationCode ? diagnosticsSnapshot.license.activationCode ?? 'saved' : 'none'}</span></div>
+                  <div>
+                    Performance: <span className="text-text-secondary">
+                      {diagnosticsSnapshot.performance.previewQueue.preview.slots} preview · {diagnosticsSnapshot.performance.faceQueue.slots} face · {diagnosticsSnapshot.performance.provider ?? 'provider pending'}
+                    </span>
+                  </div>
+                  <div>
+                    Queues: <span className="text-text-secondary">
+                      preview {diagnosticsSnapshot.performance.previewQueue.preview.active}/{diagnosticsSnapshot.performance.previewQueue.preview.queued} · detail {diagnosticsSnapshot.performance.previewQueue.detail.active}/{diagnosticsSnapshot.performance.previewQueue.detail.queued} · face {diagnosticsSnapshot.performance.faceQueue.active}/{diagnosticsSnapshot.performance.faceQueue.queued}
+                    </span>
+                  </div>
                   {diagnosticsSnapshot.update.message && (
                     <div className="text-yellow-300">Update note: {diagnosticsSnapshot.update.message}</div>
                   )}

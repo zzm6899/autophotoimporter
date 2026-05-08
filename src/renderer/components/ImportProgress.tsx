@@ -27,7 +27,15 @@ export function ImportProgress() {
   useEffect(() => {
     if (phase !== 'importing' || !importProgress) return;
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') cancelImport();
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      const target = e.target;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        (target instanceof HTMLElement && (target.isContentEditable || target.closest('[role="dialog"], [contenteditable="true"]')))
+      ) return;
+      cancelImport();
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);

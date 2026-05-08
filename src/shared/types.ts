@@ -1090,6 +1090,26 @@ export interface AppDiagnosticsSnapshot {
     cachedAt?: string;
   };
   endpoints: Array<{ url: string; role: 'primary' | 'fallback' | 'legacy' }>;
+  performance: {
+    provider: string | null;
+    faceQueue: {
+      active: number;
+      queued: number;
+      slots: number;
+    };
+    previewQueue: {
+      preview: {
+        active: number;
+        queued: number;
+        slots: number;
+      };
+      detail: {
+        active: number;
+        queued: number;
+        slots: number;
+      };
+    };
+  };
 }
 
 export interface UpdateRepairResult {

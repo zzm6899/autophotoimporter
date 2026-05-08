@@ -56,7 +56,21 @@ export function actionableBestOfCandidates(ranked: MediaFile[]): MediaFile[] {
   return actionable.length > 0 ? actionable : ranked;
 }
 
-function autoAcceptSummary(best: MediaFile, second: MediaFile | undefined, scoreGap: number): {
+function hasBestOfQualitySignal(file: MediaFile): boolean {
+  return (
+    typeof file.reviewScore === 'number' ||
+    typeof file.subjectSharpnessScore === 'number' ||
+    typeof file.sharpnessScore === 'number' ||
+    typeof file.blurRisk === 'string'
+  );
+}
+
+export function summarizeBestOfReadiness(
+  files: MediaFile[],
+  best: MediaFile,
+  second: MediaFile | undefined,
+  scoreGap: number,
+): {
   label: string;
   tone: 'safe' | 'review' | 'manual';
   detail: string;
@@ -66,6 +80,16 @@ function autoAcceptSummary(best: MediaFile, second: MediaFile | undefined, score
       label: 'Manual review',
       tone: 'manual',
       detail: 'Top pick still has high blur risk, so compare before accepting.',
+    };
+  }
+  const pendingQualitySignals = files.length > 1
+    ? files.filter((file) => !hasBestOfQualitySignal(file)).length
+    : 0;
+  if (pendingQualitySignals > 0) {
+    return {
+      label: 'AI review pending',
+      tone: 'manual',
+      detail: `${pendingQualitySignals} candidate${pendingQualitySignals === 1 ? '' : 's'} still need sharpness or review signals before auto-accepting.`,
     };
   }
   if (!second) {
@@ -325,17 +349,40 @@ function ImageLightbox({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { onClose(); return; }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        onClose();
+        return;
+      }
       if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
         setIdx((i) => Math.max(0, Math.min(ranked.length - 1, i + (e.key === 'ArrowRight' ? 1 : -1))));
       }
-      if ((e.key === 'p' || e.key === 'P') && file) onPickFile?.(file, file.pick === 'selected' ? undefined : 'selected');
-      if ((e.key === 'x' || e.key === 'X') && file) onPickFile?.(file, file.pick === 'rejected' ? undefined : 'rejected');
-      if ((e.key === 'u' || e.key === 'U') && file) onPickFile?.(file, undefined);
+      if ((e.key === 'p' || e.key === 'P') && file) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        onPickFile?.(file, file.pick === 'selected' ? undefined : 'selected');
+      }
+      if ((e.key === 'x' || e.key === 'X') && file) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        onPickFile?.(file, file.pick === 'rejected' ? undefined : 'rejected');
+      }
+      if ((e.key === 'u' || e.key === 'U') && file) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        onPickFile?.(file, undefined);
+      }
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
   }, [onClose, onPickFile, file, ranked.length]);
 
   const wheelRef = useRef<HTMLDivElement>(null);
@@ -598,7 +645,8 @@ export function BestOfSelectionPanel({
   const bestScore = best ? Math.round(rankScore(best)) : 0;
   const scoreGap = best && second ? Math.round(rankScore(best) - rankScore(second)) : bestScore;
   const confidence = scoreGapConfidence(scoreGap);
-  const readiness = best ? autoAcceptSummary(best, second, scoreGap) : null;
+  const readiness = best ? summarizeBestOfReadiness(files, best, second, scoreGap) : null;
+  const acceptNextDisabled = nextBatchDisabled || readiness?.tone !== 'safe';
   const bestExplanation = useMemo(() => explainBestShotSelection(files), [files]);
   const evidence = bestExplanation?.wins ?? [];
   const cautions = bestExplanation?.cautions ?? [];
@@ -817,14 +865,16 @@ export function BestOfSelectionPanel({
           {isBatch && onRejectRestAndNext && (
             <button
               onClick={() => {
-                if (!nextBatchDisabled) onRejectRestAndNext(best);
+                if (!acceptNextDisabled) onRejectRestAndNext(best);
               }}
-              disabled={nextBatchDisabled}
-              title={nextBatchDisabled
-                ? 'Reject Page Rest is available; there is no next batch page.'
+              disabled={acceptNextDisabled}
+              title={acceptNextDisabled
+                ? nextBatchDisabled
+                  ? 'Reject Page Rest is available; there is no next batch page.'
+                  : 'Accept + Next waits until Best Page is safe to accept. Use Reject Page Rest after manual review.'
                 : actionTitle(actionSummary?.acceptAndNextLabel, 'Pick the top-ranked candidate, reject the rest, and open the next batch page.')}
               className={`px-2.5 py-1 text-[11px] rounded ${
-                nextBatchDisabled
+                acceptNextDisabled
                   ? 'bg-surface text-text-muted cursor-not-allowed opacity-60'
                   : 'bg-red-500/10 text-red-300 hover:bg-red-500/20'
               }`}

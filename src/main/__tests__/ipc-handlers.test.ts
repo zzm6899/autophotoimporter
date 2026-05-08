@@ -108,7 +108,7 @@ import { importFiles } from '../services/import-engine';
 import { scanFiles } from '../services/file-scanner';
 import { isDuplicate } from '../services/duplicate-detector';
 import { generatePreview } from '../services/exif-parser';
-import { checkForUpdate, fetchUpdateHistory } from '../services/update-checker';
+import { checkForUpdate, fetchUpdateHistory, readLastKnownGoodUpdateMetadata } from '../services/update-checker';
 import { readFile, writeFile, chmod } from 'node:fs/promises';
 
 const mockImportFiles = vi.mocked(importFiles);
@@ -120,6 +120,7 @@ const mockWriteFile = vi.mocked(writeFile);
 const mockChmod = vi.mocked(chmod);
 const mockCheckForUpdate = vi.mocked(checkForUpdate);
 const mockFetchUpdateHistory = vi.mocked(fetchUpdateHistory);
+const mockReadLastKnownGoodUpdateMetadata = vi.mocked(readLastKnownGoodUpdateMetadata);
 
 // Helper: register all handlers, then extract the handler function for a given channel
 function getHandler(channel: string): (...args: unknown[]) => Promise<unknown> {
@@ -146,6 +147,8 @@ describe('IPC Handlers', () => {
     mockCheckForUpdate.mockResolvedValue({ status: 'up-to-date', currentVersion: '1.1.0', latestVersion: '1.1.0' });
     mockFetchUpdateHistory.mockReset();
     mockFetchUpdateHistory.mockResolvedValue([]);
+    mockReadLastKnownGoodUpdateMetadata.mockReset();
+    mockReadLastKnownGoodUpdateMetadata.mockResolvedValue(null);
     mockIsDuplicate.mockReset();
     mockIsDuplicate.mockResolvedValue(false);
     mockGeneratePreview.mockReset();
@@ -548,6 +551,27 @@ describe('IPC Handlers', () => {
       expect(settings.previewConcurrency).toBe(12);
     });
 
+    it('normalizes malformed persisted performance numbers instead of poisoning runtime queues', async () => {
+      mockReadFile.mockResolvedValue(JSON.stringify({
+        previewConcurrency: 'bad',
+        faceConcurrency: 'bad',
+        rawPreviewQuality: 'bad',
+      }) as any);
+      const handler = getHandler('settings:get');
+
+      const settings = await handler({}) as any;
+
+      expect(Number.isFinite(settings.previewConcurrency)).toBe(true);
+      expect(settings.previewConcurrency).toBeGreaterThanOrEqual(1);
+      expect(settings.previewConcurrency).toBeLessThanOrEqual(12);
+      expect(Number.isFinite(settings.faceConcurrency)).toBe(true);
+      expect(settings.faceConcurrency).toBeGreaterThanOrEqual(1);
+      expect(settings.faceConcurrency).toBeLessThanOrEqual(8);
+      expect(Number.isFinite(settings.rawPreviewQuality)).toBe(true);
+      expect(settings.rawPreviewQuality).toBeGreaterThanOrEqual(30);
+      expect(settings.rawPreviewQuality).toBeLessThanOrEqual(100);
+    });
+
     it('applies low-tier performance defaults when only perfTier is saved', async () => {
       mockReadFile.mockResolvedValue(JSON.stringify({ perfTier: 'low' }) as any);
       const handler = getHandler('settings:get');
@@ -661,6 +685,21 @@ describe('IPC Handlers', () => {
     });
   });
 
+  describe('Diagnostics', () => {
+    it('includes live preview and face queue settings in the diagnostics snapshot', async () => {
+      mockReadFile.mockResolvedValue(JSON.stringify({ perfTier: 'high', previewConcurrency: 6, faceConcurrency: 4 }) as any);
+      const handler = getHandler('diagnostics:snapshot');
+
+      const snapshot = await handler({}) as any;
+
+      expect(snapshot.performance.previewQueue.preview.slots).toBe(6);
+      expect(snapshot.performance.previewQueue.detail.slots).toBe(1);
+      expect(snapshot.performance.previewQueue.preview.active).toBe(0);
+      expect(snapshot.performance.previewQueue.preview.queued).toBe(0);
+      expect(snapshot.performance.faceQueue.slots).toBe(4);
+    });
+  });
+
   describe('Sessions', () => {
     const makeSession = (): AppSession => {
       const file: MediaFile = {
@@ -726,6 +765,27 @@ describe('IPC Handlers', () => {
         code: 'VALIDATION_ERROR',
         message: 'Invalid import config payload.',
       });
+    });
+
+    it('rejects malformed performance settings patches before saving', async () => {
+      const handler = getHandler('settings:set');
+
+      await expect(handler({}, { previewConcurrency: 'bad' })).resolves.toEqual({
+        ok: false,
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid settings patch payload.',
+      });
+      await expect(handler({}, { faceConcurrency: 'bad' })).resolves.toEqual({
+        ok: false,
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid settings patch payload.',
+      });
+      await expect(handler({}, { rawPreviewQuality: Number.NaN })).resolves.toEqual({
+        ok: false,
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid settings patch payload.',
+      });
+      expect(mockWriteFile).not.toHaveBeenCalled();
     });
 
     it('rejects malformed FTP config', async () => {

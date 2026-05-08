@@ -104,7 +104,8 @@ async function getThumbDir(): Promise<string> {
 }
 
 export function setRawPreviewQuality(quality: number): void {
-  rawPreviewQuality = Math.max(30, Math.min(100, quality));
+  const requested = typeof quality === 'number' && Number.isFinite(quality) ? quality : PREVIEW_QUALITY;
+  rawPreviewQuality = Math.max(30, Math.min(100, requested));
 }
 
 async function isFileProtected(filePath: string): Promise<boolean> {

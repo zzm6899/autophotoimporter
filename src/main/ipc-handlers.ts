@@ -176,6 +176,10 @@ function isSettingsPatch(value: unknown): value is Partial<AppSettings> {
   if (value.defaultConflictPolicy != null && !['skip', 'rename', 'overwrite', 'conflicts-folder'].includes(String(value.defaultConflictPolicy))) return false;
   if (value.conflictFolderName != null && typeof value.conflictFolderName !== 'string') return false;
   if (value.watchFolders != null && !Array.isArray(value.watchFolders)) return false;
+  if (value.previewConcurrency != null && !isNumber(value.previewConcurrency)) return false;
+  if (value.faceConcurrency != null && !isNumber(value.faceConcurrency)) return false;
+  if (value.rawPreviewQuality != null && !isNumber(value.rawPreviewQuality)) return false;
+  if (value.gpuStressStreams != null && !isNumber(value.gpuStressStreams)) return false;
   return true;
 }
 
@@ -519,7 +523,7 @@ async function runSmokeBenchmark(): Promise<{ ok: boolean; outPath: string; file
       cacheHitRate: null,
       provider: getActualExecutionProvider(),
       faceConcurrency: faceSemaphoreSlots,
-      previewConcurrency: null,
+      previewConcurrency: previewConcurrencyByVariant.preview,
     };
     mark('run', 'completed', { files: files.length, bytes, wallMs });
     const outputRecords = [...records, summary];
@@ -1033,15 +1037,17 @@ function cancelPendingFaceJobs(): void {
 
 const STALE_FACE_JOB = 'stale-face-job';
 
-function clampFaceConcurrency(n: number, max = FACE_CONCURRENCY_HARD_MAX): number {
-  const safeMax = Math.max(1, Math.min(FACE_CONCURRENCY_HARD_MAX, Math.round(max)));
-  return Math.max(1, Math.min(safeMax, Math.round(n)));
+function clampFaceConcurrency(n: unknown, max: unknown = FACE_CONCURRENCY_HARD_MAX): number {
+  const maxValue = isNumber(max) ? max : FACE_CONCURRENCY_HARD_MAX;
+  const safeMax = Math.max(1, Math.min(FACE_CONCURRENCY_HARD_MAX, Math.round(maxValue)));
+  const requested = isNumber(n) ? n : safeMax;
+  return Math.max(1, Math.min(safeMax, Math.round(requested)));
 }
 
 function resolveFaceConcurrency(settings: Pick<AppSettings, 'perfTier' | 'faceConcurrency'>, profile = detectDeviceTier(
   settings.perfTier && settings.perfTier !== 'auto' ? settings.perfTier : undefined,
 )): number {
-  const requested = settings.faceConcurrency;
+  const requested = isNumber(settings.faceConcurrency) ? settings.faceConcurrency : undefined;
   const profileMax = profile.faceConcurrency;
   if ((!settings.perfTier || settings.perfTier === 'auto') && (requested ?? 0) <= 1) {
     return clampFaceConcurrency(profileMax, profileMax);
@@ -1101,15 +1107,21 @@ const previewQueueByVariant: Record<'preview' | 'detail', Array<() => void>> = {
 const PREVIEW_CONCURRENCY_HARD_MAX = 12;
 const previewConcurrencyByVariant: Record<'preview' | 'detail', number> = { preview: 3, detail: 1 };
 
-function clampPreviewConcurrency(n: number): number {
-  return Math.max(1, Math.min(PREVIEW_CONCURRENCY_HARD_MAX, Math.round(n)));
+function clampPreviewConcurrency(n: unknown, fallback = 1): number {
+  const requested = isNumber(n) ? n : fallback;
+  return Math.max(1, Math.min(PREVIEW_CONCURRENCY_HARD_MAX, Math.round(requested)));
+}
+
+function clampRawPreviewQuality(n: unknown, fallback = DEFAULT_SETTINGS.rawPreviewQuality ?? 70): number {
+  const requested = isNumber(n) ? n : fallback;
+  return Math.max(30, Math.min(100, Math.round(requested)));
 }
 
 function resolvePreviewConcurrency(
   settings: Pick<AppSettings, 'perfTier' | 'previewConcurrency'>,
   profile = detectDeviceTier(settings.perfTier && settings.perfTier !== 'auto' ? settings.perfTier : undefined),
 ): number {
-  return clampPreviewConcurrency(settings.previewConcurrency ?? profile.previewConcurrency);
+  return clampPreviewConcurrency(settings.previewConcurrency, profile.previewConcurrency);
 }
 
 function releasePreviewSlot(variant: 'preview' | 'detail'): void {
@@ -1129,6 +1141,21 @@ function setPreviewConcurrency(n: number): void {
     previewActiveByVariant.preview++;
     previewQueueByVariant.preview.shift()?.();
   }
+}
+
+function getPreviewQueueDiagnostics(): AppDiagnosticsSnapshot['performance']['previewQueue'] {
+  return {
+    preview: {
+      active: previewActiveByVariant.preview,
+      queued: previewQueueByVariant.preview.length,
+      slots: previewConcurrencyByVariant.preview,
+    },
+    detail: {
+      active: previewActiveByVariant.detail,
+      queued: previewQueueByVariant.detail.length,
+      slots: previewConcurrencyByVariant.detail,
+    },
+  };
 }
 
 async function acquirePreviewSlot(variant: 'preview' | 'detail'): Promise<void> {
@@ -1211,6 +1238,7 @@ async function loadSettings(): Promise<AppSettings> {
       ? merged
       : { ...merged, previewConcurrency: undefined };
     const resolvedPreviewConcurrency = resolvePreviewConcurrency(previewSettings, profile);
+    const resolvedRawPreviewQuality = clampRawPreviewQuality(merged.rawPreviewQuality);
 
     // Apply performance settings immediately
     configureGpuAcceleration(merged.gpuFaceAcceleration ?? true);
@@ -1220,13 +1248,13 @@ async function loadSettings(): Promise<AppSettings> {
       faceMatching: merged.reviewFaceMatching ?? true,
       personDetection: merged.reviewPersonDetection ?? true,
     });
-    setRawPreviewQuality(merged.rawPreviewQuality ?? 70);
+    setRawPreviewQuality(resolvedRawPreviewQuality);
     setFaceConcurrency(resolvedFaceConcurrency);
     setPreviewConcurrency(resolvedPreviewConcurrency);
 
     const manualPerformanceOverrides = {
       ...(Object.prototype.hasOwnProperty.call(parsed, 'cpuOptimization') ? { cpuOptimization: merged.cpuOptimization } : {}),
-      ...(Object.prototype.hasOwnProperty.call(parsed, 'rawPreviewQuality') ? { rawPreviewQuality: merged.rawPreviewQuality } : {}),
+      ...(isNumber(parsed.rawPreviewQuality) ? { rawPreviewQuality: resolvedRawPreviewQuality } : {}),
     };
 
     // Apply device-tier presets on first load (overridden by explicit user settings)
@@ -1280,6 +1308,7 @@ async function saveSettings(settings: Partial<AppSettings>): Promise<void> {
       : merged;
   const normalized: AppSettings = {
     ...merged,
+    rawPreviewQuality: clampRawPreviewQuality(merged.rawPreviewQuality),
     previewConcurrency: resolvePreviewConcurrency(previewSettings, profile),
     faceConcurrency: resolveFaceConcurrency(merged, profile),
   };
@@ -1570,6 +1599,15 @@ async function buildDiagnosticsSnapshot(): Promise<AppDiagnosticsSnapshot> {
       cachedAt: cachedUpdate?.savedAt,
     },
     endpoints: UPDATE_DIAGNOSTIC_ENDPOINTS,
+    performance: {
+      provider: getActualExecutionProvider(),
+      faceQueue: {
+        active: faceActiveCount,
+        queued: faceSemaphoreQueue.length,
+        slots: faceSemaphoreSlots,
+      },
+      previewQueue: getPreviewQueueDiagnostics(),
+    },
   };
 }
 
@@ -2472,11 +2510,21 @@ export function registerIpcHandlers(): void {
       benchmarkSummaries,
       latestLedger: ledger,
       scannedFiles: scannedFiles.length,
+      performance: {
+        provider: provider.ep,
+        faceQueue: {
+          active: faceActiveCount,
+          queued: faceSemaphoreQueue.length,
+          slots: faceSemaphoreSlots,
+        },
+        previewQueue: getPreviewQueueDiagnostics(),
+      },
       faceQueue: {
         active: faceActiveCount,
         queued: faceSemaphoreQueue.length,
         slots: faceSemaphoreSlots,
       },
+      previewQueue: getPreviewQueueDiagnostics(),
     }, null, 2), 'utf8');
     if (settings) {
       const redacted = {

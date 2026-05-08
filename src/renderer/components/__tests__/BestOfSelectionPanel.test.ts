@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { actionableBestOfCandidates, bestOfShortcutAction, rankBestOfSelection, summarizeBestOfActions } from '../BestOfSelectionPanel';
+import { actionableBestOfCandidates, bestOfShortcutAction, rankBestOfSelection, summarizeBestOfActions, summarizeBestOfReadiness } from '../BestOfSelectionPanel';
 import type { MediaFile } from '../../../shared/types';
 
 function photo(name: string, pick?: MediaFile['pick']): MediaFile {
@@ -176,5 +176,67 @@ describe('bestOfShortcutAction', () => {
     expect(bestOfShortcutAction({ ...base, hasModifier: true })).toBe('none');
     expect(bestOfShortcutAction({ ...base, hasBest: false })).toBe('none');
     expect(bestOfShortcutAction({ ...base, lightboxOpen: true })).toBe('none');
+  });
+});
+
+describe('summarizeBestOfReadiness', () => {
+  it('waits for all page candidates to have quality signals before auto-accepting', () => {
+    const best = {
+      ...photo('sharp.jpg'),
+      subjectSharpnessScore: 120,
+      sharpnessScore: 130,
+      reviewScore: 80,
+      blurRisk: 'low' as const,
+    };
+    const pending = photo('pending.jpg');
+
+    expect(summarizeBestOfReadiness([best, pending], best, pending, 80)).toMatchObject({
+      label: 'AI review pending',
+      tone: 'manual',
+    });
+  });
+
+  it('allows safe auto-accept once candidates are analyzed and the score gap is high', () => {
+    const best = {
+      ...photo('sharp.jpg'),
+      subjectSharpnessScore: 140,
+      sharpnessScore: 140,
+      reviewScore: 85,
+      blurRisk: 'low' as const,
+    };
+    const second = {
+      ...photo('soft.jpg'),
+      subjectSharpnessScore: 60,
+      sharpnessScore: 65,
+      reviewScore: 40,
+      blurRisk: 'low' as const,
+    };
+
+    expect(summarizeBestOfReadiness([best, second], best, second, 80)).toMatchObject({
+      label: 'Safe to accept',
+      tone: 'safe',
+    });
+  });
+
+  it('keeps high-blur winners in manual review even when the page is analyzed', () => {
+    const best = {
+      ...photo('blurred.jpg'),
+      subjectSharpnessScore: 120,
+      sharpnessScore: 125,
+      reviewScore: 80,
+      blurRisk: 'high' as const,
+    };
+    const second = {
+      ...photo('other.jpg'),
+      subjectSharpnessScore: 40,
+      sharpnessScore: 45,
+      reviewScore: 20,
+      blurRisk: 'low' as const,
+    };
+
+    expect(summarizeBestOfReadiness([best, second], best, second, 120)).toMatchObject({
+      label: 'Manual review',
+      tone: 'manual',
+    });
   });
 });

@@ -73,6 +73,14 @@ export interface ReviewFlowNextStepSummary {
   nextStepTitle?: string;
 }
 
+type ReviewHealthTargetFilter = 'blur-risk' | 'catalog-duplicates' | 'group-photos' | 'face-gallery' | null;
+
+export interface ReviewFlowHealthSummary {
+  label: string;
+  title: string;
+  targetFilter: ReviewHealthTargetFilter;
+}
+
 export const BEST_OF_BATCH_PAGE_SIZE = 120;
 
 export interface BestOfBatchPageSummary {
@@ -145,6 +153,36 @@ export function shouldQueueVisibleImportablePaths(paths: readonly string[]): boo
 
 export function shouldOpenBestOfSelectionPanel(paths: readonly string[]): boolean {
   return paths.length > 0;
+}
+
+export function summarizeReviewFlowHealth({
+  blurCount,
+  catalogMatchCount,
+  groupPhotosCount,
+  faceGroupsCount,
+}: {
+  blurCount: number;
+  catalogMatchCount: number;
+  groupPhotosCount: number;
+  faceGroupsCount: number;
+}): ReviewFlowHealthSummary {
+  if (blurCount > 0) {
+    return { label: `${blurCount} blur risk`, title: 'Show blur-risk photos.', targetFilter: 'blur-risk' };
+  }
+  if (catalogMatchCount > 0) {
+    return { label: `${catalogMatchCount} catalog matches`, title: 'Show catalog matches.', targetFilter: 'catalog-duplicates' };
+  }
+  if (groupPhotosCount > 0) {
+    return { label: `${groupPhotosCount} group photos`, title: 'Show group photos.', targetFilter: 'group-photos' };
+  }
+  if (faceGroupsCount > 0) {
+    return { label: `${faceGroupsCount} face groups`, title: 'Show face groups.', targetFilter: 'face-gallery' };
+  }
+  return {
+    label: 'No review issues',
+    title: 'No blur risk, catalog matches, group photos, or face groups need attention.',
+    targetFilter: null,
+  };
 }
 
 export function summarizeReviewFlowNextStep({
@@ -4497,15 +4535,12 @@ export function ThumbnailGrid() {
       hasDestination: !!destination,
       pendingCount: reviewStats.pending,
     });
-    const health = reviewStats.blur > 0
-      ? `${reviewStats.blur} blur risk`
-      : catalogMatchCount > 0
-        ? `${catalogMatchCount} catalog matches`
-        : reviewStats.groupPhotos > 0
-          ? `${reviewStats.groupPhotos} group photos`
-          : reviewStats.faceGroups > 0
-            ? `${reviewStats.faceGroups} face groups`
-            : 'Clean review lane';
+    const health = summarizeReviewFlowHealth({
+      blurCount: reviewStats.blur,
+      catalogMatchCount,
+      groupPhotosCount: reviewStats.groupPhotos,
+      faceGroupsCount: reviewStats.faceGroups,
+    });
     return { filterLabel, nextStep: nextStep.nextStep, nextStepTitle: nextStep.nextStepTitle, health };
   }, [catalogMatchCount, destination, filter, queuedImportablePaths.length, queuedPaths.length, reviewStats.blur, reviewStats.faceGroups, reviewStats.groupPhotos, reviewStats.pending]);
 
@@ -5624,14 +5659,23 @@ export function ThumbnailGrid() {
             {searchText.trim() && <span className="rounded bg-blue-500/10 px-1.5 py-0.5 text-blue-300">search</span>}
             <span className="text-text-secondary">/</span>
             <span className="text-text-secondary" title={reviewFlow.nextStepTitle}>{reviewFlow.nextStep}</span>
-            <button
-              type="button"
-              onClick={() => dispatch({ type: 'SET_FILTER', filter: reviewStats.blur > 0 ? 'blur-risk' : catalogMatchCount > 0 ? 'catalog-duplicates' : reviewStats.groupPhotos > 0 ? 'group-photos' : reviewStats.faceGroups > 0 ? 'face-gallery' : 'all' })}
-              className="rounded border border-border bg-surface-raised px-2 py-0.5 text-text-muted hover:border-yellow-500/35 hover:text-yellow-300"
-              title="Open the most useful health filter for this scan."
-            >
-              {reviewFlow.health}
-            </button>
+            {reviewFlow.health.targetFilter ? (
+              <button
+                type="button"
+                onClick={() => dispatch({ type: 'SET_FILTER', filter: reviewFlow.health.targetFilter! })}
+                className="rounded border border-border bg-surface-raised px-2 py-0.5 text-text-muted hover:border-yellow-500/35 hover:text-yellow-300"
+                title={reviewFlow.health.title}
+              >
+                {reviewFlow.health.label}
+              </button>
+            ) : (
+              <span
+                className="rounded border border-border bg-surface-raised px-2 py-0.5 text-text-muted"
+                title={reviewFlow.health.title}
+              >
+                {reviewFlow.health.label}
+              </span>
+            )}
           </div>
         </div>
       )}
