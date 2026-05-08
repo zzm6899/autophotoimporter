@@ -75,6 +75,20 @@ export interface ReviewFlowNextStepSummary {
 
 export const BEST_OF_BATCH_PAGE_SIZE = 120;
 
+export interface BestOfBatchPageSummary {
+  pageStart: number;
+  pageEnd: number;
+  currentPage: number;
+  totalPages: number;
+  canPrev: boolean;
+  canNext: boolean;
+  subtitle: string;
+}
+
+export interface BestOfBatchPathPage extends BestOfBatchPageSummary {
+  paths: string[];
+}
+
 function queuedLabel(count: number): string {
   return `${count} queued`;
 }
@@ -85,6 +99,44 @@ export function alignBestOfBatchOffset(offset: number, totalCount: number, pageS
   const lastPageStart = Math.floor((totalCount - 1) / pageSize) * pageSize;
   const pageStart = Math.floor(safeOffset / pageSize) * pageSize;
   return Math.min(pageStart, lastPageStart);
+}
+
+export function summarizeBestOfBatchPage(
+  offset: number,
+  totalCount: number,
+  pageSize = BEST_OF_BATCH_PAGE_SIZE,
+): BestOfBatchPageSummary {
+  const safeTotal = Math.max(0, Math.floor(totalCount));
+  const safePageSize = Math.max(1, Math.floor(pageSize));
+  const pageStart = alignBestOfBatchOffset(offset, safeTotal, safePageSize);
+  const pageEnd = safeTotal > 0 ? Math.min(safeTotal, pageStart + safePageSize) : 0;
+  const totalPages = safeTotal > 0 ? Math.ceil(safeTotal / safePageSize) : 0;
+  const currentPage = totalPages > 0 ? Math.floor(pageStart / safePageSize) + 1 : 0;
+  const noun = safeTotal === 1 ? 'photo' : 'photos';
+
+  return {
+    pageStart,
+    pageEnd,
+    currentPage,
+    totalPages,
+    canPrev: pageStart > 0,
+    canNext: pageEnd < safeTotal,
+    subtitle: totalPages > 1
+      ? `Page ${currentPage}/${totalPages} · photos ${pageStart + 1}-${pageEnd} of ${safeTotal}`
+      : `${safeTotal} visible ${noun} ranked together`,
+  };
+}
+
+export function sliceBestOfBatchPathPage(
+  batchPaths: string[],
+  offset: number,
+  pageSize = BEST_OF_BATCH_PAGE_SIZE,
+): BestOfBatchPathPage {
+  const page = summarizeBestOfBatchPage(offset, batchPaths.length, pageSize);
+  return {
+    ...page,
+    paths: batchPaths.slice(page.pageStart, page.pageEnd),
+  };
 }
 
 export function summarizeReviewFlowNextStep({
@@ -1835,7 +1887,14 @@ export function ThumbnailGrid() {
   const deferredSearchText = useDeferredValue(searchText);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showBestOfSelection, setShowBestOfSelection] = useState(false);
-  const [bestScope, setBestScope] = useState<{ paths: string[]; title: string; subtitle?: string } | null>(null);
+  const [bestScope, setBestScope] = useState<{
+    paths: string[];
+    title: string;
+    subtitle?: string;
+    batchPaths?: string[];
+    canPrevBatch?: boolean;
+    canNextBatch?: boolean;
+  } | null>(null);
   const [batchOffset, setBatchOffset] = useState(0); // for Best of Batch page navigation
   const [reviewPaused, setReviewPaused] = useState(false);
   const [backgroundLoadingPaused, setBackgroundLoadingPaused] = useState(false);
@@ -2867,9 +2926,10 @@ export function ThumbnailGrid() {
     }
   }, [focusedIndex, selectedPaths, sortedFiles, dispatch, setFocused]);
 
-  const queuePaths = useCallback((paths: string[]) => {
-    if (queueActionsDisabled) return;
-    dispatch({ type: 'QUEUE_ADD_PATHS', paths });
+  const queuePaths = useCallback((paths: string[], options?: { preserveFilter?: boolean }) => {
+    if (queueActionsDisabled) return false;
+    dispatch({ type: 'QUEUE_ADD_PATHS', paths, preserveFilter: options?.preserveFilter });
+    return true;
   }, [dispatch, queueActionsDisabled]);
 
   const visiblePaths = useMemo(() => sortedFiles.map((file) => file.path), [sortedFiles]);
@@ -3123,33 +3183,36 @@ export function ThumbnailGrid() {
     setShowBestOfSelection(true);
   }, [files, focusedIndex, selectedPaths, sortedFiles, scanUnscannedPanelFiles]);
 
-  const openBestOfBatch = useCallback((offset = 0) => {
-    const eligible = sortedFiles.filter((f) => f.type === 'photo' && f.pick !== 'rejected' && (!skipDuplicates || !f.duplicate));
-    if (eligible.length === 0) return;
-    const clampedOffset = alignBestOfBatchOffset(offset, eligible.length);
-    const candidates = eligible.slice(clampedOffset, clampedOffset + BEST_OF_BATCH_PAGE_SIZE);
-    if (candidates.length === 0) return;
-    const paths = candidates.map((f) => f.path);
-    setBatchOffset(clampedOffset);
-    const totalPages = Math.ceil(eligible.length / BEST_OF_BATCH_PAGE_SIZE);
-    const currentPage = Math.floor(clampedOffset / BEST_OF_BATCH_PAGE_SIZE) + 1;
+  const openBestOfBatch = useCallback((offset = 0, existingBatchPaths?: string[]) => {
+    const batchPaths = existingBatchPaths ?? sortedFiles
+      .filter((f) => f.type === 'photo' && f.pick !== 'rejected' && (!skipDuplicates || !f.duplicate))
+      .map((f) => f.path);
+    if (batchPaths.length === 0) return;
+    const page = sliceBestOfBatchPathPage(batchPaths, offset);
+    if (page.paths.length === 0) return;
+    setBatchOffset(page.pageStart);
     setBestScope({
-      paths,
+      paths: page.paths,
       title: 'Best of Batch',
-      subtitle: totalPages > 1
-        ? `Page ${currentPage}/${totalPages} · ${candidates.length} photos`
-        : `${candidates.length} visible photos ranked together`,
+      subtitle: page.subtitle,
+      batchPaths,
+      canPrevBatch: page.canPrev,
+      canNextBatch: page.canNext,
     });
-    scanUnscannedPanelFiles(paths);
+    scanUnscannedPanelFiles(page.paths);
     setShowBestOfSelection(true);
   }, [skipDuplicates, sortedFiles, scanUnscannedPanelFiles]);
 
   const openAdjacentBatch = useCallback((direction: 1 | -1) => {
-    const eligible = sortedFiles.filter((f) => f.type === 'photo' && f.pick !== 'rejected' && (!skipDuplicates || !f.duplicate));
+    const batchPaths = bestScope?.title === 'Best of Batch' && bestScope.batchPaths?.length
+      ? bestScope.batchPaths
+      : sortedFiles
+          .filter((f) => f.type === 'photo' && f.pick !== 'rejected' && (!skipDuplicates || !f.duplicate))
+          .map((f) => f.path);
     const newOffset = batchOffset + direction * BEST_OF_BATCH_PAGE_SIZE;
-    const clamped = alignBestOfBatchOffset(newOffset, eligible.length);
-    openBestOfBatch(clamped);
-  }, [batchOffset, openBestOfBatch, skipDuplicates, sortedFiles]);
+    const clamped = alignBestOfBatchOffset(newOffset, batchPaths.length);
+    openBestOfBatch(clamped, batchPaths);
+  }, [batchOffset, bestScope?.batchPaths, bestScope?.title, openBestOfBatch, skipDuplicates, sortedFiles]);
 
   const openAdjacentBurst = useCallback((direction: 1 | -1) => {
     if (files.length === 0) return;
@@ -3345,6 +3408,27 @@ export function ThumbnailGrid() {
         if (e.key === 'Escape') {
           e.preventDefault();
           setShowBestOfSelection(false);
+          return;
+        }
+        if (e.shiftKey && (e.metaKey || e.ctrlKey) && e.key === 'ArrowRight' && bestScope?.title === 'Best of Batch') {
+          e.preventDefault();
+          if (bestScope.canNextBatch) openAdjacentBatch(1);
+          return;
+        }
+        if (e.shiftKey && (e.metaKey || e.ctrlKey) && e.key === 'ArrowLeft' && bestScope?.title === 'Best of Batch') {
+          e.preventDefault();
+          if (bestScope.canPrevBatch) openAdjacentBatch(-1);
+          return;
+        }
+        if (e.shiftKey && !e.metaKey && !e.ctrlKey && e.key === 'ArrowRight' && bestScope?.title === 'Best of Burst') {
+          e.preventDefault();
+          openAdjacentBurst(1);
+          return;
+        }
+        if (e.shiftKey && !e.metaKey && !e.ctrlKey && e.key === 'ArrowLeft' && bestScope?.title === 'Best of Burst') {
+          e.preventDefault();
+          openAdjacentBurst(-1);
+          return;
         }
         return;
       }
@@ -3820,7 +3904,7 @@ export function ThumbnailGrid() {
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [focusedIndex, sortedFiles, viewMode, virtualGridColumns, virtualGridEnabled, getColumnsCount, setFocused, pickFile, dispatch, selectedIndices, selectedPaths, cullMode, files, openBestOfSelection, openAdjacentBatch, openAdjacentBurst, queuePaths, showBestOfSelection, showShortcuts, selectAllVisible, clearSelection, keybinds, filter, queuedPaths.length, searchText]);
+  }, [focusedIndex, sortedFiles, viewMode, virtualGridColumns, virtualGridEnabled, getColumnsCount, setFocused, pickFile, dispatch, selectedIndices, selectedPaths, cullMode, files, openBestOfSelection, openAdjacentBatch, openAdjacentBurst, queuePaths, showBestOfSelection, showShortcuts, bestScope?.title, bestScope?.canPrevBatch, bestScope?.canNextBatch, selectAllVisible, clearSelection, keybinds, filter, queuedPaths.length, searchText]);
 
   useEffect(() => {
     const open = () => setShowShortcuts(true);
@@ -5023,9 +5107,9 @@ export function ThumbnailGrid() {
             <ActionButton
               icon={Wand2}
               onClick={() => openBestOfBatch(0)}
-              title={`Rank eligible visible photos in pages of ${BEST_OF_BATCH_PAGE_SIZE}; actions affect the current page. AI: ${reviewStats.analyzed}/${reviewStats.total}, faces: ${reviewStats.faces}.`}
+              title={`Rank eligible visible photos one page at a time, up to ${BEST_OF_BATCH_PAGE_SIZE} per page; actions affect the current page. AI: ${reviewStats.analyzed}/${reviewStats.total}, faces: ${reviewStats.faces}.`}
             >
-              Batch
+              Best Page
             </ActionButton>
             <ActionButton
               icon={ListChecks}
@@ -5139,6 +5223,8 @@ export function ThumbnailGrid() {
           onPrevBurst={() => openAdjacentBurst(-1)}
           onNextBurst={() => openAdjacentBurst(1)}
           isBatch={bestScope?.title === 'Best of Batch'}
+          canPrevBatch={Boolean(bestScope?.canPrevBatch)}
+          canNextBatch={Boolean(bestScope?.canNextBatch)}
           onPrevBatch={() => openAdjacentBatch(-1)}
           onNextBatch={() => openAdjacentBatch(1)}
           queuedPaths={queuedPaths}
@@ -5152,6 +5238,11 @@ export function ThumbnailGrid() {
             setFocused(sortedFiles.findIndex((f) => f.path === file.path));
           }}
           onQueueBest={(file) => queuePaths([file.path])}
+          onQueueBestAndNext={(file) => {
+            if (queuePaths([file.path], { preserveFilter: true }) && bestScope?.canNextBatch) {
+              openAdjacentBatch(1);
+            }
+          }}
           onRejectRest={(best) => {
             dispatch({
               type: 'SET_PICK_BATCH',

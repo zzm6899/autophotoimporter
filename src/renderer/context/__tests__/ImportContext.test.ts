@@ -550,6 +550,15 @@ describe('ImportContext reducer', () => {
       expect(next.queuedPaths).toEqual(['/a.jpg', '/b.jpg']);
     });
 
+    it('can queue paths without changing the active filter', () => {
+      const files = [makeFile({ path: '/a.jpg' }), makeFile({ path: '/b.jpg' })];
+      const state = makeState({ files, filter: 'review-needed' });
+      const next = reducer(state, { type: 'QUEUE_ADD_PATHS', paths: ['/a.jpg', '/b.jpg'], preserveFilter: true });
+
+      expect(next.queuedPaths).toEqual(['/a.jpg', '/b.jpg']);
+      expect(next.filter).toBe('review-needed');
+    });
+
     it('removes paths from the queue', () => {
       const state = makeState({ queuedPaths: ['/a.jpg', '/b.jpg'] });
       const next = reducer(state, { type: 'QUEUE_REMOVE_PATHS', paths: ['/a.jpg'] });

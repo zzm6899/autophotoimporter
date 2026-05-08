@@ -184,7 +184,7 @@ export type Action =
   | { type: 'SET_FILTER'; filter: FilterMode }
   | { type: 'TOGGLE_CULL_MODE' }
   | { type: 'SET_SELECTED_PATHS'; paths: string[] }
-  | { type: 'QUEUE_ADD_PATHS'; paths: string[] }
+  | { type: 'QUEUE_ADD_PATHS'; paths: string[]; preserveFilter?: boolean }
   | { type: 'QUEUE_SET_PATHS'; paths: string[] }
   | { type: 'QUEUE_REMOVE_PATHS'; paths: string[] }
   | { type: 'QUEUE_CLEAR' }
@@ -701,7 +701,7 @@ export function reducer(state: State, action: Action): State {
       const valid = new Set(state.files.map((f) => f.path));
       const next = new Set(state.queuedPaths);
       for (const p of action.paths) if (valid.has(p)) next.add(p);
-      return { ...state, queuedPaths: [...next], filter: next.size > 0 ? 'queue' : state.filter };
+      return { ...state, queuedPaths: [...next], filter: !action.preserveFilter && next.size > 0 ? 'queue' : state.filter };
     }
     case 'QUEUE_SET_PATHS': {
       const valid = new Set(state.files.map((f) => f.path));

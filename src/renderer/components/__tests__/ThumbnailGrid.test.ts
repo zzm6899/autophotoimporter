@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { alignBestOfBatchOffset, summarizeReviewFlowNextStep } from '../ThumbnailGrid';
+import { alignBestOfBatchOffset, sliceBestOfBatchPathPage, summarizeBestOfBatchPage, summarizeReviewFlowNextStep } from '../ThumbnailGrid';
 
 describe('summarizeReviewFlowNextStep', () => {
   it('shows the importable count when some queued files are blocked', () => {
@@ -70,5 +70,54 @@ describe('alignBestOfBatchOffset', () => {
   it('clamps negative and empty inputs safely', () => {
     expect(alignBestOfBatchOffset(-20, 240, 120)).toBe(0);
     expect(alignBestOfBatchOffset(120, 0, 120)).toBe(0);
+  });
+});
+
+describe('summarizeBestOfBatchPage', () => {
+  it('describes the first page range and leaves previous navigation disabled', () => {
+    expect(summarizeBestOfBatchPage(0, 241, 120)).toEqual({
+      pageStart: 0,
+      pageEnd: 120,
+      currentPage: 1,
+      totalPages: 3,
+      canPrev: false,
+      canNext: true,
+      subtitle: 'Page 1/3 · photos 1-120 of 241',
+    });
+  });
+
+  it('describes the final partial page and disables next navigation', () => {
+    expect(summarizeBestOfBatchPage(240, 241, 120)).toEqual({
+      pageStart: 240,
+      pageEnd: 241,
+      currentPage: 3,
+      totalPages: 3,
+      canPrev: true,
+      canNext: false,
+      subtitle: 'Page 3/3 · photos 241-241 of 241',
+    });
+  });
+
+  it('keeps single-page batches simple and disables both directions', () => {
+    expect(summarizeBestOfBatchPage(0, 80, 120)).toEqual({
+      pageStart: 0,
+      pageEnd: 80,
+      currentPage: 1,
+      totalPages: 1,
+      canPrev: false,
+      canNext: false,
+      subtitle: '80 visible photos ranked together',
+    });
+  });
+});
+
+describe('sliceBestOfBatchPathPage', () => {
+  it('uses the original batch path snapshot for page slices', () => {
+    const original = Array.from({ length: 241 }, (_, index) => `/photos/${index}.jpg`);
+    const firstPage = sliceBestOfBatchPathPage(original, 0, 120);
+    const afterRejectingFirstPage = original.filter((path) => !firstPage.paths.includes(path));
+
+    expect(sliceBestOfBatchPathPage(original, 120, 120).paths).toEqual(original.slice(120, 240));
+    expect(sliceBestOfBatchPathPage(afterRejectingFirstPage, 120, 120).paths).not.toEqual(original.slice(120, 240));
   });
 });

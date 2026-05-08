@@ -12,12 +12,15 @@ interface BestOfSelectionPanelProps {
   onPrevBurst?: () => void;
   onNextBurst?: () => void;
   isBatch?: boolean;
+  canPrevBatch?: boolean;
+  canNextBatch?: boolean;
   onPrevBatch?: () => void;
   onNextBatch?: () => void;
   onClose: () => void;
   onPickFile?: (file: MediaFile, pick: 'selected' | 'rejected' | undefined) => void;
   onPickBest: (file: MediaFile) => void;
   onQueueBest: (file: MediaFile) => void;
+  onQueueBestAndNext?: (file: MediaFile) => void;
   onRejectRest: (best: MediaFile) => void;
   queuedPaths?: string[];
 }
@@ -101,6 +104,8 @@ interface BestOfActionSummary {
   pickLabel: string;
   queueButtonLabel: string;
   queueLabel: string;
+  queueAndNextButtonLabel?: string;
+  queueAndNextLabel?: string;
   rejectRestButtonLabel: string;
   rejectRestLabel: string;
   queueState: 'queued' | 'ready';
@@ -148,13 +153,30 @@ export function summarizeBestOfActions(
     ? `${topName} is already in the import queue; pick/reject flags stay unchanged.`
     : `Queue Best adds ${topName} to the import queue; pick/reject flags stay unchanged.`;
   const queueButtonLabel = scope === 'batch' ? 'Queue Page Best' : 'Queue Best';
+  const queueAndNextButtonLabel = scope === 'batch' ? 'Queue + Next' : undefined;
+  const queueAndNextLabel = scope === 'batch'
+    ? queueState === 'queued'
+      ? `${topName} is already in the import queue; Next opens the following batch page.`
+      : `Queue + Next adds ${topName} to the import queue and opens the following batch page.`
+    : undefined;
 
   const rejectRestLabel = restCount > 0
     ? `Reject Rest marks ${topName} picked and rejects ${otherCandidates} in this panel.`
     : `Reject Rest keeps ${topName} picked because it is the only candidate.`;
   const rejectRestButtonLabel = scope === 'batch' ? 'Reject Page Rest' : 'Reject Rest';
 
-  return { scopeLabel, pickButtonLabel, pickLabel, queueButtonLabel, queueLabel, rejectRestButtonLabel, rejectRestLabel, queueState };
+  return {
+    scopeLabel,
+    pickButtonLabel,
+    pickLabel,
+    queueButtonLabel,
+    queueLabel,
+    queueAndNextButtonLabel,
+    queueAndNextLabel,
+    rejectRestButtonLabel,
+    rejectRestLabel,
+    queueState,
+  };
 }
 
 // Corrects face box positions for object-contain letterboxing.
@@ -508,12 +530,15 @@ export function BestOfSelectionPanel({
   onPrevBurst,
   onNextBurst,
   isBatch = false,
+  canPrevBatch = false,
+  canNextBatch = false,
   onPrevBatch,
   onNextBatch,
   onClose,
   onPickFile,
   onPickBest,
   onQueueBest,
+  onQueueBestAndNext,
   onRejectRest,
   queuedPaths = [],
 }: BestOfSelectionPanelProps) {
@@ -521,6 +546,8 @@ export function BestOfSelectionPanel({
   const actionableRanked = useMemo(() => actionableBestOfCandidates(ranked), [ranked]);
   const best = actionableRanked[0];
   const second = actionableRanked[1];
+  const prevBatchDisabled = !canPrevBatch || !onPrevBatch;
+  const nextBatchDisabled = !canNextBatch || !onNextBatch;
   const bestScore = best ? Math.round(rankScore(best)) : 0;
   const scoreGap = best && second ? Math.round(rankScore(best) - rankScore(second)) : bestScore;
   const confidence = scoreGapConfidence(scoreGap);
@@ -636,16 +663,30 @@ export function BestOfSelectionPanel({
           {isBatch && (
             <>
               <button
-                onClick={onPrevBatch}
-                className="flex items-center gap-1 px-2 py-1 text-[11px] rounded bg-surface-raised text-text-secondary hover:bg-border"
-                title="Previous page of batch"
+                onClick={() => {
+                  if (!prevBatchDisabled) onPrevBatch?.();
+                }}
+                disabled={prevBatchDisabled}
+                className={`flex items-center gap-1 px-2 py-1 text-[11px] rounded ${
+                  prevBatchDisabled
+                    ? 'bg-surface text-text-muted cursor-not-allowed opacity-60'
+                    : 'bg-surface-raised text-text-secondary hover:bg-border'
+                }`}
+                title={prevBatchDisabled ? 'Already on first batch page' : 'Previous page of batch'}
               >
                 ← Prev page
               </button>
               <button
-                onClick={onNextBatch}
-                className="flex items-center gap-1 px-2 py-1 text-[11px] rounded bg-surface-raised text-text-secondary hover:bg-border"
-                title="Next page of batch"
+                onClick={() => {
+                  if (!nextBatchDisabled) onNextBatch?.();
+                }}
+                disabled={nextBatchDisabled}
+                className={`flex items-center gap-1 px-2 py-1 text-[11px] rounded ${
+                  nextBatchDisabled
+                    ? 'bg-surface text-text-muted cursor-not-allowed opacity-60'
+                    : 'bg-surface-raised text-text-secondary hover:bg-border'
+                }`}
+                title={nextBatchDisabled ? 'Already on last batch page' : 'Next page of batch'}
               >
                 Next page →
               </button>
@@ -658,6 +699,24 @@ export function BestOfSelectionPanel({
           >
             {actionSummary?.queueButtonLabel ?? 'Queue Best'}
           </button>
+          {isBatch && onQueueBestAndNext && (
+            <button
+              onClick={() => {
+                if (!nextBatchDisabled) onQueueBestAndNext(best);
+              }}
+              disabled={nextBatchDisabled}
+              title={nextBatchDisabled
+                ? 'Queue Page Best is available; there is no next batch page.'
+                : actionTitle(actionSummary?.queueAndNextLabel, 'Queue the top-ranked candidate and open the next batch page.')}
+              className={`px-2.5 py-1 text-[11px] rounded ${
+                nextBatchDisabled
+                  ? 'bg-surface text-text-muted cursor-not-allowed opacity-60'
+                  : 'bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25'
+              }`}
+            >
+              {actionSummary?.queueAndNextButtonLabel ?? 'Queue + Next'}
+            </button>
+          )}
           <button
             onClick={() => onRejectRest(best)}
             title={actionTitle(actionSummary?.rejectRestLabel, 'Pick the top-ranked candidate and reject the rest in this panel.')}

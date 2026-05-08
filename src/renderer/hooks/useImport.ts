@@ -3,7 +3,7 @@ import { useCallback, useRef } from 'react';
 type NormalizedJobState = 'queued' | 'running' | 'paused' | 'cancelled' | 'completed' | 'failed';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import { playCompletionSound } from '../utils/completionSound';
-import { eventModeKeywords } from '../../shared/types';
+import { eventModeKeywords, type MediaFile } from '../../shared/types';
 
 let latestImportRunId = 0;
 
@@ -12,6 +12,40 @@ type StartImportOptions = {
   dryRun?: boolean;
   selectedPathsOverride?: string[];
 };
+
+type ImportPathResolutionInput = {
+  files: Pick<MediaFile, 'path' | 'destPath' | 'pick' | 'duplicate'>[];
+  selectedPaths: string[];
+  queuedPaths: string[];
+  skipDuplicates: boolean;
+  selectedPathsOverride?: string[];
+};
+
+export function resolveImportPaths({
+  files,
+  selectedPaths,
+  queuedPaths,
+  skipDuplicates,
+  selectedPathsOverride,
+}: ImportPathResolutionInput): string[] | undefined {
+  const isImportableFile = (file: ImportPathResolutionInput['files'][number]) =>
+    !!file.destPath && file.pick !== 'rejected' && (!skipDuplicates || !file.duplicate);
+  const importablePathSet = new Set(files.filter(isImportableFile).map((file) => file.path));
+  const filterImportablePaths = (paths: string[]) => paths.filter((path) => importablePathSet.has(path));
+
+  if (Array.isArray(selectedPathsOverride)) {
+    return filterImportablePaths(selectedPathsOverride);
+  }
+  if (selectedPaths.length > 0) {
+    return filterImportablePaths(selectedPaths);
+  }
+  if (queuedPaths.length > 0) {
+    return filterImportablePaths(queuedPaths);
+  }
+
+  const pickedFiles = files.filter((file) => file.pick === 'selected');
+  return pickedFiles.length > 0 ? pickedFiles.filter(isImportableFile).map((file) => file.path) : undefined;
+}
 
 export function useImport() {
   const {
@@ -63,25 +97,15 @@ export function useImport() {
     //   3. Queue.
     //   4. Pick/reject flags.
     //   5. Everything that isn't rejected and (when enabled) isn't a duplicate.
-    let pathsToImport: string[] | undefined;
     const isImportableFile = (file: typeof files[number]) =>
       !!file.destPath && file.pick !== 'rejected' && (!skipDuplicates || !file.duplicate);
-    const importablePathSet = new Set(files.filter(isImportableFile).map((file) => file.path));
-    const filterImportablePaths = (paths: string[]) => paths.filter((path) => importablePathSet.has(path));
-    if (Array.isArray(options?.selectedPathsOverride)) {
-      pathsToImport = filterImportablePaths(options.selectedPathsOverride);
-    } else if (selectedPaths.length > 0) {
-      pathsToImport = filterImportablePaths(selectedPaths);
-    } else if (queuedPaths.length > 0) {
-      pathsToImport = filterImportablePaths(queuedPaths);
-    } else {
-      const pickedFiles = files.filter((f) => f.pick === 'selected');
-      if (pickedFiles.length > 0) {
-        pathsToImport = pickedFiles.filter(isImportableFile).map((f) => f.path);
-      }
-      // else: leave undefined so the main process applies default filtering
-      //       (skip rejects + skip duplicates if enabled).
-    }
+    const pathsToImport = resolveImportPaths({
+      files,
+      selectedPaths,
+      queuedPaths,
+      skipDuplicates,
+      selectedPathsOverride: options?.selectedPathsOverride,
+    });
 
     const importPathSet = pathsToImport ? new Set(pathsToImport) : null;
 
