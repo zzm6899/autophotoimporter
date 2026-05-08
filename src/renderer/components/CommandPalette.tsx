@@ -481,7 +481,8 @@ export function buildCommandItems(
     {
       id: 'best.batch',
       group: 'AI Review',
-      label: 'Best of Batch',
+      label: 'Best Page',
+      description: 'Rank visible photos one page at a time; actions affect only that page.',
       icon: Wand2,
       disabledReason: needsPhoto,
       run: handlers['best.batch'],

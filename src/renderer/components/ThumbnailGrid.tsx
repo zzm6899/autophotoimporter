@@ -143,6 +143,10 @@ export function shouldQueueVisibleImportablePaths(paths: readonly string[]): boo
   return paths.length > 0;
 }
 
+export function shouldOpenBestOfSelectionPanel(paths: readonly string[]): boolean {
+  return paths.length > 0;
+}
+
 export function summarizeReviewFlowNextStep({
   queuedCount,
   queuedImportableCount,
@@ -3183,7 +3187,12 @@ export function ThumbnailGrid() {
       panelPaths = windowFiles.map((f) => f.path);
       setBestScope({ paths: panelPaths, title: 'Best Nearby', subtitle: 'No burst found' });
     }
-    if (panelPaths.length > 0) scanUnscannedPanelFiles(panelPaths);
+    if (!shouldOpenBestOfSelectionPanel(panelPaths)) {
+      setBestScope(null);
+      setShowBestOfSelection(false);
+      return;
+    }
+    scanUnscannedPanelFiles(panelPaths);
     setShowBestOfSelection(true);
   }, [files, focusedIndex, selectedPaths, sortedFiles, scanUnscannedPanelFiles]);
 

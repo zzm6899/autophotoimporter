@@ -97,6 +97,41 @@ function autoAcceptSummary(best: MediaFile, second: MediaFile | undefined, score
   };
 }
 
+export type BestOfShortcutAction = 'queue-next' | 'queue' | 'accept-next' | 'accept' | 'none';
+
+export function bestOfShortcutAction({
+  key,
+  hasBest,
+  isBatch,
+  canNextBatch,
+  canQueueBestAndNext,
+  canAcceptRestAndNext,
+  readinessTone,
+  hasModifier = false,
+  lightboxOpen = false,
+}: {
+  key: string;
+  hasBest: boolean;
+  isBatch: boolean;
+  canNextBatch: boolean;
+  canQueueBestAndNext: boolean;
+  canAcceptRestAndNext: boolean;
+  readinessTone?: 'safe' | 'review' | 'manual' | null;
+  hasModifier?: boolean;
+  lightboxOpen?: boolean;
+}): BestOfShortcutAction {
+  if (!hasBest || hasModifier || lightboxOpen) return 'none';
+  const normalizedKey = key.toLowerCase();
+  if (normalizedKey === 'q') {
+    return isBatch && canNextBatch && canQueueBestAndNext ? 'queue-next' : 'queue';
+  }
+  if (key === 'Enter') {
+    if (readinessTone !== 'safe') return 'none';
+    return isBatch && canNextBatch && canAcceptRestAndNext ? 'accept-next' : 'accept';
+  }
+  return 'none';
+}
+
 type BestOfActionScope = 'batch' | 'burst' | 'selection';
 
 interface BestOfActionSummary {
@@ -567,6 +602,9 @@ export function BestOfSelectionPanel({
   const bestExplanation = useMemo(() => explainBestShotSelection(files), [files]);
   const evidence = bestExplanation?.wins ?? [];
   const cautions = bestExplanation?.cautions ?? [];
+  const [previews, setPreviews] = useState<Map<string, string>>(() => new Map());
+  const [imgNaturals, setImgNaturals] = useState<Map<string, { w: number; h: number }>>(() => new Map());
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const actionSummary = summarizeBestOfActions(
     files,
     best,
@@ -590,11 +628,51 @@ export function BestOfSelectionPanel({
     }
     return { analyzed, faceFiles, blurRisk };
   }, [files]);
-  const { analyzed, faceFiles, blurRisk } = panelStats;
 
-  const [previews, setPreviews] = useState<Map<string, string>>(() => new Map());
-  const [imgNaturals, setImgNaturals] = useState<Map<string, { w: number; h: number }>>(() => new Map());
-  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        (target instanceof HTMLElement && (target.isContentEditable || target.closest('[contenteditable="true"]')))
+      ) return;
+
+      const action = bestOfShortcutAction({
+        key: event.key,
+        hasBest: !!best,
+        isBatch,
+        canNextBatch,
+        canQueueBestAndNext: !!onQueueBestAndNext,
+        canAcceptRestAndNext: !!onRejectRestAndNext,
+        readinessTone: readiness?.tone,
+        hasModifier: event.altKey || event.ctrlKey || event.metaKey || event.shiftKey,
+        lightboxOpen: lightboxIndex !== null,
+      });
+      if (action === 'none' || !best) return;
+
+      event.preventDefault();
+      if (action === 'queue-next') onQueueBestAndNext?.(best);
+      else if (action === 'queue') onQueueBest(best);
+      else if (action === 'accept-next') onRejectRestAndNext?.(best);
+      else if (action === 'accept') onRejectRest(best);
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [
+    best,
+    canNextBatch,
+    isBatch,
+    lightboxIndex,
+    onQueueBest,
+    onQueueBestAndNext,
+    onRejectRest,
+    onRejectRestAndNext,
+    readiness?.tone,
+  ]);
+  const { analyzed, faceFiles, blurRisk } = panelStats;
 
   useEffect(() => {
     let cancelled = false;

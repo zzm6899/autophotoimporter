@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { actionableBestOfCandidates, rankBestOfSelection, summarizeBestOfActions } from '../BestOfSelectionPanel';
+import { actionableBestOfCandidates, bestOfShortcutAction, rankBestOfSelection, summarizeBestOfActions } from '../BestOfSelectionPanel';
 import type { MediaFile } from '../../../shared/types';
 
 function photo(name: string, pick?: MediaFile['pick']): MediaFile {
@@ -100,5 +100,81 @@ describe('summarizeBestOfActions', () => {
 
     expect(candidates[0].name).toBe('viable.jpg');
     expect(candidates.some((file) => file.pick === 'rejected')).toBe(false);
+  });
+});
+
+describe('bestOfShortcutAction', () => {
+  it('queues and advances from batch pages with a next page', () => {
+    expect(bestOfShortcutAction({
+      key: 'q',
+      hasBest: true,
+      isBatch: true,
+      canNextBatch: true,
+      canQueueBestAndNext: true,
+      canAcceptRestAndNext: true,
+      readinessTone: 'manual',
+    })).toBe('queue-next');
+  });
+
+  it('queues without advancing on the final page', () => {
+    expect(bestOfShortcutAction({
+      key: 'q',
+      hasBest: true,
+      isBatch: true,
+      canNextBatch: false,
+      canQueueBestAndNext: true,
+      canAcceptRestAndNext: true,
+      readinessTone: 'safe',
+    })).toBe('queue');
+  });
+
+  it('accepts and advances only when the best candidate is safe', () => {
+    expect(bestOfShortcutAction({
+      key: 'Enter',
+      hasBest: true,
+      isBatch: true,
+      canNextBatch: true,
+      canQueueBestAndNext: true,
+      canAcceptRestAndNext: true,
+      readinessTone: 'safe',
+    })).toBe('accept-next');
+
+    expect(bestOfShortcutAction({
+      key: 'Enter',
+      hasBest: true,
+      isBatch: true,
+      canNextBatch: true,
+      canQueueBestAndNext: true,
+      canAcceptRestAndNext: true,
+      readinessTone: 'review',
+    })).toBe('none');
+  });
+
+  it('accepts without advancing on the final page only when safe', () => {
+    expect(bestOfShortcutAction({
+      key: 'Enter',
+      hasBest: true,
+      isBatch: true,
+      canNextBatch: false,
+      canQueueBestAndNext: true,
+      canAcceptRestAndNext: true,
+      readinessTone: 'safe',
+    })).toBe('accept');
+  });
+
+  it('ignores modified keys, missing best candidates, and open lightboxes', () => {
+    const base = {
+      key: 'q',
+      hasBest: true,
+      isBatch: true,
+      canNextBatch: true,
+      canQueueBestAndNext: true,
+      canAcceptRestAndNext: true,
+      readinessTone: 'safe' as const,
+    };
+
+    expect(bestOfShortcutAction({ ...base, hasModifier: true })).toBe('none');
+    expect(bestOfShortcutAction({ ...base, hasBest: false })).toBe('none');
+    expect(bestOfShortcutAction({ ...base, lightboxOpen: true })).toBe('none');
   });
 });

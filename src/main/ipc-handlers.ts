@@ -1098,18 +1098,53 @@ function releaseFaceSemaphore(): void {
 // clicks, progress, and settings IPC are not starved by a preview burst.
 const previewActiveByVariant: Record<'preview' | 'detail', number> = { preview: 0, detail: 0 };
 const previewQueueByVariant: Record<'preview' | 'detail', Array<() => void>> = { preview: [], detail: [] };
-const PREVIEW_CONCURRENCY: Record<'preview' | 'detail', number> = { preview: 3, detail: 1 };
+const PREVIEW_CONCURRENCY_HARD_MAX = 12;
+const previewConcurrencyByVariant: Record<'preview' | 'detail', number> = { preview: 3, detail: 1 };
+
+function clampPreviewConcurrency(n: number): number {
+  return Math.max(1, Math.min(PREVIEW_CONCURRENCY_HARD_MAX, Math.round(n)));
+}
+
+function resolvePreviewConcurrency(
+  settings: Pick<AppSettings, 'perfTier' | 'previewConcurrency'>,
+  profile = detectDeviceTier(settings.perfTier && settings.perfTier !== 'auto' ? settings.perfTier : undefined),
+): number {
+  return clampPreviewConcurrency(settings.previewConcurrency ?? profile.previewConcurrency);
+}
+
+function releasePreviewSlot(variant: 'preview' | 'detail'): void {
+  previewActiveByVariant[variant] = Math.max(0, previewActiveByVariant[variant] - 1);
+  if (previewQueueByVariant[variant].length > 0 && previewActiveByVariant[variant] < previewConcurrencyByVariant[variant]) {
+    previewActiveByVariant[variant]++;
+    previewQueueByVariant[variant].shift()?.();
+  }
+}
+
+function setPreviewConcurrency(n: number): void {
+  previewConcurrencyByVariant.preview = clampPreviewConcurrency(n);
+  while (
+    previewQueueByVariant.preview.length > 0 &&
+    previewActiveByVariant.preview < previewConcurrencyByVariant.preview
+  ) {
+    previewActiveByVariant.preview++;
+    previewQueueByVariant.preview.shift()?.();
+  }
+}
+
+async function acquirePreviewSlot(variant: 'preview' | 'detail'): Promise<void> {
+  if (previewActiveByVariant[variant] < previewConcurrencyByVariant[variant]) {
+    previewActiveByVariant[variant]++;
+    return;
+  }
+  await new Promise<void>((resolve) => previewQueueByVariant[variant].push(resolve));
+}
 
 async function withPreviewSlot<T>(variant: 'preview' | 'detail', task: () => Promise<T>): Promise<T> {
-  if (previewActiveByVariant[variant] >= PREVIEW_CONCURRENCY[variant]) {
-    await new Promise<void>((resolve) => previewQueueByVariant[variant].push(resolve));
-  }
-  previewActiveByVariant[variant]++;
+  await acquirePreviewSlot(variant);
   try {
     return await task();
   } finally {
-    previewActiveByVariant[variant] = Math.max(0, previewActiveByVariant[variant] - 1);
-    previewQueueByVariant[variant].shift()?.();
+    releasePreviewSlot(variant);
   }
 }
 
@@ -1172,6 +1207,10 @@ async function loadSettings(): Promise<AppSettings> {
       merged.perfTier && merged.perfTier !== 'auto' ? merged.perfTier : undefined
     );
     const resolvedFaceConcurrency = resolveFaceConcurrency(merged, profile);
+    const previewSettings = Object.prototype.hasOwnProperty.call(parsed, 'previewConcurrency')
+      ? merged
+      : { ...merged, previewConcurrency: undefined };
+    const resolvedPreviewConcurrency = resolvePreviewConcurrency(previewSettings, profile);
 
     // Apply performance settings immediately
     configureGpuAcceleration(merged.gpuFaceAcceleration ?? true);
@@ -1183,6 +1222,7 @@ async function loadSettings(): Promise<AppSettings> {
     });
     setRawPreviewQuality(merged.rawPreviewQuality ?? 70);
     setFaceConcurrency(resolvedFaceConcurrency);
+    setPreviewConcurrency(resolvedPreviewConcurrency);
 
     const manualPerformanceOverrides = {
       ...(Object.prototype.hasOwnProperty.call(parsed, 'cpuOptimization') ? { cpuOptimization: merged.cpuOptimization } : {}),
@@ -1199,11 +1239,15 @@ async function loadSettings(): Promise<AppSettings> {
       ...merged,
       cpuOptimization: appliedProfile.cpuOptimization,
       rawPreviewQuality: appliedProfile.rawPreviewQuality,
+      previewConcurrency: resolvedPreviewConcurrency,
       faceConcurrency: resolvedFaceConcurrency,
       licenseStatus,
     };
   } catch {
-    return { ...DEFAULT_SETTINGS };
+    const profile = detectDeviceTier();
+    const resolvedPreviewConcurrency = resolvePreviewConcurrency({ ...DEFAULT_SETTINGS, previewConcurrency: undefined }, profile);
+    setPreviewConcurrency(resolvedPreviewConcurrency);
+    return { ...DEFAULT_SETTINGS, previewConcurrency: resolvedPreviewConcurrency };
   }
 }
 
@@ -1229,8 +1273,14 @@ async function saveSettings(settings: Partial<AppSettings>): Promise<void> {
     licenseStatus: settings.licenseStatus ?? current.licenseStatus,
   };
   const profile = detectDeviceTier(merged.perfTier && merged.perfTier !== 'auto' ? merged.perfTier : undefined);
+  const previewSettings = Object.prototype.hasOwnProperty.call(settings, 'previewConcurrency')
+    ? merged
+    : Object.prototype.hasOwnProperty.call(settings, 'perfTier')
+      ? { ...merged, previewConcurrency: undefined }
+      : merged;
   const normalized: AppSettings = {
     ...merged,
+    previewConcurrency: resolvePreviewConcurrency(previewSettings, profile),
     faceConcurrency: resolveFaceConcurrency(merged, profile),
   };
   await writeSettingsFile(normalized);
@@ -1244,6 +1294,7 @@ async function saveSettings(settings: Partial<AppSettings>): Promise<void> {
     personDetection: normalized.reviewPersonDetection ?? true,
   });
   setRawPreviewQuality(normalized.rawPreviewQuality ?? 70);
+  setPreviewConcurrency(normalized.previewConcurrency ?? 2);
   setFaceConcurrency(normalized.faceConcurrency ?? 1);
   watchFolderManager?.update(normalized.watchFolders ?? []);
   };

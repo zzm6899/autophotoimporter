@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { alignBestOfBatchOffset, shouldQueueVisibleImportablePaths, sliceBestOfBatchPathPage, summarizeBestOfBatchPage, summarizeReviewFlowNextStep } from '../ThumbnailGrid';
+import { alignBestOfBatchOffset, shouldOpenBestOfSelectionPanel, shouldQueueVisibleImportablePaths, sliceBestOfBatchPathPage, summarizeBestOfBatchPage, summarizeReviewFlowNextStep } from '../ThumbnailGrid';
 
 describe('summarizeReviewFlowNextStep', () => {
   it('shows the importable count when some queued files are blocked', () => {
@@ -126,5 +126,12 @@ describe('shouldQueueVisibleImportablePaths', () => {
   it('blocks queue-visible commands that have no importable visible files', () => {
     expect(shouldQueueVisibleImportablePaths([])).toBe(false);
     expect(shouldQueueVisibleImportablePaths(['/photos/keeper.jpg'])).toBe(true);
+  });
+});
+
+describe('shouldOpenBestOfSelectionPanel', () => {
+  it('blocks hidden best-of state when there are no candidate paths', () => {
+    expect(shouldOpenBestOfSelectionPanel([])).toBe(false);
+    expect(shouldOpenBestOfSelectionPanel(['/photos/visible.jpg'])).toBe(true);
   });
 });

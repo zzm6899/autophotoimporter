@@ -107,12 +107,14 @@ import { registerIpcHandlers } from '../ipc-handlers';
 import { importFiles } from '../services/import-engine';
 import { scanFiles } from '../services/file-scanner';
 import { isDuplicate } from '../services/duplicate-detector';
+import { generatePreview } from '../services/exif-parser';
 import { checkForUpdate, fetchUpdateHistory } from '../services/update-checker';
 import { readFile, writeFile, chmod } from 'node:fs/promises';
 
 const mockImportFiles = vi.mocked(importFiles);
 const mockScanFiles = vi.mocked(scanFiles);
 const mockIsDuplicate = vi.mocked(isDuplicate);
+const mockGeneratePreview = vi.mocked(generatePreview);
 const mockReadFile = vi.mocked(readFile);
 const mockWriteFile = vi.mocked(writeFile);
 const mockChmod = vi.mocked(chmod);
@@ -146,6 +148,8 @@ describe('IPC Handlers', () => {
     mockFetchUpdateHistory.mockResolvedValue([]);
     mockIsDuplicate.mockReset();
     mockIsDuplicate.mockResolvedValue(false);
+    mockGeneratePreview.mockReset();
+    mockGeneratePreview.mockResolvedValue('data:image/jpeg;base64,preview');
   });
 
   describe('IMPORT_START', () => {
@@ -422,6 +426,89 @@ describe('IPC Handlers', () => {
     });
   });
 
+  describe('SCAN_PREVIEW', () => {
+    const previewFiles: MediaFile[] = Array.from({ length: 5 }, (_, index) => ({
+      path: `/src/${index}.jpg`,
+      name: `${index}.jpg`,
+      size: 100,
+      type: 'photo',
+      extension: '.jpg',
+      destPath: `2026/${index}.jpg`,
+    }));
+
+    async function loadPreviewFilesWithSettings(settings: Record<string, unknown>) {
+      mockReadFile.mockResolvedValue(JSON.stringify(settings) as any);
+      await getHandler('settings:get')({});
+      mockScanFiles.mockImplementation(async (_sourcePath, onBatch: (batch: MediaFile[]) => void) => {
+        onBatch(previewFiles);
+        return previewFiles.length;
+      });
+      await getHandler('scan:start')({}, '/src');
+    }
+
+    function mockBlockingPreviewGenerator() {
+      let active = 0;
+      let maxActive = 0;
+      const releases: Array<() => void> = [];
+      const waiters: Array<() => void> = [];
+      const notify = () => {
+        const ready = waiters.splice(0);
+        for (const resolve of ready) resolve();
+      };
+      mockGeneratePreview.mockImplementation((async (filePath: string, variant?: string) => {
+        active++;
+        maxActive = Math.max(maxActive, active);
+        return await new Promise<string>((resolve) => {
+          releases.push(() => {
+            active--;
+            resolve(`preview:${variant ?? 'preview'}:${filePath}`);
+          });
+          notify();
+        });
+      }) as typeof mockGeneratePreview);
+      return {
+        releases,
+        maxActive: () => maxActive,
+        waitForReleaseCount: async (count: number) => {
+          while (releases.length < count) {
+            await new Promise<void>((resolve) => waiters.push(resolve));
+          }
+        },
+      };
+    }
+
+    it('uses saved preview concurrency for preview IPC bursts', async () => {
+      await loadPreviewFilesWithSettings({ previewConcurrency: 5 });
+      const gate = mockBlockingPreviewGenerator();
+      const handler = getHandler('scan:preview');
+
+      const pending = previewFiles.map((file) => handler({}, file.path, 'preview'));
+      await gate.waitForReleaseCount(5);
+
+      expect(gate.maxActive()).toBe(5);
+      expect(gate.releases).toHaveLength(5);
+      gate.releases.splice(0).forEach((release) => release());
+      await Promise.all(pending);
+    });
+
+    it('keeps detail preview IPC single-file even when preview concurrency is high', async () => {
+      await loadPreviewFilesWithSettings({ previewConcurrency: 5 });
+      const gate = mockBlockingPreviewGenerator();
+      const handler = getHandler('scan:preview');
+
+      const pending = previewFiles.slice(0, 3).map((file) => handler({}, file.path, 'detail'));
+      for (let i = 0; i < pending.length; i++) {
+        await gate.waitForReleaseCount(1);
+        expect(gate.maxActive()).toBe(1);
+        const release = gate.releases.shift();
+        expect(release).toBeTypeOf('function');
+        release?.();
+      }
+
+      await Promise.all(pending);
+    });
+  });
+
   describe('Settings', () => {
     it('returns defaults when settings file is missing', async () => {
       mockReadFile.mockRejectedValue(new Error('ENOENT'));
@@ -453,6 +540,14 @@ describe('IPC Handlers', () => {
       expect(settings.faceConcurrency).toBeLessThanOrEqual(8);
     });
 
+    it('clamps saved preview concurrency to the renderer-supported maximum', async () => {
+      mockReadFile.mockResolvedValue(JSON.stringify({ previewConcurrency: 24 }) as any);
+      const handler = getHandler('settings:get');
+      const settings = await handler({}) as any;
+
+      expect(settings.previewConcurrency).toBe(12);
+    });
+
     it('applies low-tier performance defaults when only perfTier is saved', async () => {
       mockReadFile.mockResolvedValue(JSON.stringify({ perfTier: 'low' }) as any);
       const handler = getHandler('settings:get');
@@ -460,6 +555,7 @@ describe('IPC Handlers', () => {
 
       expect(settings.cpuOptimization).toBe(true);
       expect(settings.rawPreviewQuality).toBe(55);
+      expect(settings.previewConcurrency).toBe(1);
       expect(settings.faceConcurrency).toBe(1);
     });
 
@@ -482,6 +578,26 @@ describe('IPC Handlers', () => {
 
       expect(written.faceConcurrency).toBeGreaterThanOrEqual(1);
       expect(written.faceConcurrency).toBeLessThanOrEqual(8);
+    });
+
+    it('persists clamped preview concurrency when settings are updated', async () => {
+      mockReadFile.mockResolvedValue(JSON.stringify({ previewConcurrency: 24 }) as any);
+      const handler = getHandler('settings:set');
+
+      await handler({}, { previewConcurrency: 24 });
+      const written = JSON.parse(String(mockWriteFile.mock.calls[0][1]));
+
+      expect(written.previewConcurrency).toBe(12);
+    });
+
+    it('applies tier preview defaults when tier changes without an explicit preview override', async () => {
+      mockReadFile.mockResolvedValue(JSON.stringify({ previewConcurrency: 6 }) as any);
+      const handler = getHandler('settings:set');
+
+      await handler({}, { perfTier: 'low' });
+      const written = JSON.parse(String(mockWriteFile.mock.calls[0][1]));
+
+      expect(written.previewConcurrency).toBe(1);
     });
 
     it('returns defaults on JSON parse error', async () => {

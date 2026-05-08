@@ -73,6 +73,13 @@ describe('CommandPalette command helpers', () => {
     expect(everyoneMatch?.id).toBe('filter.group-photos');
   });
 
+  it('uses page-scoped copy for the Best Page command', () => {
+    const command = buildCommandItems(baseContext).find((item) => item.id === 'best.batch');
+
+    expect(command?.label).toBe('Best Page');
+    expect(command?.description).toContain('actions affect only that page');
+  });
+
   it('marks bulk and destructive commands as confirmation-gated', () => {
     const commands = buildCommandItems(baseContext);
 
