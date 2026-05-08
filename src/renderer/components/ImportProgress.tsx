@@ -173,7 +173,7 @@ export function ImportProgress() {
               </div>
               {importProgress.skipped > 0 && (
                 <div className="flex justify-between text-sm">
-                  <span className="text-text-secondary">Skipped (duplicates)</span>
+                  <span className="text-text-secondary">Skipped</span>
                   <span className="text-yellow-400 font-mono">{importProgress.skipped}</span>
                 </div>
               )}

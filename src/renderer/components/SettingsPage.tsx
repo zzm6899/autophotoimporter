@@ -95,6 +95,34 @@ const FAST_RAW_METADATA_EXPORT: MetadataExportFlags = {
   stripGps: false,
 };
 const MAX_FACE_CONCURRENCY = 8;
+type DeviceTier = 'low' | 'balanced' | 'high';
+
+export function clampFaceConcurrencyForSettings(concurrency: number) {
+  return Math.max(1, Math.min(MAX_FACE_CONCURRENCY, Math.round(concurrency)));
+}
+
+export function recommendFaceConcurrencyTarget(options: {
+  dmlActive: boolean;
+  avgDmlMs?: number;
+  cpuCores: number;
+  tier: DeviceTier;
+}) {
+  const rawTarget = options.dmlActive
+    ? options.avgDmlMs !== undefined && options.avgDmlMs < 8
+      ? 24
+      : options.avgDmlMs !== undefined && options.avgDmlMs < 16
+        ? 16
+        : options.avgDmlMs !== undefined && options.avgDmlMs < 45
+          ? 12
+          : Math.min(8, Math.max(4, Math.floor(options.cpuCores / 2)))
+    : options.tier === 'high'
+      ? Math.min(8, Math.max(3, Math.floor(options.cpuCores / 4)))
+      : options.tier === 'balanced'
+        ? 2
+        : 1;
+
+  return clampFaceConcurrencyForSettings(rawTarget);
+}
 
 type SettingsTopic = typeof SETTINGS_TOPICS[number]['id'];
 
@@ -594,7 +622,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   };
 
   const handleFaceConcurrency = (concurrency: number) => {
-    const next = Math.max(1, Math.min(MAX_FACE_CONCURRENCY, Math.round(concurrency)));
+    const next = clampFaceConcurrencyForSettings(concurrency);
     dispatch({ type: 'SET_FACE_CONCURRENCY', concurrency: next });
     void window.electronAPI.setSettings({ faceConcurrency: next });
     void window.electronAPI.setFaceAnalysisConcurrency?.(next);
@@ -631,19 +659,12 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
         ? dmlModels.reduce((sum, model) => sum + (model.avgInferenceMs ?? model.dmlAvgInferenceMs ?? 0), 0) / dmlModels.length
         : undefined;
       const cpuCores = profile.cpuCores;
-      const faceTarget = dmlActive
-        ? avgDmlMs !== undefined && avgDmlMs < 8
-          ? 24
-          : avgDmlMs !== undefined && avgDmlMs < 16
-            ? 16
-            : avgDmlMs !== undefined && avgDmlMs < 45
-              ? 12
-              : Math.min(8, Math.max(4, Math.floor(cpuCores / 2)))
-        : profile.tier === 'high'
-          ? Math.min(8, Math.max(3, Math.floor(cpuCores / 4)))
-          : profile.tier === 'balanced'
-            ? 2
-            : 1;
+      const faceTarget = recommendFaceConcurrencyTarget({
+        dmlActive,
+        avgDmlMs,
+        cpuCores,
+        tier: profile.tier,
+      });
       const previewTarget = profile.tier === 'high'
         ? Math.min(8, Math.max(profile.previewConcurrency, 4))
         : profile.previewConcurrency;
@@ -2840,7 +2861,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
             <div className="mt-2 rounded border border-border bg-surface-alt px-2 py-2">
               <p className="text-[10px] font-semibold uppercase tracking-wider text-text-secondary">Performance help</p>
               <p className="mt-1 text-[10px] text-text-muted">
-                Use Optimize settings first. RTX-class GPUs usually prefer 8-16 face scans; very fast systems can try 24. Laptops or older CPUs should stay at 1-4 or enable Fast Keeper Mode for huge imports.
+                Use Optimize settings first. RTX-class GPUs usually prefer 6-8 face scans. Keptra caps live face scans at 8 for DirectML stability; laptops or older CPUs should stay at 1-4 or enable Fast Keeper Mode for huge imports.
               </p>
             </div>
             </div>

@@ -2,14 +2,104 @@ import { useEffect, useState } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import { formatDuration, formatSize, formatSpeed } from '../utils/formatters';
 import { useImport } from '../hooks/useImport';
-import type { ImportResult, MediaFile } from '../../shared/types';
+import type { ImportLedgerItem, ImportResult, MediaFile } from '../../shared/types';
+
+function countLabel(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function classifySkippedReason(item: ImportLedgerItem): 'duplicate' | 'conflict' | 'other' {
+  const reason = (item.error ?? '').toLowerCase();
+  if (reason.includes('duplicate')) return 'duplicate';
+  if (
+    reason.includes('conflict')
+    || reason.includes('eexist')
+    || (reason.includes('destination') && reason.includes('exist'))
+    || reason.includes('destination already exists')
+    || reason.includes('destination file already exists')
+  ) {
+    return 'conflict';
+  }
+  return 'other';
+}
+
+export function summarizeSkippedImportReasons(result: ImportResult) {
+  const skippedItems = result.ledgerItems?.filter((item) => item.status === 'skipped') ?? [];
+  let duplicateCount = 0;
+  let conflictCount = 0;
+  let otherCount = 0;
+
+  if (skippedItems.length > 0) {
+    for (const item of skippedItems) {
+      const reason = classifySkippedReason(item);
+      if (reason === 'duplicate') duplicateCount++;
+      else if (reason === 'conflict') conflictCount++;
+      else otherCount++;
+    }
+    otherCount += Math.max(0, result.skipped - skippedItems.length);
+  } else {
+    duplicateCount = result.skipped;
+  }
+
+  const parts = [
+    duplicateCount > 0 ? countLabel(duplicateCount, skippedItems.length > 0 ? 'duplicate' : 'presumed duplicate') : null,
+    conflictCount > 0 ? countLabel(conflictCount, 'destination conflict') : null,
+    otherCount > 0 ? countLabel(otherCount, 'other skipped file') : null,
+  ].filter((part): part is string => part !== null);
+  const detail = parts.join(', ');
+  const reportLabel = detail ? `${result.skipped} skipped (${detail})` : `${result.skipped} skipped`;
+
+  return {
+    total: result.skipped,
+    duplicateCount,
+    conflictCount,
+    otherCount,
+    detail,
+    reportLabel,
+  };
+}
+
+function normalizeIssueText(value?: string) {
+  return (value ?? '').trim().toLowerCase();
+}
+
+function importIssueKey(file: string, error?: string) {
+  return `${normalizeIssueText(file)}\u0000${normalizeIssueText(error)}`;
+}
+
+export function summarizeImportIssues(result: ImportResult) {
+  const ledgerIssueItems = result.ledgerItems?.filter((item) => item.status === 'failed' || item.status === 'pending') ?? [];
+  const ledgerIssues = ledgerIssueItems.map((item) => ({
+    file: item.name,
+    error: item.error ?? (item.status === 'pending' ? 'Pending retry' : 'Failed during import'),
+  }));
+  const ledgerIssueKeys = new Set(ledgerIssues.map((issue) => importIssueKey(issue.file, issue.error)));
+  const nonLedgerIssues = result.ledgerItems
+    ? result.errors.filter((issue) => !ledgerIssueKeys.has(importIssueKey(issue.file, issue.error)))
+    : [];
+  const displayedIssues = result.ledgerItems ? [...ledgerIssues, ...nonLedgerIssues] : result.errors;
+  const pendingCount = ledgerIssueItems.filter((item) => item.status === 'pending').length;
+  const failedCount = result.ledgerItems
+    ? ledgerIssueItems.filter((item) => item.status === 'failed').length + nonLedgerIssues.length
+    : result.errors.length;
+
+  return {
+    failedCount,
+    pendingCount,
+    nonLedgerErrorCount: nonLedgerIssues.length,
+    issueCount: failedCount + pendingCount,
+    displayedIssues,
+  };
+}
 
 export function summarizeImportResult(result: ImportResult) {
-  const failedCount = result.ledgerItems?.filter((item) => item.status === 'failed').length ?? result.errors.length;
-  const pendingCount = result.ledgerItems?.filter((item) => item.status === 'pending').length ?? 0;
+  const importIssues = summarizeImportIssues(result);
+  const failedCount = importIssues.failedCount;
+  const pendingCount = importIssues.pendingCount;
+  const skippedSummary = summarizeSkippedImportReasons(result);
   const verifiedCount = result.verified ?? 0;
   const checksumCount = result.checksumVerified ?? 0;
-  const issueCount = failedCount + pendingCount;
+  const issueCount = importIssues.issueCount;
   const completedCount = result.imported + result.skipped;
   const recoveredCount = result.recoveryCount ?? 0;
   const verificationLabel = checksumCount > 0
@@ -27,22 +117,29 @@ export function summarizeImportResult(result: ImportResult) {
   const recoveryMessage = issueCount > 0
     ? pendingCount > 0
       ? 'Retry will pick up failed and pending files from the saved import ledger.'
-      : 'Retry will copy only the files that failed in this run.'
+      : importIssues.nonLedgerErrorCount > 0 && failedCount === importIssues.nonLedgerErrorCount
+        ? 'Review the listed copy or verification errors before handing this set off.'
+        : importIssues.nonLedgerErrorCount > 0
+          ? 'Retry will copy failed files; review additional copy or verification errors below.'
+          : 'Retry will copy only the files that failed in this run.'
     : 'No recovery action is needed.';
 
   return {
     failedCount,
     pendingCount,
+    nonLedgerErrorCount: importIssues.nonLedgerErrorCount,
     verifiedCount,
     checksumCount,
     issueCount,
     completedCount,
     recoveredCount,
+    skippedSummary,
     verificationLabel,
     outcomeTone,
     outcomeTitle,
     outcomeMessage,
     recoveryMessage,
+    displayedIssues: importIssues.displayedIssues,
   };
 }
 
@@ -55,7 +152,7 @@ export function summarizeReviewImportVisibility(
   const pickedCount = files.filter((file) => file.pick === 'selected').length;
   const rejectedCount = files.filter((file) => file.pick === 'rejected').length;
   const accountedCount = result.imported + result.skipped;
-  const issueCount = (result.ledgerItems?.filter((item) => item.status === 'failed' || item.status === 'pending').length ?? result.errors.length);
+  const issueCount = summarizeImportIssues(result).issueCount;
 
   const nextStep = issueCount > 0
     ? 'Retry failed or pending files before handing this set off.'
@@ -157,16 +254,10 @@ export function ImportSummary() {
 
   const summary = summarizeImportResult(importResult);
   const flowSummary = summarizeReviewImportVisibility(importResult, files, selectedPaths.length, queuedPaths.length);
-  const issueItems = importResult.ledgerItems?.filter((item) => item.status === 'failed' || item.status === 'pending') ?? [];
-  const displayedIssues = issueItems.length > 0
-    ? issueItems.map((item) => ({
-        file: item.name,
-        error: item.error ?? (item.status === 'pending' ? 'Pending retry' : 'Failed during import'),
-      }))
-    : importResult.errors;
+  const displayedIssues = summary.displayedIssues;
   const reportDetails = [
     `${importResult.imported} imported`,
-    `${importResult.skipped} skipped`,
+    summary.skippedSummary.reportLabel,
     summary.verificationLabel,
     formatSize(importResult.totalBytes),
     formatDuration(importResult.durationMs),
@@ -214,9 +305,14 @@ export function ImportSummary() {
             <span className="text-green-400 font-mono font-medium">{importResult.imported}</span>
           </div>
           {importResult.skipped > 0 && (
-            <div className="flex justify-between text-sm">
-              <span className="text-text-secondary">Skipped (duplicates)</span>
-              <span className="text-yellow-400 font-mono">{importResult.skipped}</span>
+            <div>
+              <div className="flex justify-between text-sm">
+                <span className="text-text-secondary">Skipped</span>
+                <span className="text-yellow-400 font-mono">{importResult.skipped}</span>
+              </div>
+              {summary.skippedSummary.detail && (
+                <p className="mt-0.5 text-xs text-text-muted">{summary.skippedSummary.detail}</p>
+              )}
             </div>
           )}
           {typeof importResult.verified === 'number' && (

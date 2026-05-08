@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { summarizeImportResult, summarizeReviewImportVisibility } from '../ImportSummary';
+import { summarizeImportResult, summarizeReviewImportVisibility, summarizeSkippedImportReasons } from '../ImportSummary';
 import type { ImportResult, MediaFile } from '../../../shared/types';
 
 const baseResult: ImportResult = {
@@ -36,6 +36,58 @@ describe('summarizeImportResult', () => {
     expect(summary.issueCount).toBe(2);
     expect(summary.pendingCount).toBe(1);
     expect(summary.recoveryMessage).toBe('Retry will pick up failed and pending files from the saved import ledger.');
+  });
+
+  it('treats non-ledger copy and verification errors as follow-up issues', () => {
+    const summary = summarizeImportResult({
+      ...baseResult,
+      errors: [{ file: 'good.jpg (backup checksum)', error: 'Backup copy checksum mismatch' }],
+      ledgerItems: [
+        { sourcePath: 'E:\\DCIM\\good.jpg', name: 'good.jpg', size: 100, status: 'verified' },
+      ],
+    });
+
+    expect(summary.outcomeTitle).toBe('Import Finished With Follow-Up');
+    expect(summary.issueCount).toBe(1);
+    expect(summary.failedCount).toBe(1);
+    expect(summary.nonLedgerErrorCount).toBe(1);
+    expect(summary.recoveryMessage).toBe('Review the listed copy or verification errors before handing this set off.');
+    expect(summary.displayedIssues).toEqual([
+      { file: 'good.jpg (backup checksum)', error: 'Backup copy checksum mismatch' },
+    ]);
+  });
+});
+
+describe('summarizeSkippedImportReasons', () => {
+  it('breaks skipped files down by duplicate, conflict, and other ledger reasons', () => {
+    const summary = summarizeSkippedImportReasons({
+      ...baseResult,
+      skipped: 4,
+      ledgerItems: [
+        { sourcePath: 'E:\\DCIM\\dupe.jpg', name: 'dupe.jpg', size: 100, status: 'skipped', error: 'Duplicate at destination' },
+        { sourcePath: 'E:\\DCIM\\conflict.jpg', name: 'conflict.jpg', size: 100, status: 'skipped', error: 'Destination file already exists' },
+        { sourcePath: 'E:\\DCIM\\deferred.jpg', name: 'deferred.jpg', size: 100, status: 'skipped', error: 'Skipped by policy' },
+        { sourcePath: 'E:\\DCIM\\ok.jpg', name: 'ok.jpg', size: 100, status: 'imported' },
+      ],
+    });
+
+    expect(summary.duplicateCount).toBe(1);
+    expect(summary.conflictCount).toBe(1);
+    expect(summary.otherCount).toBe(2);
+    expect(summary.detail).toBe('1 duplicate, 1 destination conflict, 2 other skipped files');
+    expect(summary.reportLabel).toBe('4 skipped (1 duplicate, 1 destination conflict, 2 other skipped files)');
+  });
+
+  it('keeps legacy skipped results understandable when no ledger items exist', () => {
+    const summary = summarizeSkippedImportReasons({
+      ...baseResult,
+      skipped: 2,
+      ledgerItems: undefined,
+    });
+
+    expect(summary.duplicateCount).toBe(2);
+    expect(summary.detail).toBe('2 presumed duplicates');
+    expect(summary.reportLabel).toBe('2 skipped (2 presumed duplicates)');
   });
 });
 
