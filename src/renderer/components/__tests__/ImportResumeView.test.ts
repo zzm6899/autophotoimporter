@@ -34,6 +34,20 @@ describe('summarizeImportLedger', () => {
     expect(names.slice(0, 2)).toEqual(['bad.jpg', 'later.jpg']);
   });
 
+  it('identifies the first actionable file for the open issue action', () => {
+    const summary = summarizeImportLedger(baseLedger);
+
+    expect(summary.nextRecoveryTarget).toMatchObject({
+      name: 'bad.jpg',
+      status: 'failed',
+      statusLabel: 'Failed',
+      detail: 'Disk full · 75 B.',
+      openTarget: 'E:\\DCIM\\bad.jpg',
+      openTargetLabel: 'source file',
+      openButtonLabel: 'Open bad.jpg',
+    });
+  });
+
   it('explains pending files as retryable recovery work', () => {
     const summary = summarizeImportLedger(baseLedger);
 
@@ -64,6 +78,7 @@ describe('summarizeImportLedger', () => {
 
     expect(summary.actionableCount).toBe(0);
     expect(summary.completionPercent).toBe(100);
+    expect(summary.nextRecoveryTarget).toBeNull();
     expect(summary.recoveryWorkloadLabel).toBe('No retry workload.');
     expect(summary.recoveryMessage).toBe('No failed or pending files need attention.');
   });

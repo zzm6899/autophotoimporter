@@ -2323,8 +2323,8 @@ export function registerIpcHandlers(): void {
     const result = await importFiles(filesToImport, retryConfig, (progress) => {
       sendToRenderer(IPC.IMPORT_PROGRESS, progress);
     });
-    result.recoveryCount = retryPaths.length;
     const ledger = await persistImportLedger(retryConfig, result);
+    result.recoveryCount = retryPaths.length;
     result.lightroomHandoff = await writePostImportLightroomHandoff(retryConfig, ledger)
       .catch((error) => {
         log.warn('[lightroom-handoff] retry handoff failed', error);

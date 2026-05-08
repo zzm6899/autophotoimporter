@@ -330,6 +330,72 @@ describe('IPC Handlers', () => {
       });
       expect(mockImportFiles).not.toHaveBeenCalled();
     });
+
+    it('retries only failed and pending ledger paths from the current scan', async () => {
+      const files: MediaFile[] = [
+        { path: '/src/failed.jpg', name: 'failed.jpg', size: 100, type: 'photo', extension: '.jpg', destPath: '2026/failed.jpg' },
+        { path: '/src/pending.jpg', name: 'pending.jpg', size: 200, type: 'photo', extension: '.jpg', destPath: '2026/pending.jpg' },
+        { path: '/src/imported.jpg', name: 'imported.jpg', size: 300, type: 'photo', extension: '.jpg', destPath: '2026/imported.jpg' },
+        { path: '/src/skipped.jpg', name: 'skipped.jpg', size: 400, type: 'photo', extension: '.jpg', destPath: '2026/skipped.jpg' },
+      ];
+      const ledger: ImportLedger = {
+        id: 'ledger-1',
+        createdAt: '2026-05-08T00:00:00.000Z',
+        sourcePath: '/src',
+        destRoot: '/dest',
+        saveFormat: 'original',
+        totalFiles: 4,
+        imported: 1,
+        skipped: 1,
+        failed: 1,
+        pending: 1,
+        totalBytes: 1000,
+        durationMs: 10,
+        items: [
+          { sourcePath: files[0].path, name: files[0].name, size: files[0].size, status: 'failed', error: 'Disk full' },
+          { sourcePath: files[1].path, name: files[1].name, size: files[1].size, status: 'pending' },
+          { sourcePath: files[2].path, name: files[2].name, size: files[2].size, status: 'imported' },
+          { sourcePath: files[3].path, name: files[3].name, size: files[3].size, status: 'skipped' },
+        ],
+      };
+      mockReadFile.mockImplementation(async (filePath) => {
+        const value = String(filePath);
+        if (value.endsWith('settings.json')) return JSON.stringify({ licenseKey: 'valid-key' }) as any;
+        if (value.endsWith('latest.json')) return JSON.stringify(ledger) as any;
+        throw new Error('ENOENT');
+      });
+      mockScanFiles.mockImplementation(async (_sourcePath, onBatch: (batch: MediaFile[]) => void) => {
+        onBatch(files);
+        return files.length;
+      });
+      mockImportFiles.mockResolvedValue({
+        imported: 2,
+        skipped: 0,
+        errors: [],
+        totalBytes: 300,
+        durationMs: 10,
+        ledgerItems: [
+          { sourcePath: files[0].path, name: files[0].name, size: files[0].size, status: 'imported' },
+          { sourcePath: files[1].path, name: files[1].name, size: files[1].size, status: 'imported' },
+        ],
+      });
+
+      await getHandler('scan:start')({}, '/src');
+      const result = await getHandler('import:retry-failed')({}, {
+        sourcePath: '/src',
+        destRoot: '/dest',
+        skipDuplicates: true,
+        saveFormat: 'original',
+        jpegQuality: 90,
+      }) as ImportResult;
+
+      expect(result.recoveryCount).toBe(2);
+      expect(mockImportFiles).toHaveBeenLastCalledWith(
+        [files[0], files[1]],
+        expect.objectContaining({ selectedPaths: [files[0].path, files[1].path] }),
+        expect.any(Function),
+      );
+    });
   });
 
   describe('SCAN_START', () => {

@@ -356,8 +356,8 @@ async function destinationExists(fullPath?: string): Promise<boolean> {
   }
 }
 
-async function anyDestinationExists(paths: ReturnType<typeof fullDestPaths>): Promise<boolean> {
-  return await destinationExists(paths.destFullPath) || await destinationExists(paths.backupFullPath);
+async function primaryDestinationExists(paths: ReturnType<typeof fullDestPaths>): Promise<boolean> {
+  return await destinationExists(paths.destFullPath);
 }
 
 function renameCandidateRelPath(destRelPath: string, index: number): string {
@@ -374,7 +374,7 @@ async function findAvailableDestPaths(
   for (let index = startIndex; index < 10000; index++) {
     const candidate = fullDestPathsFromRel(renameCandidateRelPath(startRelPath, index), config);
     if (candidate.error) return candidate;
-    if (!await anyDestinationExists(candidate)) return candidate;
+    if (!await primaryDestinationExists(candidate)) return candidate;
   }
   return {
     ...fullDestPathsFromRel(startRelPath, config),
@@ -386,7 +386,7 @@ async function resolveImportDestPaths(file: MediaFile, config: ImportConfig): Pr
   const paths = fullDestPaths(file, config);
   const policy = conflictPolicyFor(config);
   if (paths.error) return { ...paths, conflict: false, policy };
-  const conflict = await anyDestinationExists(paths);
+  const conflict = await primaryDestinationExists(paths);
   if (!conflict) return { ...paths, conflict: false, policy };
 
   if (policy === 'skip') {
@@ -850,7 +850,23 @@ export async function importFiles(
   let watermarkMissing = 0;
   let straightenMissing = 0;
   let whiteBalanceMissing = 0;
-  const ledgerItems: ImportLedgerItem[] = [];
+  const ledgerItemsBySource = new Map<string, ImportLedgerItem>();
+  for (const file of files) {
+    const plannedPaths = fullDestPaths(file, config);
+    ledgerItemsBySource.set(file.path, {
+      sourcePath: file.path,
+      name: file.name,
+      size: file.size,
+      destRelPath: plannedPaths.destRelPath,
+      destFullPath: plannedPaths.destFullPath,
+      backupFullPath: plannedPaths.backupFullPath,
+      status: 'pending',
+    });
+  }
+
+  function recordLedgerItem(file: MediaFile, item: ImportLedgerItem): void {
+    ledgerItemsBySource.set(file.path, item);
+  }
 
   function brightnessFor(file: MediaFile): number {
     const shouldNormalize = normalizeActive || perFileNormalizePaths.has(file.path);
@@ -895,7 +911,7 @@ export async function importFiles(
     };
     if (plannedPaths.error) {
       errors.push({ file: file.name, error: plannedPaths.error });
-      ledgerItems.push({ ...ledgerBase, status: 'failed', error: plannedPaths.error });
+      recordLedgerItem(file, { ...ledgerBase, status: 'failed', error: plannedPaths.error });
       return;
     }
 
@@ -907,7 +923,7 @@ export async function importFiles(
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Destination path rejected';
       errors.push({ file: file.name, error: message });
-      ledgerItems.push({ ...ledgerBase, status: 'failed', error: message });
+      recordLedgerItem(file, { ...ledgerBase, status: 'failed', error: message });
       return;
     }
 
@@ -917,7 +933,7 @@ export async function importFiles(
         : false;
       if (dup) {
         skipped++;
-        ledgerItems.push({ ...ledgerBase, status: 'skipped', error: 'Duplicate at destination' });
+        recordLedgerItem(file, { ...ledgerBase, status: 'skipped', error: 'Duplicate at destination' });
         return;
       }
     }
@@ -933,12 +949,12 @@ export async function importFiles(
     };
     if (resolvedPaths.error) {
       errors.push({ file: file.name, error: resolvedPaths.error });
-      ledgerItems.push({ ...resolvedLedgerBase, status: 'failed', error: resolvedPaths.error });
+      recordLedgerItem(file, { ...resolvedLedgerBase, status: 'failed', error: resolvedPaths.error });
       return;
     }
     if (resolvedPaths.skipped) {
       skipped++;
-      ledgerItems.push({ ...resolvedLedgerBase, status: 'skipped', error: resolvedPaths.reason || 'Destination already exists' });
+      recordLedgerItem(file, { ...resolvedLedgerBase, status: 'skipped', error: resolvedPaths.reason || 'Destination already exists' });
       return;
     }
 
@@ -948,7 +964,7 @@ export async function importFiles(
     if (!finalRelPath || !destFullPath) {
       const message = 'No destination path computed';
       errors.push({ file: file.name, error: message });
-      ledgerItems.push({ ...resolvedLedgerBase, status: 'failed', error: message });
+      recordLedgerItem(file, { ...resolvedLedgerBase, status: 'failed', error: message });
       return;
     }
     const copyMode = conflictPolicyFor(config) === 'overwrite' ? undefined : constants.COPYFILE_EXCL;
@@ -957,7 +973,7 @@ export async function importFiles(
     if (config.dryRun) {
       imported++;
       bytesTransferred += file.size;
-      ledgerItems.push({ ...resolvedLedgerBase, status: 'planned' });
+      recordLedgerItem(file, { ...resolvedLedgerBase, status: 'planned' });
       return;
     }
 
@@ -1056,25 +1072,25 @@ export async function importFiles(
         errors.push({ file: `${file.name} (verify)`, error: e.message || 'Verification failed' });
       }
       bytesTransferred += file.size;
-      ledgerItems.push({ ...resolvedLedgerBase, status: finalStatus });
+      recordLedgerItem(file, { ...resolvedLedgerBase, status: finalStatus });
     } catch (err: unknown) {
       const error = err as NodeJS.ErrnoException;
 
       if (error.code === 'ENOSPC') {
         const message = 'Disk full';
         errors.push({ file: file.name, error: message });
-        ledgerItems.push({ ...resolvedLedgerBase, status: 'failed', error: message });
+        recordLedgerItem(file, { ...resolvedLedgerBase, status: 'failed', error: message });
         job.cancel();
         return;
       }
 
       if (error.code === 'EEXIST') {
         skipped++;
-        ledgerItems.push({ ...resolvedLedgerBase, status: 'skipped', error: 'Destination already exists' });
+        recordLedgerItem(file, { ...resolvedLedgerBase, status: 'skipped', error: 'Destination already exists' });
       } else {
         const message = error.message || 'Import failed';
         errors.push({ file: file.name, error: message });
-        ledgerItems.push({ ...resolvedLedgerBase, status: 'failed', error: message });
+        recordLedgerItem(file, { ...resolvedLedgerBase, status: 'failed', error: message });
       }
     }
   }
@@ -1217,7 +1233,7 @@ export async function importFiles(
     errors,
     totalBytes: bytesTransferred,
     durationMs: Date.now() - startTime,
-    ledgerItems,
+    ledgerItems: [...ledgerItemsBySource.values()],
   };
 }
 

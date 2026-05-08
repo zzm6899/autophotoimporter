@@ -36,6 +36,7 @@ export function summarizeImportLedger(ledger: ImportLedger | null) {
       failedCount: 0,
       pendingCount: 0,
       retryBytes: 0,
+      nextRecoveryTarget: null,
       recoveryWorkloadLabel: 'No retry workload.',
       completionPercent: 0,
       statusMessage: 'No import history has been written yet.',
@@ -61,11 +62,17 @@ export function summarizeImportLedger(ledger: ImportLedger | null) {
     skipped: 4,
     planned: 5,
   };
+  const orderedItems = [...ledger.items].sort((a, b) => rank[a.status] - rank[b.status] || a.name.localeCompare(b.name));
+  const nextRecoveryTarget = summarizeRecoveryTarget(
+    orderedItems.find((item) => item.status === 'failed' || item.status === 'pending'),
+    ledger.destRoot,
+  );
   return {
     actionableCount,
     failedCount,
     pendingCount,
     retryBytes,
+    nextRecoveryTarget,
     recoveryWorkloadLabel: actionableCount > 0
       ? `${actionableCount} ${actionableCount === 1 ? 'file' : 'files'} (${formatRecoveryBytes(retryBytes)}) left to retry.`
       : 'No retry workload.',
@@ -78,7 +85,27 @@ export function summarizeImportLedger(ledger: ImportLedger | null) {
         ? 'Retry resumes pending files and re-attempts failed copies from this ledger.'
         : 'Retry re-attempts only the failed copies from this ledger.'
       : 'No failed or pending files need attention.',
-    orderedItems: [...ledger.items].sort((a, b) => rank[a.status] - rank[b.status] || a.name.localeCompare(b.name)),
+    orderedItems,
+  };
+}
+
+function summarizeRecoveryTarget(item: ImportLedgerItem | undefined, fallbackDestRoot: string) {
+  if (!item) return null;
+
+  const openTarget = item.destFullPath || item.sourcePath || fallbackDestRoot;
+  const openTargetLabel = item.destFullPath ? 'destination copy' : item.sourcePath ? 'source file' : 'destination folder';
+  const detailPrefix = item.status === 'pending'
+    ? 'Waiting for retry'
+    : item.error || 'Failed copy needs retry';
+
+  return {
+    name: item.name,
+    status: item.status,
+    statusLabel: STATUS_LABELS[item.status],
+    detail: `${detailPrefix} · ${formatRecoveryBytes(item.size)}.`,
+    openTarget,
+    openTargetLabel,
+    openButtonLabel: `Open ${item.name}`,
   };
 }
 
@@ -167,8 +194,7 @@ export function ImportResumeView({ tone = 'panel' }: ImportResumeViewProps) {
   };
 
   const handleOpenFirstFailure = () => {
-    const first = summary.orderedItems.find((item) => item.status === 'failed' || item.status === 'pending');
-    const target = first?.destFullPath || first?.sourcePath || ledger?.destRoot;
+    const target = summary.nextRecoveryTarget?.openTarget || ledger?.destRoot;
     if (target) void window.electronAPI.openPath(target);
   };
 
@@ -227,6 +253,22 @@ export function ImportResumeView({ tone = 'panel' }: ImportResumeViewProps) {
         {summary.actionableCount > 0 && (
           <p className="mt-0.5 text-[10px] text-orange-200">{summary.recoveryWorkloadLabel}</p>
         )}
+        {summary.nextRecoveryTarget && (
+          <div className="mt-1.5 border-t border-border pt-1.5">
+            <div className="flex items-center gap-1.5 text-[10px]">
+              <span className={STATUS_CLASS[summary.nextRecoveryTarget.status]}>
+                {summary.nextRecoveryTarget.statusLabel}
+              </span>
+              <span className="min-w-0 truncate text-text" title={summary.nextRecoveryTarget.name}>
+                {summary.nextRecoveryTarget.name}
+              </span>
+            </div>
+            <p className="mt-0.5 text-[10px] text-text-muted">{summary.nextRecoveryTarget.detail}</p>
+            <p className="mt-0.5 truncate text-[10px] text-text-muted" title={summary.nextRecoveryTarget.openTarget}>
+              Opens {summary.nextRecoveryTarget.openTargetLabel}: {basename(summary.nextRecoveryTarget.openTarget)}
+            </p>
+          </div>
+        )}
       </div>
 
       {!currentSessionMatches && summary.actionableCount > 0 && (
@@ -276,8 +318,11 @@ export function ImportResumeView({ tone = 'panel' }: ImportResumeViewProps) {
           <button
             onClick={handleOpenFirstFailure}
             className="rounded bg-surface-raised px-2 py-1 text-[10px] text-text-secondary hover:bg-border"
+            title={summary.nextRecoveryTarget
+              ? `${summary.nextRecoveryTarget.openTargetLabel}: ${summary.nextRecoveryTarget.openTarget}`
+              : 'Open the first failed or pending file.'}
           >
-            Open First Issue
+            {summary.nextRecoveryTarget?.openButtonLabel ?? 'Open First Issue'}
           </button>
         )}
       </div>

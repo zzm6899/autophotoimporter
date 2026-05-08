@@ -118,6 +118,22 @@ describe('planImportFiles', () => {
     expect(mockCopyFile).not.toHaveBeenCalled();
   });
 
+  it('does not block a primary import plan when only the backup target exists', async () => {
+    mockStat.mockImplementation(async (p) => {
+      if (String(p).includes('backup')) return { size: 5000 } as any;
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+    });
+
+    const plan = await planImportFiles([makeFile()], makeConfig({ backupDestRoot: '/backup' }));
+
+    expect(plan.willImport).toBe(1);
+    expect(plan.conflicts).toBe(0);
+    expect(plan.items[0]).toEqual(expect.objectContaining({
+      status: 'will-import',
+      backupFullPath: expect.stringContaining('backup'),
+    }));
+  });
+
   it('flags duplicate and low-confidence files in the dry plan', async () => {
     mockIsDuplicate.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
     mockStat.mockRejectedValue(Object.assign(new Error('missing'), { code: 'ENOENT' }));
@@ -500,6 +516,9 @@ describe('importFiles', () => {
     expect(result.errors.some((e) => e.error === 'Disk full')).toBe(true);
     // Abort stops processing — not all 20 files should be attempted
     expect(mockCopyFile.mock.calls.length).toBeLessThan(files.length);
+    expect(result.ledgerItems).toHaveLength(files.length);
+    expect(result.ledgerItems?.some((item) => item.status === 'failed' && item.error === 'Disk full')).toBe(true);
+    expect(result.ledgerItems?.some((item) => item.status === 'pending')).toBe(true);
   });
 
   it('EEXIST is counted as skip, not error', async () => {
@@ -523,6 +542,35 @@ describe('importFiles', () => {
       expect.objectContaining({ status: 'skipped', error: 'Destination file already exists' }),
     ]);
     expect(mockCopyFile).not.toHaveBeenCalled();
+  });
+
+  it('repairs the primary destination when only the backup copy already exists', async () => {
+    let primaryCopied = false;
+    mockStat.mockImplementation(async (target) => {
+      const pathText = String(target);
+      if (pathText.includes('/backup/') || pathText.includes('\\backup\\')) return { size: 1234 } as any;
+      if (primaryCopied) return { size: 5000 } as any;
+      throw Object.assign(new Error('missing primary'), { code: 'ENOENT' });
+    });
+    mockCopyFile.mockImplementation(async (_source, target) => {
+      const pathText = String(target);
+      if (pathText.includes('/backup/') || pathText.includes('\\backup\\')) {
+        throw Object.assign(new Error('backup exists'), { code: 'EEXIST' });
+      }
+      primaryCopied = true;
+    });
+
+    const result = await importFiles([makeFile()], makeConfig({
+      backupDestRoot: '/backup',
+      conflictPolicy: 'skip',
+    }), onProgress);
+
+    expect(result.imported).toBe(1);
+    expect(result.skipped).toBe(0);
+    expect(result.errors).toHaveLength(0);
+    expect(result.ledgerItems).toEqual([
+      expect.objectContaining({ status: 'imported', destFullPath: expect.stringContaining('IMG_001.jpg') }),
+    ]);
   });
 
   it('rename conflict policy writes to the first available destination name', async () => {
