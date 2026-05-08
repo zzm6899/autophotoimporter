@@ -258,10 +258,113 @@ export interface AutoCullDecision {
   reject: string[];
   confidence: 'low' | 'medium' | 'high';
   reasons: Record<string, string[]>;
+  bestExplanation?: BestShotExplanation;
 }
 
 export function scoreGapConfidence(gap: number): AutoCullDecision['confidence'] {
   return gap >= 72 ? 'high' : gap >= 28 ? 'medium' : 'low';
+}
+
+export interface BestShotExplanation {
+  bestPath: string;
+  bestName: string;
+  runnerUpPath?: string;
+  runnerUpName?: string;
+  bestScore: number;
+  runnerUpScore?: number;
+  scoreGap: number;
+  confidence: AutoCullDecision['confidence'];
+  summary: string;
+  wins: string[];
+  cautions: string[];
+}
+
+function displayName(file: MediaFile): string {
+  return file.name || file.path.split(/[/\\]/).pop() || 'top candidate';
+}
+
+function blurRank(file: MediaFile): number {
+  return file.blurRisk === 'high' ? 2 : file.blurRisk === 'medium' ? 1 : 0;
+}
+
+function pushUnique(values: string[], value: string): void {
+  if (!values.includes(value)) values.push(value);
+}
+
+export function explainBestShotSelection(files: MediaFile[]): BestShotExplanation | null {
+  const ranked = rankBestShots(files).filter(isAutoBestCandidate);
+  const best = ranked[0];
+  if (!best) return null;
+
+  const runnerUp = ranked[1];
+  const bestScore = bestShotScore(best);
+  const runnerUpScore = runnerUp ? bestShotScore(runnerUp) : undefined;
+  const scoreGap = runnerUpScore === undefined ? bestScore : bestScore - runnerUpScore;
+  const confidence = scoreGapConfidence(scoreGap);
+  const wins: string[] = [];
+  const cautions: string[] = [];
+  const bestName = displayName(best);
+  const runnerUpName = runnerUp ? displayName(runnerUp) : undefined;
+
+  if (runnerUp && scoreGap >= 0) {
+    pushUnique(wins, `${scoreGap >= 0 ? '+' : ''}${scoreGap} best-shot score vs #2`);
+  } else if (runnerUp) {
+    pushUnique(wins, 'Priority signals outrank raw score');
+  } else {
+    pushUnique(wins, 'Only candidate in this set');
+  }
+  if (runnerUp && scoreGap < 0) pushUnique(cautions, 'Runner-up has a higher raw score');
+  if (best.isProtected) pushUnique(wins, 'Protected file');
+  if ((best.rating ?? 0) > 0) pushUnique(wins, `${best.rating}-star rating`);
+
+  const bestHuman = humanMomentQuality(best);
+  const runnerHuman = runnerUp ? humanMomentQuality(runnerUp) : 0;
+  if (runnerUp && bestHuman - runnerHuman >= 12) pushUnique(wins, `Better eyes/smile +${bestHuman - runnerHuman}`);
+
+  const bestSubject = best.subjectSharpnessScore ?? best.sharpnessScore;
+  const runnerSubject = runnerUp ? runnerUp.subjectSharpnessScore ?? runnerUp.sharpnessScore : undefined;
+  if (typeof bestSubject === 'number' && typeof runnerSubject === 'number') {
+    const subjectGap = Math.round(bestSubject - runnerSubject);
+    if (subjectGap >= 12) pushUnique(wins, `Sharper subject +${subjectGap}`);
+    else if (subjectGap <= -12) pushUnique(cautions, `Runner-up is sharper by ${Math.abs(subjectGap)}`);
+  } else if (typeof bestSubject === 'number') {
+    pushUnique(wins, `Subject sharpness ${Math.round(bestSubject)}`);
+  }
+
+  const bestFaceQuality = faceQuality(best);
+  const runnerFaceQuality = runnerUp ? faceQuality(runnerUp) : 0;
+  if (runnerUp && bestFaceQuality - runnerFaceQuality >= 16) pushUnique(wins, `Stronger face signal +${bestFaceQuality - runnerFaceQuality}`);
+
+  const bestFaces = best.faceCount ?? best.faceBoxes?.length ?? 0;
+  const runnerFaces = runnerUp ? runnerUp.faceCount ?? runnerUp.faceBoxes?.length ?? 0 : 0;
+  if (bestFaces > 0) {
+    pushUnique(wins, runnerUp && bestFaces !== runnerFaces
+      ? `${bestFaces} faces vs ${runnerFaces}`
+      : `${bestFaces} face${bestFaces === 1 ? '' : 's'}`);
+  }
+
+  if (runnerUp && blurRank(best) < blurRank(runnerUp)) pushUnique(wins, 'Lower blur risk');
+  if (best.blurRisk === 'high') pushUnique(cautions, 'Top pick still has high blur risk');
+  else if (best.blurRisk === 'medium') pushUnique(cautions, 'Top pick has medium blur risk');
+  if (runnerUp && confidence === 'low') pushUnique(cautions, 'Close score gap, compare runner-up');
+
+  return {
+    bestPath: best.path,
+    bestName,
+    runnerUpPath: runnerUp?.path,
+    runnerUpName,
+    bestScore,
+    runnerUpScore,
+    scoreGap,
+    confidence,
+    summary: runnerUp
+      ? scoreGap >= 0
+        ? `Beat ${runnerUpName} by ${scoreGap} ${Math.abs(scoreGap) === 1 ? 'point' : 'points'}`
+        : `Ranked ahead of ${runnerUpName} on priority signals despite a ${Math.abs(scoreGap)}-point score gap`
+      : 'Only one candidate is available for this comparison',
+    wins: wins.slice(0, 4),
+    cautions: cautions.slice(0, 2),
+  };
 }
 
 export interface AutoCullOptions {
@@ -381,6 +484,7 @@ export function autoCullGroup(files: MediaFile[], options: AutoCullOptions = {})
     reject: [...reject],
     confidence: scoreGapConfidence(gap),
     reasons,
+    bestExplanation: explainBestShotSelection(files) ?? undefined,
   };
 }
 
@@ -407,6 +511,10 @@ export function scoreReview(input: ReviewScoreInput): ReviewScore {
   const sharpness = input.sharpnessScore ?? 0;
   const subjectSharpness = input.subjectSharpnessScore ?? 0;
   const rating = input.rating ?? 0;
+  const faceBoxes = input.faceBoxes ?? [];
+  const personBoxes = input.personBoxes ?? [];
+  const faceCount = input.faceCount ?? faceBoxes.length;
+  const personCount = input.personCount ?? personBoxes.length;
   let score = Math.min(55, Math.log10(Math.max(1, sharpness) + 1) * 18);
   const reasons: string[] = [];
 
@@ -418,18 +526,18 @@ export function scoreReview(input: ReviewScoreInput): ReviewScore {
     score += rating * 8;
     reasons.push(`${rating} star`);
   }
-  if ((input.faceCount ?? 0) > 0) {
+  if (faceCount > 0) {
     const confidence = faceSignalConfidence(input);
     score += 16 + Math.min(18, faceQuality(input) / 5);
-    reasons.push(`${input.faceCount} face${input.faceCount === 1 ? '' : 's'}`);
+    reasons.push(`${faceCount} face${faceCount === 1 ? '' : 's'}`);
     if (confidence >= 0.78) reasons.push('strong face signal');
     else if (confidence < 0.52) reasons.push('check face confidence');
-    const eyeScore = (input.faceBoxes ?? []).reduce((best, box) => Math.max(best, box.eyeScore ?? 0), 0);
+    const eyeScore = faceBoxes.reduce((best, box) => Math.max(best, box.eyeScore ?? 0), 0);
     if (eyeScore >= 2) reasons.push('eyes sharp');
     else if (eyeScore === 1) reasons.push('face present');
-  } else if ((input.personCount ?? 0) > 0) {
+  } else if (personCount > 0) {
     score += 12 + Math.min(14, subjectPresenceQuality(input) / 6);
-    reasons.push(`${input.personCount} person${input.personCount === 1 ? '' : 's'}`);
+    reasons.push(`${personCount} person${personCount === 1 ? '' : 's'}`);
   }
   if (subjectSharpness >= 120) {
     score += 22;

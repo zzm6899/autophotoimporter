@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import type { MediaFile } from '../../shared/types';
 import { formatFileSize, formatExposure } from '../utils/formatters';
 import { getCachedPreview } from '../utils/previewCache';
-import { bestShotScore, rankBestShots, scoreGapConfidence } from '../../shared/review';
+import { bestShotScore, explainBestShotSelection, rankBestShots, scoreGapConfidence } from '../../shared/review';
 
 interface BestOfSelectionPanelProps {
   files: MediaFile[];
@@ -47,6 +47,11 @@ export function rankBestOfSelection(files: MediaFile[]): MediaFile[] {
   return rankBestShots(files);
 }
 
+export function actionableBestOfCandidates(ranked: MediaFile[]): MediaFile[] {
+  const actionable = ranked.filter((file) => file.pick !== 'rejected');
+  return actionable.length > 0 ? actionable : ranked;
+}
+
 function autoAcceptSummary(best: MediaFile, second: MediaFile | undefined, scoreGap: number): {
   label: string;
   tone: 'safe' | 'review' | 'manual';
@@ -86,29 +91,6 @@ function autoAcceptSummary(best: MediaFile, second: MediaFile | undefined, score
     tone: 'manual',
     detail: `Only ${Math.max(0, scoreGap)} points separate the top two.`,
   };
-}
-
-function topPickEvidence(best: MediaFile, second: MediaFile | undefined, scoreGap: number): string[] {
-  const evidence: string[] = [];
-  if (best.isProtected) evidence.push('Protected file');
-  if ((best.rating ?? 0) > 0) evidence.push(`${best.rating}-star rating`);
-  if (second) evidence.push(`${scoreGap >= 0 ? '+' : ''}${scoreGap} vs #2`);
-
-  const bestSubject = best.subjectSharpnessScore ?? best.sharpnessScore;
-  const secondSubject = second ? second.subjectSharpnessScore ?? second.sharpnessScore : undefined;
-  if (typeof bestSubject === 'number' && typeof secondSubject === 'number') {
-    const subjectGap = Math.round(bestSubject - secondSubject);
-    if (subjectGap >= 12) evidence.push(`Sharper subject +${subjectGap}`);
-    else if (subjectGap <= -12) evidence.push(`Softer subject ${subjectGap}`);
-  } else if (typeof bestSubject === 'number') {
-    evidence.push(`Subject ${bestSubject}`);
-  }
-
-  const bestFaces = best.faceCount ?? best.faceBoxes?.length ?? 0;
-  const secondFaces = second ? second.faceCount ?? second.faceBoxes?.length ?? 0 : 0;
-  if (bestFaces > 0) evidence.push(second && bestFaces !== secondFaces ? `${bestFaces} faces vs ${secondFaces}` : `${bestFaces} face${bestFaces === 1 ? '' : 's'}`);
-  if (best.blurRisk && best.blurRisk !== 'low') evidence.push(`${best.blurRisk} blur risk`);
-  return evidence.slice(0, 4);
 }
 
 type BestOfActionScope = 'batch' | 'burst' | 'selection';
@@ -536,13 +518,16 @@ export function BestOfSelectionPanel({
   queuedPaths = [],
 }: BestOfSelectionPanelProps) {
   const ranked = useMemo(() => rankBestOfSelection(files).slice(0, 6), [files]);
-  const best = ranked[0];
-  const second = ranked[1];
+  const actionableRanked = useMemo(() => actionableBestOfCandidates(ranked), [ranked]);
+  const best = actionableRanked[0];
+  const second = actionableRanked[1];
   const bestScore = best ? Math.round(rankScore(best)) : 0;
   const scoreGap = best && second ? Math.round(rankScore(best) - rankScore(second)) : bestScore;
   const confidence = scoreGapConfidence(scoreGap);
   const readiness = best ? autoAcceptSummary(best, second, scoreGap) : null;
-  const evidence = best ? topPickEvidence(best, second, scoreGap) : [];
+  const bestExplanation = useMemo(() => explainBestShotSelection(files), [files]);
+  const evidence = bestExplanation?.wins ?? [];
+  const cautions = bestExplanation?.cautions ?? [];
   const actionSummary = summarizeBestOfActions(
     files,
     best,
@@ -713,10 +698,22 @@ export function BestOfSelectionPanel({
                     {readiness.label}
                   </div>
                   <div className="mt-0.5 text-[10px] text-text-secondary">{readiness.detail}</div>
+                  {bestExplanation?.summary && (
+                    <div className="mt-1 text-[10px] text-text">{bestExplanation.summary}</div>
+                  )}
                   {evidence.length > 0 && (
                     <div className="mt-1.5 flex flex-wrap gap-1">
                       {evidence.map((item) => (
                         <span key={item} className="px-1.5 py-0.5 rounded bg-surface/80 text-[9px] text-text-muted">
+                          {item}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {cautions.length > 0 && (
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {cautions.map((item) => (
+                        <span key={item} className="px-1.5 py-0.5 rounded bg-yellow-500/10 text-[9px] text-yellow-200">
                           {item}
                         </span>
                       ))}

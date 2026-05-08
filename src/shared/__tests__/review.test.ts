@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { autoCullGroup, bestInGroup, buildFaceIdentityGroups, faceSignalConfidence, groupByFaceEmbedding, groupByFaceSimilarity, groupByVisualHash, hammingDistanceHex, humanMomentQuality, rankBestShots, scoreReview, subjectPresenceQuality } from '../review';
+import { autoCullGroup, bestInGroup, buildFaceIdentityGroups, explainBestShotSelection, faceSignalConfidence, groupByFaceEmbedding, groupByFaceSimilarity, groupByVisualHash, hammingDistanceHex, humanMomentQuality, rankBestShots, scoreReview, subjectPresenceQuality } from '../review';
 import type { MediaFile } from '../types';
 
 function file(path: string, hash?: string, overrides: Partial<MediaFile> = {}): MediaFile {
@@ -287,6 +287,29 @@ describe('review utilities', () => {
     })).toBeGreaterThan(20);
   });
 
+  it('scores face boxes even when a legacy result has no face count', () => {
+    const review = scoreReview({
+      faceBoxes: [{ x: 0.25, y: 0.18, width: 0.2, height: 0.24, score: 0.96, eyeScore: 2 }],
+      subjectSharpnessScore: 125,
+      sharpnessScore: 140,
+    });
+
+    expect(review.reasons).toContain('1 face');
+    expect(review.reasons).toContain('eyes sharp');
+    expect(review.score).toBeGreaterThan(50);
+  });
+
+  it('scores person boxes even when a legacy result has no person count', () => {
+    const review = scoreReview({
+      personBoxes: [{ x: 0.2, y: 0.05, width: 0.45, height: 0.88, score: 0.94 }],
+      subjectSharpnessScore: 100,
+      sharpnessScore: 110,
+    });
+
+    expect(review.reasons).toContain('1 person');
+    expect(review.score).toBeGreaterThan(35);
+  });
+
   it('chooses protected and rated files before face/subject tie-breakers', () => {
     const chosen = bestInGroup([
       file('/protected.jpg', undefined, { isProtected: true, rating: 5, sharpnessScore: 200, reviewScore: 95 }),
@@ -351,6 +374,107 @@ describe('review utilities', () => {
     expect(humanMomentQuality(ranked[0])).toBeGreaterThan(humanMomentQuality(ranked[1]));
   });
 
+  it('explains why an open-eyes portrait wins over a sharper blink frame', () => {
+    const explanation = explainBestShotSelection([
+      file('/sharper-blink.jpg', undefined, {
+        faceCount: 1,
+        faceBoxes: [{ x: 0.33, y: 0.2, width: 0.2, height: 0.24, eyeScore: 0, smileScore: 0.15, score: 0.96 }],
+        subjectSharpnessScore: 160,
+        sharpnessScore: 190,
+        reviewScore: 84,
+      }),
+      file('/open-smile.jpg', undefined, {
+        faceCount: 1,
+        faceBoxes: [{ x: 0.34, y: 0.2, width: 0.2, height: 0.24, eyeScore: 2, smileScore: 0.9, score: 0.93 }],
+        subjectSharpnessScore: 128,
+        sharpnessScore: 150,
+        reviewScore: 78,
+      }),
+    ]);
+
+    expect(explanation?.bestPath).toBe('/open-smile.jpg');
+    expect(explanation?.summary).toContain('Beat sharper-blink.jpg by');
+    expect(explanation?.wins.some((item) => item.startsWith('Better eyes/smile'))).toBe(true);
+    expect(explanation?.cautions).toContain('Runner-up is sharper by 32');
+  });
+
+  it('returns a single-candidate best-shot explanation without implying a comparison', () => {
+    const explanation = explainBestShotSelection([
+      file('/solo.jpg', undefined, { subjectSharpnessScore: 100, reviewScore: 60 }),
+    ]);
+
+    expect(explanation).toMatchObject({
+      bestPath: '/solo.jpg',
+      runnerUpPath: undefined,
+      summary: 'Only one candidate is available for this comparison',
+    });
+    expect(explanation?.wins).toContain('Only candidate in this set');
+  });
+
+  it('flags close best-shot decisions for manual comparison', () => {
+    const explanation = explainBestShotSelection([
+      file('/one.jpg', undefined, { subjectSharpnessScore: 100, sharpnessScore: 100, reviewScore: 60 }),
+      file('/two.jpg', undefined, { subjectSharpnessScore: 99, sharpnessScore: 100, reviewScore: 60 }),
+    ]);
+
+    expect(explanation?.confidence).toBe('low');
+    expect(explanation?.cautions).toContain('Close score gap, compare runner-up');
+  });
+
+  it('surfaces protected and rated evidence plus high-blur caution', () => {
+    const explanation = explainBestShotSelection([
+      file('/vip.jpg', undefined, {
+        isProtected: true,
+        rating: 5,
+        subjectSharpnessScore: 90,
+        sharpnessScore: 90,
+        reviewScore: 60,
+        blurRisk: 'high',
+      }),
+      file('/ordinary.jpg', undefined, {
+        subjectSharpnessScore: 130,
+        sharpnessScore: 130,
+        reviewScore: 65,
+      }),
+    ]);
+
+    expect(explanation?.bestPath).toBe('/vip.jpg');
+    expect(explanation?.wins).toContain('Protected file');
+    expect(explanation?.wins).toContain('5-star rating');
+    expect(explanation?.cautions).toContain('Top pick still has high blur risk');
+  });
+
+  it('explains priority-ranked winners without negative beat-by copy', () => {
+    const explanation = explainBestShotSelection([
+      file('/protected-soft.jpg', undefined, {
+        isProtected: true,
+        subjectSharpnessScore: 8,
+        sharpnessScore: 8,
+        reviewScore: 10,
+        blurRisk: 'high',
+      }),
+      file('/strong-runner.jpg', undefined, {
+        faceCount: 1,
+        faceBoxes: [{ x: 0.34, y: 0.2, width: 0.2, height: 0.24, eyeScore: 2, smileScore: 0.9, score: 0.96 }],
+        subjectSharpnessScore: 170,
+        sharpnessScore: 190,
+        reviewScore: 90,
+      }),
+    ]);
+
+    expect(explanation?.bestPath).toBe('/protected-soft.jpg');
+    expect(explanation?.scoreGap).toBeLessThan(0);
+    expect(explanation?.summary).toContain('Ranked ahead of strong-runner.jpg on priority signals');
+    expect(explanation?.cautions).toContain('Runner-up has a higher raw score');
+  });
+
+  it('returns no best-shot explanation when every candidate is manually rejected', () => {
+    expect(explainBestShotSelection([
+      file('/reject-a.jpg', undefined, { pick: 'rejected', subjectSharpnessScore: 180 }),
+      file('/reject-b.jpg', undefined, { pick: 'rejected', subjectSharpnessScore: 170 }),
+    ])).toBeNull();
+  });
+
   it('prefers group frames where more people have usable faces', () => {
     const ranked = rankBestShots([
       file('/missing-face.jpg', undefined, {
@@ -397,6 +521,7 @@ describe('review utilities', () => {
       file('/reject.jpg', undefined, { faceCount: 1, faceBoxes: [{ x: 0.2, y: 0.2, width: 0.12, height: 0.12, eyeScore: 0, score: 0.55 }], subjectSharpnessScore: 20, sharpnessScore: 35, blurRisk: 'high', reviewScore: 20 }),
     ]);
     expect(decision.best?.path).toBe('/best.jpg');
+    expect(decision.bestExplanation?.bestPath).toBe('/best.jpg');
     expect(decision.keep).toContain('/keeper.jpg');
     expect(decision.reject).toContain('/reject.jpg');
   });

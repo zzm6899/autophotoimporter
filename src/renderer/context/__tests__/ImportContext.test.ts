@@ -319,6 +319,31 @@ describe('ImportContext reducer', () => {
       expect(next.reviewVisualDuplicates).toBe(false);
     });
 
+    it('restores full review stages and higher concurrency in high performance tier', () => {
+      const next = reducer(makeState({
+        fastKeeperMode: true,
+        previewConcurrency: 1,
+        faceConcurrency: 1,
+        rawPreviewQuality: 55,
+        reviewFaceAnalysis: false,
+        reviewFaceMatching: false,
+        reviewPersonDetection: false,
+        reviewVisualDuplicates: false,
+      }), {
+        type: 'SET_PERF_TIER',
+        tier: 'high',
+      });
+
+      expect(next.fastKeeperMode).toBe(false);
+      expect(next.previewConcurrency).toBeGreaterThanOrEqual(3);
+      expect(next.faceConcurrency).toBeGreaterThanOrEqual(4);
+      expect(next.rawPreviewQuality).toBeGreaterThanOrEqual(82);
+      expect(next.reviewFaceAnalysis).toBe(true);
+      expect(next.reviewFaceMatching).toBe(true);
+      expect(next.reviewPersonDetection).toBe(true);
+      expect(next.reviewVisualDuplicates).toBe(true);
+    });
+
     it('stores auto speed fallback mode and clears it when low tier is applied', () => {
       const enabled = reducer(makeState({ autoSpeedMode: false }), { type: 'SET_AUTO_SPEED_MODE', enabled: true });
       expect(enabled.autoSpeedMode).toBe(true);

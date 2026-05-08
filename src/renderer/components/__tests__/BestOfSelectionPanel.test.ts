@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { rankBestOfSelection, summarizeBestOfActions } from '../BestOfSelectionPanel';
+import { actionableBestOfCandidates, rankBestOfSelection, summarizeBestOfActions } from '../BestOfSelectionPanel';
 import type { MediaFile } from '../../../shared/types';
 
 function photo(name: string, pick?: MediaFile['pick']): MediaFile {
@@ -66,5 +66,24 @@ describe('summarizeBestOfActions', () => {
     ]);
 
     expect(ranked[0].name).toBe('quality-best.jpg');
+  });
+
+  it('uses non-rejected candidates for best-of actions before rejected high-score frames', () => {
+    const viable = {
+      ...photo('viable.jpg'),
+      subjectSharpnessScore: 45,
+      sharpnessScore: 50,
+      reviewScore: 30,
+    };
+    const rejected = {
+      ...photo('rejected-strong.jpg', 'rejected'),
+      subjectSharpnessScore: 220,
+      sharpnessScore: 240,
+      reviewScore: 99,
+    };
+    const candidates = actionableBestOfCandidates(rankBestOfSelection([rejected, viable]));
+
+    expect(candidates[0].name).toBe('viable.jpg');
+    expect(candidates.some((file) => file.pick === 'rejected')).toBe(false);
   });
 });
