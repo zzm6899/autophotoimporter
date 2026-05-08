@@ -107,10 +107,10 @@ const requiredUiFiles = [
 const screens = [
   {
     id: 'preflight',
-    label: 'Import preflight',
+    label: 'Import check',
     source: path.join(root, 'src', 'renderer', 'components', 'DestinationPanel.tsx'),
-    sourceTokens: ['Preflight', 'Check Plan', 'preflightImport'],
-    bundleTokens: ['Preflight', 'Check Plan'],
+    sourceTokens: ['Import check', 'Import Check', 'preflightImport'],
+    bundleTokens: ['Import check', 'Import Check'],
   },
   {
     id: 'resume-view',

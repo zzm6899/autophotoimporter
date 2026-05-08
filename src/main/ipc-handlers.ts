@@ -172,6 +172,8 @@ function isSettingsPatch(value: unknown): value is Partial<AppSettings> {
   if (value.ftpDestConfig != null && !isFtpConfig(value.ftpDestConfig)) return false;
   if (value.viewOverlayPreferences != null && !isViewOverlayPreferencesPatch(value.viewOverlayPreferences)) return false;
   if (value.lastDestination != null && typeof value.lastDestination !== 'string') return false;
+  if (value.experienceMode != null && !['simple', 'pro'].includes(String(value.experienceMode))) return false;
+  if (value.firstRunWizardSeen != null && typeof value.firstRunWizardSeen !== 'boolean') return false;
   if (value.sourceProfile != null && !['auto', 'ssd', 'usb', 'nas'].includes(String(value.sourceProfile))) return false;
   if (value.defaultConflictPolicy != null && !['skip', 'rename', 'overwrite', 'conflicts-folder'].includes(String(value.defaultConflictPolicy))) return false;
   if (value.conflictFolderName != null && typeof value.conflictFolderName !== 'string') return false;
@@ -923,6 +925,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   folderPreset: 'date-flat',
   customPattern: '{YYYY}-{MM}-{DD}/{filename}',
   theme: 'dark',
+  experienceMode: 'simple',
   separateProtected: false,
   protectedFolderName: '_Protected',
   backupDestRoot: '',
@@ -963,6 +966,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   autoImport: false,
   autoImportDestRoot: '',
   autoImportPromptSeen: false,
+  firstRunWizardSeen: false,
   burstGrouping: true,
   burstWindowSec: 2,
   normalizeExposure: false,

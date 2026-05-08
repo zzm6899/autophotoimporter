@@ -213,6 +213,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     metadataExport,
     whiteBalanceTemperature,
     whiteBalanceTint,
+    experienceMode,
   } = useAppState();
   const dispatch = useAppDispatch();
   const { updateState, checkNow, downloadUpdate, installUpdate, openRelease } = useUpdateNotification();
@@ -383,6 +384,11 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const handleTheme = (t: 'light' | 'dark') => {
     dispatch({ type: 'SET_THEME', theme: t });
     set('theme', t);
+  };
+
+  const handleExperienceMode = (mode: 'simple' | 'pro') => {
+    dispatch({ type: 'SET_EXPERIENCE_MODE', mode });
+    set('experienceMode', mode);
   };
 
   const handleFolderPreset = (preset: string) => {
@@ -1191,6 +1197,27 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                   {t === 'light' ? '☀ Light' : '☾ Dark'}
                 </button>
               ))}
+            </div>
+            <div className="mt-3">
+              <h3 className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-text-secondary">Experience mode</h3>
+              <div className="inline-flex rounded-md border border-border bg-surface p-0.5">
+                {(['simple', 'pro'] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => handleExperienceMode(mode)}
+                    className={`rounded px-2.5 py-1 text-[10px] font-medium transition-colors ${
+                      experienceMode === mode ? 'bg-accent text-white' : 'text-text-muted hover:bg-surface-raised hover:text-text-secondary'
+                    }`}
+                    title={mode === 'simple' ? 'Keep the everyday card/folder import workflow prominent.' : 'Show advanced sources, diagnostics, catalog, and automation controls.'}
+                  >
+                    {mode === 'simple' ? 'Simple' : 'Pro'}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-1 text-[10px] text-text-muted">
+                Simple keeps the main ingest path calm. Pro exposes FTP, watch folders, diagnostics, catalog, and tuning controls.
+              </p>
             </div>
           </section>
           )}

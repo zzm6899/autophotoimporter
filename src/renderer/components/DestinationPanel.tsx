@@ -2,6 +2,8 @@ import { useMemo, useEffect, useState } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import { useImport } from '../hooks/useImport';
 import { ImportResumeView } from './ImportResumeView';
+import { DestinationPreview } from './import/DestinationPreview';
+import { RecentDestinations } from './import/RecentDestinations';
 import type { AppSettings, EventMode, SaveFormat, JobPreset, ImportConfig, ImportPreflight, ImportBenchmarkResult, ImportConflictPolicy, MetadataExportFlags, SourceProfile } from '../../shared/types';
 import { DEFAULT_METADATA_EXPORT, EVENT_MODE_PRESETS, FOLDER_PRESETS, eventModeKeywords, resolvePattern } from '../../shared/types';
 import { formatSize } from '../utils/formatters';
@@ -195,6 +197,11 @@ export function DestinationPanel() {
       dispatch({ type: 'SET_DESTINATION', path: folder });
       window.electronAPI.setSettings({ lastDestination: folder });
     }
+  };
+
+  const handleSelectDestination = (folder: string) => {
+    dispatch({ type: 'SET_DESTINATION', path: folder });
+    window.electronAPI.setSettings({ lastDestination: folder });
   };
 
   const handleChooseBackup = async () => {
@@ -717,6 +724,17 @@ export function DestinationPanel() {
     }
     return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   }, [importFiles, activePattern, saveFormat, separateProtected, protectedFolderName]);
+  const recentDestinations = useMemo(() => {
+    const seen = new Set<string>();
+    const values: string[] = [];
+    for (const value of [destination, ...jobPresets.map((preset) => preset.destRoot)]) {
+      const normalized = value?.trim();
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+      values.push(normalized);
+    }
+    return values;
+  }, [destination, jobPresets]);
 
   return (
     <div className="flex flex-col h-full">
@@ -732,20 +750,33 @@ export function DestinationPanel() {
         )}
       </div>
 
-      {/* Destination folder */}
       <div className="px-2.5 mb-2.5">
-        <button
-          onClick={handleChooseDestination}
-          className="w-full px-2 py-1 text-xs bg-surface-raised hover:bg-border rounded text-text transition-colors text-left cursor-pointer"
-          aria-label={destination ? `Change destination folder, currently ${destination}` : 'Choose destination folder'}
-        >
-          {destination ? (
-            <span className="truncate block" title={destination}>{destination.split(/[/\\]/).pop()}</span>
-          ) : (
-            'Choose Destination...'
-          )}
-        </button>
+        <RecentDestinations
+          destinations={recentDestinations}
+          activeDestination={destination}
+          onSelect={handleSelectDestination}
+          onChoose={() => { void handleChooseDestination(); }}
+        />
       </div>
+
+      {outputMode === 'import' && files.length > 0 && (
+        <div className="px-2.5 mb-2.5">
+          <DestinationPreview
+            destination={destination}
+            fileCount={importFiles.length}
+            totalSize={totalSize}
+            duplicateCount={duplicateCount}
+            protectedCount={protectedCount}
+            folderCount={folders.length}
+            backupEnabled={!!backupDestRoot}
+            checksumEnabled={verifyChecksums}
+            metadataEnabled={metadataFieldLabels.length > 0}
+            freeBytes={freeBytes}
+            insufficientSpace={insufficientSpace}
+            spaceWarning={spaceWarning}
+          />
+        </div>
+      )}
 
       <div className="px-2.5 mb-2.5">
         <div className="grid grid-cols-3 gap-1 rounded-md border border-border bg-surface p-1">
@@ -1553,7 +1584,7 @@ export function DestinationPanel() {
         {preflightOpen && preflight && (
           <div className="mb-2 rounded border border-border bg-surface-alt px-2 py-1.5">
             <div className="flex items-center justify-between gap-2">
-              <div className="text-[10px] font-medium text-text">Preflight</div>
+              <div className="text-[10px] font-medium text-text">Import check</div>
               <button
                 onClick={() => setPreflightOpen(false)}
                 className="text-[10px] text-text-muted hover:text-text"
@@ -1575,7 +1606,7 @@ export function DestinationPanel() {
               {preflight.metadataEnabled && 'XMP metadata enabled. '}
               {preflight.watermarkEnabled && 'Watermark enabled. '}
               {preflight.recoveryAvailable && 'Recovery ledger available. '}
-              {preflight.dryRun && 'Dry-run preview only.'}
+              {preflight.dryRun && 'Preview only; no files copied.'}
             </div>
             {preflight.sessionWarnings.length > 0 && (
               <div className="mt-1 space-y-0.5">
@@ -1614,7 +1645,7 @@ export function DestinationPanel() {
             title="Preview the exact import plan without copying files."
             aria-label="Preview the import plan without copying files"
           >
-            Check Plan
+            Import Check
           </button>
           <button
             onClick={() => { void handleRunImportBenchmark(); }}

@@ -1,5 +1,5 @@
 import { createContext, useContext, useReducer, useRef, useMemo, useCallback, useEffect, useState, type Dispatch, type ReactNode } from 'react';
-import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, SourceKind, FtpConfig, FtpSyncSettings, FtpSyncStatus, RatingFilter, SelectionSet, LicenseValidation, WatermarkPosition, WatermarkMode, KeybindMap, MetadataExportFlags, ViewOverlayPreferences, EventMode, CullConfidence, KeeperQuota, SourceProfile, ImportConflictPolicy, AppSession } from '../../shared/types';
+import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, SourceKind, FtpConfig, FtpSyncSettings, FtpSyncStatus, RatingFilter, SelectionSet, LicenseValidation, WatermarkPosition, WatermarkMode, KeybindMap, MetadataExportFlags, ViewOverlayPreferences, EventMode, CullConfidence, KeeperQuota, SourceProfile, ImportConflictPolicy, AppSession, ExperienceMode } from '../../shared/types';
 import { FOLDER_PRESETS, DEFAULT_KEYBINDS, DEFAULT_METADATA_EXPORT, DEFAULT_VIEW_OVERLAY_PREFERENCES } from '../../shared/types';
 import { groupBursts } from '../../shared/burst';
 import { clampStops, normalizeExposureStops } from '../../shared/exposure';
@@ -47,6 +47,7 @@ interface State {
   viewMode: ViewMode;
   previousViewMode: Exclude<ViewMode, 'settings'> | null;
   theme: 'light' | 'dark';
+  experienceMode: ExperienceMode;
   showLeftPanel: boolean;
   showRightPanel: boolean;
   sourceKind: SourceKind;
@@ -171,6 +172,7 @@ export type Action =
   | { type: 'SET_FOCUSED'; index: number; path?: string | null }
   | { type: 'SET_VIEW_MODE'; mode: ViewMode }
   | { type: 'SET_THEME'; theme: 'light' | 'dark' }
+  | { type: 'SET_EXPERIENCE_MODE'; mode: ExperienceMode }
   | { type: 'TOGGLE_LEFT_PANEL' }
   | { type: 'TOGGLE_RIGHT_PANEL' }
   | { type: 'RESET_FILES' }
@@ -297,6 +299,7 @@ const initialState: State = {
   viewMode: 'grid' as ViewMode,
   previousViewMode: null,
   theme: systemDark ? 'dark' : 'light',
+  experienceMode: 'simple',
   showLeftPanel: true,
   showRightPanel: true,
   sourceKind: 'volume',
@@ -663,6 +666,12 @@ export function reducer(state: State, action: Action): State {
       return { ...state, viewMode: action.mode };
     case 'SET_THEME':
       return { ...state, theme: action.theme };
+    case 'SET_EXPERIENCE_MODE':
+      return {
+        ...state,
+        experienceMode: action.mode,
+        sourceKind: action.mode === 'simple' && state.sourceKind === 'ftp' ? 'volume' : state.sourceKind,
+      };
     case 'TOGGLE_LEFT_PANEL':
       return { ...state, showLeftPanel: !state.showLeftPanel };
     case 'TOGGLE_RIGHT_PANEL':

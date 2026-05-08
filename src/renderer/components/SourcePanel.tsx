@@ -1,4 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
+import type { LucideIcon } from 'lucide-react';
+import { FolderClock, FolderOpen, HardDrive, Server } from 'lucide-react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import { useFileScanner } from '../hooks/useFileScanner';
 import { VolumeItem } from './VolumeItem';
@@ -9,8 +11,58 @@ import type { CatalogStats, WatchFolder } from '../../shared/types';
 const isMac = typeof window !== 'undefined' && window.electronAPI?.platform === 'darwin';
 const MOD = isMac ? '\u2318' : 'Ctrl';
 
+function SourceCard({
+  icon: Icon,
+  title,
+  description,
+  status,
+  active,
+  disabled,
+  onClick,
+}: {
+  icon: LucideIcon;
+  title: string;
+  description: string;
+  status: string;
+  active?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`w-full rounded-md border px-2 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
+        active
+          ? 'border-emerald-500/35 bg-emerald-500/10'
+          : 'border-border bg-surface-alt hover:border-text-muted hover:bg-surface-raised'
+      }`}
+    >
+      <span className="flex items-start gap-2">
+        <span className={`mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border ${
+          active ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' : 'border-border bg-surface text-text-muted'
+        }`}>
+          <Icon className="h-3.5 w-3.5" aria-hidden="true" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center justify-between gap-2">
+            <span className="text-[11px] font-semibold text-text">{title}</span>
+            <span className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] ${
+              active ? 'border-emerald-500/25 text-emerald-300' : 'border-border text-text-muted'
+            }`}>
+              {status}
+            </span>
+          </span>
+          <span className="mt-0.5 block text-[10px] leading-snug text-text-muted">{description}</span>
+        </span>
+      </span>
+    </button>
+  );
+}
+
 export function SourcePanel() {
-  const { volumes, selectedSource, files, phase, sourceKind, scanPaused, volumeImportQueue } = useAppState();
+  const { volumes, selectedSource, files, phase, sourceKind, scanPaused, volumeImportQueue, experienceMode } = useAppState();
   const dispatch = useAppDispatch();
   const { startScan, pauseScan, resumeScan } = useFileScanner();
 
@@ -133,6 +185,8 @@ export function SourcePanel() {
   const protectedCount = files.filter((f) => f.isProtected).length;
   const totalSize = files.reduce((sum, f) => sum + f.size, 0);
   const enabledWatchCount = watchFolders.filter((folder) => folder.enabled).length;
+  const dcimVolumeCount = volumes.filter((v) => v.hasDcim).length;
+  const sourceLabel = sourceKind === 'ftp' ? 'FTP' : selectedSource ? 'Local source' : 'Choose source';
 
   return (
     <div
@@ -143,36 +197,60 @@ export function SourcePanel() {
     >
       <div className="px-2.5 py-2 flex items-center justify-between">
         <h2 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider">Source</h2>
-        <div className="flex items-center gap-px bg-surface border border-border rounded overflow-hidden">
+        <span className="rounded-full border border-border bg-surface px-2 py-0.5 text-[9px] text-text-muted">{sourceLabel}</span>
+      </div>
+
+      <div className="px-2.5 pb-2 space-y-1.5">
+        <SourceCard
+          icon={HardDrive}
+          title="SD card / drive"
+          description={dcimVolumeCount > 0 ? `${dcimVolumeCount} camera source${dcimVolumeCount === 1 ? '' : 's'} detected.` : 'Plug in a card or external drive.'}
+          status={dcimVolumeCount > 0 ? 'detected' : sourceKind === 'volume' ? 'ready' : 'local'}
+          active={sourceKind === 'volume'}
+          disabled={sourceChangeLocked}
+          onClick={() => dispatch({ type: 'SET_SOURCE_KIND', kind: 'volume' })}
+        />
+        <SourceCard
+          icon={FolderOpen}
+          title="Folder"
+          description="Pick any folder and scan it as a local source."
+          status={selectedSource && sourceKind === 'volume' && !volumes.some((v) => v.path === selectedSource) ? 'selected' : 'choose'}
+          active={!!selectedSource && sourceKind === 'volume' && !volumes.some((v) => v.path === selectedSource)}
+          disabled={sourceChangeLocked}
+          onClick={() => { void handleChooseFolder(); }}
+        />
+        {experienceMode === 'pro' ? (
+          <>
+            <SourceCard
+              icon={Server}
+              title="FTP"
+              description="Mirror from a camera or remote drop folder."
+              status={sourceKind === 'ftp' ? 'ready' : 'pro'}
+              active={sourceKind === 'ftp'}
+              disabled={sourceChangeLocked}
+              onClick={() => dispatch({ type: 'SET_SOURCE_KIND', kind: 'ftp' })}
+            />
+            <SourceCard
+              icon={FolderClock}
+              title="Watch folder"
+              description={enabledWatchCount > 0 ? `${enabledWatchCount} active folder${enabledWatchCount === 1 ? '' : 's'}.` : 'Configure staged auto-scan folders.'}
+              status={enabledWatchCount > 0 ? 'watched' : 'setup'}
+              disabled={sourceChangeLocked}
+              onClick={() => dispatch({ type: 'SET_VIEW_MODE', mode: 'settings' })}
+            />
+          </>
+        ) : (
           <button
-            onClick={() => dispatch({ type: 'SET_SOURCE_KIND', kind: 'volume' })}
-            disabled={sourceChangeLocked}
-            className={`px-1.5 py-0.5 text-[10px] transition-colors ${
-              sourceChangeLocked
-                ? 'cursor-not-allowed text-text-muted opacity-50'
-                : sourceKind === 'volume'
-                ? 'bg-surface-raised text-text'
-                : 'text-text-muted hover:text-text'
-            }`}
-            title={sourceChangeLocked ? sourceBusyTitle : 'Import from a local drive / SD card'}
+            type="button"
+            onClick={() => {
+              dispatch({ type: 'SET_EXPERIENCE_MODE', mode: 'pro' });
+              void window.electronAPI.setSettings({ experienceMode: 'pro' });
+            }}
+            className="w-full rounded-md border border-border bg-surface-alt px-2 py-1.5 text-left text-[10px] text-text-muted hover:text-text-secondary"
           >
-            Drive
+            Switch to Pro for FTP, watch folders, diagnostics, and catalog tools.
           </button>
-          <button
-            onClick={() => dispatch({ type: 'SET_SOURCE_KIND', kind: 'ftp' })}
-            disabled={sourceChangeLocked}
-            className={`px-1.5 py-0.5 text-[10px] transition-colors ${
-              sourceChangeLocked
-                ? 'cursor-not-allowed text-text-muted opacity-50'
-                : sourceKind === 'ftp'
-                ? 'bg-surface-raised text-text'
-                : 'text-text-muted hover:text-text'
-            }`}
-            title={sourceChangeLocked ? sourceBusyTitle : 'Import from a camera or server via FTP'}
-          >
-            FTP
-          </button>
-        </div>
+        )}
       </div>
 
       {sourceKind === 'volume' && (

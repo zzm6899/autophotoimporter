@@ -27,6 +27,9 @@ export function useSettings() {
       if (settings.theme) {
         dispatch({ type: 'SET_THEME', theme: settings.theme });
       }
+      if (settings.experienceMode) {
+        dispatch({ type: 'SET_EXPERIENCE_MODE', mode: settings.experienceMode });
+      }
 
       // Workflow
       if (typeof settings.separateProtected === 'boolean') {

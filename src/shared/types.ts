@@ -125,6 +125,7 @@ export interface MediaFile {
 }
 
 export type SourceKind = 'volume' | 'ftp';
+export type ExperienceMode = 'simple' | 'pro';
 
 export interface FtpConfig {
   host: string;
@@ -900,6 +901,8 @@ export interface AppSettings {
   folderPreset: string;      // key from FOLDER_PRESETS or 'custom'
   customPattern: string;     // user-defined pattern when folderPreset is 'custom'
   theme: 'light' | 'dark';
+  /** Simple keeps the everyday card/folder workflow prominent; pro exposes advanced ingest surfaces. */
+  experienceMode?: ExperienceMode;
   // Workflow
   separateProtected: boolean;
   protectedFolderName: string;
@@ -918,6 +921,8 @@ export interface AppSettings {
   autoImportDestRoot: string;
   /** Set to true after the first-run prompt has been shown. */
   autoImportPromptSeen: boolean;
+  /** Set to true after the guided first-run wizard has been completed or skipped. */
+  firstRunWizardSeen?: boolean;
   // Burst grouping
   burstGrouping: boolean;
   /** Max gap between consecutive shots (seconds) to count as one burst. */

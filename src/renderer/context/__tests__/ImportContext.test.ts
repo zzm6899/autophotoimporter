@@ -23,6 +23,7 @@ function makeState(overrides: Record<string, unknown> = {}) {
     viewMode: 'grid' as const,
     previousViewMode: null,
     theme: 'dark' as const,
+    experienceMode: 'simple' as const,
     showLeftPanel: true,
     showRightPanel: true,
     // FTP source defaults

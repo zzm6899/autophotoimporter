@@ -18,7 +18,7 @@ export function AutoImportPrompt() {
 
   useEffect(() => {
     window.electronAPI.getSettings().then((settings) => {
-      if (!settings.autoImportPromptSeen) setShow(true);
+      if (settings.firstRunWizardSeen && !settings.autoImportPromptSeen) setShow(true);
       setChecking(false);
     }).catch(() => setChecking(false));
   }, []);
