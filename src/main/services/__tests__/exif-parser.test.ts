@@ -285,7 +285,9 @@ describe('generatePreview RAW cache setting', () => {
     mockStat.mockReset();
     mockReadFile.mockReset();
     mockUnlink.mockReset();
+    mockExecFile.mockReset();
     mockUnlink.mockResolvedValue(undefined);
+    mockExecFile.mockRejectedValue(new Error('resize unavailable'));
     mockExifrThumbnail.mockReset();
   });
 
