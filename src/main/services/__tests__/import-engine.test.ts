@@ -709,6 +709,35 @@ describe('importFiles', () => {
     ]);
   });
 
+  it('reserves duplicate batch destination names before concurrent workers copy', async () => {
+    const writtenTargets = new Set<string>();
+    mockStat.mockImplementation(async (target) => {
+      const pathText = String(target);
+      if (pathText.startsWith('/src') || pathText.includes('\\src\\')) return { size: 5000 } as any;
+      if (writtenTargets.has(pathText)) return { size: 5000 } as any;
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+    });
+    mockCopyFile.mockImplementation(async (_source, target) => {
+      writtenTargets.add(String(target));
+    });
+
+    const files = [
+      makeFile({ path: '/src/a.jpg', name: 'a.jpg', destPath: '2024/same.jpg' }),
+      makeFile({ path: '/src/b.jpg', name: 'b.jpg', destPath: '2024/same.jpg' }),
+    ];
+
+    const result = await importFiles(files, makeConfig({ conflictPolicy: 'rename' }), onProgress);
+
+    expect(result.imported).toBe(2);
+    expect(result.errors).toHaveLength(0);
+    const copyTargets = mockCopyFile.mock.calls.map(([, target]) => String(target)).sort();
+    expect(copyTargets).toEqual([
+      expect.stringContaining('same (1).jpg'),
+      expect.stringContaining('same.jpg'),
+    ]);
+    expect(new Set(copyTargets).size).toBe(2);
+  });
+
   it('overwrite conflict policy replaces the existing destination', async () => {
     mockStat.mockResolvedValue({ size: 1234 } as any);
 

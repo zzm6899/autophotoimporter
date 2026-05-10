@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { alignBestOfBatchOffset, shouldOpenBestOfSelectionPanel, shouldQueueVisibleImportablePaths, sliceBestOfBatchPathPage, summarizeBestOfBatchPage, summarizeReviewFlowHealth, summarizeReviewFlowNextStep } from '../ThumbnailGrid';
+import { alignBestOfBatchOffset, shouldOpenBestOfSelectionPanel, shouldQueueVisibleImportablePaths, shouldRunOnnxForReview, sliceBestOfBatchPathPage, summarizeBestOfBatchPage, summarizeReviewFlowHealth, summarizeReviewFlowNextStep } from '../ThumbnailGrid';
+import type { MediaFile } from '../../../shared/types';
 
 describe('summarizeReviewFlowNextStep', () => {
   it('shows the importable count when some queued files are blocked', () => {
@@ -182,5 +183,49 @@ describe('shouldOpenBestOfSelectionPanel', () => {
   it('blocks hidden best-of state when there are no candidate paths', () => {
     expect(shouldOpenBestOfSelectionPanel([])).toBe(false);
     expect(shouldOpenBestOfSelectionPanel(['/photos/visible.jpg'])).toBe(true);
+  });
+});
+
+describe('shouldRunOnnxForReview', () => {
+  const photo = (overrides: Partial<MediaFile> = {}): MediaFile => ({
+    path: '/photos/ready.jpg',
+    name: 'ready.jpg',
+    size: 1,
+    type: 'photo',
+    extension: '.jpg',
+    ...overrides,
+  });
+  const fullOptions = {
+    reviewFaceAnalysis: true,
+    reviewFaceMatching: true,
+    reviewPersonDetection: true,
+  };
+
+  it('skips ONNX when only renderer-side sharpness or hash work is missing', () => {
+    expect(shouldRunOnnxForReview(photo({
+      faceBoxes: [],
+      personBoxes: [],
+      subjectSharpnessScore: 80,
+    }), fullOptions)).toBe(false);
+  });
+
+  it('runs ONNX when face boxes have not been populated yet', () => {
+    expect(shouldRunOnnxForReview(photo(), fullOptions)).toBe(true);
+  });
+
+  it('runs ONNX when native face boxes need embeddings for face matching', () => {
+    expect(shouldRunOnnxForReview(photo({
+      faceDetection: 'native',
+      faceCount: 1,
+      faceBoxes: [{ x: 0.2, y: 0.2, width: 0.2, height: 0.2 }],
+      personBoxes: [],
+    }), fullOptions)).toBe(true);
+  });
+
+  it('respects disabled face analysis', () => {
+    expect(shouldRunOnnxForReview(photo(), {
+      ...fullOptions,
+      reviewFaceAnalysis: false,
+    })).toBe(false);
   });
 });

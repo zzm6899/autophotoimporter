@@ -53,7 +53,7 @@ const RAW_EXTENSIONS = new Set([
   '.nef', '.nrw',
   '.arw', '.srf', '.sr2',
   '.raf', '.orf', '.rw2', '.pef', '.srw', '.rwl',
-  '.3fr', '.fff', '.gpr', '.mrw', '.erf',
+  '.x3f', '.3fr', '.fff', '.iiq', '.dng', '.gpr', '.mrw', '.erf',
 ]);
 
 const THUMB_WIDTH = 320;

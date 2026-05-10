@@ -8,9 +8,9 @@
  *   t = shutter speed in seconds
  *   S = ISO
  *
- * Higher EV → more light captured. A two-stop brighter shot has EV higher
- * by 2. We use EV100 (ISO-100-equivalent) so two shots at different ISOs can
- * be compared directly.
+ * Higher EV100 means a camera setting captured less light (for the same
+ * aperture/ISO, 1/100s is one EV higher than 1/50s). We use EV100
+ * (ISO-100-equivalent) so two shots at different ISOs can be compared directly.
  *
  * Returns undefined if any input is missing or non-positive — EV of 0 is a
  * valid value (it means "pretty dim"), so don't use 0 as a sentinel.
@@ -54,7 +54,7 @@ export function getNormalizedExposureStops(
   if (typeof fileExposureValue !== 'number' || typeof anchorExposureValue !== 'number') {
     return 0;
   }
-  return normalizeExposureStops(clampStops(anchorExposureValue - fileExposureValue, maxStops), 0.01);
+  return normalizeExposureStops(clampStops(fileExposureValue - anchorExposureValue, maxStops), 0.01);
 }
 
 export function getEffectiveExposureStops(
@@ -195,7 +195,8 @@ export function estimateClippingPercent(
  */
 export function clampStops(stops: number, maxStops: number): number {
   if (!Number.isFinite(stops)) return 0;
-  return Math.max(-maxStops, Math.min(maxStops, stops));
+  const safeMax = Number.isFinite(maxStops) ? Math.max(0, Math.abs(maxStops)) : 0;
+  return Math.max(-safeMax, Math.min(safeMax, stops));
 }
 
 export interface ChannelMultipliers {

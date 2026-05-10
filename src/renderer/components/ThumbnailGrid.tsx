@@ -365,6 +365,22 @@ function hasFaceMatchData(file: MediaFile): boolean {
   return !!file.faceEmbedding || (file.faceEmbeddings?.length ?? 0) > 0;
 }
 
+export function shouldRunOnnxForReview(
+  file: MediaFile,
+  options: {
+    reviewFaceAnalysis: boolean;
+    reviewFaceMatching: boolean;
+    reviewPersonDetection: boolean;
+  },
+): boolean {
+  if (!options.reviewFaceAnalysis) return false;
+  if (file.faceBoxes === undefined) return true;
+  if (options.reviewPersonDetection && file.personBoxes === undefined && file.personCount === undefined) return true;
+  if (!options.reviewFaceMatching) return false;
+  const faceCount = file.faceBoxes?.length ?? file.faceCount ?? 0;
+  return file.faceDetection === 'native' && faceCount > 0 && !hasFaceMatchData(file);
+}
+
 function faceMatchFingerprint(files: MediaFile[], enabled: boolean): string {
   if (!enabled) return '';
   let count = 0;
@@ -2026,6 +2042,7 @@ export function ThumbnailGrid() {
   const gpuFaceAccelerationRef = useRef(gpuFaceAcceleration);
   const reviewFaceAnalysisRef = useRef(reviewFaceAnalysis);
   const reviewFaceMatchingRef = useRef(reviewFaceMatching);
+  const reviewPersonDetectionRef = useRef(reviewPersonDetection);
   const reviewVisualDuplicatesRef = useRef(reviewVisualDuplicates);
   const faceGroupEmbeddingThresholdRef = useRef(FACE_GROUP_EMBEDDING_THRESHOLD);
   const faceIdentityCacheRef = useRef<{ key: string; groups: FaceIdentityGroup[] } | null>(null);
@@ -2618,6 +2635,7 @@ export function ThumbnailGrid() {
   useEffect(() => { gpuFaceAccelerationRef.current = gpuFaceAcceleration; }, [gpuFaceAcceleration]);
   useEffect(() => { reviewFaceAnalysisRef.current = reviewFaceAnalysis; }, [reviewFaceAnalysis]);
   useEffect(() => { reviewFaceMatchingRef.current = reviewFaceMatching; }, [reviewFaceMatching]);
+  useEffect(() => { reviewPersonDetectionRef.current = reviewPersonDetection; }, [reviewPersonDetection]);
   useEffect(() => { reviewVisualDuplicatesRef.current = reviewVisualDuplicates; }, [reviewVisualDuplicates]);
   useEffect(() => {
     const element = flatScrollRef.current;
@@ -2811,12 +2829,17 @@ export function ThumbnailGrid() {
           const needsSharpness = typeof f.sharpnessScore !== 'number';
           const needsVisualHash = currentReviewVisualDuplicates && !f.visualHash;
           const needsSubject = currentReviewFaceAnalysis && !(typeof f.subjectSharpnessScore === 'number' && f.faceBoxes !== undefined);
+          const needsOnnx = shouldRunOnnxForReview(f, {
+            reviewFaceAnalysis: currentReviewFaceAnalysis,
+            reviewFaceMatching: currentReviewFaceMatching,
+            reviewPersonDetection: reviewPersonDetectionRef.current,
+          });
           // Kick off ONNX IPC and one shared thumbnail canvas pass in parallel.
           // ONNX is serialised in the main process via the semaphore — concurrent
           // IPC calls queue there and return one at a time, but we overlap the
           // renderer-side canvas work with whatever is ahead in the queue.
           const [onnxArr, thumbnailSignals] = await Promise.all([
-            !currentReviewFaceAnalysis
+            !needsOnnx
               ? Promise.resolve([] as Awaited<ReturnType<typeof window.electronAPI.analyzeFaces>>)
               : window.electronAPI.analyzeFaces(f.path).catch(
                   () => [] as Awaited<ReturnType<typeof window.electronAPI.analyzeFaces>>,
@@ -2875,8 +2898,8 @@ export function ThumbnailGrid() {
             faceEmbedding: onnx?.embeddings?.[0] || f.faceEmbedding,
             faceEmbeddings: onnx?.embeddings?.length ? onnx.embeddings : f.faceEmbeddings,
             faceEmbeddingBoxes: onnxEmbeddingBoxes.length > 0 ? onnxEmbeddingBoxes : f.faceEmbeddingBoxes,
-            personCount: onnxPersonBoxes.length,
-            personBoxes: onnxPersonBoxes,
+            personCount: onnx ? onnxPersonBoxes.length : (f.personCount ?? f.personBoxes?.length ?? 0),
+            personBoxes: onnx ? onnxPersonBoxes : f.personBoxes,
             subjectReasons: [...new Set(mergedReasons)],
           };
           if (reviewGeneration === reviewGenerationRef.current) {

@@ -118,10 +118,6 @@ button {
   touch-action: manipulation;
 }
 
-button:not(:disabled) {
-  will-change: transform;
-}
-
 button:not(:disabled):active {
   transform: translateY(1px) scale(0.99);
 }

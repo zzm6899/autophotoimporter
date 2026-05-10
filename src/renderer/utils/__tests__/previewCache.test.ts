@@ -158,4 +158,19 @@ describe('previewCache scheduler', () => {
 
     activeResolvers.forEach((resolve, index) => resolve(`done-${index}`));
   });
+
+  it('bounds queued normal preview work by cancelling the oldest stale normal request', async () => {
+    installPreviewMock(() => new Promise<string | undefined>(() => undefined));
+    const { getCachedPreview, getPreviewCacheStats, setPreviewConcurrency } = await loadPreviewCache();
+
+    setPreviewConcurrency(1);
+    void getCachedPreview('active.jpg', 'preview', 'normal');
+    const oldestQueued = getCachedPreview('queued-0.jpg', 'preview', 'normal');
+    for (let i = 1; i <= 500; i++) {
+      void getCachedPreview(`queued-${i}.jpg`, 'preview', 'normal');
+    }
+
+    await expect(oldestQueued).resolves.toBeUndefined();
+    expect(getPreviewCacheStats().queued).toBe(500);
+  });
 });

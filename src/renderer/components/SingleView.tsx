@@ -519,7 +519,7 @@ export function SingleView({ file, files, index, total, aiPaused = false }: Sing
   }, [canPreviewAdjust, dispatch, editDisabled, file.path]);
 
   useEffect(() => {
-    if (!imageSrc) {
+    if (!imageSrc || Math.abs(previewStops) < 0.01) {
       setClipping(null);
       return;
     }
@@ -549,7 +549,7 @@ export function SingleView({ file, files, index, total, aiPaused = false }: Sing
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [imageSrc, brightnessMultiplier]);
+  }, [imageSrc, brightnessMultiplier, previewStops]);
 
   return (
     <div

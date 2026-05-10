@@ -951,6 +951,40 @@ describe('ImportContext reducer', () => {
       expect(next.files.find((file) => file.path === '/other.jpg')?.exposureAdjustmentStops).toBe(0.5);
       expect(next.files.find((file) => file.path === '/other.jpg')?.whiteBalanceAdjustment).toEqual({ temperature: 10, tint: 5 });
     });
+
+    it('does not record file history for no-op exposure and white balance edits', () => {
+      const file = makeFile({ path: '/edit.jpg', exposureValue: 10 });
+      const state = makeState({ files: [file] });
+
+      const exposureNoop = reducer(state, {
+        type: 'SET_EXPOSURE_ADJUSTMENT',
+        filePaths: [file.path],
+        stops: 0,
+      });
+      expect(exposureNoop).toBe(state);
+      expect(exposureNoop.fileHistory).toHaveLength(0);
+
+      const whiteBalanceNoop = reducer(state, {
+        type: 'SET_WHITE_BALANCE_ADJUSTMENT',
+        filePaths: [file.path],
+        temperature: 0,
+        tint: 0,
+      });
+      expect(whiteBalanceNoop).toBe(state);
+      expect(whiteBalanceNoop.fileHistory).toHaveLength(0);
+    });
+
+    it('records file history when exposure edits actually change a file', () => {
+      const file = makeFile({ path: '/edit.jpg', exposureValue: 10 });
+      const next = reducer(makeState({ files: [file] }), {
+        type: 'SET_EXPOSURE_ADJUSTMENT',
+        filePaths: [file.path],
+        stops: 0.5,
+      });
+
+      expect(next.files[0].exposureAdjustmentStops).toBe(0.5);
+      expect(next.fileHistory).toHaveLength(1);
+    });
   });
 
   // --- CLEAR_PICKS ---

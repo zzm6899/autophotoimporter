@@ -32,6 +32,43 @@ const priorityRank: Record<PreviewPriority, number> = {
   high: 2,
 };
 
+function dropOldestQueuedRequest(maxPriority: PreviewPriority): boolean {
+  const maxRank = priorityRank[maxPriority];
+  for (let i = 0; i < queuedRequests.length; i++) {
+    const next = queuedRequests[i];
+    if (priorityRank[next.priority] > maxRank) continue;
+    queuedRequests.splice(i, 1);
+    next.cancel();
+    return true;
+  }
+  return false;
+}
+
+function enqueueQueuedRequest(request: {
+  key?: string;
+  priority: PreviewPriority;
+  run: () => void;
+  cancel: () => void;
+}): void {
+  if (queuedRequests.length >= MAX_QUEUED_REQUESTS) {
+    if (request.priority === 'low') {
+      request.cancel();
+      return;
+    }
+    const dropped = dropOldestQueuedRequest(request.priority === 'high' ? 'normal' : 'normal');
+    if (!dropped && request.priority !== 'high') {
+      request.cancel();
+      return;
+    }
+  }
+
+  if (request.priority === 'high') {
+    queuedRequests.unshift(request);
+  } else {
+    queuedRequests.push(request);
+  }
+}
+
 function takeNextQueuedRequest(): (() => void) | undefined {
   const priorityOrder: Array<'high' | 'normal' | 'low'> = ['high', 'normal', 'low'];
   for (const priority of priorityOrder) {
@@ -122,12 +159,11 @@ function schedule<T>(
       onCanceled?.();
       resolve(undefined as T);
     };
+    const request = { key, priority, run, cancel };
     if (activeRequests < maxActiveRequests) {
       run();
-    } else if (priority === 'high') {
-      queuedRequests.unshift({ key, priority, run, cancel });
     } else {
-      queuedRequests.push({ key, priority, run, cancel });
+      enqueueQueuedRequest(request);
     }
   });
 }

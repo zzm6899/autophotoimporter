@@ -225,7 +225,7 @@ function ThumbnailCardInner({
             </div>
           )}
 
-          {(duplicateBadge || file.isProtected || file.normalizeToAnchor || file.exposureAdjustmentStops || whiteBalanceMarked) && (
+          {(duplicateBadge || queued || file.isProtected || file.normalizeToAnchor || file.exposureAdjustmentStops || whiteBalanceMarked) && (
             <div className="absolute top-1.5 left-1.5 flex flex-col gap-0.5 z-20">
               {duplicateBadge && (
                 <div
@@ -233,6 +233,11 @@ function ThumbnailCardInner({
                   title={duplicateBadge.title}
                 >
                   {duplicateBadge.label}
+                </div>
+              )}
+              {queued && (
+                <div className="bg-emerald-600/90 text-[9px] text-white px-1 py-0.5 rounded font-medium">
+                  QUEUED
                 </div>
               )}
               {file.isProtected && (
@@ -270,12 +275,6 @@ function ThumbnailCardInner({
                   WB
                 </div>
               )}
-            </div>
-          )}
-
-          {queued && (
-            <div className="absolute top-7 left-1.5 bg-emerald-600/90 text-[9px] text-white px-1 py-0.5 rounded font-medium z-20">
-              QUEUED
             </div>
           )}
 

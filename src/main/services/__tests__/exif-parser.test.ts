@@ -326,6 +326,23 @@ describe('generatePreview RAW cache setting', () => {
     });
   });
 
+  it('treats DNG as RAW and uses the embedded preview path before platform resize', async () => {
+    mockStat.mockImplementation(async (filePath) => {
+      if (String(filePath) === '/photos/card/IMG_0004.dng') return { mtimeMs: 1, size: 100 } as any;
+      throw new Error('cache miss');
+    });
+    mockExifrThumbnail.mockResolvedValue(Buffer.from('dng-embedded-preview'));
+
+    const result = await generatePreview('/photos/card/IMG_0004.dng');
+
+    expect(result).toBe(`data:image/jpeg;base64,${Buffer.from('dng-embedded-preview').toString('base64')}`);
+    expect(mockExecFile).not.toHaveBeenCalled();
+    expect(getRawPreviewCacheDiagnostics()).toMatchObject({
+      embeddedFallbacks: 1,
+      platformResizes: 0,
+    });
+  });
+
   it('does not reuse a stale cached RAW preview after quality changes', async () => {
     const sourcePath = '/photos/card/IMG_0003.cr3';
     const sourceStat = { mtimeMs: 1, size: 100 } as any;

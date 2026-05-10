@@ -403,6 +403,8 @@ type ResolvedImportPaths = ReturnType<typeof fullDestPaths> & {
   reason?: string;
 };
 
+type DestinationReservations = Set<string>;
+
 function conflictPolicyFor(config: ImportConfig): ImportConflictPolicy {
   return config.conflictPolicy ?? 'skip';
 }
@@ -428,6 +430,31 @@ async function primaryDestinationExists(paths: ReturnType<typeof fullDestPaths>)
   return await destinationExists(paths.destFullPath);
 }
 
+function destinationReservationKey(fullPath?: string): string | undefined {
+  if (!fullPath) return undefined;
+  const resolved = path.resolve(fullPath);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function tryReserveDestination(
+  paths: ReturnType<typeof fullDestPaths>,
+  reservations?: DestinationReservations,
+): boolean {
+  const key = destinationReservationKey(paths.destFullPath);
+  if (!key || !reservations) return true;
+  if (reservations.has(key)) return false;
+  reservations.add(key);
+  return true;
+}
+
+function releaseDestination(
+  paths: ReturnType<typeof fullDestPaths>,
+  reservations?: DestinationReservations,
+): void {
+  const key = destinationReservationKey(paths.destFullPath);
+  if (key) reservations?.delete(key);
+}
+
 function renameCandidateRelPath(destRelPath: string, index: number): string {
   const parsed = path.parse(destRelPath);
   const suffix = index === 0 ? '' : ` (${index})`;
@@ -438,11 +465,14 @@ async function findAvailableDestPaths(
   startRelPath: string,
   config: ImportConfig,
   startIndex: number,
+  reservations?: DestinationReservations,
 ): Promise<ReturnType<typeof fullDestPaths>> {
   for (let index = startIndex; index < 10000; index++) {
     const candidate = fullDestPathsFromRel(renameCandidateRelPath(startRelPath, index), config);
     if (candidate.error) return candidate;
+    if (!tryReserveDestination(candidate, reservations)) continue;
     if (!await primaryDestinationExists(candidate)) return candidate;
+    releaseDestination(candidate, reservations);
   }
   return {
     ...fullDestPathsFromRel(startRelPath, config),
@@ -450,30 +480,56 @@ async function findAvailableDestPaths(
   };
 }
 
-async function resolveImportDestPaths(file: MediaFile, config: ImportConfig): Promise<ResolvedImportPaths> {
+async function resolveImportDestPaths(
+  file: MediaFile,
+  config: ImportConfig,
+  reservations?: DestinationReservations,
+): Promise<ResolvedImportPaths> {
   const paths = fullDestPaths(file, config);
   const policy = conflictPolicyFor(config);
   if (paths.error) return { ...paths, conflict: false, policy };
-  const conflict = await primaryDestinationExists(paths);
-  if (!conflict) return { ...paths, conflict: false, policy };
-
-  if (policy === 'skip') {
-    return { ...paths, conflict: true, policy, skipped: true, reason: 'Destination file already exists' };
+  const reservedConflict = !tryReserveDestination(paths, reservations);
+  const diskConflict = await primaryDestinationExists(paths);
+  const conflict = reservedConflict || diskConflict;
+  if (!conflict) {
+    return { ...paths, conflict: false, policy };
   }
 
-  if (policy === 'overwrite') {
+  if (policy === 'skip') {
+    if (!reservedConflict) releaseDestination(paths, reservations);
+    return {
+      ...paths,
+      conflict: true,
+      policy,
+      skipped: true,
+      reason: reservedConflict
+        ? 'Destination path is already used by another file in this import'
+        : 'Destination file already exists',
+    };
+  }
+
+  if (policy === 'overwrite' && !reservedConflict) {
     return { ...paths, conflict: true, policy, reason: 'Destination exists; will overwrite' };
   }
 
   if (policy === 'conflicts-folder' && paths.destRelPath) {
+    if (!reservedConflict) releaseDestination(paths, reservations);
     const conflictRelPath = path.join(cleanConflictFolderName(config), paths.destRelPath);
-    const resolved = await findAvailableDestPaths(conflictRelPath, config, 0);
+    const resolved = await findAvailableDestPaths(conflictRelPath, config, 0, reservations);
     return { ...resolved, conflict: true, policy, reason: 'Destination exists; will import to conflicts folder' };
   }
 
   if (paths.destRelPath) {
-    const resolved = await findAvailableDestPaths(paths.destRelPath, config, 1);
-    return { ...resolved, conflict: true, policy, reason: 'Destination exists; will rename' };
+    if (!reservedConflict) releaseDestination(paths, reservations);
+    const resolved = await findAvailableDestPaths(paths.destRelPath, config, 1, reservations);
+    return {
+      ...resolved,
+      conflict: true,
+      policy,
+      reason: reservedConflict
+        ? 'Destination path is already used in this import; will rename'
+        : 'Destination exists; will rename',
+    };
   }
 
   return { ...paths, conflict: true, policy, skipped: true, reason: 'Destination file already exists' };
@@ -486,6 +542,7 @@ export async function planImportFiles(files: MediaFile[], config: ImportConfig):
   let invalid = 0;
   let willImport = 0;
   let lowConfidence = 0;
+  const destinationReservations: DestinationReservations = new Set();
 
   for (const file of files) {
     const paths = fullDestPaths(file, config);
@@ -516,7 +573,7 @@ export async function planImportFiles(files: MediaFile[], config: ImportConfig):
       items.push({ ...base, status: 'duplicate', reason: 'Already exists at destination with matching size and mtime' });
       continue;
     }
-    const resolved = await resolveImportDestPaths(file, config);
+    const resolved = await resolveImportDestPaths(file, config, destinationReservations);
     if (resolved.error) {
       invalid++;
       items.push({ ...base, status: 'invalid', reason: resolved.error });
@@ -896,6 +953,7 @@ export async function importFiles(
   const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
   const { saveFormat, jpegQuality } = config;
   const createdDirs = new Set<string>();
+  const destinationReservations: DestinationReservations = new Set();
   let processedCount = 0;
   const ftpUploads: Array<{ localPath: string; remoteRelPath: string; fileName: string; size: number }> = [];
   const ftpMirrorActive =
@@ -1025,7 +1083,7 @@ export async function importFiles(
     }
 
     const resolvedPaths = (config.dryRun || config.conflictPolicy || sourceBeforeCopy)
-      ? await resolveImportDestPaths(file, config)
+      ? await resolveImportDestPaths(file, config, destinationReservations)
       : { ...plannedPaths, conflict: false, policy: conflictPolicyFor(config) };
     const resolvedLedgerBase: ImportLedgerItem = {
       ...ledgerBase,

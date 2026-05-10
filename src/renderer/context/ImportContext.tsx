@@ -425,6 +425,21 @@ function withFileHistory(state: State, files: MediaFile[]): State {
   };
 }
 
+function withFileHistoryIfChanged(state: State, files: MediaFile[]): State {
+  if (files.length === state.files.length && files.every((file, index) => file === state.files[index])) {
+    return state;
+  }
+  return withFileHistory(state, files);
+}
+
+function sameWhiteBalanceAdjustment(
+  a: MediaFile['whiteBalanceAdjustment'],
+  b: MediaFile['whiteBalanceAdjustment'],
+): boolean {
+  if (!a && !b) return true;
+  return a?.temperature === b?.temperature && a?.tint === b?.tint;
+}
+
 function collectReviewGroups(files: MediaFile[], includeFace = true): Map<string, MediaFile[]> {
   const groups = new Map<string, MediaFile[]>();
   const addToGroup = (id: string, file: MediaFile) => {
@@ -855,13 +870,16 @@ export function reducer(state: State, action: Action): State {
       return { ...state, collapsedBursts: [] };
     case 'SET_EXPOSURE_ANCHOR':
       return { ...state, exposureAnchorPath: action.path };
-    case 'CLEAR_EXPOSURE_ANCHOR':
+    case 'CLEAR_EXPOSURE_ANCHOR': {
+      const next = withFileHistoryIfChanged(state, state.files.map((f) =>
+        f.normalizeToAnchor ? { ...f, normalizeToAnchor: false } : f,
+      ));
+      if (next === state && state.exposureAnchorPath === null) return state;
       return {
-        ...withFileHistory(state, state.files.map((f) =>
-          f.normalizeToAnchor ? { ...f, normalizeToAnchor: false } : f,
-        )),
+        ...next,
         exposureAnchorPath: null,
       };
+    }
     case 'SET_EXPOSURE_MAX_STOPS':
       return { ...state, exposureMaxStops: Math.max(0.33, Math.min(4, action.stops)) };
     case 'SET_EXPOSURE_ADJUSTMENT_STEP':
@@ -879,8 +897,10 @@ export function reducer(state: State, action: Action): State {
       const nextAdjustment = Math.abs(temperature) >= 0.5 || Math.abs(tint) >= 0.5
         ? { temperature, tint }
         : undefined;
-      return withFileHistory(state, state.files.map((f) =>
-        pathSet.has(f.path) ? { ...f, whiteBalanceAdjustment: nextAdjustment } : f,
+      return withFileHistoryIfChanged(state, state.files.map((f) =>
+        pathSet.has(f.path) && !sameWhiteBalanceAdjustment(f.whiteBalanceAdjustment, nextAdjustment)
+          ? { ...f, whiteBalanceAdjustment: nextAdjustment }
+          : f,
       ));
     }
     case 'SET_EVENT_MODE':
@@ -893,29 +913,29 @@ export function reducer(state: State, action: Action): State {
       return { ...state, keeperQuota: action.quota };
     case 'SET_NORMALIZE_TO_ANCHOR': {
       const pathSet = new Set(action.filePaths);
-      return withFileHistory(state, state.files.map((f) =>
-        pathSet.has(f.path)
-          ? {
-              ...f,
-              normalizeToAnchor: action.value &&
-                f.path !== state.exposureAnchorPath &&
-                typeof f.exposureValue === 'number',
-            }
-          : f,
-      ));
+      return withFileHistoryIfChanged(state, state.files.map((f) => {
+        if (!pathSet.has(f.path)) return f;
+        const normalizeToAnchor = action.value &&
+          f.path !== state.exposureAnchorPath &&
+          typeof f.exposureValue === 'number';
+        return !!f.normalizeToAnchor === normalizeToAnchor ? f : { ...f, normalizeToAnchor };
+      }));
     }
     case 'SET_EXPOSURE_ADJUSTMENT': {
       const pathSet = new Set(action.filePaths);
       const stops = normalizeExposureStops(clampStops(action.stops, state.exposureMaxStops));
-      return withFileHistory(state, state.files.map((f) =>
-        pathSet.has(f.path) ? { ...f, exposureAdjustmentStops: stops === 0 ? undefined : stops } : f,
-      ));
+      return withFileHistoryIfChanged(state, state.files.map((f) => {
+        if (!pathSet.has(f.path)) return f;
+        if (normalizeExposureStops(f.exposureAdjustmentStops ?? 0) === stops) return f;
+        return { ...f, exposureAdjustmentStops: stops === 0 ? undefined : stops };
+      }));
     }
     case 'NUDGE_EXPOSURE_ADJUSTMENT': {
       const pathSet = new Set(action.filePaths);
-      return withFileHistory(state, state.files.map((f) => {
+      return withFileHistoryIfChanged(state, state.files.map((f) => {
         if (!pathSet.has(f.path)) return f;
         const next = normalizeExposureStops(clampStops((f.exposureAdjustmentStops ?? 0) + action.delta, state.exposureMaxStops));
+        if (normalizeExposureStops(f.exposureAdjustmentStops ?? 0) === next) return f;
         return { ...f, exposureAdjustmentStops: next === 0 ? undefined : next };
       }));
     }
