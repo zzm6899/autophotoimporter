@@ -1045,11 +1045,23 @@ export function SingleView({ file, files, index, total, aiPaused = false }: Sing
               </span>
             )}
           </div>
-          {cameraName && (
-            <span className="text-[9px] font-mono text-white bg-black/70 backdrop-blur-sm px-1.5 py-0.5 rounded pointer-events-none">
-              {cameraName}
-            </span>
-          )}
+          <div className="flex items-center gap-1.5">
+            {cameraName && (
+              <span className="text-[9px] font-mono text-white bg-black/70 backdrop-blur-sm px-1.5 py-0.5 rounded pointer-events-none">
+                {cameraName}
+              </span>
+            )}
+            {(file.locationName || file.gps) && (
+              <span
+                className="text-[9px] font-mono text-white bg-black/70 backdrop-blur-sm px-1.5 py-0.5 rounded pointer-events-none"
+                title={file.gps ? `${file.gps.latitude.toFixed(5)}, ${file.gps.longitude.toFixed(5)}${file.gps.altitude != null ? ` · ${Math.round(file.gps.altitude)} m` : ''}` : undefined}
+              >
+                {file.locationName
+                  ? `📍 ${file.locationName}`
+                  : `${file.gps!.latitude.toFixed(4)}, ${file.gps!.longitude.toFixed(4)}`}
+              </span>
+            )}
+          </div>
         </div>
       )}
 

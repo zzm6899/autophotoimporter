@@ -3,12 +3,12 @@ import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, Sourc
 import { FOLDER_PRESETS, DEFAULT_KEYBINDS, DEFAULT_METADATA_EXPORT, DEFAULT_VIEW_OVERLAY_PREFERENCES } from '../../shared/types';
 import { groupBursts } from '../../shared/burst';
 import { clampStops, normalizeExposureStops } from '../../shared/exposure';
-import { FACE_GROUP_EMBEDDING_THRESHOLD, assignSceneBuckets, autoCullGroup, bestInGroup, groupByFaceSimilarity, groupByVisualHash, humanMomentQuality, rankBestShots, scoreReview } from '../../shared/review';
+import { FACE_GROUP_EMBEDDING_THRESHOLD, assignSceneBuckets, autoCullGroup, bestInGroup, clearEmbeddingCache, groupByFaceSimilarity, groupByVisualHash, humanMomentQuality, rankBestShots, scoreReview } from '../../shared/review';
 
 export type AppPhase = 'idle' | 'scanning' | 'ready' | 'importing' | 'complete';
 export type ViewMode = 'grid' | 'single' | 'split' | 'compare' | 'settings';
 
-export type FilterMode = 'all' | 'protected' | 'picked' | 'rejected' | 'unrated' | 'duplicates' | 'catalog-duplicates' | 'unmarked' | 'queue' | 'best' | 'faces' | 'face-groups' | 'face-gallery' | 'group-photos' | 'blur-risk' | 'near-duplicates' | 'review-needed' | 'needs-exposure' | 'normalized' | 'adjusted' | 'photos' | 'videos' | 'raw' | RatingFilter | `camera:${string}` | `lens:${string}` | `date:${string}` | `ext:${string}` | `scene:${string}` | `burst:${string}` | `face:${string}`;
+export type FilterMode = 'all' | 'protected' | 'picked' | 'rejected' | 'unrated' | 'duplicates' | 'catalog-duplicates' | 'unmarked' | 'queue' | 'best' | 'faces' | 'face-groups' | 'face-gallery' | 'group-photos' | 'blur-risk' | 'near-duplicates' | 'review-needed' | 'needs-exposure' | 'normalized' | 'adjusted' | 'photos' | 'videos' | 'raw' | 'import-failures' | 'color-red' | 'color-yellow' | 'color-green' | 'color-blue' | 'color-purple' | RatingFilter | `camera:${string}` | `lens:${string}` | `date:${string}` | `ext:${string}` | `scene:${string}` | `burst:${string}` | `face:${string}`;
 const MAX_FACE_CONCURRENCY = 8;
 const REVIEW_OVERLAY_SMALL_DELAY_MS = 80;
 const REVIEW_OVERLAY_MEDIUM_DELAY_MS = 140;
@@ -42,10 +42,12 @@ interface State {
   customPattern: string;
   importProgress: ImportProgress | null;
   importResult: ImportResult | null;
+  importFailedPaths: string[];
   focusedIndex: number;
   focusedPath: string | null;
   viewMode: ViewMode;
   previousViewMode: Exclude<ViewMode, 'settings'> | null;
+  thumbnailSize: number;
   theme: 'light' | 'dark';
   experienceMode: ExperienceMode;
   showLeftPanel: boolean;
@@ -58,6 +60,7 @@ interface State {
   ftpSyncSettings: FtpSyncSettings;
   ftpSyncStatus: FtpSyncStatus;
   filter: FilterMode;
+  gridSortOrder: 'capture-asc' | 'capture-desc' | 'score-desc' | 'name-asc';
   cullMode: boolean;
   /**
    * File paths corresponding to the user's click-selection in the grid
@@ -171,6 +174,9 @@ export type Action =
   | { type: 'CLEAR_PICKS' }
   | { type: 'SET_FOCUSED'; index: number; path?: string | null }
   | { type: 'SET_VIEW_MODE'; mode: ViewMode }
+  | { type: 'SET_THUMBNAIL_SIZE'; size: number }
+  | { type: 'SET_COLOR_LABEL'; filePath: string; label: MediaFile['colorLabel'] }
+  | { type: 'SET_COLOR_LABEL_BATCH'; filePaths: string[]; label: MediaFile['colorLabel'] }
   | { type: 'SET_THEME'; theme: 'light' | 'dark' }
   | { type: 'SET_EXPERIENCE_MODE'; mode: ExperienceMode }
   | { type: 'TOGGLE_LEFT_PANEL' }
@@ -184,6 +190,7 @@ export type Action =
   | { type: 'SET_FTP_SYNC_SETTINGS'; settings: Partial<FtpSyncSettings> }
   | { type: 'SET_FTP_SYNC_STATUS'; status: FtpSyncStatus }
   | { type: 'SET_FILTER'; filter: FilterMode }
+  | { type: 'SET_GRID_SORT_ORDER'; order: 'capture-asc' | 'capture-desc' | 'score-desc' | 'name-asc' }
   | { type: 'TOGGLE_CULL_MODE' }
   | { type: 'SET_SELECTED_PATHS'; paths: string[] }
   | { type: 'QUEUE_ADD_PATHS'; paths: string[]; preserveFilter?: boolean }
@@ -294,10 +301,12 @@ const initialState: State = {
   customPattern: FOLDER_PRESETS['date-flat'].pattern,
   importProgress: null,
   importResult: null,
+  importFailedPaths: [],
   focusedIndex: -1,
   focusedPath: null,
   viewMode: 'grid' as ViewMode,
   previousViewMode: null,
+  thumbnailSize: 160,
   theme: systemDark ? 'dark' : 'light',
   experienceMode: 'simple',
   showLeftPanel: true,
@@ -327,6 +336,7 @@ const initialState: State = {
     message: 'FTP sync is idle.',
   },
   filter: 'all',
+  gridSortOrder: 'capture-asc',
   cullMode: false,
   selectedPaths: [],
   queuedPaths: [],
@@ -585,15 +595,26 @@ export function reducer(state: State, action: Action): State {
         filter: isExpensiveImportFilter(state.filter) ? 'all' : state.filter,
         importProgress: null,
         importResult: null,
+        importFailedPaths: [],
       };
     case 'IMPORT_PROGRESS':
       return { ...state, importProgress: action.progress };
-    case 'IMPORT_COMPLETE':
-      return { ...state, phase: 'complete', importResult: action.result };
+    case 'IMPORT_COMPLETE': {
+      const failedPaths = (action.result.ledgerItems ?? [])
+        .filter((item) => item.status === 'failed' || item.status === 'pending')
+        .map((item) => item.sourcePath);
+      return { ...state, phase: 'complete', importResult: action.result, importFailedPaths: failedPaths };
+    }
     case 'DISMISS_SUMMARY':
       // If there are no files in the list (e.g. after auto-import cleared them),
       // return to idle rather than 'ready' — avoids a blank ready-but-empty state.
-      return { ...state, phase: state.files.length > 0 ? 'ready' : 'idle', importResult: null, importProgress: null };
+      return {
+        ...state,
+        phase: state.files.length > 0 ? 'ready' : 'idle',
+        importResult: null,
+        importProgress: null,
+        filter: state.filter === 'import-failures' ? 'all' : state.filter,
+      };
     case 'SET_THUMBNAIL':
       return {
         ...state,
@@ -648,7 +669,10 @@ export function reducer(state: State, action: Action): State {
       return {
         ...state,
         focusedIndex: action.index,
-        focusedPath: action.path ?? (action.index >= 0 ? state.files[action.index]?.path ?? null : null),
+        // Use !== undefined to distinguish explicit null (clear) from omitted path (use index fallback).
+        // action.index here is a sorted-view index and should not be used to index state.files directly;
+        // callers are expected to pass path explicitly when index refers to a filtered/sorted position.
+        focusedPath: action.path !== undefined ? action.path : (action.index >= 0 ? state.files[action.index]?.path ?? null : null),
       };
     case 'SET_VIEW_MODE':
       if (action.mode === 'settings') {
@@ -664,6 +688,18 @@ export function reducer(state: State, action: Action): State {
         return { ...state, viewMode: state.previousViewMode, previousViewMode: null };
       }
       return { ...state, viewMode: action.mode };
+    case 'SET_THUMBNAIL_SIZE':
+      return { ...state, thumbnailSize: Math.max(80, Math.min(320, action.size)) };
+    case 'SET_COLOR_LABEL':
+      return withFileHistory(state, state.files.map((f) =>
+        f.path === action.filePath ? { ...f, colorLabel: action.label } : f,
+      ));
+    case 'SET_COLOR_LABEL_BATCH': {
+      const pathSet = new Set(action.filePaths);
+      return withFileHistory(state, state.files.map((f) =>
+        pathSet.has(f.path) ? { ...f, colorLabel: action.label } : f,
+      ));
+    }
     case 'SET_THEME':
       return { ...state, theme: action.theme };
     case 'SET_EXPERIENCE_MODE':
@@ -702,6 +738,8 @@ export function reducer(state: State, action: Action): State {
       return { ...state, ftpSyncStatus: action.status };
     case 'SET_FILTER':
       return { ...state, filter: action.filter };
+    case 'SET_GRID_SORT_ORDER':
+      return { ...state, gridSortOrder: action.order };
     case 'TOGGLE_CULL_MODE':
       return { ...state, cullMode: !state.cullMode, viewMode: !state.cullMode ? 'single' : 'grid' };
     case 'SET_SELECTED_PATHS':
@@ -1179,8 +1217,8 @@ export function reducer(state: State, action: Action): State {
         ...state,
         licenseStatus: action.status,
         licenseHydrated: true,
-        licensePromptOpen: false,
-        licenseBannerDismissed: false,
+        licensePromptOpen: valid ? false : state.licensePromptOpen,
+        licenseBannerDismissed: valid ? false : state.licenseBannerDismissed,
       };
     }
     case 'SET_LICENSE_STATUS':
@@ -1397,6 +1435,7 @@ export function ImportProvider({ children }: { children: ReactNode }) {
       action.type === 'ADVANCE_VOLUME_IMPORT_QUEUE'
     ) {
       reviewScoresRef.current.clear();
+      clearEmbeddingCache();
       bumpReviewVersionNow();
     }
     if (action.type === 'CLEAR_PICKS') {

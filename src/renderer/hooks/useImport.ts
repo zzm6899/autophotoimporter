@@ -73,6 +73,7 @@ export function useImport() {
     if (!selectedSource || !destination) return;
     if (!licenseStatus?.valid) {
       importStateRef.current = 'failed';
+      dispatch({ type: 'IMPORT_START' });
       dispatch({
         type: 'IMPORT_COMPLETE',
         result: {

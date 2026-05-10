@@ -192,7 +192,7 @@ export function summarizeReviewImportVisibility(
 }
 
 export function ImportSummary() {
-  const { phase, importResult, destination, files, selectedPaths, queuedPaths } = useAppState();
+  const { phase, importResult, destination, files, selectedPaths, queuedPaths, importFailedPaths } = useAppState();
   const dispatch = useAppDispatch();
   const { startImport } = useImport();
   const [handoffBusy, setHandoffBusy] = useState(false);
@@ -213,6 +213,11 @@ export function ImportSummary() {
   };
 
   const handleDismiss = () => {
+    dispatch({ type: 'DISMISS_SUMMARY' });
+  };
+
+  const handleViewFailures = () => {
+    dispatch({ type: 'SET_FILTER', filter: 'import-failures' });
     dispatch({ type: 'DISMISS_SUMMARY' });
   };
 
@@ -403,6 +408,15 @@ export function ImportSummary() {
               className="flex-1 min-w-[9rem] py-2 rounded text-sm bg-surface-raised hover:bg-red-500/10 text-red-300 transition-colors"
             >
               Retry Failed/Pending
+            </button>
+          )}
+          {importFailedPaths.length > 0 && (
+            <button
+              onClick={handleViewFailures}
+              className="flex-1 min-w-[9rem] py-2 rounded text-sm bg-surface-raised hover:bg-orange-500/10 text-orange-300 transition-colors"
+              title={`Filter the grid to the ${importFailedPaths.length} source ${importFailedPaths.length === 1 ? 'file' : 'files'} that failed or are pending retry.`}
+            >
+              View Failures ({importFailedPaths.length})
             </button>
           )}
           <button

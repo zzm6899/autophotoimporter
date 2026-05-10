@@ -38,6 +38,8 @@ export interface MediaFile {
   lensModel?: string;
   /** 0-5 star rating from EXIF xmp:Rating / MakerNote */
   rating?: number;
+  /** User-assigned color label for visual grouping and filtering (inspired by Lightroom color labels). */
+  colorLabel?: 'red' | 'yellow' | 'green' | 'blue' | 'purple';
   /**
    * True when the file is read-only (filesystem attribute) or flagged as
    * "Protect" in the camera's in-body protect workflow. The UI sorts

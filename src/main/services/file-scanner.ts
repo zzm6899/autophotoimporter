@@ -32,6 +32,7 @@ const RAW_PRIORITY_EXTENSIONS = new Set([
 ]);
 
 let currentJob: JobController | null = null;
+let backgroundThumbnailAbort: AbortController | null = null;
 let paused = false;
 const pauseWaiters: Array<() => void> = [];
 
@@ -101,6 +102,10 @@ export async function scanFiles(
   options?: { generateThumbnails?: boolean },
 ): Promise<number> {
   currentJob?.cancel();
+  // Cancel any background thumbnail task from a previous scan so stale
+  // onThumbnail callbacks don't pollute the new scan's state.
+  backgroundThumbnailAbort?.abort();
+  backgroundThumbnailAbort = null;
   while (pauseWaiters.length) pauseWaiters.shift()?.();
   const job = new JobController('file-scan');
   currentJob = job;
@@ -130,13 +135,19 @@ export async function scanFiles(
     job.progress({ current: Math.min(i + BATCH_SIZE, allFiles.length), total: allFiles.length, percent: allFiles.length ? Math.round(((i + BATCH_SIZE) / allFiles.length) * 100) : 0 });
   }
 
-  // Thumbnails load in the background — don't block scan completion
+  // Thumbnails load in the background — don't block scan completion.
+  // Use a dedicated AbortController so a subsequent scanFiles call can cancel
+  // this task even after the job's own signal has already resolved.
   if (options?.generateThumbnails !== false) {
-    generateThumbnailsInBackground(allFiles, onThumbnail, signal);
+    const bgAbort = new AbortController();
+    backgroundThumbnailAbort = bgAbort;
+    generateThumbnailsInBackground(allFiles, onThumbnail, bgAbort.signal);
   }
 
   job.complete({ current: allFiles.length, total: allFiles.length, percent: 100 });
   if (currentJob === job) currentJob = null;
+  // backgroundThumbnailAbort is intentionally kept alive until the next scan
+  // starts so the background task can still be cancelled if needed.
   return allFiles.length;
 }
 
@@ -255,6 +266,8 @@ export function cancelScan(): void {
   const job = currentJob;
   job?.cancel();
   currentJob = null;
+  backgroundThumbnailAbort?.abort();
+  backgroundThumbnailAbort = null;
   paused = false;
   job?.resume();
   while (pauseWaiters.length) pauseWaiters.shift()?.();

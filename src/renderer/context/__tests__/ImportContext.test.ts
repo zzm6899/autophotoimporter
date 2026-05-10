@@ -22,6 +22,7 @@ function makeState(overrides: Record<string, unknown> = {}) {
     focusedPath: null as string | null,
     viewMode: 'grid' as const,
     previousViewMode: null,
+    thumbnailSize: 160,
     theme: 'dark' as const,
     experienceMode: 'simple' as const,
     showLeftPanel: true,
@@ -53,6 +54,8 @@ function makeState(overrides: Record<string, unknown> = {}) {
     },
     // Workflow filters + selection
     filter: 'all' as const,
+    gridSortOrder: 'capture-asc' as const,
+    importFailedPaths: [] as string[],
     cullMode: false,
     selectedPaths: [] as string[],
     queuedPaths: [] as string[],

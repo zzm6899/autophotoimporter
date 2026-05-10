@@ -244,21 +244,56 @@ export function assignSceneBuckets(files: MediaFile[], eventMode: EventMode = 'g
   });
 }
 
+type RankKey = {
+  file: MediaFile;
+  manualPick: number;
+  protected: number;
+  rating: number;
+  bestShot: number;
+  subjectPresence: number;
+  face: number;
+  subjectSharpness: number;
+  highBlur: number;
+  sharpness: number;
+  review: number;
+  burstIndex: number;
+};
+
 export function rankBestShots(files: MediaFile[]): MediaFile[] {
-  return files.slice().sort((a, b) =>
-    manualPickRank(b) - manualPickRank(a) ||
-    Number(!!b.isProtected) - Number(!!a.isProtected) ||
-    (b.rating ?? 0) - (a.rating ?? 0) ||
-    bestShotScore(b) - bestShotScore(a) ||
-    subjectPresenceQuality(b) - subjectPresenceQuality(a) ||
-    faceQuality(b) - faceQuality(a) ||
-    (b.subjectSharpnessScore ?? 0) - (a.subjectSharpnessScore ?? 0) ||
-    Number(a.blurRisk === 'high') - Number(b.blurRisk === 'high') ||
-    (b.sharpnessScore ?? 0) - (a.sharpnessScore ?? 0) ||
-    (b.reviewScore ?? 0) - (a.reviewScore ?? 0) ||
-    (a.burstIndex ?? 0) - (b.burstIndex ?? 0) ||
-    a.name.localeCompare(b.name),
+  // Pre-compute all scoring functions once per file (Schwartzian transform) so
+  // the sort comparator does O(1) field comparisons instead of calling scoring
+  // functions on every pivot — important for bursts with hundreds of candidates.
+  const keyed: RankKey[] = files.map((file) => ({
+    file,
+    manualPick: manualPickRank(file),
+    protected: Number(!!file.isProtected),
+    rating: file.rating ?? 0,
+    bestShot: bestShotScore(file),
+    subjectPresence: subjectPresenceQuality(file),
+    face: faceQuality(file),
+    subjectSharpness: file.subjectSharpnessScore ?? 0,
+    highBlur: Number(file.blurRisk === 'high'),
+    sharpness: file.sharpnessScore ?? 0,
+    review: file.reviewScore ?? 0,
+    burstIndex: file.burstIndex ?? 0,
+  }));
+
+  keyed.sort((a, b) =>
+    b.manualPick - a.manualPick ||
+    b.protected - a.protected ||
+    b.rating - a.rating ||
+    b.bestShot - a.bestShot ||
+    b.subjectPresence - a.subjectPresence ||
+    b.face - a.face ||
+    b.subjectSharpness - a.subjectSharpness ||
+    a.highBlur - b.highBlur ||
+    b.sharpness - a.sharpness ||
+    b.review - a.review ||
+    a.burstIndex - b.burstIndex ||
+    a.file.name.localeCompare(b.file.name),
   );
+
+  return keyed.map((k) => k.file);
 }
 
 export interface AutoCullDecision {
@@ -516,8 +551,10 @@ export function autoCullGroup(files: MediaFile[], options: AutoCullOptions = {})
   for (const path of keep) reasons[path] = path === best.path ? ['best shot'] : ['quota keeper'];
   const bestScore = bestShotScore(best);
   const second = ranked.find((file) => file.path !== best.path && isAutoBestCandidate(file));
-  const secondScore = second ? bestShotScore(second) : 0;
-  const gap = bestScore - secondScore;
+  // When there is no eligible runner-up the gap is meaningless — treat as 0
+  // so scoreGapConfidence returns 'low' rather than inflating against a score of 0.
+  const secondScore = second ? bestShotScore(second) : bestScore;
+  const gap = second ? bestScore - secondScore : 0;
   const confidence = options.confidence ?? 'balanced';
   const requiredReasons = confidence === 'conservative' ? 4 : confidence === 'aggressive' ? 1 : 2;
   const scoreGapThreshold = confidence === 'conservative' ? 92 : confidence === 'aggressive' ? 48 : 72;
@@ -676,6 +713,11 @@ export function groupByFaceSignature(files: MediaFile[], threshold = 10): Record
   );
 }
 
+// O(n²) pairwise comparison — skip when the hashed set is too large to avoid
+// blocking the renderer thread. At 2 000 entries this is ~2 M comparisons;
+// beyond that the grouping cost outweighs the benefit.
+const VISUAL_SIMILARITY_MAX_FILES = 2000;
+
 function groupByHexSimilarity(
   files: MediaFile[],
   hashFor: (file: MediaFile) => string | undefined,
@@ -685,6 +727,9 @@ function groupByHexSimilarity(
   const hashed = files
     .map((file, order) => ({ file, hash: hashFor(file), order }))
     .filter((entry): entry is { file: MediaFile; hash: string; order: number } => !!entry.hash);
+
+  if (hashed.length > VISUAL_SIMILARITY_MAX_FILES) return {};
+
   const parent = new Map<string, string>();
 
   const find = (path: string): string => {
@@ -732,19 +777,34 @@ function groupByHexSimilarity(
   return groups;
 }
 
+// Embedding deserialization is called in render-path comparisons for every
+// face in the gallery on each render pass. Cache by hex string to avoid
+// allocating a new Float32Array on every call for the same embedding.
+// A typical session has <500 unique face embeddings so the Map stays small.
+const embeddingCache = new Map<string, Float32Array | null>();
+
 export function deserializeEmbedding(hex: string): Float32Array | null {
   if (!hex || hex.length % 2 !== 0) return null;
+  const cached = embeddingCache.get(hex);
+  if (cached !== undefined) return cached;
   try {
     const bytes = new Uint8Array(hex.length / 2);
     for (let i = 0; i < bytes.length; i++) {
       const value = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-      if (Number.isNaN(value)) return null;
+      if (Number.isNaN(value)) { embeddingCache.set(hex, null); return null; }
       bytes[i] = value;
     }
-    return new Float32Array(bytes.buffer);
+    const result = new Float32Array(bytes.buffer);
+    embeddingCache.set(hex, result);
+    return result;
   } catch {
+    embeddingCache.set(hex, null);
     return null;
   }
+}
+
+export function clearEmbeddingCache(): void {
+  embeddingCache.clear();
 }
 
 function normalizeEmbedding(embedding: Float32Array | null): Float32Array | null {

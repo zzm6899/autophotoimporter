@@ -1936,7 +1936,7 @@ async function visualHash(src: string): Promise<string> {
 }
 
 export function ThumbnailGrid() {
-  const { phase, selectedSource, scanError, focusedIndex, focusedPath, viewMode, filter, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, exposureAdjustmentStep, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused, fastKeeperMode, autoSpeedMode, faceConcurrency, gpuFaceAcceleration, reviewFaceAnalysis, reviewFaceMatching, reviewPersonDetection, reviewVisualDuplicates, keybinds, metadataKeywords, whiteBalanceTemperature, whiteBalanceTint, destination, skipDuplicates, licenseStatus, ftpDestEnabled, ftpDestConfig, experienceMode } = useAppState();
+  const { phase, selectedSource, scanError, focusedIndex, focusedPath, viewMode, filter, gridSortOrder, thumbnailSize, importFailedPaths, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, exposureAdjustmentStep, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused, fastKeeperMode, autoSpeedMode, faceConcurrency, gpuFaceAcceleration, reviewFaceAnalysis, reviewFaceMatching, reviewPersonDetection, reviewVisualDuplicates, keybinds, metadataKeywords, whiteBalanceTemperature, whiteBalanceTint, destination, skipDuplicates, licenseStatus, ftpDestEnabled, ftpDestConfig, experienceMode } = useAppState();
   const isPro = experienceMode === 'pro';
   // useMergedFiles() overlays face/review scores without re-running the full
   // reducer map — O(n) only when scores.size > 0, otherwise returns the same array.
@@ -2033,6 +2033,7 @@ export function ThumbnailGrid() {
   const autoSpeedTriggeredRef = useRef(false);
   const collapsedSet = useMemo(() => new Set(collapsedBursts), [collapsedBursts]);
   const queuedSet = useMemo(() => new Set(queuedPaths), [queuedPaths]);
+  const importFailedSet = useMemo(() => new Set(importFailedPaths), [importFailedPaths]);
   const totalPhotoCount = useMemo(() => files.filter((f) => f.type === 'photo').length, [files]);
   const readyThumbnailCount = useMemo(
     () => files.filter((f) => f.type === 'photo' && !!f.thumbnail).length,
@@ -2214,6 +2215,12 @@ export function ThumbnailGrid() {
         case 'duplicates': return f.duplicate;
         case 'catalog-duplicates': return !!f.duplicateMemory;
         case 'queue': return queuedSet.has(f.path);
+        case 'import-failures': return importFailedSet.has(f.path);
+        case 'color-red': return f.colorLabel === 'red';
+        case 'color-yellow': return f.colorLabel === 'yellow';
+        case 'color-green': return f.colorLabel === 'green';
+        case 'color-blue': return f.colorLabel === 'blue';
+        case 'color-purple': return f.colorLabel === 'purple';
         case 'unmarked': return !f.pick;
         case 'best': return (f.reviewScore ?? 0) >= 70;
         case 'faces': return mediaFaceCount(f) > 0;
@@ -2239,26 +2246,39 @@ export function ThumbnailGrid() {
       }
     });
     const sorted = [...filtered].sort((a, b) => {
+      // Protected files always surface first regardless of sort order.
       const pa = a.isProtected ? 1 : 0;
       const pb = b.isProtected ? 1 : 0;
       if (pa !== pb) return pb - pa;
-      const ra = a.rating ?? 0;
-      const rb = b.rating ?? 0;
-      if (ra !== rb) return rb - ra;
-      if (filter === 'group-photos') {
-        const groupScoreA = groupPhotoReviewScore(a);
-        const groupScoreB = groupPhotoReviewScore(b);
-        if (groupScoreA !== groupScoreB) return groupScoreB - groupScoreA;
-        const subjectCountA = groupPhotoSubjectCount(a);
-        const subjectCountB = groupPhotoSubjectCount(b);
-        if (subjectCountA !== subjectCountB) return subjectCountB - subjectCountA;
+
+      if (gridSortOrder === 'score-desc') {
+        const sa = a.reviewScore ?? 0;
+        const sb = b.reviewScore ?? 0;
+        if (sa !== sb) return sb - sa;
+      } else if (gridSortOrder === 'name-asc') {
+        const cmp = a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true });
+        if (cmp !== 0) return cmp;
+      } else {
+        // capture-asc / capture-desc: rating then date
+        const ra = a.rating ?? 0;
+        const rb = b.rating ?? 0;
+        if (ra !== rb) return rb - ra;
+        if (filter === 'group-photos') {
+          const groupScoreA = groupPhotoReviewScore(a);
+          const groupScoreB = groupPhotoReviewScore(b);
+          if (groupScoreA !== groupScoreB) return groupScoreB - groupScoreA;
+          const subjectCountA = groupPhotoSubjectCount(a);
+          const subjectCountB = groupPhotoSubjectCount(b);
+          if (subjectCountA !== subjectCountB) return subjectCountB - subjectCountA;
+        }
+        const da = a.duplicate ? 1 : 0;
+        const db = b.duplicate ? 1 : 0;
+        if (da !== db) return da - db;
       }
-      const da = a.duplicate ? 1 : 0;
-      const db = b.duplicate ? 1 : 0;
-      if (da !== db) return da - db;
+
       const ta = mediaDateSortMs(a);
       const tb = mediaDateSortMs(b);
-      if (ta !== tb) return ta - tb;
+      if (ta !== tb) return gridSortOrder === 'capture-desc' ? tb - ta : ta - tb;
       // Within the same second, bursts go by their index so shots stay in order.
       return (a.burstIndex ?? 0) - (b.burstIndex ?? 0);
     });
@@ -2273,15 +2293,15 @@ export function ThumbnailGrid() {
       seenCollapsedLeader.add(f.burstId);
       return true;
     });
-  }, [files, filter, collapsedSet, exposureAnchorPath, deferredSearchText, queuedSet, faceIdentityPathMap, faceIdentityGroupedPaths]);
+  }, [files, filter, gridSortOrder, collapsedSet, exposureAnchorPath, deferredSearchText, queuedSet, importFailedSet, faceIdentityPathMap, faceIdentityGroupedPaths]);
   const flatGridContentWidth = Math.max(0, flatGridWidth - 32);
-  const virtualGridColumns = Math.max(1, Math.floor((flatGridContentWidth + 12) / (160 + 12)));
+  const virtualGridColumns = Math.max(1, Math.floor((flatGridContentWidth + 12) / (thumbnailSize + 12)));
   const virtualGridEnabled = viewMode === 'grid' && filter !== 'face-gallery' && !groupByFolder && sortedFiles.length > 300;
   const virtualRowCount = Math.ceil(sortedFiles.length / virtualGridColumns);
   const rowVirtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: virtualGridEnabled ? virtualRowCount : 0,
     getScrollElement: () => flatScrollRef.current,
-    estimateSize: () => 248,
+    estimateSize: () => Math.round(thumbnailSize * 1.55),
     overscan: 6,
   });
   const splitVirtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
@@ -3703,6 +3723,20 @@ export function ThumbnailGrid() {
           }
           return;
         }
+        // Color label keys (6=red 7=yellow 8=green 9=blue — same key clears)
+        const colorLabelMap: Record<string, MediaFile['colorLabel']> = { '6': 'red', '7': 'yellow', '8': 'green', '9': 'blue' };
+        const colorLabel = colorLabelMap[e.key];
+        if (colorLabel !== undefined) {
+          e.preventDefault();
+          if (selectedPaths.length > 0) {
+            const anyUnset = selectedPaths.some((p) => files.find((f) => f.path === p)?.colorLabel !== colorLabel);
+            dispatch({ type: 'SET_COLOR_LABEL_BATCH', filePaths: selectedPaths, label: anyUnset ? colorLabel : undefined });
+          } else if (focusedIndex >= 0 && focusedIndex < sortedFiles.length) {
+            const focused = sortedFiles[focusedIndex];
+            dispatch({ type: 'SET_COLOR_LABEL', filePath: focused.path, label: focused.colorLabel === colorLabel ? undefined : colorLabel });
+          }
+          return;
+        }
       }
 
       // ── Shift-modified bulk pick shortcuts (non-remappable, keep as-is) ──
@@ -3995,6 +4029,20 @@ export function ThumbnailGrid() {
     window.addEventListener('photo-importer:shortcuts', open);
     return () => window.removeEventListener('photo-importer:shortcuts', open);
   }, []);
+
+  // Ctrl/Cmd+scroll to resize thumbnails
+  useEffect(() => {
+    const el = flatScrollRef.current ?? gridRef.current;
+    if (!el) return;
+    const handleWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? -16 : 16;
+      dispatch({ type: 'SET_THUMBNAIL_SIZE', size: Math.max(80, Math.min(320, thumbnailSize + delta)) });
+    };
+    el.addEventListener('wheel', handleWheel, { passive: false });
+    return () => el.removeEventListener('wheel', handleWheel);
+  }, [dispatch, thumbnailSize]);
 
   useEffect(() => {
     setShowBestOfSelection(false);
@@ -5137,6 +5185,30 @@ export function ThumbnailGrid() {
         </ToolbarGroup>
         )}
 
+        <select
+          value={gridSortOrder}
+          onChange={(e) => dispatch({ type: 'SET_GRID_SORT_ORDER', order: e.target.value as typeof gridSortOrder })}
+          className="shrink-0 rounded border border-border bg-surface-raised px-1.5 py-0.5 text-[10px] text-text-muted focus:outline-none focus:border-blue-500/50 cursor-pointer"
+          title="Change the order photos appear in the grid"
+        >
+          <option value="capture-asc">Date ↑</option>
+          <option value="capture-desc">Date ↓</option>
+          <option value="score-desc">Score</option>
+          <option value="name-asc">Name</option>
+        </select>
+        <div className="shrink-0 flex items-center gap-1" title={`Thumbnail size: ${thumbnailSize}px. Use the slider or Ctrl/Cmd+scroll in the grid.`}>
+          <span className="text-[9px] text-text-faint">S</span>
+          <input
+            type="range"
+            min={80}
+            max={320}
+            step={8}
+            value={thumbnailSize}
+            onChange={(e) => dispatch({ type: 'SET_THUMBNAIL_SIZE', size: Number(e.target.value) })}
+            className="w-16 accent-blue-500 cursor-pointer"
+          />
+          <span className="text-[9px] text-text-faint">L</span>
+        </div>
         <span className="shrink-0 text-[10px] text-text-faint">
           {isPro ? 'Ctrl/Cmd+K for all commands' : 'Simple mode'}
         </span>
@@ -5978,7 +6050,7 @@ export function ThumbnailGrid() {
                           )}
                         </button>
                         {!collapsed && (
-                        <div className="thumbnail-grid grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-3">
+                        <div className="thumbnail-grid grid" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${thumbnailSize}px, 1fr))`, gap: '12px' }}>
                           {folderFiles.map((file) => {
                             const i = pathToSortedIndex.get(file.path) ?? -1;
                             return (
@@ -6057,7 +6129,8 @@ export function ThumbnailGrid() {
                 /* Normal flat grid */
                 <div
                   ref={gridRef}
-                  className="thumbnail-grid grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-3"
+                  className="thumbnail-grid grid"
+                  style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${thumbnailSize}px, 1fr))`, gap: '12px' }}
                 >
                   {sortedFiles.map((file, i) => (
                     <ThumbnailCard

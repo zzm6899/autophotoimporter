@@ -49,6 +49,9 @@ export function groupBursts(files: MediaFile[], opts: BurstOptions): MediaFile[]
   const cameraKey = (f: MediaFile): string | null => {
     const make = f.cameraMake?.trim().toLowerCase() ?? '';
     const model = f.cameraModel?.trim().toLowerCase() ?? '';
+    // Require a model identifier. Make-only is not specific enough — different
+    // camera bodies from the same manufacturer share the make field and would
+    // be incorrectly merged into the same burst group.
     if (!model) return null;
     return `${make}|${model}`;
   };

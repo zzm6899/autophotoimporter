@@ -378,6 +378,19 @@ function ThumbnailCardInner({
               <div className="absolute -top-1 -right-1 -bottom-1 -left-1 border border-border/40 rounded-sm -z-20 translate-x-1 translate-y-1" />
             </>
           )}
+
+          {file.colorLabel && (
+            <div
+              className={`absolute bottom-0 left-0 right-0 h-[3px] z-30 ${
+                file.colorLabel === 'red' ? 'bg-red-500' :
+                file.colorLabel === 'yellow' ? 'bg-yellow-400' :
+                file.colorLabel === 'green' ? 'bg-emerald-500' :
+                file.colorLabel === 'blue' ? 'bg-blue-500' :
+                'bg-purple-500'
+              }`}
+              title={`Color label: ${file.colorLabel}`}
+            />
+          )}
         </div>
       </div>
 
@@ -401,6 +414,7 @@ export const ThumbnailCard = memo(ThumbnailCardInner, (prev, next) => {
     a.path === b.path &&
     a.thumbnail === b.thumbnail &&
     a.pick === b.pick &&
+    a.colorLabel === b.colorLabel &&
     a.duplicate === b.duplicate &&
     a.isProtected === b.isProtected &&
     a.rating === b.rating &&

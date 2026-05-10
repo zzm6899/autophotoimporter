@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import type { AppSession, MediaFile } from '../../shared/types';
@@ -192,12 +192,21 @@ class JsonSessionStore implements SessionStoreBackend {
   private async writeAtomic(targetPath: string, content: string): Promise<void> {
     const tempPath = `${targetPath}.tmp`;
     await writeFile(tempPath, content, { encoding: 'utf8', mode: 0o600 });
-    await rename(tempPath, targetPath);
+    try {
+      await rename(tempPath, targetPath);
+    } catch (err) {
+      // Clean up the orphaned temp file so it doesn't accumulate on disk.
+      await unlink(tempPath).catch(() => undefined);
+      throw err;
+    }
   }
 }
 
 class SqliteSessionStore implements SessionStoreBackend {
   private readonly db: SqliteDatabase;
+  // Promise-chain mutex: each save() appends to this chain so SQLite
+  // BEGIN/COMMIT calls from concurrent async callers never interleave.
+  private saveMutex: Promise<unknown> = Promise.resolve();
 
   constructor(sqlite: SqliteModule, public readonly sqlitePath: string) {
     this.db = new sqlite.DatabaseSync(sqlitePath);
@@ -269,6 +278,14 @@ class SqliteSessionStore implements SessionStoreBackend {
   }
 
   async save(session: AppSession): Promise<AppSession> {
+    // Serialize saves through the mutex so concurrent callers don't interleave
+    // BEGIN/COMMIT on the synchronous SQLite connection.
+    const result = this.saveMutex.then(() => this._saveImpl(session));
+    this.saveMutex = result.catch(() => undefined);
+    return result;
+  }
+
+  private _saveImpl(session: AppSession): AppSession {
     const next = leanSession(session);
     const stats = sessionStats(next);
     const upsertSession = this.db.prepare(`

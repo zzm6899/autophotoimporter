@@ -1088,8 +1088,8 @@ export async function runFaceGpuStressTest(durationMs = 8000, streams = 8): Prom
           await detectorSession!.run({ [detectorInputName]: detectorTensor });
           detectorMs += performance.now() - t;
           detectorRuns++;
-        } else {
-          await embedderSession!.run({ [embedderInputName]: embedderTensor });
+        } else if (embedderSession) {
+          await embedderSession.run({ [embedderInputName]: embedderTensor });
           embedderMs += performance.now() - t;
           embedderRuns++;
         }

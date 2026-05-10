@@ -511,9 +511,9 @@ export async function planImportFiles(files: MediaFile[], config: ImportConfig):
       items.push({ ...base, status: 'invalid', reason: unstableSource });
       continue;
     }
-    if (config.skipDuplicates && paths.destRelPath && await isDuplicate(config.destRoot, paths.destRelPath, file.size)) {
+    if (config.skipDuplicates && paths.destRelPath && await isDuplicate(config.destRoot, paths.destRelPath, file.size, file.sourceModifiedAtMs)) {
       duplicates++;
-      items.push({ ...base, status: 'duplicate', reason: 'Already exists at destination with matching size' });
+      items.push({ ...base, status: 'duplicate', reason: 'Already exists at destination with matching size and mtime' });
       continue;
     }
     const resolved = await resolveImportDestPaths(file, config);
@@ -578,10 +578,11 @@ async function convertWithSips(
   jpegQuality: number,
   autoStraighten = false,
 ): Promise<void> {
+  // sips does not support auto-orient; the autoStraighten flag is handled by
+  // the ImageMagick path. Only add formatOptions once (for JPEG quality).
   const args = [
     '-s', 'format', format,
     ...(format === 'jpeg' ? ['-s', 'formatOptions', String(jpegQuality)] : []),
-    ...(autoStraighten ? ['-s', 'formatOptions', String(jpegQuality)] : []),
     srcPath,
     '--out', destFullPath,
   ];
@@ -1014,7 +1015,7 @@ export async function importFiles(
 
     if (config.skipDuplicates) {
       const dup = plannedPaths.destRelPath
-        ? await isDuplicate(config.destRoot, plannedPaths.destRelPath, file.size)
+        ? await isDuplicate(config.destRoot, plannedPaths.destRelPath, file.size, file.sourceModifiedAtMs)
         : false;
       if (dup) {
         skipped++;
@@ -1306,9 +1307,10 @@ export async function importFiles(
         if (signal.aborted) break;
         const remotePath = remoteJoin(baseRemote, upload.remoteRelPath);
         const remoteDir = path.posix.dirname(remotePath);
-        const remoteName = path.posix.basename(remotePath);
         await client.ensureDir(remoteDir);
-        await client.uploadFrom(upload.localPath, remoteName);
+        // Use the absolute remote path so concurrent sidecar uploads that change
+        // the client CWD cannot redirect this file to the wrong directory.
+        await client.uploadFrom(upload.localPath, remotePath);
         uploaded++;
         recordSpeedSample();
         emitProgress(`${upload.fileName} (FTP ${uploaded}/${ftpUploads.length})`, uploaded >= ftpUploads.length);

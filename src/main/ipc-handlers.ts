@@ -2215,7 +2215,7 @@ export function registerIpcHandlers(): void {
       const relPath = file.isProtected && sep
         ? path.join(folder, file.destPath)
         : file.destPath;
-      const dup = await isDuplicate(destRoot, relPath, file.size);
+      const dup = await isDuplicate(destRoot, relPath, file.size, file.sourceModifiedAtMs);
       if (dup) {
         file.duplicate = true;
         sendToRenderer(IPC.SCAN_DUPLICATE, file.path);
