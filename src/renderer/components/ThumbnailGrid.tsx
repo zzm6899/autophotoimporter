@@ -2993,6 +2993,11 @@ export function ThumbnailGrid() {
     setReviewLoopTick((value) => value + 1);
   }, []);
 
+  const rerunFaceScan = useCallback(() => {
+    dispatch({ type: 'CLEAR_FACE_DATA' });
+    resumeAiReview();
+  }, [dispatch, resumeAiReview]);
+
   const pauseAiReview = useCallback(() => {
     setReviewPaused(true);
     reviewPausedRef.current = true;
@@ -5835,6 +5840,25 @@ export function ThumbnailGrid() {
                 {item}
               </span>
             ))}
+            {reviewPaused ? (
+              <button
+                type="button"
+                onClick={resumeAiReview}
+                className="rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-emerald-300 hover:bg-emerald-500/20 hover:text-emerald-200"
+                title="Resume the background AI review loop."
+              >
+                Resume AI review
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={rerunFaceScan}
+                className="rounded border border-blue-500/30 bg-blue-500/10 px-1.5 py-0.5 text-blue-300 hover:bg-blue-500/20 hover:text-blue-200"
+                title="Clear current face results and run face scanning again for this gallery."
+              >
+                Rerun face scan
+              </button>
+            )}
             {reviewStats.embeddings > 1 && (
               <button
                 type="button"
