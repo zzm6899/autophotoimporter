@@ -695,7 +695,7 @@ export async function generatePreview(
         }
       }
 
-      if (isRawPreview && process.platform !== 'darwin') {
+      if (isRawPreview) {
         const fallback = await embeddedFallback(filePath, ext, width, quality, outPath);
         if (fallback) {
           rawPreviewCacheCounters.embeddedFallbacks++;
