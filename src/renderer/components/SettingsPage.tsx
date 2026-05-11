@@ -874,6 +874,14 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     }
   };
 
+
+  const handleRerunFaceScan = () => {
+    // Keep local thumbnails/metadata, but wipe face-analysis outputs so every
+    // eligible photo re-enters the background AI review queue immediately.
+    dispatch({ type: 'CLEAR_FACE_DATA' });
+    window.dispatchEvent(new Event('photo-importer:resume-ai'));
+  };
+
   const handleClearFaceCache = async () => {
     setFaceCacheClearing(true);
     try {
@@ -2906,16 +2914,24 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
               </p>
             </div>
 
-            {/* Clear face cache */}
-            <button
-              onClick={handleClearFaceCache}
-              disabled={faceCacheClearing}
-              className="text-[10px] text-text-secondary border border-surface-border rounded px-2 py-1 hover:text-text hover:border-text-secondary transition-colors disabled:opacity-50"
-            >
-              {faceCacheClearing ? 'Clearing…' : 'Clear face cache'}
-            </button>
+            {/* Face scan controls */}
+            <div className="flex flex-wrap gap-1">
+              <button
+                onClick={handleRerunFaceScan}
+                className="text-[10px] text-text-secondary border border-surface-border rounded px-2 py-1 hover:text-text hover:border-text-secondary transition-colors"
+              >
+                Run face scan now
+              </button>
+              <button
+                onClick={handleClearFaceCache}
+                disabled={faceCacheClearing}
+                className="text-[10px] text-text-secondary border border-surface-border rounded px-2 py-1 hover:text-text hover:border-text-secondary transition-colors disabled:opacity-50"
+              >
+                {faceCacheClearing ? 'Clearing…' : 'Clear face cache'}
+              </button>
+            </div>
             <p className="text-[10px] text-text-muted mt-0.5">
-              Forces re-analysis of all photos on next import. Use after swapping lenses or changing detection settings.
+              Run face scan now resumes AI review immediately for this gallery. Clear face cache also wipes persisted ONNX results so future imports re-analyze from scratch.
             </p>
 
             <div className="mt-2 rounded border border-border bg-surface-alt px-2 py-2">
