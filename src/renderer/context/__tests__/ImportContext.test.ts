@@ -701,7 +701,24 @@ describe('ImportContext reducer', () => {
       expect(next.files[2].faceGroupId).toBeUndefined();
     });
 
-    it('groups lower-confidence event face candidates with the app threshold', () => {
+    it('keeps lower-confidence face candidates split with the default app threshold', () => {
+      const files = [
+        makeFile({ path: '/a.jpg' }),
+        makeFile({ path: '/b.jpg' }),
+        makeFile({ path: '/c.jpg' }),
+      ];
+      const mergedFiles = [
+        { ...files[0], faceCount: 1, faceEmbedding: embeddingHex([1, 0, 0, 0]) },
+        { ...files[1], faceCount: 1, faceEmbedding: embeddingHex([0.58, 0.815, 0, 0]) },
+        { ...files[2], faceCount: 1, faceEmbedding: embeddingHex([0, 0, 1, 0]) },
+      ];
+      const next = reducer(makeState({ files }), { type: 'GROUP_FACE_SIMILAR', threshold: 10, files: mergedFiles });
+      expect(next.files[0].faceGroupId).toBeUndefined();
+      expect(next.files[1].faceGroupId).toBeUndefined();
+      expect(next.files[2].faceGroupId).toBeUndefined();
+    });
+
+    it('can still group lower-confidence event face candidates when explicitly loosened', () => {
       const files = [
         makeFile({ path: '/a.jpg' }),
         makeFile({ path: '/b.jpg' }),
@@ -710,9 +727,14 @@ describe('ImportContext reducer', () => {
       const mergedFiles = [
         { ...files[0], faceCount: 1, faceEmbedding: embeddingHex([1, 0, 0, 0]) },
         { ...files[1], faceCount: 1, faceEmbedding: embeddingHex([0.6, 0.8, 0, 0]) },
-        { ...files[2], faceCount: 1, faceEmbedding: embeddingHex([0, 1, 0, 0]) },
+        { ...files[2], faceCount: 1, faceEmbedding: embeddingHex([0, 0, 1, 0]) },
       ];
-      const next = reducer(makeState({ files }), { type: 'GROUP_FACE_SIMILAR', threshold: 10, files: mergedFiles });
+      const next = reducer(makeState({ files }), {
+        type: 'GROUP_FACE_SIMILAR',
+        threshold: 10,
+        embeddingThreshold: 0.52,
+        files: mergedFiles,
+      });
       expect(next.files[1].faceGroupId).toBe(next.files[0].faceGroupId);
       expect(next.files[0].faceGroupSize).toBe(2);
       expect(next.files[2].faceGroupId).toBeUndefined();

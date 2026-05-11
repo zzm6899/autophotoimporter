@@ -1160,11 +1160,10 @@ export function groupByFaceEmbedding(files: MediaFile[], threshold = 0.67): Reco
   return groups;
 }
 
-// Real event/crowd photos usually have small, blurred, or profile faces. A
-// strict identity threshold can produce no groups even when embeddings exist,
-// so the app-level grouping uses a candidate-match cutoff while the helper's
-// default remains conservative for tests and callers that need exact identity.
-export const FACE_GROUP_EMBEDDING_THRESHOLD = 0.52;
+// Default app-level identity grouping should prefer splitting uncertain faces
+// over merging different people. The UI exposes a lower Event threshold for
+// difficult shoots with small, blurred, or profile faces.
+export const FACE_GROUP_EMBEDDING_THRESHOLD = 0.6;
 
 export function groupByFaceSimilarity(files: MediaFile[], embeddingThreshold = 0.67, signatureThreshold = 10): Record<string, string[]> {
   const combined: Record<string, string[]> = {};

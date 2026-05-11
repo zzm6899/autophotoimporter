@@ -247,9 +247,9 @@ export function summarizeReviewFlowNextStep({
 type MediaFaceBox = NonNullable<MediaFile['faceBoxes']>[number];
 
 const FACE_GROUP_SENSITIVITY_OPTIONS = [
-  { id: 'strict', label: 'Strict', threshold: 0.6, hint: 'Fewer false matches, more split people.' },
-  { id: 'balanced', label: 'Balanced', threshold: 0.5, hint: 'Safer event-photo grouping.' },
-  { id: 'loose', label: 'Event', threshold: 0.44, hint: 'Stacks more angle/blur variants, may need checking.' },
+  { id: 'strict', label: 'Strict', threshold: 0.68, hint: 'Most cautious grouping; fewer false matches, more split people.' },
+  { id: 'balanced', label: 'Balanced', threshold: 0.6, hint: 'Default identity grouping with fewer accidental merges.' },
+  { id: 'loose', label: 'Event', threshold: 0.52, hint: 'Stacks more angle/blur variants for hard shoots; check results.' },
 ] as const;
 
 type FaceGroupSensitivity = typeof FACE_GROUP_SENSITIVITY_OPTIONS[number]['id'];
@@ -581,7 +581,8 @@ function coalesceNearbyFaceGroups(
   sensitivity: FaceGroupSensitivity,
 ): FaceIdentityGroup[] {
   if (groups.length < 2) return groups;
-  const mergeThreshold = sensitivity === 'strict' ? 0.55 : sensitivity === 'balanced' ? 0.46 : 0.42;
+  if (sensitivity !== 'loose') return groups;
+  const mergeThreshold = 0.58;
   const clusters = groups.map((group) => ({ groups: [group], paths: new Set(group.paths), manual: 'manual' in group }));
   const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
   const comparisonLimit = groups.length > FACE_SOFT_MERGE_LARGE_GROUP_LIMIT
@@ -646,7 +647,7 @@ function coalesceNearbyFaceGroups(
             if (overBudget()) return finalizeClusters();
             similarity = Math.max(similarity, bestSimilarity(left, right));
             confidentEnough = confidentEnough ||
-              Math.max(left.confidence, right.confidence) >= 0.52 ||
+              Math.max(left.confidence, right.confidence) >= 0.62 ||
               left.size > 1 ||
               right.size > 1;
           }
@@ -909,8 +910,8 @@ function FaceThresholdSlider({
   return (
     <input
       type="range"
-      min={0.42}
-      max={0.72}
+      min={0.5}
+      max={0.78}
       step={0.01}
       value={draft}
       onChange={(event) => setDraft(Number(event.target.value))}
@@ -1995,7 +1996,7 @@ export function ThumbnailGrid() {
   const [showTagSuggestions, setShowTagSuggestions] = useState(false);
   const [faceProviderSummary, setFaceProviderSummary] = useState<string>('Face engine warming');
   const [showAiReviewStrip, setShowAiReviewStrip] = useState(false);
-  const [faceGroupSensitivity, setFaceGroupSensitivity] = useState<FaceGroupSensitivity>('loose');
+  const [faceGroupSensitivity, setFaceGroupSensitivity] = useState<FaceGroupSensitivity>('balanced');
   const [faceGalleryShowSingles, setFaceGalleryShowSingles] = useState(false);
   const [selectedFaceGroupIds, setSelectedFaceGroupIds] = useState<Set<string>>(new Set());
   const [manualFaceGroups, setManualFaceGroups] = useState<ManualFaceGroup[]>([]);
@@ -2461,7 +2462,7 @@ export function ThumbnailGrid() {
     setCatalogFaceSearch({ status: 'loading', groupId: group.id, groupLabel: label });
     void window.electronAPI.searchCatalogFaces({
       embedding,
-      threshold: Math.max(0.42, faceGroupEmbeddingThreshold - 0.03),
+      threshold: Math.max(0.52, faceGroupEmbeddingThreshold - 0.03),
       limit: 48,
       excludePaths: group.paths,
     }).then((result) => {
