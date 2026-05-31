@@ -17,7 +17,7 @@ import { BestOfSelectionPanel, rankBestOfSelection } from './BestOfSelectionPane
 import { REVIEW_COMMAND_EVENT } from './CommandPalette';
 import { ActionButton, ToolbarGroup } from './ui';
 import { getCachedPreview, getPreviewCacheStats, setBackgroundPreviewPaused, warmPreviews } from '../utils/previewCache';
-import { isPathInsideSourceRoot } from '../utils/sourcePath';
+import { getSourceFolderLabel, isPathInsideSourceRoot } from '../utils/sourcePath';
 import { clampStops, getEffectiveExposureStops, getNormalizedExposureStops, normalizeExposureStops } from '../../shared/exposure';
 import { buildFaceIdentityGroups, cosineSimilarity, deserializeEmbedding, FACE_GROUP_EMBEDDING_THRESHOLD, faceSignalConfidence, focusQuality, humanMomentQuality, isUsablyFocused, type FaceIdentityGroup } from '../../shared/review';
 import { needsSecondPass } from '../../shared/review-lane';
@@ -4184,6 +4184,7 @@ export function ThumbnailGrid() {
   // Expose-normalize button state (computed before early returns so the
   // handleNormalizeToggle useCallback is always called unconditionally).
   const focusedFile = focusedIndex >= 0 && focusedIndex < sortedFiles.length ? sortedFiles[focusedIndex] : null;
+  const focusedSourceFolder = focusedFile ? getSourceFolderLabel(selectedSource, focusedFile.path) : null;
   const selectedFiles = useMemo(() => (
     selectedPaths
       .map((path) => filesByPath.get(path))
@@ -4294,12 +4295,7 @@ export function ThumbnailGrid() {
     if (!groupByFolder || !selectedSource) return null;
     const groups = new Map<string, typeof sortedFiles>();
     for (const file of sortedFiles) {
-      let rel = file.path;
-      if (rel.startsWith(selectedSource)) rel = rel.slice(selectedSource.length);
-      // strip leading separator (works for both / and \)
-      if (rel.startsWith('/') || rel.startsWith('\\')) rel = rel.slice(1);
-      const lastSep = Math.max(rel.lastIndexOf('/'), rel.lastIndexOf('\\'));
-      const folder = lastSep < 0 ? '(root)' : rel.slice(0, lastSep).replace(/\\/g, '/');
+      const folder = getSourceFolderLabel(selectedSource, file.path);
       if (!groups.has(folder)) groups.set(folder, []);
       groups.get(folder)!.push(file);
     }
@@ -5467,7 +5463,12 @@ export function ThumbnailGrid() {
             <span className="text-xs text-blue-400 font-medium">{selectedPaths.length} selected</span>
           ) : isSingle ? (
             <>
-              <span className="text-xs font-mono text-text truncate max-w-[120px]">{focusedFile.name}</span>
+              <span className="min-w-0 max-w-[min(360px,36vw)]" title={focusedFile.path}>
+                <span className="block truncate text-xs font-mono text-text">{focusedFile.name}</span>
+                {focusedSourceFolder && (
+                  <span className="block truncate text-[10px] font-mono text-text-muted">{focusedSourceFolder}</span>
+                )}
+              </span>
               <span className="text-[10px] text-text-muted font-mono shrink-0">{focusedIndex + 1}/{sortedFiles.length}</span>
             </>
           ) : (

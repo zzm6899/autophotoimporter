@@ -23,6 +23,7 @@ import { bestShotScore } from '../../shared/review';
 import { Histogram } from './Histogram';
 import { decodeImage, getCachedPreview } from '../utils/previewCache';
 import { buildAiReasons } from '../utils/aiReasons';
+import { getSourceFolderLabel } from '../utils/sourcePath';
 
 interface SingleViewProps {
   file: MediaFile;
@@ -101,6 +102,7 @@ export function SingleView({ file, files, index, total, aiPaused = false }: Sing
     viewOverlayPreferences,
     fastKeeperMode,
     reviewFaceAnalysis,
+    selectedSource,
   } = useAppState();
   const dispatch = useAppDispatch();
   const {
@@ -155,6 +157,7 @@ export function SingleView({ file, files, index, total, aiPaused = false }: Sing
   const lastMouse = useRef({ x: 0, y: 0 });
   const containerRef = useRef<HTMLDivElement>(null);
   const rawPreview = isRawPhoto(file);
+  const sourceFolder = getSourceFolderLabel(selectedSource, file.path);
 
   // Reset zoom/pan and preview toggle when file changes
   useEffect(() => {
@@ -843,6 +846,16 @@ export function SingleView({ file, files, index, total, aiPaused = false }: Sing
       )}
 
       {!isZoomed && showHistogram && imageSrc && <Histogram src={imageSrc} filter={imageFilter} />}
+
+      {!isZoomed && imageSrc && (
+        <div
+          className="absolute bottom-11 left-3 z-20 max-w-[min(560px,calc(100vw-9rem))] rounded border border-white/10 bg-black/60 px-2 py-1 text-white/90 shadow backdrop-blur-sm"
+          title={file.path}
+        >
+          <div className="truncate text-[10px] font-mono font-semibold">{file.name}</div>
+          <div className="truncate text-[9px] font-mono text-white/60">{sourceFolder}</div>
+        </div>
+      )}
 
       {!isZoomed && (file.isProtected || (file.rating && file.rating > 0)) && (
         <div className="absolute top-3 left-3 flex items-center gap-1.5 z-20">
