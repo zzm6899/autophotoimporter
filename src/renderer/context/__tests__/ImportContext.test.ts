@@ -7,6 +7,8 @@ function makeState(overrides: Record<string, unknown> = {}) {
   return {
     volumes: [],
     selectedSource: null,
+    activeScanId: null,
+    scanDiagnostics: null,
     files: [] as MediaFile[],
     phase: 'idle' as AppPhase,
     scanError: null as string | null,
@@ -363,10 +365,19 @@ describe('ImportContext reducer', () => {
     it('appends files to existing array', () => {
       const file1 = makeFile({ path: '/a.jpg' });
       const file2 = makeFile({ path: '/b.jpg' });
-      const state = makeState({ files: [file1] });
+      const state = makeState({ files: [file1], phase: 'scanning' });
       const next = reducer(state, { type: 'SCAN_BATCH', files: [file2] });
       expect(next.files).toHaveLength(2);
       expect(next.files[1].path).toBe('/b.jpg');
+    });
+
+    it('ignores stale scan batches from a previous source', () => {
+      const file1 = makeFile({ path: '/current.jpg' });
+      const file2 = makeFile({ path: '/old.jpg' });
+      const state = makeState({ files: [file1], phase: 'scanning', activeScanId: 'current-scan' });
+      const next = reducer(state, { type: 'SCAN_BATCH', files: [file2], scanId: 'old-scan' });
+      expect(next.files).toEqual([file1]);
+      expect(next.scanDiagnostics?.staleEventsIgnored).toBe(1);
     });
   });
 
@@ -458,6 +469,31 @@ describe('ImportContext reducer', () => {
     it('stores catalog duplicate filter selection', () => {
       const next = reducer(makeState(), { type: 'SET_FILTER', filter: 'catalog-duplicates' });
       expect(next.filter).toBe('catalog-duplicates');
+    });
+  });
+
+  describe('CLEAR_CATALOG_MEMORY_FOR_SOURCE', () => {
+    it('clears catalog duplicate memory only for files inside the current source', () => {
+      const inside = makeFile({
+        path: '/card/DCIM/a.jpg',
+        duplicate: true,
+        duplicateMemory: { kind: 'previous-import', matchedPath: '/archive/a.jpg' },
+      });
+      const outside = makeFile({
+        path: '/old/DCIM/b.jpg',
+        duplicate: true,
+        duplicateMemory: { kind: 'previous-import', matchedPath: '/archive/b.jpg' },
+      });
+
+      const next = reducer(makeState({ files: [inside, outside] }), {
+        type: 'CLEAR_CATALOG_MEMORY_FOR_SOURCE',
+        sourcePath: '/card',
+      });
+
+      expect(next.files[0].duplicate).toBe(false);
+      expect(next.files[0].duplicateMemory).toBeUndefined();
+      expect(next.files[1].duplicate).toBe(true);
+      expect(next.files[1].duplicateMemory).toEqual(outside.duplicateMemory);
     });
   });
 
@@ -820,10 +856,11 @@ describe('ImportContext reducer', () => {
       expect(next.files.find((f) => f.path === '/stale-best.jpg')?.pick).toBe('rejected');
     });
 
-    it('queues every keepable standalone photo', () => {
+    it('queues focused keepable standalone photos', () => {
       const files = [
-        makeFile({ path: '/best.jpg', reviewScore: 80 }),
-        makeFile({ path: '/weak.jpg', reviewScore: 40 }),
+        makeFile({ path: '/best.jpg', reviewScore: 80, sharpnessScore: 150, subjectSharpnessScore: 120, blurRisk: 'low' }),
+        makeFile({ path: '/weak.jpg', reviewScore: 40, sharpnessScore: 118, subjectSharpnessScore: 96, blurRisk: 'low' }),
+        makeFile({ path: '/soft.jpg', reviewScore: 84, sharpnessScore: 112, subjectSharpnessScore: 34, blurRisk: 'medium', faceCount: 4 }),
         makeFile({ path: '/reject.jpg', reviewScore: 95, pick: 'rejected' }),
         makeFile({ path: '/duplicate.jpg', reviewScore: 95, duplicate: true }),
       ];
@@ -833,7 +870,7 @@ describe('ImportContext reducer', () => {
 
     it('replaces stale queued paths when queueing keepers', () => {
       const files = [
-        makeFile({ path: '/keeper.jpg', reviewScore: 80 }),
+        makeFile({ path: '/keeper.jpg', reviewScore: 80, sharpnessScore: 145, subjectSharpnessScore: 110, blurRisk: 'low' }),
         makeFile({ path: '/reject.jpg', reviewScore: 95, pick: 'rejected' }),
       ];
       const next = reducer(makeState({ files, queuedPaths: ['/stale.jpg'], filter: 'queue' }), { type: 'QUEUE_BEST' });

@@ -4,9 +4,9 @@ import { execFile, spawn } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 import path from 'node:path';
 import { DEFAULT_VIEW_OVERLAY_PREFERENCES, IPC, PHOTO_EXTENSIONS } from '../shared/types';
-import type { ImportConfig, ImportResult, ImportBenchmarkQuery, ImportBenchmarkResult, AppSettings, MediaFile, FtpConfig, FtpSyncStatus, Volume, UpdateState, ImportLedger, ImportHealthSummary, MacFirstRunDoctor, AppDiagnosticsSnapshot, UpdateRepairResult, AppSession, WatchFolder, CatalogBrowserQuery, CatalogFaceSearchQuery } from '../shared/types';
+import type { ImportConfig, ImportResult, ImportBenchmarkQuery, ImportBenchmarkResult, AppSettings, MediaFile, FtpConfig, FtpSyncStatus, Volume, UpdateState, ImportLedger, ImportHealthSummary, MacFirstRunDoctor, AppDiagnosticsSnapshot, UpdateRepairResult, AppSession, WatchFolder, CatalogBrowserQuery, CatalogFaceSearchQuery, ScanDiagnostics } from '../shared/types';
 import { listVolumes, startWatching, stopWatching } from './services/volume-watcher';
-import { scanFiles, cancelScan, pauseScan, resumeScan } from './services/file-scanner';
+import { scanFiles, cancelScan, pauseScan, resumeScan, type FileScanDiagnostics } from './services/file-scanner';
 import { importFiles, cancelImport, planImportFiles } from './services/import-engine';
 import { writeLightroomHandoff } from './services/lightroom-handoff';
 import { isDuplicate } from './services/duplicate-detector';
@@ -858,22 +858,25 @@ async function buildImportHealthSummary(): Promise<ImportHealthSummary> {
   };
 }
 
-async function applyCatalogScanMemory(sourcePath: string): Promise<void> {
+async function applyCatalogScanMemory(sourcePath: string, scanId: string): Promise<number> {
   catalogService ??= openCatalog(path.join(app.getPath('userData'), 'catalog'));
   const db = await catalogService;
   const { duplicateCandidates } = await db.upsertMediaFiles(scannedFiles, sourcePath);
   const byPath = new Map(duplicateCandidates.map((candidate) => [candidate.sourcePath, candidate]));
+  let marked = 0;
   for (const file of scannedFiles) {
     const candidate = byPath.get(file.path);
     if (!candidate) continue;
+    marked++;
     file.duplicate = true;
     file.duplicateMemory = {
       kind: candidate.importedCount > 0 ? 'previous-import' : 'same-visual',
       matchedPath: candidate.matchedPaths[0] ?? file.path,
       importedAt: candidate.lastImportedAt,
     };
-    sendToRenderer(IPC.SCAN_DUPLICATE, file.path, file.duplicateMemory);
+    sendToRenderer(IPC.SCAN_DUPLICATE, scanId, file.path, file.duplicateMemory);
   }
+  return marked;
 }
 
 async function recordCatalogImport(config: ImportConfig, result: ImportResult): Promise<void> {
@@ -2136,11 +2139,12 @@ export function registerIpcHandlers(): void {
   });
 
   // Scanning
-  handleIpc(IPC.SCAN_START, async (_event, sourcePath: string, folderPattern?: string) => {
+  handleIpc(IPC.SCAN_START, async (_event, sourcePath: string, folderPattern?: string, requestScanId?: string) => {
     console.log(`[scan] Starting scan of: ${sourcePath}`);
     scannedFiles = [];
     scannedFilesByPath = new Map();
     const scanGeneration = ++scanEventGeneration;
+    const scanId = requestScanId || `main-${scanGeneration}-${Date.now().toString(36)}`;
     clearImageDecodeCache(); // flush stale RAW decodes from previous source
     cancelPendingFaceJobs(); // drain queued face jobs from old source so they don't compete with new scan
     const thumbnailBuffer = new Map<string, string>();
@@ -2158,7 +2162,7 @@ export function registerIpcHandlers(): void {
       const batch = Array.from(thumbnailBuffer.entries());
       thumbnailBuffer.clear();
       for (const [filePath, thumbnail] of batch) {
-        sendToRenderer(IPC.SCAN_THUMBNAIL, filePath, thumbnail);
+        sendToRenderer(IPC.SCAN_THUMBNAIL, scanId, filePath, thumbnail);
       }
     };
     const scheduleThumbnailFlush = () => {
@@ -2170,6 +2174,12 @@ export function registerIpcHandlers(): void {
         thumbnailFlushTimer = setTimeout(flushThumbnailBuffer, 120);
       }
     };
+    let fileDiagnostics: FileScanDiagnostics = {
+      filesFound: 0,
+      hiddenOrSystemEntriesSkipped: 0,
+      inaccessibleDirectories: 0,
+      statFailures: 0,
+    };
     try {
       const total = await scanFiles(
         sourcePath,
@@ -2177,7 +2187,7 @@ export function registerIpcHandlers(): void {
           if (scanGeneration !== scanEventGeneration) return;
           scannedFiles.push(...batch);
           for (const file of batch) scannedFilesByPath.set(file.path, file);
-          sendToRenderer(IPC.SCAN_BATCH, batch);
+          sendToRenderer(IPC.SCAN_BATCH, scanId, batch);
         },
         (filePath, thumbnail) => {
           if (scanGeneration !== scanEventGeneration) return;
@@ -2188,21 +2198,52 @@ export function registerIpcHandlers(): void {
           scheduleThumbnailFlush();
         },
         folderPattern,
+        {
+          onDiagnostics: (diagnostics) => {
+            fileDiagnostics = diagnostics;
+          },
+        },
       );
       console.log(`[scan] Complete: ${total} files`);
-      await applyCatalogScanMemory(sourcePath).catch((error) => log.warn('[catalog] scan memory failed', error));
+      const catalogDuplicatesMarked = await applyCatalogScanMemory(sourcePath, scanId).catch((error) => {
+        log.warn('[catalog] scan memory failed', error);
+        return 0;
+      });
       if (scanGeneration !== scanEventGeneration) return;
-      sendToRenderer(IPC.SCAN_COMPLETE, total);
+      const diagnostics: ScanDiagnostics = {
+        scanId,
+        sourcePath,
+        filesFound: total,
+        hiddenOrSystemEntriesSkipped: fileDiagnostics.hiddenOrSystemEntriesSkipped,
+        inaccessibleDirectories: fileDiagnostics.inaccessibleDirectories,
+        statFailures: fileDiagnostics.statFailures,
+        catalogDuplicatesMarked,
+        staleEventsIgnored: 0,
+      };
+      sendToRenderer(IPC.SCAN_DIAGNOSTICS, scanId, diagnostics);
+      sendToRenderer(IPC.SCAN_COMPLETE, scanId, total);
     } catch (err) {
       console.error('[scan] Error:', err);
       if (scanGeneration !== scanEventGeneration) return;
-      sendToRenderer(IPC.SCAN_COMPLETE, 0);
+      const diagnostics: ScanDiagnostics = {
+        scanId,
+        sourcePath,
+        filesFound: 0,
+        hiddenOrSystemEntriesSkipped: fileDiagnostics.hiddenOrSystemEntriesSkipped,
+        inaccessibleDirectories: fileDiagnostics.inaccessibleDirectories,
+        statFailures: fileDiagnostics.statFailures,
+        catalogDuplicatesMarked: 0,
+        staleEventsIgnored: 0,
+      };
+      sendToRenderer(IPC.SCAN_DIAGNOSTICS, scanId, diagnostics);
+      sendToRenderer(IPC.SCAN_COMPLETE, scanId, 0);
     } finally {
       flushThumbnailBuffer();
     }
   });
 
-  handleIpc(IPC.SCAN_CHECK_DUPLICATES, async (_event, destRoot: string) => {
+  handleIpc(IPC.SCAN_CHECK_DUPLICATES, async (_event, destRoot: string, requestScanId?: string) => {
+    const scanId = requestScanId || `duplicate-${scanEventGeneration}-${Date.now().toString(36)}`;
     // Use the same path composition as the import pipeline so protected files
     // land in _Protected/ and are matched there (otherwise they look like new
     // files forever because we'd check `destRoot/destPath` while they're
@@ -2218,10 +2259,10 @@ export function registerIpcHandlers(): void {
       const dup = await isDuplicate(destRoot, relPath, file.size, file.sourceModifiedAtMs);
       if (dup) {
         file.duplicate = true;
-        sendToRenderer(IPC.SCAN_DUPLICATE, file.path);
+        sendToRenderer(IPC.SCAN_DUPLICATE, scanId, file.path);
       } else {
         file.duplicate = isDuplicateMemoryMatch(file.duplicateMemory);
-        sendToRenderer(IPC.SCAN_DUPLICATE, file.path, undefined, false);
+        sendToRenderer(IPC.SCAN_DUPLICATE, scanId, file.path, undefined, false);
       }
     }
   });
@@ -2306,6 +2347,10 @@ export function registerIpcHandlers(): void {
   handleIpc(IPC.CATALOG_PRUNE_MISSING, async () => {
     return (await getCatalogService()).pruneMissingEntries();
   });
+
+  handleIpc(IPC.CATALOG_CLEAR_SOURCE, async (_event, sourcePath: string) => {
+    return (await getCatalogService()).clearSource(sourcePath);
+  }, ([sourcePath]) => isNonEmptyString(sourcePath) ? null : ipcError('VALIDATION_ERROR', 'Invalid source path.'));
 
   handleIpc(IPC.CATALOG_EXPORT_BACKUP, async () => {
     const defaultPath = path.join(
@@ -3264,6 +3309,7 @@ async function runAutoImport(volume: Volume, options: Omit<QueuedAutoImport, 'vo
     scannedFiles = [];
     scannedFilesByPath = new Map();
     const scanGeneration = ++scanEventGeneration;
+    const scanId = `auto-${scanGeneration}-${Date.now().toString(36)}`;
     const thumbnailBuffer = new Map<string, string>();
     let thumbnailFlushTimer: NodeJS.Timeout | null = null;
     const flushThumbnailBuffer = () => {
@@ -3279,7 +3325,7 @@ async function runAutoImport(volume: Volume, options: Omit<QueuedAutoImport, 'vo
       const batch = Array.from(thumbnailBuffer.entries());
       thumbnailBuffer.clear();
       for (const [filePath, thumbnail] of batch) {
-        sendToRenderer(IPC.SCAN_THUMBNAIL, filePath, thumbnail);
+        sendToRenderer(IPC.SCAN_THUMBNAIL, scanId, filePath, thumbnail);
       }
     };
     const scheduleThumbnailFlush = () => {
@@ -3298,7 +3344,7 @@ async function runAutoImport(volume: Volume, options: Omit<QueuedAutoImport, 'vo
         if (scanGeneration !== scanEventGeneration) return;
         scannedFiles.push(...batch);
         for (const file of batch) scannedFilesByPath.set(file.path, file);
-        sendToRenderer(IPC.SCAN_BATCH, batch);
+        sendToRenderer(IPC.SCAN_BATCH, scanId, batch);
       },
       (filePath, thumbnail) => {
         if (scanGeneration !== scanEventGeneration) return;
@@ -3310,9 +3356,9 @@ async function runAutoImport(volume: Volume, options: Omit<QueuedAutoImport, 'vo
       },
       pattern,
     );
-    await applyCatalogScanMemory(volume.path).catch((error) => log.warn('[catalog] auto scan memory failed', error));
+    await applyCatalogScanMemory(volume.path, scanId).catch((error) => log.warn('[catalog] auto scan memory failed', error));
     if (scanGeneration !== scanEventGeneration) return;
-    sendToRenderer(IPC.SCAN_COMPLETE, total);
+    sendToRenderer(IPC.SCAN_COMPLETE, scanId, total);
     flushThumbnailBuffer();
 
     const importConfig: ImportConfig = {

@@ -90,7 +90,7 @@ describe('validateLicenseKey', () => {
       n: 'Trial Customer',
       e: 'trial@example.com',
       i: '24-04-2026',
-      x: '11-05-2026',
+      x: '31-12-2027',
       t: 'Full access',
     });
 
@@ -106,7 +106,7 @@ describe('validateLicenseKey', () => {
           name: 'Trial Customer',
           email: 'trial@example.com',
           issuedAt: '2026-04-24T00:00:00.000Z',
-          expiresAt: '2026-05-11T00:00:00.000Z',
+          expiresAt: '2027-12-31T00:00:00.000Z',
           tier: 'Full access',
         },
       }),
@@ -114,7 +114,7 @@ describe('validateLicenseKey', () => {
 
     const result = await activateLicenseInput(' pic-test-1234-abcd ');
     expect(result.valid).toBe(true);
-    expect(result.entitlement?.expiresAt).toBe('2026-05-11');
+    expect(result.entitlement?.expiresAt).toBe('2027-12-31');
     expect(result.message).toContain('active');
     expect(String(vi.mocked(fetch).mock.calls[0]?.[0])).toBe('https://keptra.z2hs.au/api/v1/license/resolve');
     expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0]?.[1]?.body)).activationCode).toBe('PIC-TEST-1234-ABCD');

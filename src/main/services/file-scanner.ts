@@ -31,6 +31,18 @@ const RAW_PRIORITY_EXTENSIONS = new Set([
   '.dng',
 ]);
 
+export interface FileScanDiagnostics {
+  filesFound: number;
+  hiddenOrSystemEntriesSkipped: number;
+  inaccessibleDirectories: number;
+  statFailures: number;
+}
+
+export interface FileScanOptions {
+  generateThumbnails?: boolean;
+  onDiagnostics?: (diagnostics: FileScanDiagnostics) => void;
+}
+
 let currentJob: JobController | null = null;
 let backgroundThumbnailAbort: AbortController | null = null;
 let paused = false;
@@ -52,6 +64,7 @@ async function walkDirectory(
   dirPath: string,
   files: MediaFile[],
   signal: AbortSignal,
+  diagnostics: FileScanDiagnostics,
 ): Promise<void> {
   if (signal.aborted) return;
 
@@ -59,6 +72,7 @@ async function walkDirectory(
   try {
     entries = await readdir(dirPath, { withFileTypes: true });
   } catch {
+    diagnostics.inaccessibleDirectories++;
     return;
   }
 
@@ -68,10 +82,13 @@ async function walkDirectory(
 
     const fullPath = path.join(dirPath, entry.name);
 
-    if (entry.name.startsWith('.')) continue;
+    if (entry.name.startsWith('.')) {
+      diagnostics.hiddenOrSystemEntriesSkipped++;
+      continue;
+    }
 
     if (entry.isDirectory()) {
-      await walkDirectory(fullPath, files, signal);
+      await walkDirectory(fullPath, files, signal, diagnostics);
     } else if (entry.isFile()) {
       const ext = path.extname(entry.name).toLowerCase();
       const type = getFileType(ext);
@@ -87,6 +104,7 @@ async function walkDirectory(
             extension: ext,
           });
         } catch {
+          diagnostics.statFailures++;
           // Skip files we can't stat
         }
       }
@@ -99,7 +117,7 @@ export async function scanFiles(
   onBatch: (files: MediaFile[]) => void,
   onThumbnail: (filePath: string, thumbnail: string) => void,
   folderPattern?: string,
-  options?: { generateThumbnails?: boolean },
+  options?: FileScanOptions,
 ): Promise<number> {
   currentJob?.cancel();
   // Cancel any background thumbnail task from a previous scan so stale
@@ -116,7 +134,15 @@ export async function scanFiles(
 
   // Phase 1: Walk directory and get metadata + dates (fast)
   const allFiles: MediaFile[] = [];
-  await walkDirectory(sourcePath, allFiles, signal);
+  const diagnostics: FileScanDiagnostics = {
+    filesFound: 0,
+    hiddenOrSystemEntriesSkipped: 0,
+    inaccessibleDirectories: 0,
+    statFailures: 0,
+  };
+  await walkDirectory(sourcePath, allFiles, signal, diagnostics);
+  diagnostics.filesFound = allFiles.length;
+  options?.onDiagnostics?.({ ...diagnostics });
   if (signal.aborted) { job.cancel(); if (currentJob === job) currentJob = null; return 0; }
 
   // Enrich with dates only (no thumbnails yet)

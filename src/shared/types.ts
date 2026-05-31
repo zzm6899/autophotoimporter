@@ -705,6 +705,12 @@ export interface CatalogPruneResult extends CatalogMaintenanceResult {
   removedImportOutcomes: number;
 }
 
+export interface CatalogClearSourceResult {
+  sourcePath: string;
+  removedMediaFiles: number;
+  removedImportOutcomes: number;
+}
+
 export interface CatalogBackupResult {
   path: string;
   bytes: number;
@@ -722,6 +728,17 @@ export interface CatalogStats {
   importOutcomes: number;
   lastSeenAt?: string;
   lastImportedAt?: string;
+}
+
+export interface ScanDiagnostics {
+  scanId?: string;
+  sourcePath?: string;
+  filesFound: number;
+  hiddenOrSystemEntriesSkipped: number;
+  inaccessibleDirectories: number;
+  statFailures: number;
+  catalogDuplicatesMarked: number;
+  staleEventsIgnored: number;
 }
 
 export interface ImportHealthSummary {
@@ -1215,6 +1232,7 @@ export const IPC = {
   SCAN_THUMBNAIL: 'scan:thumbnail',
   SCAN_CHECK_DUPLICATES: 'scan:check-duplicates',
   SCAN_DUPLICATE: 'scan:duplicate',
+  SCAN_DIAGNOSTICS: 'scan:diagnostics',
   SCAN_CANCEL: 'scan:cancel',
   SCAN_PAUSE: 'scan:pause',
   SCAN_RESUME: 'scan:resume',
@@ -1236,6 +1254,7 @@ export const IPC = {
   CATALOG_VERIFY_MISSING: 'catalog:verify-missing',
   CATALOG_PRUNE_MISSING: 'catalog:prune-missing',
   CATALOG_EXPORT_BACKUP: 'catalog:export-backup',
+  CATALOG_CLEAR_SOURCE: 'catalog:clear-source',
   IMPORT_PROGRESS: 'import:progress',
   IMPORT_COMPLETE: 'import:complete',
   IMPORT_CANCEL: 'import:cancel',

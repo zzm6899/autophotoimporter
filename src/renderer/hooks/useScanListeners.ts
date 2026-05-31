@@ -14,6 +14,7 @@ function thumbnailFlushDelay(fileCount: number): number {
 export function useScanListeners() {
   const {
     destination,
+    activeScanId,
     files,
     phase,
     separateProtected,
@@ -22,8 +23,10 @@ export function useScanListeners() {
   const dispatch = useAppDispatch();
   const thumbnailBufferRef = useRef<Record<string, string>>({});
   const thumbnailBufferCountRef = useRef(0);
+  const thumbnailBufferScanIdRef = useRef<string | null>(null);
   const thumbnailFlushTimerRef = useRef<number | null>(null);
   const fileCountRef = useRef(0);
+  const activeScanIdRef = useRef<string | null>(null);
 
   // Track whether we're in an active scan at the listener layer.
   // This ref stays in sync with the phase state and lets the onScanComplete
@@ -34,7 +37,17 @@ export function useScanListeners() {
     isActiveRef.current = phase === 'scanning';
     scanStateRef.current = phase === 'scanning' ? 'running' : scanStateRef.current;
     fileCountRef.current = files.length;
-  }, [phase]);
+    activeScanIdRef.current = activeScanId;
+    if (phase === 'scanning') {
+      thumbnailBufferRef.current = {};
+      thumbnailBufferCountRef.current = 0;
+      thumbnailBufferScanIdRef.current = null;
+      if (thumbnailFlushTimerRef.current !== null) {
+        window.clearTimeout(thumbnailFlushTimerRef.current);
+        thumbnailFlushTimerRef.current = null;
+      }
+    }
+  }, [phase, activeScanId, files.length]);
 
   useEffect(() => {
     fileCountRef.current = files.length;
@@ -44,10 +57,12 @@ export function useScanListeners() {
     const flushThumbnails = () => {
       thumbnailFlushTimerRef.current = null;
       const thumbnails = thumbnailBufferRef.current;
+      const scanId = thumbnailBufferScanIdRef.current ?? undefined;
       thumbnailBufferRef.current = {};
       thumbnailBufferCountRef.current = 0;
+      thumbnailBufferScanIdRef.current = null;
       if (Object.keys(thumbnails).length > 0) {
-        dispatch({ type: 'SET_THUMBNAILS', thumbnails });
+        dispatch({ type: 'SET_THUMBNAILS', thumbnails, scanId });
       }
     };
 
@@ -56,20 +71,20 @@ export function useScanListeners() {
       thumbnailFlushTimerRef.current = window.setTimeout(flushThumbnails, thumbnailFlushDelay(fileCountRef.current));
     };
 
-    const unsubBatch = window.electronAPI.onScanBatch((files) => {
-      dispatch({ type: 'SCAN_BATCH', files });
+    const unsubBatch = window.electronAPI.onScanBatch((scanId, files) => {
+      dispatch({ type: 'SCAN_BATCH', files, scanId });
     });
 
-    const unsubComplete = window.electronAPI.onScanComplete(() => {
-      // Discard SCAN_COMPLETE that arrives after the scan was cancelled /
-      // superseded. The reducer also guards on phase === 'scanning', so this
-      // is belt-and-suspenders — but it avoids a spurious dispatch entirely.
-      if (!isActiveRef.current) return;
+    const unsubComplete = window.electronAPI.onScanComplete((scanId) => {
       scanStateRef.current = 'completed';
-      dispatch({ type: 'SCAN_COMPLETE' });
+      dispatch({ type: 'SCAN_COMPLETE', scanId });
     });
 
-    const unsubThumb = window.electronAPI.onScanThumbnail((filePath, thumbnail) => {
+    const unsubThumb = window.electronAPI.onScanThumbnail((scanId, filePath, thumbnail) => {
+      if (thumbnailBufferScanIdRef.current && thumbnailBufferScanIdRef.current !== scanId) {
+        flushThumbnails();
+      }
+      thumbnailBufferScanIdRef.current = scanId;
       if (thumbnailBufferRef.current[filePath] === undefined) {
         thumbnailBufferCountRef.current++;
       }
@@ -85,8 +100,12 @@ export function useScanListeners() {
       scheduleThumbnailFlush();
     });
 
-    const unsubDuplicate = window.electronAPI.onScanDuplicate((filePath, duplicateMemory, duplicate) => {
-      dispatch({ type: 'SET_DUPLICATE', filePath, duplicateMemory, duplicate });
+    const unsubDuplicate = window.electronAPI.onScanDuplicate((scanId, filePath, duplicateMemory, duplicate) => {
+      dispatch({ type: 'SET_DUPLICATE', filePath, duplicateMemory, duplicate, scanId });
+    });
+
+    const unsubDiagnostics = window.electronAPI.onScanDiagnostics((scanId, diagnostics) => {
+      dispatch({ type: 'SCAN_DIAGNOSTICS', scanId, diagnostics });
     });
 
     return () => {
@@ -94,6 +113,7 @@ export function useScanListeners() {
       unsubComplete();
       unsubThumb();
       unsubDuplicate();
+      unsubDiagnostics();
       if (thumbnailFlushTimerRef.current !== null) {
         window.clearTimeout(thumbnailFlushTimerRef.current);
         thumbnailFlushTimerRef.current = null;
@@ -109,6 +129,6 @@ export function useScanListeners() {
     // at the wrong path and protected files stay stuck as "ready to import"
     // even when they've already been imported into _Protected/.
     dispatch({ type: 'CLEAR_DUPLICATES' });
-    window.electronAPI.checkDuplicates(destination);
-  }, [destination, files.length, phase, separateProtected, protectedFolderName, dispatch]);
+    window.electronAPI.checkDuplicates(destination, activeScanId ?? undefined);
+  }, [destination, files.length, phase, separateProtected, protectedFolderName, activeScanId, dispatch]);
 }

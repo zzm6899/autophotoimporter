@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { autoCullGroup, bestInGroup, bestShotScore, buildFaceIdentityGroups, explainBestShotSelection, faceSignalConfidence, groupByFaceEmbedding, groupByFaceSimilarity, groupByVisualHash, hammingDistanceHex, humanMomentQuality, rankBestShots, scoreReview, subjectPresenceQuality } from '../review';
+import { autoCullGroup, bestInGroup, bestShotScore, buildFaceIdentityGroups, explainBestShotSelection, faceSignalConfidence, focusQuality, groupByFaceEmbedding, groupByFaceSimilarity, groupByVisualHash, hammingDistanceHex, humanMomentQuality, isUsablyFocused, rankBestShots, scoreReview, subjectPresenceQuality } from '../review';
 import type { MediaFile } from '../types';
 
 function file(path: string, hash?: string, overrides: Partial<MediaFile> = {}): MediaFile {
@@ -351,6 +351,46 @@ describe('review utilities', () => {
       file('/sharp-eyes.jpg', undefined, { faceCount: 1, faceBoxes: [{ x: 0.2, y: 0.2, width: 0.22, height: 0.22, eyeScore: 2, score: 0.96 }], subjectSharpnessScore: 135, sharpnessScore: 155, reviewScore: 80 }),
     ]);
     expect(ranked[0].path).toBe('/sharp-eyes.jpg');
+  });
+
+  it('does not auto-pick soft group photos even when many faces are detected', () => {
+    const softGroup = file('/soft-group.jpg', undefined, {
+      faceCount: 8,
+      faceBoxes: Array.from({ length: 8 }, (_, index) => ({
+        x: 0.08 + index * 0.08,
+        y: 0.22,
+        width: 0.05,
+        height: 0.06,
+        eyeScore: 0,
+        smileScore: 0.4,
+        score: 0.88,
+      })),
+      subjectSharpnessScore: 34,
+      sharpnessScore: 112,
+      reviewScore: 72,
+      blurRisk: 'medium',
+    });
+    const sharpGroup = file('/sharp-group.jpg', undefined, {
+      faceCount: 6,
+      faceBoxes: Array.from({ length: 6 }, (_, index) => ({
+        x: 0.12 + index * 0.1,
+        y: 0.24,
+        width: 0.06,
+        height: 0.07,
+        eyeScore: 2,
+        smileScore: 0.6,
+        score: 0.94,
+      })),
+      subjectSharpnessScore: 118,
+      sharpnessScore: 145,
+      reviewScore: 78,
+      blurRisk: 'low',
+    });
+
+    expect(isUsablyFocused(softGroup)).toBe(false);
+    expect(focusQuality(sharpGroup)).toBeGreaterThan(focusQuality(softGroup));
+    expect(bestInGroup([softGroup, sharpGroup])?.path).toBe('/sharp-group.jpg');
+    expect(bestInGroup([softGroup])?.path).toBeUndefined();
   });
 
   it('prefers open eyes and smiles for portrait burst picks', () => {

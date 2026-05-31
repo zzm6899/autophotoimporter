@@ -141,6 +141,38 @@ export function subjectPresenceQuality(
   return Math.max(face, personScore);
 }
 
+export function focusQuality(
+  file: Pick<MediaFile, 'sharpnessScore' | 'subjectSharpnessScore' | 'blurRisk' | 'faceCount' | 'faceBoxes' | 'personCount' | 'personBoxes'>,
+): number {
+  const wholeSharp = file.sharpnessScore ?? 0;
+  const subjectSharp = file.subjectSharpnessScore;
+  const hasSubjects =
+    (file.faceCount ?? file.faceBoxes?.length ?? 0) > 0 ||
+    (file.personCount ?? file.personBoxes?.length ?? 0) > 0;
+  const wholeSignal = clamp01((wholeSharp - 45) / 135);
+  const subjectSignal = typeof subjectSharp === 'number'
+    ? clamp01((subjectSharp - (hasSubjects ? 38 : 48)) / (hasSubjects ? 82 : 92))
+    : wholeSignal;
+  const combined = hasSubjects
+    ? subjectSignal * 0.72 + wholeSignal * 0.28
+    : Math.max(subjectSignal, wholeSignal * 0.92);
+
+  if (file.blurRisk === 'high') return Math.min(combined, 0.32);
+  if (file.blurRisk === 'medium') return Math.min(combined, 0.68);
+  return combined;
+}
+
+export function isUsablyFocused(
+  file: Pick<MediaFile, 'sharpnessScore' | 'subjectSharpnessScore' | 'blurRisk' | 'faceCount' | 'faceBoxes' | 'personCount' | 'personBoxes'>,
+): boolean {
+  const hasSubjects =
+    (file.faceCount ?? file.faceBoxes?.length ?? 0) > 0 ||
+    (file.personCount ?? file.personBoxes?.length ?? 0) > 0;
+  if (file.blurRisk === 'high') return false;
+  if (hasSubjects && typeof file.subjectSharpnessScore === 'number' && file.subjectSharpnessScore < 45) return false;
+  return focusQuality(file) >= (hasSubjects ? 0.34 : 0.4);
+}
+
 export function keeperScore(file: MediaFile): number {
   return (
     (file.isProtected ? 120 : 0) +
@@ -197,7 +229,9 @@ function manualPickRank(file: MediaFile): number {
 }
 
 function isAutoBestCandidate(file: MediaFile): boolean {
-  return file.pick !== 'rejected';
+  if (file.pick === 'rejected') return false;
+  if (file.pick === 'selected' || file.isProtected || (file.rating ?? 0) > 0) return true;
+  return isUsablyFocused(file);
 }
 
 export function isDetailStoryKeeper(file: MediaFile): boolean {
@@ -833,6 +867,13 @@ export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
   return Math.max(0, Math.min(1, dot / denom));
 }
 
+function normalizedCosineSimilarity(a: Float32Array, b: Float32Array): number {
+  if (a.length !== b.length || a.length === 0) return 0;
+  let dot = 0;
+  for (let i = 0; i < a.length; i++) dot += a[i] * b[i];
+  return Math.max(0, Math.min(1, dot));
+}
+
 type FaceEmbeddingEntry = {
   path: string;
   embedding: Float32Array;
@@ -913,7 +954,7 @@ function maxSimilarityToRepresentatives(
   let best = 0;
   for (let i = 0; i < representatives.length; i++) {
     if (i === ignoreIndex) continue;
-    best = Math.max(best, cosineSimilarity(entry.embedding, representatives[i].embedding));
+    best = Math.max(best, normalizedCosineSimilarity(entry.embedding, representatives[i].embedding));
   }
   return best;
 }
@@ -966,13 +1007,13 @@ function faceClusterCandidates(cluster: FaceCluster): FaceEmbeddingEntry[] {
 }
 
 function faceClusterPairSimilarity(a: FaceCluster, b: FaceCluster): { best: number; centroid: number } {
-  const centroid = cosineSimilarity(a.centroid, b.centroid);
+  const centroid = normalizedCosineSimilarity(a.centroid, b.centroid);
   let best = centroid;
   const aCandidates = faceClusterCandidates(a);
   const bCandidates = faceClusterCandidates(b);
   for (const left of aCandidates) {
     for (const right of bCandidates) {
-      best = Math.max(best, cosineSimilarity(left.embedding, right.embedding));
+      best = Math.max(best, normalizedCosineSimilarity(left.embedding, right.embedding));
     }
   }
   return { best, centroid };
@@ -981,7 +1022,7 @@ function faceClusterPairSimilarity(a: FaceCluster, b: FaceCluster): { best: numb
 function shouldMergeFaceClusters(a: FaceCluster, b: FaceCluster, baseThreshold: number): boolean {
   if (Math.min(a.confidence, b.confidence) < 0.42) return false;
   const centroidGate = Math.max(0.25, baseThreshold - 0.32);
-  const centroidSimilarity = cosineSimilarity(a.centroid, b.centroid);
+  const centroidSimilarity = normalizedCosineSimilarity(a.centroid, b.centroid);
   if (centroidSimilarity < centroidGate) return false;
 
   const similarity = faceClusterPairSimilarity(a, b);
@@ -1087,14 +1128,20 @@ export function buildFaceIdentityGroups(files: MediaFile[], threshold = 0.67, in
     let bestSimilarity = 0;
     const matchingClusters: FaceCluster[] = [];
     for (const cluster of clusters) {
-      const centroidSimilarity = cosineSimilarity(entry.embedding, cluster.centroid);
-      let representativeSimilarity = centroidSimilarity;
-      for (const representative of cluster.representatives) {
-        representativeSimilarity = Math.max(representativeSimilarity, cosineSimilarity(entry.embedding, representative.embedding));
-      }
       const adaptiveThreshold = faceClusterThreshold(threshold, entry.confidence, cluster.confidence);
       const representativeThreshold = adaptiveThreshold + (Math.min(entry.confidence, cluster.confidence) >= 0.56 ? 0.04 : 0.065);
       const representativeCentroidFloor = adaptiveThreshold - (threshold <= 0.56 ? 0.07 : 0.1);
+      const centroidSimilarity = normalizedCosineSimilarity(entry.embedding, cluster.centroid);
+      if (centroidSimilarity < representativeCentroidFloor) continue;
+      let representativeSimilarity = centroidSimilarity;
+      if (centroidSimilarity < adaptiveThreshold) {
+        for (const representative of cluster.representatives) {
+          representativeSimilarity = Math.max(
+            representativeSimilarity,
+            normalizedCosineSimilarity(entry.embedding, representative.embedding),
+          );
+        }
+      }
       const representativeMatch =
         representativeSimilarity >= representativeThreshold &&
         centroidSimilarity >= representativeCentroidFloor;

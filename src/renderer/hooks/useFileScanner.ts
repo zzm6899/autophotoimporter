@@ -2,6 +2,10 @@ import { useCallback } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import { FOLDER_PRESETS } from '../../shared/types';
 
+function createScanId(sourcePath: string): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${sourcePath.length}`;
+}
+
 export function useFileScanner() {
   const { selectedSource, folderPreset, customPattern } = useAppState();
   const dispatch = useAppDispatch();
@@ -14,10 +18,11 @@ export function useFileScanner() {
       ? customPattern
       : FOLDER_PRESETS[folderPreset]?.pattern;
 
+    const scanId = createScanId(target);
     await window.electronAPI.cancelScan();
-    dispatch({ type: 'SCAN_START' });
+    dispatch({ type: 'SCAN_START', scanId, sourcePath: target });
     try {
-      await window.electronAPI.scanFiles(target, pattern);
+      await window.electronAPI.scanFiles(target, pattern, scanId);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Scan failed';
       dispatch({ type: 'SCAN_ERROR', message });

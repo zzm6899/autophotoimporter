@@ -17,8 +17,9 @@ import { BestOfSelectionPanel, rankBestOfSelection } from './BestOfSelectionPane
 import { REVIEW_COMMAND_EVENT } from './CommandPalette';
 import { ActionButton, ToolbarGroup } from './ui';
 import { getCachedPreview, getPreviewCacheStats, setBackgroundPreviewPaused, warmPreviews } from '../utils/previewCache';
+import { isPathInsideSourceRoot } from '../utils/sourcePath';
 import { clampStops, getEffectiveExposureStops, getNormalizedExposureStops, normalizeExposureStops } from '../../shared/exposure';
-import { buildFaceIdentityGroups, cosineSimilarity, deserializeEmbedding, FACE_GROUP_EMBEDDING_THRESHOLD, faceSignalConfidence, humanMomentQuality, type FaceIdentityGroup } from '../../shared/review';
+import { buildFaceIdentityGroups, cosineSimilarity, deserializeEmbedding, FACE_GROUP_EMBEDDING_THRESHOLD, faceSignalConfidence, focusQuality, humanMomentQuality, isUsablyFocused, type FaceIdentityGroup } from '../../shared/review';
 import { needsSecondPass } from '../../shared/review-lane';
 
 const SIMPLE_FILTERS = new Set<string>([
@@ -30,6 +31,7 @@ const SIMPLE_FILTERS = new Set<string>([
   'protected',
   'unrated',
   'duplicates',
+  'outside-source',
   'best',
   'photos',
   'videos',
@@ -488,9 +490,10 @@ function groupPhotoReviewScore(file: MediaFile): number {
   const humanSignal = clampUnit(humanMomentQuality(file) / 120);
   const faceSignal = faceCount > 0 ? faceSignalConfidence(file) : 0.45;
   const coverageSignal = clampUnit(subjectCount / 6);
-  const sharpSignal = clampUnit((file.subjectSharpnessScore ?? file.sharpnessScore ?? 0) / 160);
+  const sharpSignal = focusQuality(file);
   const blurPenalty = file.blurRisk === 'high' ? 0.34 : file.blurRisk === 'medium' ? 0.16 : 0;
-  const score = humanSignal * 0.4 + faceSignal * 0.25 + coverageSignal * 0.18 + sharpSignal * 0.17 - blurPenalty;
+  const focusPenalty = isUsablyFocused(file) ? 0 : 0.24;
+  const score = humanSignal * 0.34 + faceSignal * 0.2 + coverageSignal * 0.16 + sharpSignal * 0.3 - blurPenalty - focusPenalty;
   return Math.round(clampUnit(score) * 100);
 }
 
@@ -2232,6 +2235,7 @@ export function ThumbnailGrid() {
         case 'unrated': return !f.rating || f.rating === 0;
         case 'duplicates': return f.duplicate;
         case 'catalog-duplicates': return !!f.duplicateMemory;
+        case 'outside-source': return !isPathInsideSourceRoot(selectedSource, f.path);
         case 'queue': return queuedSet.has(f.path);
         case 'import-failures': return importFailedSet.has(f.path);
         case 'color-red': return f.colorLabel === 'red';
@@ -2311,7 +2315,7 @@ export function ThumbnailGrid() {
       seenCollapsedLeader.add(f.burstId);
       return true;
     });
-  }, [files, filter, gridSortOrder, collapsedSet, exposureAnchorPath, deferredSearchText, queuedSet, importFailedSet, faceIdentityPathMap, faceIdentityGroupedPaths]);
+  }, [files, filter, gridSortOrder, collapsedSet, exposureAnchorPath, deferredSearchText, queuedSet, importFailedSet, faceIdentityPathMap, faceIdentityGroupedPaths, selectedSource]);
   const flatGridContentWidth = Math.max(0, flatGridWidth - 32);
   const virtualGridColumns = Math.max(1, Math.floor((flatGridContentWidth + 12) / (thumbnailSize + 12)));
   const virtualGridEnabled = viewMode === 'grid' && filter !== 'face-gallery' && !groupByFolder && sortedFiles.length > 300;
@@ -4629,15 +4633,17 @@ export function ThumbnailGrid() {
                 ? 'Similar photos'
                 : filter === 'catalog-duplicates'
                   ? 'Catalog matches'
-                  : filter === 'queue'
-                    ? 'Queue'
-                    : filter === 'review-needed'
-                      ? 'Second pass'
-                      : filter === 'unmarked'
-                        ? 'Unmarked'
-                        : filter === 'all'
-                          ? 'All photos'
-                          : filter;
+                  : filter === 'outside-source'
+                    ? 'Outside source'
+                    : filter === 'queue'
+                      ? 'Queue'
+                      : filter === 'review-needed'
+                        ? 'Second pass'
+                        : filter === 'unmarked'
+                          ? 'Unmarked'
+                          : filter === 'all'
+                            ? 'All photos'
+                            : filter;
     const nextStep = summarizeReviewFlowNextStep({
       queuedCount: queuedPaths.length,
       queuedImportableCount: queuedImportablePaths.length,
@@ -5593,6 +5599,7 @@ export function ThumbnailGrid() {
                 <option value="protected">Protected</option>
                 <option value="unrated">Unrated</option>
                 <option value="duplicates">Duplicates</option>
+                <option value="outside-source">Outside source</option>
                 <option value="best">Best shots</option>
                 {isPro && <option value="catalog-duplicates">Catalog matches</option>}
                 {isPro && <option value="faces">Faces detected</option>}

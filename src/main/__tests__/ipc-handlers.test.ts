@@ -428,9 +428,9 @@ describe('IPC Handlers', () => {
       mockScanFiles.mockRejectedValue(new Error('scan failed'));
 
       const handler = getHandler('scan:start');
-      await handler({}, '/some/path');
+      await handler({}, '/some/path', undefined, 'scan-test');
 
-      expect(mockWin.webContents.send).toHaveBeenCalledWith('scan:complete', 0);
+      expect(mockWin.webContents.send).toHaveBeenCalledWith('scan:complete', 'scan-test', 0);
     });
 
     it('accumulates batches and sends SCAN_COMPLETE with total', async () => {
@@ -439,9 +439,9 @@ describe('IPC Handlers', () => {
       mockScanFiles.mockResolvedValue(5);
 
       const handler = getHandler('scan:start');
-      await handler({}, '/some/path');
+      await handler({}, '/some/path', undefined, 'scan-test');
 
-      expect(mockWin.webContents.send).toHaveBeenCalledWith('scan:complete', 5);
+      expect(mockWin.webContents.send).toHaveBeenCalledWith('scan:complete', 'scan-test', 5);
     });
   });
 
