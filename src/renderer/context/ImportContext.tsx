@@ -1,14 +1,15 @@
 import { createContext, useContext, useReducer, useRef, useMemo, useCallback, useEffect, useState, type Dispatch, type ReactNode } from 'react';
-import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, SourceKind, FtpConfig, FtpSyncSettings, FtpSyncStatus, RatingFilter, SelectionSet, LicenseValidation, WatermarkPosition, WatermarkMode, KeybindMap, MetadataExportFlags, ViewOverlayPreferences, EventMode, CullConfidence, KeeperQuota, SourceProfile, ImportConflictPolicy, AppSession, ExperienceMode } from '../../shared/types';
+import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, SourceKind, FtpConfig, FtpSyncSettings, FtpSyncStatus, RatingFilter, SelectionSet, LicenseValidation, WatermarkPosition, WatermarkMode, KeybindMap, MetadataExportFlags, ViewOverlayPreferences, EventMode, CullConfidence, KeeperQuota, SourceProfile, ImportConflictPolicy, AppSession, ExperienceMode, ScanDiagnostics } from '../../shared/types';
 import { FOLDER_PRESETS, DEFAULT_KEYBINDS, DEFAULT_METADATA_EXPORT, DEFAULT_VIEW_OVERLAY_PREFERENCES } from '../../shared/types';
 import { groupBursts } from '../../shared/burst';
 import { clampStops, normalizeExposureStops } from '../../shared/exposure';
 import { FACE_GROUP_EMBEDDING_THRESHOLD, assignSceneBuckets, autoCullGroup, bestInGroup, clearEmbeddingCache, groupByFaceSimilarity, groupByVisualHash, humanMomentQuality, rankBestShots, scoreReview } from '../../shared/review';
+import { isPathInsideSourceRoot } from '../utils/sourcePath';
 
 export type AppPhase = 'idle' | 'scanning' | 'ready' | 'importing' | 'complete';
 export type ViewMode = 'grid' | 'single' | 'split' | 'compare' | 'settings';
 
-export type FilterMode = 'all' | 'protected' | 'picked' | 'rejected' | 'unrated' | 'duplicates' | 'catalog-duplicates' | 'unmarked' | 'queue' | 'best' | 'faces' | 'face-groups' | 'face-gallery' | 'group-photos' | 'blur-risk' | 'near-duplicates' | 'review-needed' | 'needs-exposure' | 'normalized' | 'adjusted' | 'photos' | 'videos' | 'raw' | 'import-failures' | 'color-red' | 'color-yellow' | 'color-green' | 'color-blue' | 'color-purple' | RatingFilter | `camera:${string}` | `lens:${string}` | `date:${string}` | `ext:${string}` | `scene:${string}` | `burst:${string}` | `face:${string}`;
+export type FilterMode = 'all' | 'protected' | 'picked' | 'rejected' | 'unrated' | 'duplicates' | 'catalog-duplicates' | 'outside-source' | 'unmarked' | 'queue' | 'best' | 'faces' | 'face-groups' | 'face-gallery' | 'group-photos' | 'blur-risk' | 'near-duplicates' | 'review-needed' | 'needs-exposure' | 'normalized' | 'adjusted' | 'photos' | 'videos' | 'raw' | 'import-failures' | 'color-red' | 'color-yellow' | 'color-green' | 'color-blue' | 'color-purple' | RatingFilter | `camera:${string}` | `lens:${string}` | `date:${string}` | `ext:${string}` | `scene:${string}` | `burst:${string}` | `face:${string}`;
 const MAX_FACE_CONCURRENCY = 8;
 const REVIEW_OVERLAY_SMALL_DELAY_MS = 80;
 const REVIEW_OVERLAY_MEDIUM_DELAY_MS = 140;
@@ -31,6 +32,8 @@ function reviewOverlayDelayMs(fileCount: number): number {
 interface State {
   volumes: Volume[];
   selectedSource: string | null;
+  activeScanId: string | null;
+  scanDiagnostics: ScanDiagnostics | null;
   files: MediaFile[];
   phase: AppPhase;
   scanError: string | null;
@@ -149,9 +152,10 @@ interface State {
 export type Action =
   | { type: 'SET_VOLUMES'; volumes: Volume[] }
   | { type: 'SELECT_SOURCE'; path: string | null }
-  | { type: 'SCAN_START' }
-  | { type: 'SCAN_BATCH'; files: MediaFile[] }
-  | { type: 'SCAN_COMPLETE' }
+  | { type: 'SCAN_START'; scanId?: string; sourcePath?: string }
+  | { type: 'SCAN_BATCH'; files: MediaFile[]; scanId?: string }
+  | { type: 'SCAN_COMPLETE'; scanId?: string }
+  | { type: 'SCAN_DIAGNOSTICS'; scanId?: string; diagnostics: ScanDiagnostics }
   | { type: 'SCAN_ERROR'; message: string }
   | { type: 'SCAN_PAUSE' }
   | { type: 'SCAN_RESUME' }
@@ -166,9 +170,10 @@ export type Action =
   | { type: 'IMPORT_COMPLETE'; result: ImportResult }
   | { type: 'DISMISS_SUMMARY' }
   | { type: 'SET_THUMBNAIL'; filePath: string; thumbnail: string }
-  | { type: 'SET_THUMBNAILS'; thumbnails: Record<string, string> }
-  | { type: 'SET_DUPLICATE'; filePath: string; duplicate?: boolean; duplicateMemory?: MediaFile['duplicateMemory'] }
+  | { type: 'SET_THUMBNAILS'; thumbnails: Record<string, string>; scanId?: string }
+  | { type: 'SET_DUPLICATE'; filePath: string; duplicate?: boolean; duplicateMemory?: MediaFile['duplicateMemory']; scanId?: string }
   | { type: 'CLEAR_DUPLICATES' }
+  | { type: 'CLEAR_CATALOG_MEMORY_FOR_SOURCE'; sourcePath: string }
   | { type: 'SET_PICK'; filePath: string; pick: 'selected' | 'rejected' | undefined }
   | { type: 'SET_PICK_BATCH'; filePaths: string[]; pick: 'selected' | 'rejected' | undefined }
   | { type: 'CLEAR_PICKS' }
@@ -290,6 +295,8 @@ const systemDark = typeof window !== 'undefined' && window.matchMedia('(prefers-
 const initialState: State = {
   volumes: [],
   selectedSource: null,
+  activeScanId: null,
+  scanDiagnostics: null,
   files: [],
   phase: 'idle',
   scanError: null,
@@ -530,6 +537,30 @@ function queueBestPaths(
   return eligible.filter((f) => queued.has(f.path)).map((f) => f.path);
 }
 
+function createEmptyScanDiagnostics(scanId: string | undefined, sourcePath: string | undefined): ScanDiagnostics {
+  return {
+    scanId,
+    sourcePath,
+    filesFound: 0,
+    hiddenOrSystemEntriesSkipped: 0,
+    inaccessibleDirectories: 0,
+    statFailures: 0,
+    catalogDuplicatesMarked: 0,
+    staleEventsIgnored: 0,
+  };
+}
+
+function withStaleScanEventIgnored(state: State): State {
+  const diagnostics = state.scanDiagnostics ?? createEmptyScanDiagnostics(state.activeScanId ?? undefined, state.selectedSource ?? undefined);
+  return {
+    ...state,
+    scanDiagnostics: {
+      ...diagnostics,
+      staleEventsIgnored: diagnostics.staleEventsIgnored + 1,
+    },
+  };
+}
+
 export function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'SET_VOLUMES':
@@ -537,10 +568,12 @@ export function reducer(state: State, action: Action): State {
     case 'SELECT_SOURCE':
       // Clear exposure anchor — its path belongs to the old source and would
       // resolve to `undefined` in `files.find()` once the new scan lands.
-      return { ...state, selectedSource: action.path, files: [], phase: 'idle', exposureAnchorPath: null, queuedPaths: [], selectedPaths: [], focusedPath: null };
+      return { ...state, selectedSource: action.path, activeScanId: null, scanDiagnostics: null, files: [], phase: 'idle', exposureAnchorPath: null, queuedPaths: [], selectedPaths: [], focusedPath: null };
     case 'SCAN_START':
       return {
         ...state,
+        activeScanId: action.scanId ?? null,
+        scanDiagnostics: createEmptyScanDiagnostics(action.scanId, action.sourcePath ?? state.selectedSource ?? undefined),
         files: [],
         phase: 'scanning',
         scanError: null,
@@ -554,6 +587,8 @@ export function reducer(state: State, action: Action): State {
         collapsedBursts: [],
       };
     case 'SCAN_BATCH':
+      if (state.phase !== 'scanning') return state;
+      if (action.scanId && state.activeScanId && action.scanId !== state.activeScanId) return withStaleScanEventIgnored(state);
       return { ...state, files: [...state.files, ...action.files] };
     case 'SCAN_COMPLETE': {
       // Guard: ignore stale SCAN_COMPLETE events that arrive after a new
@@ -561,6 +596,7 @@ export function reducer(state: State, action: Action): State {
       // This prevents a cancelled scan's completion from resetting the
       // phase to 'idle' before the new scan's batches arrive.
       if (state.phase !== 'scanning') return state;
+      if (action.scanId && state.activeScanId && action.scanId !== state.activeScanId) return withStaleScanEventIgnored(state);
       // Bursts can only be reliably grouped once every file has a parsed
       // dateTaken, so we do it here (not per-batch). If the user has toggled
       // grouping off, just drop any stale burst data.
@@ -583,8 +619,17 @@ export function reducer(state: State, action: Action): State {
         collapsedBursts: [],
       };
     }
+    case 'SCAN_DIAGNOSTICS':
+      if (action.scanId && state.activeScanId && action.scanId !== state.activeScanId) return withStaleScanEventIgnored(state);
+      return {
+        ...state,
+        scanDiagnostics: {
+          ...action.diagnostics,
+          staleEventsIgnored: state.scanDiagnostics?.staleEventsIgnored ?? action.diagnostics.staleEventsIgnored,
+        },
+      };
     case 'SCAN_ERROR':
-      return { ...state, phase: 'idle', scanError: action.message, scanPaused: false };
+      return { ...state, activeScanId: null, scanDiagnostics: null, phase: 'idle', scanError: action.message, scanPaused: false };
     case 'SCAN_PAUSE':
       return { ...state, scanPaused: true };
     case 'SCAN_RESUME':
@@ -638,6 +683,7 @@ export function reducer(state: State, action: Action): State {
         ),
       };
     case 'SET_THUMBNAILS': {
+      if (action.scanId && state.activeScanId && action.scanId !== state.activeScanId) return withStaleScanEventIgnored(state);
       const updates = action.thumbnails;
       let changed = false;
       const files = state.files.map((f) => {
@@ -649,6 +695,7 @@ export function reducer(state: State, action: Action): State {
       return changed ? { ...state, files } : state;
     }
     case 'SET_DUPLICATE':
+      if (action.scanId && state.activeScanId && action.scanId !== state.activeScanId) return withStaleScanEventIgnored(state);
       return {
         ...state,
         files: state.files.map((f) =>
@@ -667,6 +714,17 @@ export function reducer(state: State, action: Action): State {
       return {
         ...state,
         files: state.files.map((f) => ({ ...f, duplicate: isDuplicateMemoryMatch(f.duplicateMemory) })),
+      };
+    case 'CLEAR_CATALOG_MEMORY_FOR_SOURCE':
+      return {
+        ...state,
+        files: state.files.map((f) => {
+          if (!f.duplicateMemory || !isPathInsideSourceRoot(action.sourcePath, f.path)) return f;
+          return { ...f, duplicate: false, duplicateMemory: undefined };
+        }),
+        scanDiagnostics: state.scanDiagnostics
+          ? { ...state.scanDiagnostics, catalogDuplicatesMarked: 0 }
+          : state.scanDiagnostics,
       };
     case 'SET_PICK':
       return withFileHistory(state, state.files.map((f) =>
@@ -1066,6 +1124,7 @@ export function reducer(state: State, action: Action): State {
           const next = group
             ? { ...f, visualGroupId: group.id, visualGroupSize: group.size }
             : { ...f, visualGroupId: undefined, visualGroupSize: undefined };
+          if (next.visualGroupId === f.visualGroupId && next.visualGroupSize === f.visualGroupSize) return f;
           const review = scoreReview(next);
           return { ...next, reviewScore: review.score, blurRisk: review.blurRisk, reviewReasons: review.reasons };
         }),
@@ -1088,11 +1147,10 @@ export function reducer(state: State, action: Action): State {
         ...state,
         files: state.files.map((f) => {
           const group = groupByPath.get(f.path);
-          const next = group
-            ? { ...f, faceGroupId: group.id, faceGroupSize: group.size }
-            : { ...f, faceGroupId: undefined, faceGroupSize: undefined };
-          const review = scoreReview(next);
-          return { ...next, reviewScore: review.score, blurRisk: review.blurRisk, reviewReasons: review.reasons };
+          const faceGroupId = group?.id;
+          const faceGroupSize = group?.size;
+          if (f.faceGroupId === faceGroupId && f.faceGroupSize === faceGroupSize) return f;
+          return { ...f, faceGroupId, faceGroupSize };
         }),
       };
     }
@@ -1218,6 +1276,8 @@ export function reducer(state: State, action: Action): State {
         ...state,
         volumeImportQueue: rest,
         selectedSource: nextSource,
+        activeScanId: null,
+        scanDiagnostics: null,
         files: [],
         phase: 'idle',
         exposureAnchorPath: null,
@@ -1351,6 +1411,8 @@ export function reducer(state: State, action: Action): State {
       return {
         ...state,
         selectedSource: action.session.sourcePath,
+        activeScanId: null,
+        scanDiagnostics: null,
         destination: action.session.destRoot,
         files: restoredFiles,
         selectedPaths,
@@ -1381,20 +1443,34 @@ const DispatchContext = createContext<Dispatch<Action>>(() => {});
 type ReviewPatch = Partial<MediaFile> & { reviewScore?: number; blurRisk?: MediaFile['blurRisk']; reviewReasons?: string[] };
 const ReviewScoresContext = createContext<Map<string, ReviewPatch>>(new Map());
 const ReviewScoresVersionContext = createContext<number>(0);
+const mergedReviewFileCache = new WeakMap<MediaFile, WeakMap<ReviewPatch, MediaFile>>();
+
+function mergeReviewPatch(file: MediaFile, patch: ReviewPatch): MediaFile {
+  let byPatch = mergedReviewFileCache.get(file);
+  if (!byPatch) {
+    byPatch = new WeakMap();
+    mergedReviewFileCache.set(file, byPatch);
+  }
+  const cached = byPatch.get(patch);
+  if (cached) return cached;
+
+  const merged = { ...file, ...patch };
+  if (patch.reviewScore === undefined) {
+    const review = scoreReview(merged);
+    merged.blurRisk = patch.blurRisk ?? review.blurRisk;
+    merged.reviewScore = review.score;
+    merged.reviewReasons = review.reasons;
+  }
+  byPatch.set(patch, merged);
+  return merged;
+}
 
 function mergeReviewScoreOverlay(files: MediaFile[], overlay: Map<string, ReviewPatch>): MediaFile[] {
   if (overlay.size === 0) return files;
   return files.map((f) => {
     const patch = overlay.get(f.path);
     if (!patch) return f;
-    const merged = { ...f, ...patch };
-    if (patch.reviewScore === undefined) {
-      const review = scoreReview(merged);
-      merged.blurRisk = patch.blurRisk ?? review.blurRisk;
-      merged.reviewScore = review.score;
-      merged.reviewReasons = review.reasons;
-    }
-    return merged;
+    return mergeReviewPatch(f, patch);
   });
 }
 

@@ -6,6 +6,7 @@ import type {
   CatalogBrowserQuery,
   CatalogBrowserRecord,
   CatalogBrowserResult,
+  CatalogClearSourceResult,
   CatalogFaceSearchMatch,
   CatalogFaceSearchQuery,
   CatalogFaceSearchResult,
@@ -150,6 +151,19 @@ function normalizeName(name: string): string {
 function compactString(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function normalizePathForContainment(value: string): string {
+  const resolved = path.resolve(value);
+  return process.platform === 'win32' ? resolved.toLocaleLowerCase() : resolved;
+}
+
+function isPathWithinRoot(rootPath: string, candidatePath: string): boolean {
+  if (!rootPath.trim() || !candidatePath.trim()) return false;
+  const root = normalizePathForContainment(rootPath);
+  const candidate = normalizePathForContainment(candidatePath);
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
 function stripThumbnail(file: MediaFile): Omit<MediaFile, 'thumbnail'> {
@@ -768,6 +782,25 @@ class JsonCatalogStore {
     };
   }
 
+  async clearSource(sourcePath: string): Promise<CatalogClearSourceResult> {
+    const beforeMedia = Object.keys(this.state.mediaFiles).length;
+    for (const record of Object.values(this.state.mediaFiles)) {
+      if (isPathWithinRoot(sourcePath, record.sourcePath)) {
+        delete this.state.mediaFiles[record.sourcePath];
+      }
+    }
+
+    const beforeImports = this.state.importOutcomes.length;
+    this.state.importOutcomes = this.state.importOutcomes.filter((record) => !isPathWithinRoot(sourcePath, record.sourcePath));
+    await this.persist();
+
+    return {
+      sourcePath,
+      removedMediaFiles: beforeMedia - Object.keys(this.state.mediaFiles).length,
+      removedImportOutcomes: beforeImports - this.state.importOutcomes.length,
+    };
+  }
+
   async exportBackup(outputPath: string, storageKind: CatalogStorageKind): Promise<CatalogBackupResult> {
     await mkdir(path.dirname(outputPath), { recursive: true });
     const content = serializeCatalogBackup(
@@ -1075,6 +1108,35 @@ class SqliteCatalogStore {
     };
   }
 
+  async clearSource(sourcePath: string): Promise<CatalogClearSourceResult> {
+    const deleteMedia = this.db.prepare('DELETE FROM media_files WHERE source_path = ?');
+    const deleteImport = this.db.prepare('DELETE FROM import_outcomes WHERE id = ?');
+    const mediaRecords = this.getAllMediaRecords();
+    const importRecords = this.getAllImportRecords();
+    let removedMediaFiles = 0;
+    let removedImportOutcomes = 0;
+
+    this.db.exec('BEGIN');
+    try {
+      for (const record of mediaRecords) {
+        if (isPathWithinRoot(sourcePath, record.sourcePath)) {
+          removedMediaFiles += deleteMedia.run(record.sourcePath).changes;
+        }
+      }
+      for (const record of importRecords) {
+        if (isPathWithinRoot(sourcePath, record.sourcePath)) {
+          removedImportOutcomes += deleteImport.run(record.id).changes;
+        }
+      }
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+
+    return { sourcePath, removedMediaFiles, removedImportOutcomes };
+  }
+
   async exportBackup(outputPath: string, storageKind: CatalogStorageKind): Promise<CatalogBackupResult> {
     await mkdir(path.dirname(outputPath), { recursive: true });
     const mediaRecords = this.getAllMediaRecords();
@@ -1247,6 +1309,10 @@ export class CatalogService {
 
   async pruneMissingEntries(): Promise<CatalogPruneResult> {
     return this.store.pruneMissingEntries();
+  }
+
+  async clearSource(sourcePath: string): Promise<CatalogClearSourceResult> {
+    return this.store.clearSource(sourcePath);
   }
 
   async exportBackup(outputPath: string): Promise<CatalogBackupResult> {

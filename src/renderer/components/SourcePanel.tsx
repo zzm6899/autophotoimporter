@@ -7,6 +7,7 @@ import { VolumeItem } from './VolumeItem';
 import { FtpPanel } from './FtpPanel';
 import { formatSize } from '../utils/formatters';
 import type { CatalogStats, WatchFolder } from '../../shared/types';
+import { getOutsideSourceFiles } from '../utils/sourcePath';
 
 const isMac = typeof window !== 'undefined' && window.electronAPI?.platform === 'darwin';
 const MOD = isMac ? '\u2318' : 'Ctrl';
@@ -62,7 +63,7 @@ function SourceCard({
 }
 
 export function SourcePanel() {
-  const { volumes, selectedSource, files, phase, sourceKind, scanPaused, volumeImportQueue, experienceMode } = useAppState();
+  const { volumes, selectedSource, scanDiagnostics, files, phase, sourceKind, scanPaused, volumeImportQueue, experienceMode } = useAppState();
   const dispatch = useAppDispatch();
   const { startScan, pauseScan, resumeScan } = useFileScanner();
   const isPro = experienceMode === 'pro';
@@ -72,6 +73,7 @@ export function SourcePanel() {
   const [catalogStats, setCatalogStats] = useState<CatalogStats | null>(null);
   const [watchFolders, setWatchFolders] = useState<WatchFolder[]>([]);
   const [watchNotice, setWatchNotice] = useState<string | null>(null);
+  const [catalogNotice, setCatalogNotice] = useState<string | null>(null);
   const sourceChangeLocked = phase === 'scanning' || phase === 'importing';
   const sourceBusyTitle = phase === 'importing'
     ? 'Import is running. Wait for it to finish before changing source.'
@@ -190,12 +192,23 @@ export function SourcePanel() {
     }
   };
 
+  const handleClearCatalogMemory = async () => {
+    if (!selectedSource || !window.confirm('Clear catalog memory for the current source? This only removes local catalog memory for this source path. It does not delete photos.')) return;
+    const result = await window.electronAPI.clearCatalogSource(selectedSource);
+    dispatch({ type: 'CLEAR_CATALOG_MEMORY_FOR_SOURCE', sourcePath: selectedSource });
+    const stats = await window.electronAPI.getCatalogStats?.().catch(() => null);
+    if (stats) setCatalogStats(stats);
+    setCatalogNotice(`Cleared ${result.removedMediaFiles + result.removedImportOutcomes} catalog record${result.removedMediaFiles + result.removedImportOutcomes === 1 ? '' : 's'}`);
+    window.setTimeout(() => setCatalogNotice(null), 4000);
+  };
+
   const photoCount = files.filter((f) => f.type === 'photo').length;
   const videoCount = files.filter((f) => f.type === 'video').length;
   const pickedCount = files.filter((f) => f.pick === 'selected').length;
   const rejectedCount = files.filter((f) => f.pick === 'rejected').length;
   const duplicateCount = files.filter((f) => f.duplicate).length;
   const memoryDuplicateCount = files.filter((f) => f.duplicateMemory).length;
+  const outsideSourceCount = getOutsideSourceFiles(selectedSource, files).length;
   const protectedCount = files.filter((f) => f.isProtected).length;
   const totalSize = files.reduce((sum, f) => sum + f.size, 0);
   const enabledWatchCount = watchFolders.filter((folder) => folder.enabled).length;
@@ -348,8 +361,23 @@ export function SourcePanel() {
       {/* Selected source */}
       {selectedSource && (
         <div className="px-2.5 pt-1 pb-2 border-b border-border">
-          <div className="text-[10px] text-text-muted truncate" title={selectedSource}>
-            {selectedSource}
+          <div className="flex items-center gap-1.5">
+            <div className="min-w-0 flex-1 text-[10px] text-text-muted truncate" title={selectedSource}>
+              {selectedSource}
+            </div>
+            <button
+              type="button"
+              onClick={() => outsideSourceCount > 0 && dispatch({ type: 'SET_FILTER', filter: 'outside-source' })}
+              disabled={outsideSourceCount === 0}
+              className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] disabled:cursor-default ${
+                outsideSourceCount > 0
+                  ? 'border-amber-500/35 bg-amber-500/10 text-amber-300 hover:bg-amber-500/15'
+                  : 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'
+              }`}
+              title={outsideSourceCount > 0 ? 'Show files whose paths are outside the selected source root' : 'All visible file paths are inside this source root'}
+            >
+              {outsideSourceCount > 0 ? `${outsideSourceCount} outside source` : 'current source only'}
+            </button>
           </div>
           <div className="mt-1 flex items-center gap-2">
             {phase === 'ready' && (
@@ -384,6 +412,30 @@ export function SourcePanel() {
                 </button>
               );
             })()}
+          </div>
+          {outsideSourceCount > 0 && (
+            <div className="mt-1 rounded border border-amber-500/25 bg-amber-500/10 px-1.5 py-1 text-[10px] leading-snug text-amber-200">
+              Some visible files are outside this source. Use the badge to isolate them.
+            </div>
+          )}
+        </div>
+      )}
+
+      {isPro && scanDiagnostics && (
+        <div className="mx-2.5 mt-2 rounded border border-border bg-surface-alt px-2 py-1.5 text-[10px] text-text-muted">
+          <div className="flex items-center justify-between gap-2">
+            <span>Scan diagnostics</span>
+            <span className="font-mono text-text-secondary">{scanDiagnostics.filesFound} found</span>
+          </div>
+          <div className="mt-1 grid grid-cols-2 gap-x-2 gap-y-0.5">
+            <span>stale ignored</span>
+            <span className="text-right font-mono text-text-secondary">{scanDiagnostics.staleEventsIgnored}</span>
+            <span>catalog marked</span>
+            <span className="text-right font-mono text-cyan-300">{scanDiagnostics.catalogDuplicatesMarked}</span>
+            <span>hidden/system skipped</span>
+            <span className="text-right font-mono text-text-secondary">{scanDiagnostics.hiddenOrSystemEntriesSkipped}</span>
+            <span>scan skips</span>
+            <span className="text-right font-mono text-text-secondary">{scanDiagnostics.inaccessibleDirectories + scanDiagnostics.statFailures}</span>
           </div>
         </div>
       )}
@@ -436,16 +488,29 @@ export function SourcePanel() {
                 </div>
               )}
               {memoryDuplicateCount > 0 && (
-                <button
-                  type="button"
-                  onClick={() => dispatch({ type: 'SET_FILTER', filter: 'catalog-duplicates' })}
-                  className="flex w-full justify-between rounded px-1 py-0.5 text-left transition-colors hover:bg-surface-raised"
-                  title="Show files remembered by the local catalog from previous sessions"
-                >
-                  <span className="text-text-secondary">From catalog</span>
-                  <span className="text-cyan-300 font-mono">{memoryDuplicateCount}</span>
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={() => dispatch({ type: 'SET_FILTER', filter: 'catalog-duplicates' })}
+                    className="flex w-full justify-between rounded px-1 py-0.5 text-left transition-colors hover:bg-surface-raised"
+                    title="Show files remembered by the local catalog from previous sessions"
+                  >
+                    <span className="text-text-secondary">From catalog</span>
+                    <span className="text-cyan-300 font-mono">{memoryDuplicateCount}</span>
+                  </button>
+                  {isPro && selectedSource && (
+                    <button
+                      type="button"
+                      onClick={() => { void handleClearCatalogMemory(); }}
+                      className="w-full rounded px-1 py-0.5 text-left text-[10px] text-text-muted transition-colors hover:bg-surface-raised hover:text-text-secondary"
+                      title="Clear local catalog duplicate memory for this selected source"
+                    >
+                      Clear catalog memory for this source
+                    </button>
+                  )}
+                </>
               )}
+              {catalogNotice && <div className="px-1 text-[10px] text-emerald-300">{catalogNotice}</div>}
             </div>
           )}
         </div>

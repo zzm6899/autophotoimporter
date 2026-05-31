@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC } from '../shared/types';
-import type { ImportConfig, AppSettings, MediaFile, Volume, ImportProgress, ImportResult, UpdateInfo, UpdateReleaseSummary, UpdateState, FtpConfig, FtpSyncStatus, ImportError, LicenseValidation, ImportPreflight, ImportBenchmarkQuery, ImportBenchmarkResult, ImportLedger, ImportHealthSummary, MacFirstRunDoctor, AppDiagnosticsSnapshot, UpdateRepairResult, AppSession, WatchFolder, CatalogStats, CatalogBrowserQuery, CatalogBrowserResult, CatalogFaceSearchQuery, CatalogFaceSearchResult, CatalogFaceMetadataWriteResult, CatalogMaintenanceResult, CatalogPruneResult, CatalogBackupResult, LightroomHandoffResult } from '../shared/types';
+import type { ImportConfig, AppSettings, MediaFile, Volume, ImportProgress, ImportResult, UpdateInfo, UpdateReleaseSummary, UpdateState, FtpConfig, FtpSyncStatus, ImportError, LicenseValidation, ImportPreflight, ImportBenchmarkQuery, ImportBenchmarkResult, ImportLedger, ImportHealthSummary, MacFirstRunDoctor, AppDiagnosticsSnapshot, UpdateRepairResult, AppSession, WatchFolder, CatalogStats, CatalogBrowserQuery, CatalogBrowserResult, CatalogFaceSearchQuery, CatalogFaceSearchResult, CatalogFaceMetadataWriteResult, CatalogMaintenanceResult, CatalogPruneResult, CatalogBackupResult, CatalogClearSourceResult, ScanDiagnostics, LightroomHandoffResult } from '../shared/types';
 import type { FaceBox } from './services/face-engine';
 import type { ModelDownloadProgress } from './services/model-downloader';
 
@@ -34,29 +34,34 @@ const api = {
   },
 
   // Scanning
-  scanFiles: (sourcePath: string, folderPattern?: string): Promise<void> =>
-    ipcRenderer.invoke(IPC.SCAN_START, sourcePath, folderPattern),
-  onScanBatch: (cb: (files: MediaFile[]) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, files: MediaFile[]) => cb(files);
+  scanFiles: (sourcePath: string, folderPattern?: string, scanId?: string): Promise<void> =>
+    ipcRenderer.invoke(IPC.SCAN_START, sourcePath, folderPattern, scanId),
+  onScanBatch: (cb: (scanId: string, files: MediaFile[]) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, scanId: string, files: MediaFile[]) => cb(scanId, files);
     ipcRenderer.on(IPC.SCAN_BATCH, handler);
     return () => ipcRenderer.removeListener(IPC.SCAN_BATCH, handler);
   },
-  onScanComplete: (cb: (totalFiles: number) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, total: number) => cb(total);
+  onScanComplete: (cb: (scanId: string, totalFiles: number) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, scanId: string, total: number) => cb(scanId, total);
     ipcRenderer.on(IPC.SCAN_COMPLETE, handler);
     return () => ipcRenderer.removeListener(IPC.SCAN_COMPLETE, handler);
   },
-  onScanThumbnail: (cb: (filePath: string, thumbnail: string) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, filePath: string, thumbnail: string) => cb(filePath, thumbnail);
+  onScanThumbnail: (cb: (scanId: string, filePath: string, thumbnail: string) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, scanId: string, filePath: string, thumbnail: string) => cb(scanId, filePath, thumbnail);
     ipcRenderer.on(IPC.SCAN_THUMBNAIL, handler);
     return () => ipcRenderer.removeListener(IPC.SCAN_THUMBNAIL, handler);
   },
-  checkDuplicates: (destRoot: string): Promise<void> =>
-    ipcRenderer.invoke(IPC.SCAN_CHECK_DUPLICATES, destRoot),
-  onScanDuplicate: (cb: (filePath: string, duplicateMemory?: MediaFile['duplicateMemory'], duplicate?: boolean) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, filePath: string, duplicateMemory?: MediaFile['duplicateMemory'], duplicate?: boolean) => cb(filePath, duplicateMemory, duplicate);
+  checkDuplicates: (destRoot: string, scanId?: string): Promise<void> =>
+    ipcRenderer.invoke(IPC.SCAN_CHECK_DUPLICATES, destRoot, scanId),
+  onScanDuplicate: (cb: (scanId: string, filePath: string, duplicateMemory?: MediaFile['duplicateMemory'], duplicate?: boolean) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, scanId: string, filePath: string, duplicateMemory?: MediaFile['duplicateMemory'], duplicate?: boolean) => cb(scanId, filePath, duplicateMemory, duplicate);
     ipcRenderer.on(IPC.SCAN_DUPLICATE, handler);
     return () => ipcRenderer.removeListener(IPC.SCAN_DUPLICATE, handler);
+  },
+  onScanDiagnostics: (cb: (scanId: string, diagnostics: ScanDiagnostics) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, scanId: string, diagnostics: ScanDiagnostics) => cb(scanId, diagnostics);
+    ipcRenderer.on(IPC.SCAN_DIAGNOSTICS, handler);
+    return () => ipcRenderer.removeListener(IPC.SCAN_DIAGNOSTICS, handler);
   },
   getPreview: (filePath: string, variant?: 'preview' | 'detail'): Promise<string | undefined> =>
     ipcRenderer.invoke(IPC.SCAN_PREVIEW, filePath, variant),
@@ -133,6 +138,8 @@ const api = {
     ipcRenderer.invoke(IPC.CATALOG_PRUNE_MISSING),
   exportCatalogBackup: (): Promise<CatalogBackupResult | null> =>
     ipcRenderer.invoke(IPC.CATALOG_EXPORT_BACKUP),
+  clearCatalogSource: (sourcePath: string): Promise<CatalogClearSourceResult> =>
+    ipcRenderer.invoke(IPC.CATALOG_CLEAR_SOURCE, sourcePath),
   onWatchFolderTriggered: (cb: (trigger: { folder: WatchFolder; eventType: string; filename?: string; triggeredAt: string }) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, trigger: { folder: WatchFolder; eventType: string; filename?: string; triggeredAt: string }) => cb(trigger);
     ipcRenderer.on(IPC.WATCH_FOLDER_TRIGGERED, handler);

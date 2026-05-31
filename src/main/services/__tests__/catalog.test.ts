@@ -163,6 +163,36 @@ describe('CatalogService JSON fallback', () => {
     await second.close();
   });
 
+  it('clears catalog memory for a selected source root', async () => {
+    const userDataPath = await tempCatalogDir();
+    const catalog = await openCatalog(userDataPath, { preferJson: true });
+    await catalog.upsertMediaFiles([
+      makeFile({ path: '/card-a/DCIM/a.jpg', name: 'a.jpg', size: 1 }),
+      makeFile({ path: '/card-a/DCIM/nested/b.jpg', name: 'b.jpg', size: 2 }),
+      makeFile({ path: '/card-b/DCIM/c.jpg', name: 'c.jpg', size: 3 }),
+    ]);
+    await catalog.recordImportLedgerItems('ledger-a', [
+      makeLedgerItem({ sourcePath: '/card-a/DCIM/a.jpg', name: 'a.jpg', size: 1 }),
+      makeLedgerItem({ sourcePath: '/card-b/DCIM/c.jpg', name: 'c.jpg', size: 3 }),
+    ]);
+
+    const cleared = await catalog.clearSource('/card-a');
+    const stats = await catalog.getStats();
+
+    expect(cleared).toEqual({
+      sourcePath: '/card-a',
+      removedMediaFiles: 2,
+      removedImportOutcomes: 1,
+    });
+    expect(stats.totalFiles).toBe(1);
+    expect(stats.importOutcomes).toBe(1);
+    await expect(catalog.browse({ imported: 'any' })).resolves.toEqual(expect.objectContaining({
+      total: 1,
+      records: [expect.objectContaining({ sourcePath: '/card-b/DCIM/c.jpg' })],
+    }));
+    await catalog.close();
+  });
+
   it('stores face embeddings and searches older catalog faces by similarity', async () => {
     const userDataPath = await tempCatalogDir();
     const personA = embeddingHex([1, 0, 0, 0]);

@@ -7,6 +7,8 @@ function makeState(overrides: Record<string, unknown> = {}) {
   return {
     volumes: [],
     selectedSource: null,
+    activeScanId: null,
+    scanDiagnostics: null,
     files: [] as MediaFile[],
     phase: 'idle' as AppPhase,
     scanError: null as string | null,
@@ -363,10 +365,19 @@ describe('ImportContext reducer', () => {
     it('appends files to existing array', () => {
       const file1 = makeFile({ path: '/a.jpg' });
       const file2 = makeFile({ path: '/b.jpg' });
-      const state = makeState({ files: [file1] });
+      const state = makeState({ files: [file1], phase: 'scanning' });
       const next = reducer(state, { type: 'SCAN_BATCH', files: [file2] });
       expect(next.files).toHaveLength(2);
       expect(next.files[1].path).toBe('/b.jpg');
+    });
+
+    it('ignores stale scan batches from a previous source', () => {
+      const file1 = makeFile({ path: '/current.jpg' });
+      const file2 = makeFile({ path: '/old.jpg' });
+      const state = makeState({ files: [file1], phase: 'scanning', activeScanId: 'current-scan' });
+      const next = reducer(state, { type: 'SCAN_BATCH', files: [file2], scanId: 'old-scan' });
+      expect(next.files).toEqual([file1]);
+      expect(next.scanDiagnostics?.staleEventsIgnored).toBe(1);
     });
   });
 
@@ -458,6 +469,31 @@ describe('ImportContext reducer', () => {
     it('stores catalog duplicate filter selection', () => {
       const next = reducer(makeState(), { type: 'SET_FILTER', filter: 'catalog-duplicates' });
       expect(next.filter).toBe('catalog-duplicates');
+    });
+  });
+
+  describe('CLEAR_CATALOG_MEMORY_FOR_SOURCE', () => {
+    it('clears catalog duplicate memory only for files inside the current source', () => {
+      const inside = makeFile({
+        path: '/card/DCIM/a.jpg',
+        duplicate: true,
+        duplicateMemory: { kind: 'previous-import', matchedPath: '/archive/a.jpg' },
+      });
+      const outside = makeFile({
+        path: '/old/DCIM/b.jpg',
+        duplicate: true,
+        duplicateMemory: { kind: 'previous-import', matchedPath: '/archive/b.jpg' },
+      });
+
+      const next = reducer(makeState({ files: [inside, outside] }), {
+        type: 'CLEAR_CATALOG_MEMORY_FOR_SOURCE',
+        sourcePath: '/card',
+      });
+
+      expect(next.files[0].duplicate).toBe(false);
+      expect(next.files[0].duplicateMemory).toBeUndefined();
+      expect(next.files[1].duplicate).toBe(true);
+      expect(next.files[1].duplicateMemory).toEqual(outside.duplicateMemory);
     });
   });
 

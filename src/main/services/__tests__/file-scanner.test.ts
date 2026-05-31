@@ -89,6 +89,28 @@ describe('scanFiles', () => {
     expect(total).toBe(1);
   });
 
+  it('reports scan diagnostics for skipped and failed entries', async () => {
+    const onDiagnostics = vi.fn();
+    mockReaddir.mockResolvedValue([
+      makeDirent('.hidden.jpg', false, true),
+      makeDirent('visible.jpg', false, true),
+      makeDirent('blocked.jpg', false, true),
+    ] as any);
+    mockStat
+      .mockResolvedValueOnce({ size: 1000, mtimeMs: 10 } as any)
+      .mockRejectedValueOnce(new Error('EACCES'));
+
+    const total = await scanFiles('/source', onBatch, onThumbnail, undefined, { generateThumbnails: false, onDiagnostics });
+
+    expect(total).toBe(1);
+    expect(onDiagnostics).toHaveBeenCalledWith({
+      filesFound: 1,
+      hiddenOrSystemEntriesSkipped: 1,
+      inaccessibleDirectories: 0,
+      statFailures: 1,
+    });
+  });
+
   it('recurses into subdirectories', async () => {
     mockReaddir
       .mockResolvedValueOnce([
