@@ -856,10 +856,11 @@ describe('ImportContext reducer', () => {
       expect(next.files.find((f) => f.path === '/stale-best.jpg')?.pick).toBe('rejected');
     });
 
-    it('queues every keepable standalone photo', () => {
+    it('queues focused keepable standalone photos', () => {
       const files = [
-        makeFile({ path: '/best.jpg', reviewScore: 80 }),
-        makeFile({ path: '/weak.jpg', reviewScore: 40 }),
+        makeFile({ path: '/best.jpg', reviewScore: 80, sharpnessScore: 150, subjectSharpnessScore: 120, blurRisk: 'low' }),
+        makeFile({ path: '/weak.jpg', reviewScore: 40, sharpnessScore: 118, subjectSharpnessScore: 96, blurRisk: 'low' }),
+        makeFile({ path: '/soft.jpg', reviewScore: 84, sharpnessScore: 112, subjectSharpnessScore: 34, blurRisk: 'medium', faceCount: 4 }),
         makeFile({ path: '/reject.jpg', reviewScore: 95, pick: 'rejected' }),
         makeFile({ path: '/duplicate.jpg', reviewScore: 95, duplicate: true }),
       ];
@@ -869,7 +870,7 @@ describe('ImportContext reducer', () => {
 
     it('replaces stale queued paths when queueing keepers', () => {
       const files = [
-        makeFile({ path: '/keeper.jpg', reviewScore: 80 }),
+        makeFile({ path: '/keeper.jpg', reviewScore: 80, sharpnessScore: 145, subjectSharpnessScore: 110, blurRisk: 'low' }),
         makeFile({ path: '/reject.jpg', reviewScore: 95, pick: 'rejected' }),
       ];
       const next = reducer(makeState({ files, queuedPaths: ['/stale.jpg'], filter: 'queue' }), { type: 'QUEUE_BEST' });

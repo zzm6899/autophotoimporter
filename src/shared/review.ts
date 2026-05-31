@@ -141,6 +141,38 @@ export function subjectPresenceQuality(
   return Math.max(face, personScore);
 }
 
+export function focusQuality(
+  file: Pick<MediaFile, 'sharpnessScore' | 'subjectSharpnessScore' | 'blurRisk' | 'faceCount' | 'faceBoxes' | 'personCount' | 'personBoxes'>,
+): number {
+  const wholeSharp = file.sharpnessScore ?? 0;
+  const subjectSharp = file.subjectSharpnessScore;
+  const hasSubjects =
+    (file.faceCount ?? file.faceBoxes?.length ?? 0) > 0 ||
+    (file.personCount ?? file.personBoxes?.length ?? 0) > 0;
+  const wholeSignal = clamp01((wholeSharp - 45) / 135);
+  const subjectSignal = typeof subjectSharp === 'number'
+    ? clamp01((subjectSharp - (hasSubjects ? 38 : 48)) / (hasSubjects ? 82 : 92))
+    : wholeSignal;
+  const combined = hasSubjects
+    ? subjectSignal * 0.72 + wholeSignal * 0.28
+    : Math.max(subjectSignal, wholeSignal * 0.92);
+
+  if (file.blurRisk === 'high') return Math.min(combined, 0.32);
+  if (file.blurRisk === 'medium') return Math.min(combined, 0.68);
+  return combined;
+}
+
+export function isUsablyFocused(
+  file: Pick<MediaFile, 'sharpnessScore' | 'subjectSharpnessScore' | 'blurRisk' | 'faceCount' | 'faceBoxes' | 'personCount' | 'personBoxes'>,
+): boolean {
+  const hasSubjects =
+    (file.faceCount ?? file.faceBoxes?.length ?? 0) > 0 ||
+    (file.personCount ?? file.personBoxes?.length ?? 0) > 0;
+  if (file.blurRisk === 'high') return false;
+  if (hasSubjects && typeof file.subjectSharpnessScore === 'number' && file.subjectSharpnessScore < 45) return false;
+  return focusQuality(file) >= (hasSubjects ? 0.34 : 0.4);
+}
+
 export function keeperScore(file: MediaFile): number {
   return (
     (file.isProtected ? 120 : 0) +
@@ -197,7 +229,9 @@ function manualPickRank(file: MediaFile): number {
 }
 
 function isAutoBestCandidate(file: MediaFile): boolean {
-  return file.pick !== 'rejected';
+  if (file.pick === 'rejected') return false;
+  if (file.pick === 'selected' || file.isProtected || (file.rating ?? 0) > 0) return true;
+  return isUsablyFocused(file);
 }
 
 export function isDetailStoryKeeper(file: MediaFile): boolean {

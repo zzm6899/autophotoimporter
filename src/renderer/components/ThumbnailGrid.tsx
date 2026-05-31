@@ -19,7 +19,7 @@ import { ActionButton, ToolbarGroup } from './ui';
 import { getCachedPreview, getPreviewCacheStats, setBackgroundPreviewPaused, warmPreviews } from '../utils/previewCache';
 import { isPathInsideSourceRoot } from '../utils/sourcePath';
 import { clampStops, getEffectiveExposureStops, getNormalizedExposureStops, normalizeExposureStops } from '../../shared/exposure';
-import { buildFaceIdentityGroups, cosineSimilarity, deserializeEmbedding, FACE_GROUP_EMBEDDING_THRESHOLD, faceSignalConfidence, humanMomentQuality, type FaceIdentityGroup } from '../../shared/review';
+import { buildFaceIdentityGroups, cosineSimilarity, deserializeEmbedding, FACE_GROUP_EMBEDDING_THRESHOLD, faceSignalConfidence, focusQuality, humanMomentQuality, isUsablyFocused, type FaceIdentityGroup } from '../../shared/review';
 import { needsSecondPass } from '../../shared/review-lane';
 
 const SIMPLE_FILTERS = new Set<string>([
@@ -490,9 +490,10 @@ function groupPhotoReviewScore(file: MediaFile): number {
   const humanSignal = clampUnit(humanMomentQuality(file) / 120);
   const faceSignal = faceCount > 0 ? faceSignalConfidence(file) : 0.45;
   const coverageSignal = clampUnit(subjectCount / 6);
-  const sharpSignal = clampUnit((file.subjectSharpnessScore ?? file.sharpnessScore ?? 0) / 160);
+  const sharpSignal = focusQuality(file);
   const blurPenalty = file.blurRisk === 'high' ? 0.34 : file.blurRisk === 'medium' ? 0.16 : 0;
-  const score = humanSignal * 0.4 + faceSignal * 0.25 + coverageSignal * 0.18 + sharpSignal * 0.17 - blurPenalty;
+  const focusPenalty = isUsablyFocused(file) ? 0 : 0.24;
+  const score = humanSignal * 0.34 + faceSignal * 0.2 + coverageSignal * 0.16 + sharpSignal * 0.3 - blurPenalty - focusPenalty;
   return Math.round(clampUnit(score) * 100);
 }
 

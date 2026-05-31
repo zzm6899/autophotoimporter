@@ -3,7 +3,7 @@ import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, Sourc
 import { FOLDER_PRESETS, DEFAULT_KEYBINDS, DEFAULT_METADATA_EXPORT, DEFAULT_VIEW_OVERLAY_PREFERENCES } from '../../shared/types';
 import { groupBursts } from '../../shared/burst';
 import { clampStops, normalizeExposureStops } from '../../shared/exposure';
-import { FACE_GROUP_EMBEDDING_THRESHOLD, assignSceneBuckets, autoCullGroup, bestInGroup, clearEmbeddingCache, groupByFaceSimilarity, groupByVisualHash, humanMomentQuality, rankBestShots, scoreReview } from '../../shared/review';
+import { FACE_GROUP_EMBEDDING_THRESHOLD, assignSceneBuckets, autoCullGroup, bestInGroup, clearEmbeddingCache, groupByFaceSimilarity, groupByVisualHash, humanMomentQuality, isUsablyFocused, rankBestShots, scoreReview } from '../../shared/review';
 import { isPathInsideSourceRoot } from '../utils/sourcePath';
 
 export type AppPhase = 'idle' | 'scanning' | 'ready' | 'importing' | 'complete';
@@ -497,7 +497,7 @@ function queueBestPaths(
       if (f.pick === 'selected' || f.isProtected || (f.rating ?? 0) > 0) queued.add(f.path);
     }
     const ranked = rankBestShots(group);
-    const best = ranked[0] ?? null;
+    const best = ranked.find((file) => file.pick === 'selected' || file.isProtected || (file.rating ?? 0) > 0 || isUsablyFocused(file)) ?? null;
     if (best) queued.add(best.path);
 
     if (options.cullConfidence === 'conservative') {
@@ -510,19 +510,20 @@ function queueBestPaths(
     }
 
     const quota = options.keeperQuota ?? 'best-1';
+    const autoCandidates = ranked.filter((file) => file.pick === 'selected' || file.isProtected || (file.rating ?? 0) > 0 || isUsablyFocused(file));
     if (quota === 'top-2') {
-      for (const file of ranked.slice(0, 2)) queued.add(file.path);
+      for (const file of autoCandidates.slice(0, 2)) queued.add(file.path);
     } else if (quota === 'smile-and-sharp') {
       const expressionScore = (file: MediaFile) => {
         const boxes = file.faceBoxes ?? [];
         if (boxes.length === 0) return 0;
         return boxes.reduce((bestExpression, box) => Math.max(bestExpression, box.smileScore ?? box.expressionScore ?? 0.5), 0);
       };
-      const smileBest = ranked.slice().sort((a, b) =>
+      const smileBest = autoCandidates.slice().sort((a, b) =>
         expressionScore(b) - expressionScore(a) ||
         humanMomentQuality(b) - humanMomentQuality(a),
       )[0];
-      const sharpBest = ranked.slice().sort((a, b) =>
+      const sharpBest = autoCandidates.slice().sort((a, b) =>
         (b.subjectSharpnessScore ?? b.sharpnessScore ?? 0) - (a.subjectSharpnessScore ?? a.sharpnessScore ?? 0),
       )[0];
       if (smileBest) queued.add(smileBest.path);
@@ -531,7 +532,9 @@ function queueBestPaths(
   }
 
   for (const f of eligible) {
-    if (!groupedPaths.has(f.path)) queued.add(f.path);
+    if (!groupedPaths.has(f.path) && (f.pick === 'selected' || f.isProtected || (f.rating ?? 0) > 0 || isUsablyFocused(f))) {
+      queued.add(f.path);
+    }
   }
 
   return eligible.filter((f) => queued.has(f.path)).map((f) => f.path);
