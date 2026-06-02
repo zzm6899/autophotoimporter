@@ -8,7 +8,7 @@ describe('recommendFaceConcurrencyTarget', () => {
       avgDmlMs: 4,
       cpuCores: 24,
       tier: 'high',
-    })).toBe(8);
+    })).toBe(24);
   });
 
   it('keeps older or unstable DirectML devices below the cap', () => {
@@ -38,6 +38,6 @@ describe('clampFaceConcurrencyForSettings', () => {
   it('rounds and clamps user-facing face scan settings to the supported range', () => {
     expect(clampFaceConcurrencyForSettings(0)).toBe(1);
     expect(clampFaceConcurrencyForSettings(2.6)).toBe(3);
-    expect(clampFaceConcurrencyForSettings(24)).toBe(8);
+    expect(clampFaceConcurrencyForSettings(32)).toBe(24);
   });
 });

@@ -10,7 +10,7 @@ export type AppPhase = 'idle' | 'scanning' | 'ready' | 'importing' | 'complete';
 export type ViewMode = 'grid' | 'single' | 'split' | 'compare' | 'settings';
 
 export type FilterMode = 'all' | 'protected' | 'picked' | 'rejected' | 'unrated' | 'duplicates' | 'catalog-duplicates' | 'outside-source' | 'unmarked' | 'queue' | 'best' | 'faces' | 'face-groups' | 'face-gallery' | 'group-photos' | 'blur-risk' | 'near-duplicates' | 'review-needed' | 'needs-exposure' | 'normalized' | 'adjusted' | 'photos' | 'videos' | 'raw' | 'import-failures' | 'color-red' | 'color-yellow' | 'color-green' | 'color-blue' | 'color-purple' | RatingFilter | `camera:${string}` | `lens:${string}` | `date:${string}` | `ext:${string}` | `scene:${string}` | `burst:${string}` | `face:${string}`;
-const MAX_FACE_CONCURRENCY = 8;
+const MAX_FACE_CONCURRENCY = 24;
 const REVIEW_OVERLAY_SMALL_DELAY_MS = 80;
 const REVIEW_OVERLAY_MEDIUM_DELAY_MS = 140;
 const REVIEW_OVERLAY_LARGE_DELAY_MS = 240;

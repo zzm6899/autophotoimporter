@@ -96,7 +96,7 @@ const FAST_RAW_METADATA_EXPORT: MetadataExportFlags = {
   pickLabel: false,
   stripGps: false,
 };
-const MAX_FACE_CONCURRENCY = 8;
+const MAX_FACE_CONCURRENCY = 24;
 type DeviceTier = 'low' | 'balanced' | 'high';
 
 export function clampFaceConcurrencyForSettings(concurrency: number) {
@@ -2897,7 +2897,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                 className="w-full h-1 bg-surface-raised rounded appearance-none cursor-pointer accent-accent"
               />
               <div className="mt-1 flex gap-1">
-                {[1, 2, 4, 6, 8].map((value) => (
+                {[1, 2, 4, 8, 16, 24].map((value) => (
                   <button
                     key={value}
                     type="button"
@@ -2910,7 +2910,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                 ))}
               </div>
               <p className="text-[10px] text-text-muted mt-0.5">
-                Higher can push GPUs harder on large batches. Capped at 8 for DirectML stability; use 2-5 if the app restarts during face scans.
+                Higher can push GPUs harder on large batches. Fast DirectML devices can use 12-24 after Optimize settings; use 2-5 if the app restarts during face scans.
               </p>
             </div>
 
@@ -2937,7 +2937,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
             <div className="mt-2 rounded border border-border bg-surface-alt px-2 py-2">
               <p className="text-[10px] font-semibold uppercase tracking-wider text-text-secondary">Performance help</p>
               <p className="mt-1 text-[10px] text-text-muted">
-                Use Optimize settings first. RTX-class GPUs usually prefer 6-8 face scans. Keptra caps live face scans at 8 for DirectML stability; laptops or older CPUs should stay at 1-4 or enable Fast Keeper Mode for huge imports.
+                Use Optimize settings first. RTX-class GPUs usually prefer 12-24 face scans when DirectML benchmarks cleanly; laptops or older CPUs should stay at 1-4 or enable Fast Keeper Mode for huge imports.
               </p>
             </div>
             </div>

@@ -556,7 +556,7 @@ describe('IPC Handlers', () => {
       const settings = await handler({}) as any;
 
       expect(settings.faceConcurrency).toBeGreaterThanOrEqual(1);
-      expect(settings.faceConcurrency).toBeLessThanOrEqual(8);
+      expect(settings.faceConcurrency).toBeLessThanOrEqual(24);
     });
 
     it('uses profile face concurrency when no persisted face override exists', async () => {
@@ -565,7 +565,7 @@ describe('IPC Handlers', () => {
       const settings = await handler({}) as any;
 
       expect(settings.faceConcurrency).toBeGreaterThanOrEqual(4);
-      expect(settings.faceConcurrency).toBeLessThanOrEqual(8);
+      expect(settings.faceConcurrency).toBeLessThanOrEqual(24);
     });
 
     it('clamps saved preview concurrency to the renderer-supported maximum', async () => {
@@ -591,7 +591,7 @@ describe('IPC Handlers', () => {
       expect(settings.previewConcurrency).toBeLessThanOrEqual(12);
       expect(Number.isFinite(settings.faceConcurrency)).toBe(true);
       expect(settings.faceConcurrency).toBeGreaterThanOrEqual(1);
-      expect(settings.faceConcurrency).toBeLessThanOrEqual(8);
+      expect(settings.faceConcurrency).toBeLessThanOrEqual(24);
       expect(Number.isFinite(settings.rawPreviewQuality)).toBe(true);
       expect(settings.rawPreviewQuality).toBeGreaterThanOrEqual(30);
       expect(settings.rawPreviewQuality).toBeLessThanOrEqual(100);
@@ -626,7 +626,7 @@ describe('IPC Handlers', () => {
       const written = JSON.parse(String(mockWriteFile.mock.calls[0][1]));
 
       expect(written.faceConcurrency).toBeGreaterThanOrEqual(1);
-      expect(written.faceConcurrency).toBeLessThanOrEqual(8);
+      expect(written.faceConcurrency).toBeLessThanOrEqual(24);
     });
 
     it('persists clamped preview concurrency when settings are updated', async () => {

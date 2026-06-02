@@ -1026,7 +1026,7 @@ const DEFAULT_SETTINGS: AppSettings = {
 let faceSemaphoreSlots = 1;
 let faceSemaphoreQueue: Array<() => void> = [];
 let faceActiveCount = 0;
-const FACE_CONCURRENCY_HARD_MAX = 8;
+const FACE_CONCURRENCY_HARD_MAX = 24;
 
 // Incremented on every SCAN_START so in-flight semaphore waiters from the
 // previous source can detect they've been superseded and bail out early.
