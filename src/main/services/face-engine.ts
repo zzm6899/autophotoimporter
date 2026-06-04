@@ -27,6 +27,8 @@ import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { app } from 'electron';
 import { log } from '../logger';
+import { estimatePoses, isPoseAnalysisEnabled } from './pose-engine';
+import type { PoseKeypoints } from '../../shared/types';
 
 // onnxruntime-node is a native addon — it must be outside the asar.
 // The forge config sets unpackDir for it. Require at runtime to avoid
@@ -97,6 +99,11 @@ export interface FaceAnalysisResult {
   embeddings: Float32Array[];
   /** Face boxes corresponding 1:1 with embeddings. */
   embeddingBoxes?: FaceBox[];
+  /**
+   * Optional per-athlete pose keypoints (MoveNet) — present only when pose
+   * analysis is enabled and the model is installed. Aligned to personBoxes.
+   */
+  poses?: PoseKeypoints[];
   /** Feature stages that were actually completed for this result. */
   features?: {
     faceMatching: boolean;
@@ -938,6 +945,13 @@ async function _analyzeFacesInner(imagePath: string): Promise<FaceAnalysisResult
   await yieldToEventLoop();
   const detectMs = Date.now() - detectStart;
 
+  // Optional pose estimation (sports modes). Gated: zero cost unless the user
+  // enabled it AND the MoveNet model is installed. Runs once per athlete box.
+  const poses: PoseKeypoints[] = (isPoseAnalysisEnabled() && personBoxes.length > 0)
+    ? await estimatePoses(img, personBoxes).catch(() => [] as PoseKeypoints[])
+    : [];
+  if (poses.length > 0) await yieldToEventLoop();
+
   const finishStats = (embedMs: number) => {
     imageDecodeCache.delete(imagePath);
     _analyzeCallCount++;
@@ -961,6 +975,7 @@ async function _analyzeFacesInner(imagePath: string): Promise<FaceAnalysisResult
       personBoxes,
       embeddings: [],
       embeddingBoxes: [],
+      poses,
       features: { faceMatching: faceMatchingEnabled, personDetection: shouldRunPerson, embeddingLimit: faceEmbeddingLimit },
     };
   }
@@ -972,6 +987,7 @@ async function _analyzeFacesInner(imagePath: string): Promise<FaceAnalysisResult
       personBoxes,
       embeddings: [],
       embeddingBoxes: [],
+      poses,
       features: { faceMatching: false, personDetection: shouldRunPerson, embeddingLimit: 0 },
     };
   }
@@ -980,8 +996,17 @@ async function _analyzeFacesInner(imagePath: string): Promise<FaceAnalysisResult
   // settings. All detected boxes are still returned for UI overlays.
   const rankedFaces = rankFacesForEmbedding(boxes);
   const reliableFaces = rankedFaces.filter(isReliableFaceForEmbedding);
+  // Crowd guard: embedding cost scales with faces-per-frame, and in a packed
+  // sports/stadium shot the marginal faces are tiny background spectators with
+  // little identity value. Embed only the strongest few when a frame is crowded
+  // so a 25k-image event with full stands stays fast — the dominant cost at
+  // "10k+ people" is crop+resize+inference per embedded face, not the model.
+  const crowdAdaptiveLimit = boxes.length >= 12 ? 4
+    : boxes.length >= 8 ? 6
+    : faceEmbeddingLimit;
+  const effectiveEmbeddingLimit = Math.min(faceEmbeddingLimit, crowdAdaptiveLimit);
   const facesToEmbed = (reliableFaces.length > 0 ? reliableFaces : rankedFaces.slice(0, 1))
-    .slice(0, faceEmbeddingLimit);
+    .slice(0, effectiveEmbeddingLimit);
   const embedStart = Date.now();
   const embeddedFaces: Array<{ box: FaceBox; embedding: Float32Array }> = [];
   for (const box of facesToEmbed) {
@@ -1002,6 +1027,7 @@ async function _analyzeFacesInner(imagePath: string): Promise<FaceAnalysisResult
     personBoxes,
     embeddings,
     embeddingBoxes,
+    poses,
     features: { faceMatching: true, personDetection: shouldRunPerson, embeddingLimit: faceEmbeddingLimit },
   };
 }

@@ -9,6 +9,34 @@ export interface Volume {
   hasDcim?: boolean;
 }
 
+/** A single normalised pose keypoint (0..1 frame coords) with confidence. */
+export interface PoseKeypoint {
+  x: number;
+  y: number;
+  score: number;
+}
+
+/**
+ * 17 COCO keypoints for one athlete, in standard order:
+ * 0 nose, 1 leftEye, 2 rightEye, 3 leftEar, 4 rightEar,
+ * 5 leftShoulder, 6 rightShoulder, 7 leftElbow, 8 rightElbow,
+ * 9 leftWrist, 10 rightWrist, 11 leftHip, 12 rightHip,
+ * 13 leftKnee, 14 rightKnee, 15 leftAnkle, 16 rightAnkle.
+ */
+export interface PoseKeypoints {
+  keypoints: PoseKeypoint[];
+  /** Overall detection confidence for this athlete's pose. */
+  score?: number;
+}
+
+/** COCO keypoint indices, named for readable geometry code. */
+export const COCO_KP = {
+  nose: 0, leftEye: 1, rightEye: 2, leftEar: 3, rightEar: 4,
+  leftShoulder: 5, rightShoulder: 6, leftElbow: 7, rightElbow: 8,
+  leftWrist: 9, rightWrist: 10, leftHip: 11, rightHip: 12,
+  leftKnee: 13, rightKnee: 14, leftAnkle: 15, rightAnkle: 16,
+} as const;
+
 export interface MediaFile {
   path: string;
   name: string;
@@ -95,6 +123,13 @@ export interface MediaFile {
   personCount?: number;
   /** Normalized person/body boxes from the ONNX review pipeline. */
   personBoxes?: Array<{ x: number; y: number; width: number; height: number; score?: number }>;
+  /**
+   * Per-athlete pose keypoints from the optional pose model (MoveNet, 17 COCO
+   * keypoints). Coordinates are normalised 0..1 to the full frame. One entry per
+   * detected athlete, aligned to personBoxes order where possible. Absent when
+   * the pose model is not installed/enabled — scoring falls back to box proxies.
+   */
+  poses?: PoseKeypoints[];
   /** Compact perceptual hash of the primary detected face crop. Used only for local same-face clustering. */
   faceSignature?: string;
   /**
@@ -175,7 +210,22 @@ export type EventMode =
   | 'vendor-booth'
   | 'crowd'
   | 'panels'
-  | 'meetups';
+  | 'meetups'
+  | 'taekwondo'
+  | 'sports-combat';
+
+/**
+ * Event modes that retune culling toward peak sports action: frozen motion,
+ * athlete-to-athlete contact, emotion at the moment of impact, and group/team
+ * focus. These read athlete person-boxes + face expression rather than pose
+ * keypoints (no pose model shipped yet), so "contact" and "action" are strong
+ * proxies, not measured limb angles.
+ */
+export const SPORTS_EVENT_MODES: ReadonlySet<EventMode> = new Set<EventMode>(['taekwondo', 'sports-combat']);
+
+export function isSportsEventMode(mode: EventMode | undefined): boolean {
+  return mode !== undefined && SPORTS_EVENT_MODES.has(mode);
+}
 
 export interface EventModePreset {
   label: string;
@@ -238,6 +288,18 @@ export const EVENT_MODE_PRESETS: Record<EventMode, EventModePreset> = {
     description: 'Group coverage with everyone visible and duplicate stacks collapsed.',
     keywords: ['meetup', 'group photo', 'group coverage', 'people'],
     help: 'Pairs well with the group-photo culling logic that prefers more usable faces and people present.',
+  },
+  taekwondo: {
+    label: 'Taekwondo / martial arts',
+    description: 'Peak kicks, sparring contact, poomsae form, emotion, and sharp team/group shots.',
+    keywords: ['taekwondo', 'martial arts', 'sparring', 'kick', 'poomsae', 'kyorugi', 'action', 'contact'],
+    help: 'Tuned for sparring + forms: rewards frozen action, athlete-to-athlete contact, emotion at impact, and clean group/team focus. Aggressively rejects soft/missed-moment frames so big batches cull down hard.',
+  },
+  'sports-combat': {
+    label: 'Combat / contact sports',
+    description: 'General contact-sport action: impact moments, athlete contact, emotion, and sharp group shots.',
+    keywords: ['sports', 'combat sport', 'contact', 'action', 'impact', 'athlete'],
+    help: 'Same action-first scoring as the taekwondo preset, for boxing, karate, judo, wrestling, MMA, and similar contact sports.',
   },
 };
 
