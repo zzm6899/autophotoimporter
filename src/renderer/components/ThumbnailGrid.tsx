@@ -2643,6 +2643,20 @@ export function ThumbnailGrid() {
   useEffect(() => { reviewPersonDetectionRef.current = reviewPersonDetection; }, [reviewPersonDetection]);
   useEffect(() => { reviewVisualDuplicatesRef.current = reviewVisualDuplicates; }, [reviewVisualDuplicates]);
   useEffect(() => {
+    const stopBackgroundReview = () => {
+      reviewGenerationRef.current++;
+      sharpnessInFlightRef.current = false;
+      void window.electronAPI.cancelFaceAnalysis?.().catch(() => undefined);
+    };
+    window.addEventListener('pagehide', stopBackgroundReview);
+    window.addEventListener('beforeunload', stopBackgroundReview);
+    return () => {
+      window.removeEventListener('pagehide', stopBackgroundReview);
+      window.removeEventListener('beforeunload', stopBackgroundReview);
+      stopBackgroundReview();
+    };
+  }, []);
+  useEffect(() => {
     const element = flatScrollRef.current;
     if (!element) return;
     const updateWidth = () => setFlatGridWidth(element.clientWidth);
@@ -2836,8 +2850,8 @@ export function ThumbnailGrid() {
       // Canvas work (sharpness, hash, analyzeSubject) runs in the renderer
       // concurrently with the IPC round-trip, overlapping CPU work efficiently.
       void (async () => {
-      const canvasConcurrency = currentFastKeeperMode ? 1 : Math.min(3, Math.max(1, currentFaceConcurrency));
-      const entries = await mapWithConcurrency(candidates, canvasConcurrency, async (f): Promise<[string, Partial<MediaFile>]> => {
+      const reviewPipelineConcurrency = currentFastKeeperMode ? 1 : Math.min(24, Math.max(4, currentFaceConcurrency));
+      const entries = await mapWithConcurrency(candidates, reviewPipelineConcurrency, async (f): Promise<[string, Partial<MediaFile>]> => {
         if (reviewGeneration !== reviewGenerationRef.current) return [f.path, {}];
         const thumbnail = f.thumbnail as string;
         const hasThumbnail = typeof thumbnail === 'string' && thumbnail.length > 0;

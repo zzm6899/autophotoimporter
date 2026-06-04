@@ -61,8 +61,8 @@ describe('detectDeviceTier', () => {
     const profile = detectDeviceTier();
 
     expect(profile.tier).toBe('high');
-    expect(profile.previewConcurrency).toBe(6);
-    expect(profile.faceConcurrency).toBe(6);
+    expect(profile.previewConcurrency).toBe(8);
+    expect(profile.faceConcurrency).toBe(12);
     expect(profile.cpuOptimization).toBe(false);
     expect(profile.rawPreviewQuality).toBe(80);
   });
@@ -74,7 +74,7 @@ describe('detectDeviceTier', () => {
 
     expect(profile.tier).toBe('balanced');
     expect(profile.previewConcurrency).toBe(2);
-    expect(profile.faceConcurrency).toBe(2);
+    expect(profile.faceConcurrency).toBe(3);
     expect(profile.rawPreviewQuality).toBe(70);
   });
 

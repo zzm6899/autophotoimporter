@@ -2136,6 +2136,8 @@ export function registerIpcHandlers(): void {
   }).catch(() => undefined);
 
   app.on('before-quit', () => {
+    cancelPendingFaceJobs();
+    clearImageDecodeCache();
     stopWatching();
     watchFolderManager?.stop();
     clearFtpSyncTimer();
