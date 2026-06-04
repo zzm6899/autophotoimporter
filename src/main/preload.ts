@@ -3,6 +3,7 @@ import { IPC } from '../shared/types';
 import type { ImportConfig, AppSettings, MediaFile, Volume, ImportProgress, ImportResult, UpdateInfo, UpdateReleaseSummary, UpdateState, FtpConfig, FtpSyncStatus, ImportError, LicenseValidation, ImportPreflight, ImportBenchmarkQuery, ImportBenchmarkResult, ImportLedger, ImportHealthSummary, MacFirstRunDoctor, AppDiagnosticsSnapshot, UpdateRepairResult, AppSession, WatchFolder, CatalogStats, CatalogBrowserQuery, CatalogBrowserResult, CatalogFaceSearchQuery, CatalogFaceSearchResult, CatalogFaceMetadataWriteResult, CatalogMaintenanceResult, CatalogPruneResult, CatalogBackupResult, CatalogClearSourceResult, ScanDiagnostics, LightroomHandoffResult } from '../shared/types';
 import type { FaceBox } from './services/face-engine';
 import type { ModelDownloadProgress } from './services/model-downloader';
+import type { PoseKeypoints } from '../shared/types';
 
 export interface FtpProbeResult {
   ok: boolean;
@@ -251,6 +252,7 @@ const api = {
     personBoxes: FaceBox[];
     embeddings: string[];
     embeddingBoxes: FaceBox[];
+    poses?: PoseKeypoints[];
     faceCount: number;
     personCount: number;
     error?: string;

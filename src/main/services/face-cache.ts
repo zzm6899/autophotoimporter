@@ -24,6 +24,7 @@ import { stat, readFile, writeFile, mkdir, readdir, unlink } from 'node:fs/promi
 import { app } from 'electron';
 import crypto from 'node:crypto';
 import type { FaceAnalysisResult, FaceBox } from './face-engine';
+import type { PoseKeypoints } from '../../shared/types';
 
 const SCHEMA_VERSION = 2;
 const MAX_ENTRIES = 50_000;       // ~50k photos worth of cached face data
@@ -40,6 +41,7 @@ interface CachedEntry {
   personBoxes: FaceBox[];
   embeddings: string[];  // hex-serialised, matches the IPC wire format
   embeddingBoxes?: FaceBox[];
+  poses?: PoseKeypoints[]; // optional; present only when pose analysis ran
   features: {
     faceMatching: boolean;
     personDetection: boolean;
@@ -172,6 +174,7 @@ function rehydrate(entry: CachedEntry): { result: FaceAnalysisResult; hexEmbeddi
       personBoxes: entry.personBoxes,
       embeddings,
       embeddingBoxes: entry.embeddingBoxes ?? [],
+      poses: entry.poses,
       features: entry.features,
     },
     hexEmbeddings: entry.embeddings,
@@ -207,6 +210,7 @@ export async function setCachedFaceResult(
     personBoxes: result.personBoxes,
     embeddings: hexEmbeddings,
     embeddingBoxes: result.embeddingBoxes,
+    poses: result.poses,
     features: result.features ?? {
       faceMatching: hexEmbeddings.length > 0 || result.boxes.length === 0,
       personDetection: true,

@@ -1,4 +1,30 @@
-import type { CullConfidence, EventMode, KeeperQuota, MediaFile } from './types';
+import type { CullConfidence, EventMode, KeeperQuota, MediaFile, PoseKeypoint, PoseKeypoints } from './types';
+import { COCO_KP, isSportsEventMode } from './types';
+
+// ---------------------------------------------------------------------------
+// Active review profile
+//
+// Scoring is parameterised by the session's EventMode without threading the
+// mode through every bestShotScore()/keeperScore() call site (there are many,
+// across renderer + main). This mirrors the module-level config pattern already
+// used by the face engine (configureFaceThroughput etc.). Default 'general'
+// preserves the original scoring exactly, so existing callers/tests are
+// unaffected until they opt in via configureReviewProfile().
+// ---------------------------------------------------------------------------
+
+let activeEventMode: EventMode = 'general';
+
+export function configureReviewProfile(mode: EventMode | undefined): void {
+  activeEventMode = mode ?? 'general';
+}
+
+export function getReviewProfile(): EventMode {
+  return activeEventMode;
+}
+
+function sportsModeActive(): boolean {
+  return isSportsEventMode(activeEventMode);
+}
 
 export interface ReviewScoreInput {
   sharpnessScore?: number;
@@ -31,6 +57,277 @@ function boxCenterScore(box: { x: number; y: number; width: number; height: numb
   const dx = Math.abs(cx - 0.5);
   const dy = Math.abs(cy - 0.43);
   return clamp01(1 - (dx * 1.45 + dy * 1.05));
+}
+
+// ---------------------------------------------------------------------------
+// Sports / taekwondo action scoring
+//
+// We have no pose model, so "contact" and "action" are proxies built from the
+// signals we DO have: person boxes (athlete bodies), face expression (emotion /
+// kiap), and subject vs whole-frame sharpness (frozen motion). These are strong
+// heuristics for peak-moment selection, not measured limb geometry.
+// ---------------------------------------------------------------------------
+
+type Box = { x: number; y: number; width: number; height: number; score?: number };
+
+function boxIoU(a: Box, b: Box): number {
+  const ix1 = Math.max(a.x, b.x);
+  const iy1 = Math.max(a.y, b.y);
+  const ix2 = Math.min(a.x + a.width, b.x + b.width);
+  const iy2 = Math.min(a.y + a.height, b.y + b.height);
+  const iw = Math.max(0, ix2 - ix1);
+  const ih = Math.max(0, iy2 - iy1);
+  const inter = iw * ih;
+  const union = a.width * a.height + b.width * b.height - inter;
+  return union > 1e-6 ? inter / union : 0;
+}
+
+/**
+ * Strongest athlete-to-athlete contact signal in the frame, 0..1.
+ * Two overlapping/adjacent person boxes with vertical overlap approximate a
+ * sparring exchange or kick-to-body contact. A single isolated athlete (poomsae
+ * / form) scores 0 here and is rewarded by the action term instead.
+ */
+export function athleteContactSignal(file: Pick<MediaFile, 'personBoxes' | 'personCount'>): number {
+  const boxes = (file.personBoxes ?? []).filter((b) => b.width > 0 && b.height > 0);
+  if (boxes.length < 2) return 0;
+  let best = 0;
+  for (let i = 0; i < boxes.length; i++) {
+    for (let j = i + 1; j < boxes.length; j++) {
+      const a = boxes[i];
+      const b = boxes[j];
+      const iou = boxIoU(a, b);
+      // Edge proximity: athletes can make contact (a kick) while bodies barely
+      // overlap. Reward small horizontal gaps when there is vertical overlap.
+      const vOverlap = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+      const hGap = Math.max(a.x, b.x) - Math.min(a.x + a.width, b.x + b.width);
+      const proximity = vOverlap > 0 && hGap < 0.06 ? clamp01(1 - hGap / 0.06) * 0.6 : 0;
+      // Size similarity — two same-scale athletes engaging beats one foreground
+      // body overlapping a tiny background spectator.
+      const sizeRatio = Math.min(a.width * a.height, b.width * b.height) /
+        Math.max(a.width * a.height, b.width * b.height, 1e-6);
+      const engagement = Math.max(clamp01(iou / 0.25), proximity) * (0.55 + 0.45 * sizeRatio);
+      best = Math.max(best, engagement);
+    }
+  }
+  return clamp01(best);
+}
+
+/**
+ * Frozen-action signal, 0..1. Peak sports frames are tack-sharp on the subject
+ * even when the background streaks from a pan. A sharp subject paired with a
+ * softer whole frame is a strong "caught the moment" cue.
+ */
+export function frozenActionSignal(
+  file: Pick<MediaFile, 'sharpnessScore' | 'subjectSharpnessScore' | 'blurRisk'>,
+): number {
+  if (file.blurRisk === 'high') return 0;
+  const subject = file.subjectSharpnessScore ?? file.sharpnessScore ?? 0;
+  const whole = file.sharpnessScore ?? subject;
+  // Laplacian-variance sharpness spans 0..several-thousand on a well-lit sports
+  // shoot, so a linear threshold saturates instantly. Compress with sqrt and a
+  // high knee, and lean on subject-vs-frame isolation (panned/frozen action)
+  // as the real discriminator since everything is "sharp" in good light.
+  const subjectSignal = clamp01((Math.sqrt(subject) - 14) / 46);
+  const isolation = whole > 0 ? clamp01((subject - whole) / Math.max(whole, 400)) : 0;
+  return clamp01(subjectSignal * 0.6 + isolation * 0.55);
+}
+
+// ---------------------------------------------------------------------------
+// Pose-keypoint geometry (used when the optional pose model has run)
+//
+// Pure, unit-testable math over COCO-17 keypoints. When poses are present these
+// give MEASURED kick straightness and real foot-to-torso contact; when absent
+// the sports scorer falls back to the person-box proxies above.
+// ---------------------------------------------------------------------------
+
+const POSE_KP_MIN_SCORE = 0.3;
+
+function kp(pose: PoseKeypoints, index: number): PoseKeypoint | null {
+  const point = pose.keypoints[index];
+  if (!point || point.score < POSE_KP_MIN_SCORE) return null;
+  return point;
+}
+
+/** Interior angle at vertex b formed by a-b-c, in degrees (0..180). */
+function jointAngle(a: PoseKeypoint, b: PoseKeypoint, c: PoseKeypoint): number {
+  const v1x = a.x - b.x, v1y = a.y - b.y;
+  const v2x = c.x - b.x, v2y = c.y - b.y;
+  const dot = v1x * v2x + v1y * v2y;
+  const m1 = Math.hypot(v1x, v1y);
+  const m2 = Math.hypot(v2x, v2y);
+  if (m1 < 1e-6 || m2 < 1e-6) return 0;
+  const cos = Math.max(-1, Math.min(1, dot / (m1 * m2)));
+  return (Math.acos(cos) * 180) / Math.PI;
+}
+
+function torsoHeight(pose: PoseKeypoints): number {
+  const ls = kp(pose, COCO_KP.leftShoulder);
+  const rs = kp(pose, COCO_KP.rightShoulder);
+  const lh = kp(pose, COCO_KP.leftHip);
+  const rh = kp(pose, COCO_KP.rightHip);
+  const shoulderY = ls && rs ? (ls.y + rs.y) / 2 : (ls?.y ?? rs?.y);
+  const hipY = lh && rh ? (lh.y + rh.y) / 2 : (lh?.y ?? rh?.y);
+  if (shoulderY === undefined || hipY === undefined) return 0;
+  return Math.abs(hipY - shoulderY);
+}
+
+/**
+ * Straightness of the best-extended kicking leg for one athlete, 0..1.
+ * 1 = a fully-locked leg (hip-knee-ankle ≈ 180°) that is also raised — i.e. a
+ * committed kick or a clean poomsae extension, not a bent standing leg.
+ */
+export function kickStraightness(pose: PoseKeypoints): number {
+  const legs: Array<[number, number, number]> = [
+    [COCO_KP.leftHip, COCO_KP.leftKnee, COCO_KP.leftAnkle],
+    [COCO_KP.rightHip, COCO_KP.rightKnee, COCO_KP.rightAnkle],
+  ];
+  const tHeight = torsoHeight(pose) || 0.2;
+  let best = 0;
+  for (const [hipIdx, kneeIdx, ankleIdx] of legs) {
+    const hip = kp(pose, hipIdx);
+    const knee = kp(pose, kneeIdx);
+    const ankle = kp(pose, ankleIdx);
+    if (!hip || !knee || !ankle) continue;
+    const angle = jointAngle(hip, knee, ankle);
+    const straightness = clamp01((angle - 150) / 30); // 150°→0, 180°→1
+    // Elevation: ankle raised toward/above hip level => an actual kick, not a
+    // planted leg. Measured in torso-heights so it's scale-invariant. A leg
+    // planted straight down stays low; a raised straight leg scores near 1.
+    const elevation = clamp01((hip.y - ankle.y) / tHeight + 0.25);
+    best = Math.max(best, straightness * (0.2 + 0.8 * elevation));
+  }
+  return clamp01(best);
+}
+
+/** Best kick straightness across all athletes in the frame, 0..1. */
+export function frameKickStraightness(file: Pick<MediaFile, 'poses'>): number {
+  const poses = file.poses ?? [];
+  let best = 0;
+  for (const pose of poses) best = Math.max(best, kickStraightness(pose));
+  return best;
+}
+
+function torsoCenter(pose: PoseKeypoints): { x: number; y: number } | null {
+  const pts = [
+    kp(pose, COCO_KP.leftShoulder), kp(pose, COCO_KP.rightShoulder),
+    kp(pose, COCO_KP.leftHip), kp(pose, COCO_KP.rightHip),
+  ].filter((p): p is PoseKeypoint => p !== null);
+  if (pts.length < 2) return null;
+  return {
+    x: pts.reduce((s, p) => s + p.x, 0) / pts.length,
+    y: pts.reduce((s, p) => s + p.y, 0) / pts.length,
+  };
+}
+
+/**
+ * Measured kick-to-body contact across athlete pairs, 0..1. Looks for one
+ * athlete's foot/ankle landing near another athlete's torso centre, scaled by
+ * the target's torso size so it is distance-invariant. 1 = foot on the body.
+ */
+export function poseContactSignal(file: Pick<MediaFile, 'poses'>): number {
+  const poses = file.poses ?? [];
+  if (poses.length < 2) return 0;
+  let best = 0;
+  for (let i = 0; i < poses.length; i++) {
+    for (let j = 0; j < poses.length; j++) {
+      if (i === j) continue;
+      const target = torsoCenter(poses[j]);
+      if (!target) continue;
+      const reach = torsoHeight(poses[j]) || 0.2;
+      for (const ankleIdx of [COCO_KP.leftAnkle, COCO_KP.rightAnkle]) {
+        const foot = kp(poses[i], ankleIdx);
+        if (!foot) continue;
+        const dist = Math.hypot(foot.x - target.x, foot.y - target.y);
+        // Within ~one torso height of the chest/core => scoring-range contact.
+        best = Math.max(best, clamp01(1 - dist / reach));
+      }
+    }
+  }
+  return best;
+}
+
+/** Emotion / intensity proxy from face expression (kiap shout, focus), 0..1. */
+export function emotionSignal(file: Pick<MediaFile, 'faceBoxes'>): number {
+  const boxes = file.faceBoxes ?? [];
+  if (boxes.length === 0) return 0;
+  return boxes.reduce(
+    (best, box) => Math.max(best, clamp01(box.smileScore ?? box.expressionScore, 0.5)),
+    0,
+  );
+}
+
+/**
+ * Composite sports-action bonus added to bestShotScore/keeperScore when a sports
+ * EventMode is active. Tuned so peak-contact, frozen, emotive, well-focused
+ * frames rise to the top and flat/soft frames fall away — which is what makes a
+ * 25k batch cull down hard.
+ */
+export function sportsActionQuality(file: MediaFile): number {
+  const hasPeople = (file.personCount ?? file.personBoxes?.length ?? 0) > 0;
+  const hasFaces = (file.faceCount ?? file.faceBoxes?.length ?? 0) > 0;
+  const hasPoses = (file.poses?.length ?? 0) > 0;
+  // Prefer MEASURED pose geometry when the pose model has run; otherwise fall
+  // back to the person-box proxies so scoring degrades gracefully.
+  const boxContact = athleteContactSignal(file);
+  const contact = hasPoses ? Math.max(boxContact, poseContactSignal(file)) : boxContact;
+  const kickForm = hasPoses ? frameKickStraightness(file) : 0;
+  const action = Math.max(frozenActionSignal(file), kickForm);
+  const emotion = emotionSignal(file);
+  const focus = focusQuality(file);
+  const group = groupCoverageQuality(file); // already 0..~34
+  const faceCount = file.faceCount ?? file.faceBoxes?.length ?? 0;
+  const personCount = file.personCount ?? file.personBoxes?.length ?? 0;
+  const isGroup = faceCount >= 2 || personCount >= 2;
+
+  // Pure scenery / no subject: heavily deprioritised in sports mode so the cull
+  // budget spends itself on athletes, not empty mats or crowd filler.
+  if (!hasPeople && !hasFaces) {
+    return isDetailStoryKeeper(file) ? 8 : -40;
+  }
+
+  // Clean-exchange awareness: a 1-v-1 / small-group sparring duel is the money
+  // shot. In a packed mat, overlapping bodies inflate "contact" without being a
+  // real kick, so weight contact UP for a clean duel and DOWN for a crowd.
+  const duelFactor = personCount <= 1 ? 0.65
+    : personCount <= 4 ? 1.18
+    : personCount <= 6 ? 0.98
+    : 0.78;
+
+  let bonus =
+    contact * 104 * duelFactor + // kick-to-body / sparring exchange (measured if poses)
+    action * 48 +                // frozen peak motion / committed extension
+    emotion * 34 +               // intensity at the moment
+    focus * 30 +                 // clarity gate
+    kickForm * 48;               // measured straight-kick / poomsae form (poses only)
+
+  // Combined peak: a clean exchange that is ALSO frozen-sharp is the shot to
+  // keep — reward the conjunction so it clears the crowd-coverage frames.
+  bonus += contact * action * duelFactor * 46;
+
+  // Group / team frames: clarity + coverage is the priority (your "group photos
+  // priority clarity and focus"). Reward sharp, everyone-visible team shots,
+  // but not so much that a static clump outranks live action.
+  if (isGroup) {
+    bonus += group * 0.7 + focus * 22;
+  }
+
+  // A lone, razor-sharp athlete mid-form (poomsae) with no contact still earns
+  // its keep through the action term; nudge it so forms aren't all culled.
+  if (!isGroup && contact === 0 && action >= 0.5) {
+    bonus += 22;
+  }
+
+  // Crowd damping: a big static clump shouldn't auto-win the keeper budget over
+  // a clean kick. Gentle penalty past a handful of bodies.
+  const crowd = Math.max(0, personCount - 6) + Math.max(0, faceCount - 7);
+  bonus -= crowd * 9;
+
+  // Soft / missed-moment athlete frames lose ground fast.
+  if (file.blurRisk === 'medium') bonus -= 26;
+  if (action < 0.2 && contact < 0.15) bonus -= 30;
+
+  return Math.round(bonus);
 }
 
 export function faceSignalConfidence(
@@ -181,7 +478,8 @@ export function keeperScore(file: MediaFile): number {
     Math.min(70, (file.subjectSharpnessScore ?? 0) / 2.4) +
     Math.min(45, (file.sharpnessScore ?? 0) / 6) +
     Math.min(55, file.reviewScore ?? 0) -
-    (file.blurRisk === 'high' ? 90 : file.blurRisk === 'medium' ? 30 : 0)
+    (file.blurRisk === 'high' ? 90 : file.blurRisk === 'medium' ? 30 : 0) +
+    (sportsModeActive() ? sportsActionQuality(file) : 0)
   );
 }
 
@@ -220,6 +518,7 @@ export function bestShotScore(file: MediaFile): number {
   score -= weakFace;
   if (hasFaces && subjectSharp > 0 && subjectSharp < 38) score -= 55;
   if (!hasFaces && subjectSharp > 0 && subjectSharp < 28) score -= 25;
+  if (sportsModeActive()) score += sportsActionQuality(file);
   return Math.round(score);
 }
 
@@ -244,6 +543,16 @@ export function isDetailStoryKeeper(file: MediaFile): boolean {
 
 export function inferSceneBucket(file: MediaFile, eventMode: EventMode = 'general'): string {
   if (file.type === 'video') return 'Video';
+  if (isSportsEventMode(eventMode)) {
+    const faces = file.faceCount ?? file.faceBoxes?.length ?? 0;
+    const persons = file.personCount ?? file.personBoxes?.length ?? 0;
+    if (faces === 0 && persons === 0) return isDetailStoryKeeper(file) ? 'Details' : 'Scene';
+    if (athleteContactSignal(file) >= 0.45) return 'Sparring / contact';
+    if (faces >= 3 || persons >= 3) return 'Team / group';
+    if (frozenActionSignal(file) >= 0.55) return 'Kicks / action';
+    if (persons === 1 && faces <= 1) return 'Poomsae / form';
+    return 'Athletes';
+  }
   if ((file.faceCount ?? file.faceBoxes?.length ?? 0) >= 3 || (file.personCount ?? file.personBoxes?.length ?? 0) >= 3) {
     return 'Groups';
   }
@@ -1241,4 +1550,106 @@ export function groupByFaceSimilarity(files: MediaFile[], embeddingThreshold = 0
 export function bestInGroup(files: MediaFile[]): MediaFile | null {
   if (files.length === 0) return null;
   return rankBestShots(files).find(isAutoBestCandidate) ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Cull-to-target keeper selection
+//
+// Reduce a huge batch (e.g. 25k) down to a hard keeper budget (e.g. ~1000),
+// keeping the strongest frame per near-duplicate group first so you get variety
+// instead of 40 frames of one exchange. O(n log n) — uses the burst/visual/face
+// group ids already computed on each file, so it scales past the O(n²) visual-
+// hash grouping cap.
+// ---------------------------------------------------------------------------
+
+export interface KeeperTargetOptions {
+  /** Hard cap on how many files to keep. */
+  target: number;
+  /** Retune scoring for a sports/event mode while selecting. */
+  eventMode?: EventMode;
+  /** Max keepers per near-duplicate group before the budget is spread wider. Default 1. */
+  perGroupCap?: number;
+}
+
+export interface KeeperTargetResult {
+  keep: string[];
+  reject: string[];
+  target: number;
+  kept: number;
+  /** Always-kept files (protected / rated / manually selected). */
+  mandatory: number;
+  /** Distinct near-duplicate groups represented in the kept set. */
+  groups: number;
+}
+
+function diversityKey(file: MediaFile): string {
+  return file.burstId
+    ?? file.visualGroupId
+    ?? file.faceGroupId
+    ?? `solo:${file.path}`;
+}
+
+function isMandatoryKeeper(file: MediaFile): boolean {
+  return !!file.isProtected || (file.rating ?? 0) > 0 || file.pick === 'selected';
+}
+
+export function selectKeepersToTarget(files: MediaFile[], options: KeeperTargetOptions): KeeperTargetResult {
+  const target = Math.max(0, Math.floor(options.target));
+  const perGroupCap = Math.max(1, Math.floor(options.perGroupCap ?? 1));
+  const prevProfile = getReviewProfile();
+  if (options.eventMode) configureReviewProfile(options.eventMode);
+
+  try {
+    const keep = new Set<string>();
+    const groupCount = new Map<string, number>();
+    let mandatoryCount = 0;
+
+    // 1. Always keep protected / rated / manually selected — even past target.
+    for (const file of files) {
+      if (file.pick === 'rejected') continue;
+      if (isMandatoryKeeper(file)) {
+        keep.add(file.path);
+        const key = diversityKey(file);
+        groupCount.set(key, (groupCount.get(key) ?? 0) + 1);
+        mandatoryCount++;
+      }
+    }
+
+    // 2. Rank the remaining candidates by keeper score (sports-aware if set).
+    const candidates = files
+      .filter((file) => file.pick !== 'rejected' && !keep.has(file.path))
+      .map((file) => ({ file, score: keeperScore(file), key: diversityKey(file) }))
+      .sort((a, b) => b.score - a.score || a.file.name.localeCompare(b.file.name));
+
+    // 3. First pass — one (perGroupCap) best frame per group for maximum variety.
+    for (const cand of candidates) {
+      if (keep.size >= target) break;
+      if ((groupCount.get(cand.key) ?? 0) >= perGroupCap) continue;
+      keep.add(cand.file.path);
+      groupCount.set(cand.key, (groupCount.get(cand.key) ?? 0) + 1);
+    }
+
+    // 4. Second pass — budget left over (target not yet hit) gets filled by the
+    //    next-best frames regardless of group, still strictly by score.
+    if (keep.size < target) {
+      for (const cand of candidates) {
+        if (keep.size >= target) break;
+        if (keep.has(cand.file.path)) continue;
+        keep.add(cand.file.path);
+        groupCount.set(cand.key, (groupCount.get(cand.key) ?? 0) + 1);
+      }
+    }
+
+    const reject = files.filter((file) => !keep.has(file.path)).map((file) => file.path);
+    return {
+      keep: [...keep],
+      reject,
+      target,
+      kept: keep.size,
+      mandatory: mandatoryCount,
+      groups: groupCount.size,
+    };
+  } finally {
+    configureReviewProfile(prevProfile);
+  }
 }

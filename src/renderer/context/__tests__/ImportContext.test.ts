@@ -158,6 +158,33 @@ function embeddingHex(values: number[]): string {
 }
 
 describe('ImportContext reducer', () => {
+  describe('CULL_TO_TARGET', () => {
+    it('culls photos down to the target budget, leaving videos untouched', () => {
+      const photos = Array.from({ length: 20 }, (_, i) =>
+        makeFile({ path: `/p${i}.jpg`, name: `p${i}.jpg`, sharpnessScore: 50 + i, blurRisk: 'low' }));
+      const video = makeFile({ path: '/clip.mov', name: 'clip.mov', type: 'video' });
+      const state = makeState({ files: [...photos, video] });
+      const next = reducer(state, { type: 'CULL_TO_TARGET', target: 5 });
+      const kept = next.files.filter((f) => f.pick === 'selected');
+      const rejected = next.files.filter((f) => f.pick === 'rejected');
+      expect(kept).toHaveLength(5);
+      expect(rejected).toHaveLength(15);
+      // Video is never auto-rejected by the cull.
+      expect(next.files.find((f) => f.path === '/clip.mov')?.pick).toBeUndefined();
+    });
+
+    it('always keeps protected files even below target', () => {
+      const state = makeState({
+        files: [
+          makeFile({ path: '/keep.jpg', isProtected: true, sharpnessScore: 1, blurRisk: 'high' }),
+          ...Array.from({ length: 10 }, (_, i) => makeFile({ path: `/x${i}.jpg`, name: `x${i}.jpg`, sharpnessScore: 100, blurRisk: 'low' })),
+        ],
+      });
+      const next = reducer(state, { type: 'CULL_TO_TARGET', target: 1 });
+      expect(next.files.find((f) => f.path === '/keep.jpg')?.pick).toBe('selected');
+    });
+  });
+
   // --- Phase transitions ---
 
   describe('phase transitions', () => {

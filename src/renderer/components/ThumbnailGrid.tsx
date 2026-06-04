@@ -2905,6 +2905,7 @@ export function ThumbnailGrid() {
             faceEmbeddingBoxes: onnxEmbeddingBoxes.length > 0 ? onnxEmbeddingBoxes : f.faceEmbeddingBoxes,
             personCount: onnx ? onnxPersonBoxes.length : (f.personCount ?? f.personBoxes?.length ?? 0),
             personBoxes: onnx ? onnxPersonBoxes : f.personBoxes,
+            poses: onnx?.poses?.length ? onnx.poses : f.poses,
             subjectReasons: [...new Set(mergedReasons)],
           };
           if (reviewGeneration === reviewGenerationRef.current) {
@@ -3274,6 +3275,7 @@ export function ThumbnailGrid() {
                 faceEmbeddingBoxes: embeddingBoxes.length > 0 ? embeddingBoxes : f.faceEmbeddingBoxes,
                 personCount: result.personBoxes.length,
                 personBoxes,
+                poses: result.poses?.length ? result.poses : f.poses,
               },
             },
           });
