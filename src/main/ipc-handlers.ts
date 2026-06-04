@@ -3150,6 +3150,9 @@ export function registerIpcHandlers(): void {
         }
         try {
           const { boxes, personBoxes, embeddings, embeddingBoxes, poses, features } = await analyzeFaces(filePath);
+          if (capturedGen !== faceQueueGeneration) {
+            return { path: filePath, boxes: [], personBoxes: [], embeddings: [], embeddingBoxes: [], poses: [], faceCount: 0, personCount: 0 };
+          }
           const hexEmbeddings = embeddings.map(serializeEmbedding);
           await setCachedFaceResult(filePath, { boxes, personBoxes, embeddings, embeddingBoxes, poses, features }, hexEmbeddings).catch(() => undefined);
           await new Promise<void>((resolve) => setImmediate(resolve));
