@@ -51,16 +51,41 @@ function bitmapAt(img: Electron.NativeImage, w: number, h: number): { buf: Buffe
   return { buf: (r.toBitmap?.() ?? r.getBitmap()) as Buffer, w: sz.width, h: sz.height };
 }
 
+// 8x8 median perceptual hash — matches the renderer's visualHashFromImage.
+function visualHash(img: Electron.NativeImage): string {
+  const { buf } = bitmapAt(img, 8, 8);
+  const rOff = IS_BGRA ? 2 : 0, bOff = IS_BGRA ? 0 : 2;
+  const luma: number[] = [];
+  for (let i = 0; i < 64; i++) {
+    const p = i * 4;
+    luma.push(buf[p + rOff] * 0.299 + buf[p + 1] * 0.587 + buf[p + bOff] * 0.114);
+  }
+  const median = luma.slice().sort((a, b) => a - b)[32] ?? 0;
+  let bits = '';
+  for (const v of luma) bits += v >= median ? '1' : '0';
+  let hex = '';
+  for (let i = 0; i < bits.length; i += 4) hex += parseInt(bits.slice(i, i + 4), 2).toString(16);
+  return hex.padStart(16, '0');
+}
+
 async function main() {
   const folder = process.argv[2];
   const sampleCount = parseInt(process.argv[3] ?? '80', 10);
   const cullPercent = parseFloat(process.argv[4] ?? '8');
   if (!folder) { console.error('usage: electron tune.cjs <folder> <sampleCount> <cullPercent>'); app.quit(); return; }
 
-  const all = readdirSync(folder).filter((f) => PHOTO_EXT.has(path.extname(f).toLowerCase()));
-  const stride = Math.max(1, Math.floor(all.length / sampleCount));
-  const sample = all.filter((_, i) => i % stride === 0).slice(0, sampleCount);
-  console.log(`\nFolder: ${folder}\nTotal photos: ${all.length} | sampling every ${stride} → ${sample.length} frames\n`);
+  const seq = process.argv[5] === 'seq';
+  const all = readdirSync(folder).filter((f) => PHOTO_EXT.has(path.extname(f).toLowerCase())).sort();
+  let sample: string[];
+  if (seq) {
+    // Consecutive block from the middle — captures real near-dup runs / RAW+JPEG.
+    const start = Math.floor(all.length / 3);
+    sample = all.slice(start, start + sampleCount);
+  } else {
+    const stride = Math.max(1, Math.floor(all.length / sampleCount));
+    sample = all.filter((_, i) => i % stride === 0).slice(0, sampleCount);
+  }
+  console.log(`\nFolder: ${folder}\nTotal photos: ${all.length} | ${seq ? 'consecutive' : 'strided'} sample → ${sample.length} frames\n`);
 
   const files: MediaFile[] = [];
   let n = 0;
@@ -83,6 +108,7 @@ async function main() {
       files.push({
         path: p, name, size: 1, type: 'photo', extension: path.extname(name),
         sharpnessScore: wholeSharp, subjectSharpnessScore: subjSharp,
+        visualHash: visualHash(img),
         faceCount: fa.boxes.length, faceBoxes: fa.boxes, faceDetection: 'native',
         personCount: fa.personBoxes.length, personBoxes: fa.personBoxes,
         blurRisk: review.blurRisk, reviewScore: review.score,
@@ -121,10 +147,10 @@ async function main() {
   const target = Math.max(1, Math.round(files.length * (cullPercent / 100)));
   const cull = selectKeepersToTarget(files, { target, eventMode: 'taekwondo' });
   const keptSet = new Set(cull.keep);
-  console.log(`\n=== CULL to ${cullPercent}% → ${target} keepers (of ${files.length}) ===`);
+  console.log(`\n=== CULL to ${cullPercent}% → ${target} keepers (of ${files.length}) | near-dups dropped: ${cull.dedupedNearDuplicates} ===`);
   console.log('Kept frames:');
   rows.filter((r) => keptSet.has(r.f.path)).forEach((r) =>
-    console.log(`  best=${String(r.best).padStart(5)} contact=${r.contact.toFixed(2)} action=${r.action.toFixed(2)} faces=${r.faces} persons=${r.persons} subj=${r.subj}  ${r.f.name}`));
+    console.log(`  best=${String(r.best).padStart(5)} hash=${r.f.visualHash} faces=${r.faces} persons=${r.persons}  ${r.f.name}`));
 
   // Distribution summary to sanity-check the weighting.
   const avg = (sel: (r: typeof rows[number]) => number) => (rows.reduce((s, r) => s + sel(r), 0) / Math.max(1, rows.length));

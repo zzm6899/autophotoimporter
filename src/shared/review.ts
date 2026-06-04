@@ -1569,6 +1569,13 @@ export interface KeeperTargetOptions {
   eventMode?: EventMode;
   /** Max keepers per near-duplicate group before the budget is spread wider. Default 1. */
   perGroupCap?: number;
+  /**
+   * Max perceptual-hash Hamming distance (out of 64 bits) for two frames to be
+   * treated as visual near-duplicates. Catches consecutive identical frames and
+   * RAW+JPEG pairs even when burst detection missed them (e.g. RAW files with no
+   * parseable timestamp). 0 disables hash dedup. Default 8.
+   */
+  dedupeHashDistance?: number;
 }
 
 export interface KeeperTargetResult {
@@ -1580,6 +1587,8 @@ export interface KeeperTargetResult {
   mandatory: number;
   /** Distinct near-duplicate groups represented in the kept set. */
   groups: number;
+  /** Frames dropped specifically because they were visual near-duplicates of a keeper. */
+  dedupedNearDuplicates: number;
 }
 
 function diversityKey(file: MediaFile): string {
@@ -1593,16 +1602,78 @@ function isMandatoryKeeper(file: MediaFile): boolean {
   return !!file.isProtected || (file.rating ?? 0) > 0 || file.pick === 'selected';
 }
 
+function popcount32(value: number): number {
+  let v = value - ((value >>> 1) & 0x55555555);
+  v = (v & 0x33333333) + ((v >>> 2) & 0x33333333);
+  v = (v + (v >>> 4)) & 0x0f0f0f0f;
+  return (v * 0x01010101) >>> 24;
+}
+
+/** Parse a 16-hex (64-bit) visualHash into two 32-bit halves for fast Hamming. */
+function parseVisualHash(hash: string | undefined): { hi: number; lo: number } | null {
+  if (!hash || hash.length < 16) return null;
+  const hi = parseInt(hash.slice(0, 8), 16);
+  const lo = parseInt(hash.slice(8, 16), 16);
+  if (!Number.isFinite(hi) || !Number.isFinite(lo)) return null;
+  return { hi: hi >>> 0, lo: lo >>> 0 };
+}
+
+/**
+ * Tracks the perceptual hashes of frames already kept so visual near-duplicates
+ * can be suppressed regardless of burst/group metadata. Buckets by the top 8
+ * hash bits to keep the common case near-O(1); near-dups that cross a bucket
+ * boundary are still caught by also scanning neighbouring buckets.
+ */
+class NearDuplicateIndex {
+  private readonly buckets = new Map<number, Array<{ hi: number; lo: number }>>();
+  constructor(private readonly threshold: number) {}
+
+  private bucketKey(h: { hi: number }): number {
+    return h.hi >>> 24; // top 8 bits
+  }
+
+  isNearDuplicate(h: { hi: number; lo: number }): boolean {
+    if (this.threshold <= 0) return false;
+    const base = this.bucketKey(h);
+    // Scan a small neighbourhood of bucket keys so a flipped top bit can't hide
+    // a near-duplicate. The threshold is small, so this stays cheap.
+    for (let k = base - 1; k <= base + 1; k++) {
+      const bucket = this.buckets.get(k & 0xff);
+      if (!bucket) continue;
+      for (const kept of bucket) {
+        const dist = popcount32(h.hi ^ kept.hi) + popcount32(h.lo ^ kept.lo);
+        if (dist <= this.threshold) return true;
+      }
+    }
+    return false;
+  }
+
+  add(h: { hi: number; lo: number }): void {
+    const key = this.bucketKey(h);
+    const bucket = this.buckets.get(key);
+    if (bucket) bucket.push(h);
+    else this.buckets.set(key, [h]);
+  }
+}
+
 export function selectKeepersToTarget(files: MediaFile[], options: KeeperTargetOptions): KeeperTargetResult {
   const target = Math.max(0, Math.floor(options.target));
   const perGroupCap = Math.max(1, Math.floor(options.perGroupCap ?? 1));
+  const hashThreshold = Math.max(0, Math.floor(options.dedupeHashDistance ?? 8));
   const prevProfile = getReviewProfile();
   if (options.eventMode) configureReviewProfile(options.eventMode);
 
   try {
     const keep = new Set<string>();
     const groupCount = new Map<string, number>();
+    const hashIndex = new NearDuplicateIndex(hashThreshold);
     let mandatoryCount = 0;
+    let dedupedNearDuplicates = 0;
+
+    const recordHash = (file: MediaFile): void => {
+      const h = parseVisualHash(file.visualHash);
+      if (h) hashIndex.add(h);
+    };
 
     // 1. Always keep protected / rated / manually selected — even past target.
     for (const file of files) {
@@ -1611,6 +1682,7 @@ export function selectKeepersToTarget(files: MediaFile[], options: KeeperTargetO
         keep.add(file.path);
         const key = diversityKey(file);
         groupCount.set(key, (groupCount.get(key) ?? 0) + 1);
+        recordHash(file);
         mandatoryCount++;
       }
     }
@@ -1618,25 +1690,43 @@ export function selectKeepersToTarget(files: MediaFile[], options: KeeperTargetO
     // 2. Rank the remaining candidates by keeper score (sports-aware if set).
     const candidates = files
       .filter((file) => file.pick !== 'rejected' && !keep.has(file.path))
-      .map((file) => ({ file, score: keeperScore(file), key: diversityKey(file) }))
+      .map((file) => ({ file, score: keeperScore(file), key: diversityKey(file), hash: parseVisualHash(file.visualHash) }))
       .sort((a, b) => b.score - a.score || a.file.name.localeCompare(b.file.name));
 
-    // 3. First pass — one (perGroupCap) best frame per group for maximum variety.
+    const take = (cand: typeof candidates[number]): void => {
+      keep.add(cand.file.path);
+      groupCount.set(cand.key, (groupCount.get(cand.key) ?? 0) + 1);
+      if (cand.hash) hashIndex.add(cand.hash);
+    };
+
+    // 3. First pass — one (perGroupCap) best frame per group AND not a visual
+    //    near-duplicate of an already-kept frame. This is what stops 7 nearly
+    //    identical RAW frames (or RAW+JPEG pairs) all surviving the cull.
     for (const cand of candidates) {
       if (keep.size >= target) break;
       if ((groupCount.get(cand.key) ?? 0) >= perGroupCap) continue;
-      keep.add(cand.file.path);
-      groupCount.set(cand.key, (groupCount.get(cand.key) ?? 0) + 1);
+      if (cand.hash && hashIndex.isNearDuplicate(cand.hash)) { dedupedNearDuplicates++; continue; }
+      take(cand);
     }
 
-    // 4. Second pass — budget left over (target not yet hit) gets filled by the
-    //    next-best frames regardless of group, still strictly by score.
+    // 4. Second pass — if the budget isn't met, relax the per-group cap but keep
+    //    suppressing visual near-duplicates so we add genuinely different frames.
     if (keep.size < target) {
       for (const cand of candidates) {
         if (keep.size >= target) break;
         if (keep.has(cand.file.path)) continue;
-        keep.add(cand.file.path);
-        groupCount.set(cand.key, (groupCount.get(cand.key) ?? 0) + 1);
+        if (cand.hash && hashIndex.isNearDuplicate(cand.hash)) continue;
+        take(cand);
+      }
+    }
+
+    // 5. Final pass — only if STILL short of budget, fill with the next best
+    //    frames regardless of similarity so the requested count is honoured.
+    if (keep.size < target) {
+      for (const cand of candidates) {
+        if (keep.size >= target) break;
+        if (keep.has(cand.file.path)) continue;
+        take(cand);
       }
     }
 
@@ -1648,6 +1738,7 @@ export function selectKeepersToTarget(files: MediaFile[], options: KeeperTargetO
       kept: keep.size,
       mandatory: mandatoryCount,
       groups: groupCount.size,
+      dedupedNearDuplicates,
     };
   } finally {
     configureReviewProfile(prevProfile);
