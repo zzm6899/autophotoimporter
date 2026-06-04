@@ -2052,6 +2052,14 @@ export function ThumbnailGrid() {
   const faceIdentityCacheRef = useRef<{ key: string; groups: FaceIdentityGroup[] } | null>(null);
   const importPausedReviewRef = useRef(false);
   const autoSpeedTriggeredRef = useRef(false);
+  const reviewScanCursorRef = useRef(0);
+  const lastReviewRegroupAtRef = useRef(0);
+  const reviewAdaptiveRef = useRef({
+    avgMsPerFile: 0,
+    pipelineLimit: Math.max(4, faceConcurrency),
+    canvasLimit: 3,
+  });
+  const canvasReviewGateRef = useRef<{ active: number; queue: Array<() => void> }>({ active: 0, queue: [] });
   const collapsedSet = useMemo(() => new Set(collapsedBursts), [collapsedBursts]);
   const queuedSet = useMemo(() => new Set(queuedPaths), [queuedPaths]);
   const importFailedSet = useMemo(() => new Set(importFailedPaths), [importFailedPaths]);
@@ -2643,6 +2651,20 @@ export function ThumbnailGrid() {
   useEffect(() => { reviewPersonDetectionRef.current = reviewPersonDetection; }, [reviewPersonDetection]);
   useEffect(() => { reviewVisualDuplicatesRef.current = reviewVisualDuplicates; }, [reviewVisualDuplicates]);
   useEffect(() => {
+    const stopBackgroundReview = () => {
+      reviewGenerationRef.current++;
+      sharpnessInFlightRef.current = false;
+      void window.electronAPI.cancelFaceAnalysis?.().catch(() => undefined);
+    };
+    window.addEventListener('pagehide', stopBackgroundReview);
+    window.addEventListener('beforeunload', stopBackgroundReview);
+    return () => {
+      window.removeEventListener('pagehide', stopBackgroundReview);
+      window.removeEventListener('beforeunload', stopBackgroundReview);
+      stopBackgroundReview();
+    };
+  }, []);
+  useEffect(() => {
     const element = flatScrollRef.current;
     if (!element) return;
     const updateWidth = () => setFlatGridWidth(element.clientWidth);
@@ -2759,6 +2781,7 @@ export function ThumbnailGrid() {
     const selectedPathSet = selectedPathSetRef.current;
     const queuedPathSet = queuedPathSetRef.current;
     const reviewGeneration = reviewGenerationRef.current;
+    const adaptive = reviewAdaptiveRef.current;
     // With the streaming per-file IPC approach, batchSize controls how many
     // files are queued into the main-process semaphore at once. Larger = more
     // pipelining (canvas work overlaps with ONNX), but also more memory for
@@ -2769,6 +2792,7 @@ export function ThumbnailGrid() {
     const visibleRank = new Map<string, number>();
     currentSortedFiles.slice(0, 240).forEach((f, index) => visibleRank.set(f.path, index));
     const rankedCandidates: Array<{ file: MediaFile; rank: number }> = [];
+    const rankedCandidatePaths = new Set<string>();
     const rankCandidate = (f: MediaFile) => {
       const focus = focusedPath && f.path === focusedPath ? -1000 : 0;
       const queue = queuedPathSet.has(f.path) ? -800 : 0;
@@ -2779,9 +2803,11 @@ export function ThumbnailGrid() {
       return focus + queue + selected + pick + missingFace + visible;
     };
     const offerCandidate = (file: MediaFile) => {
+      if (rankedCandidatePaths.has(file.path)) return;
       const rank = rankCandidate(file);
       if (rankedCandidates.length < batchSize) {
         rankedCandidates.push({ file, rank });
+        rankedCandidatePaths.add(file.path);
         return;
       }
       let worstIndex = 0;
@@ -2789,19 +2815,43 @@ export function ThumbnailGrid() {
         if (rankedCandidates[i].rank > rankedCandidates[worstIndex].rank) worstIndex = i;
       }
       if (rank < rankedCandidates[worstIndex].rank) {
+        rankedCandidatePaths.delete(rankedCandidates[worstIndex].file.path);
         rankedCandidates[worstIndex] = { file, rank };
+        rankedCandidatePaths.add(file.path);
       }
     };
-    for (const f of currentFiles) {
-      if (f.type !== 'photo' || !f.thumbnail) continue;
-      if (
+    const offerIfNeeded = (f: MediaFile) => {
+      if (f.type !== 'photo') return;
+      // ONNX face/person analysis decodes from the file PATH in the main process,
+      // so it does not need the renderer-held thumbnail. Letting it run ahead of
+      // thumbnail generation is what stops the "stuck at ~11k" stall on large
+      // imports: thumbnails are intentionally windowed (holding 23k base64
+      // thumbnails would exhaust renderer memory), but the GPU can churn every
+      // file by path. Canvas-derived signals (sharpness, hash, subject) still
+      // require the thumbnail.
+      const needsOnnx = currentReviewFaceAnalysis && shouldRunOnnxForReview(f, {
+        reviewFaceAnalysis: currentReviewFaceAnalysis,
+        reviewFaceMatching: currentReviewFaceMatching,
+        reviewPersonDetection: reviewPersonDetectionRef.current,
+      });
+      const needsCanvas = !!f.thumbnail && !(
         typeof f.sharpnessScore === 'number' &&
         (!currentReviewVisualDuplicates || f.visualHash) &&
-        (currentFastKeeperMode || !currentReviewFaceAnalysis || typeof f.subjectSharpnessScore === 'number') &&
-        (!currentReviewFaceMatching || f.faceDetection !== 'native' || (f.faceCount ?? 0) <= 0 || hasFaceMatchData(f)) &&
-        (!currentReviewFaceAnalysis || f.faceBoxes !== undefined)
-      ) continue;
+        (currentFastKeeperMode || !currentReviewFaceAnalysis || typeof f.subjectSharpnessScore === 'number')
+      );
+      if (!needsOnnx && !needsCanvas) return;
       offerCandidate(f);
+    };
+    const visibleCandidates = currentSortedFiles.slice(0, 240);
+    for (const f of visibleCandidates) offerIfNeeded(f);
+    const scanCount = currentFiles.length;
+    const scanLimit = Math.min(scanCount, Math.max(batchSize * 32, batchSize + visibleCandidates.length));
+    let inspected = 0;
+    while (inspected < scanLimit && scanCount > 0) {
+      const index = reviewScanCursorRef.current % scanCount;
+      offerIfNeeded(currentFiles[index]);
+      reviewScanCursorRef.current = (index + 1) % scanCount;
+      inspected++;
     }
     const candidates = rankedCandidates
       .sort((a, b) => a.rank - b.rank)
@@ -2824,16 +2874,36 @@ export function ThumbnailGrid() {
       //
       // Canvas work (sharpness, hash, analyzeSubject) runs in the renderer
       // concurrently with the IPC round-trip, overlapping CPU work efficiently.
+      const runStartedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
       void (async () => {
-      const canvasConcurrency = currentFastKeeperMode ? 1 : Math.min(3, Math.max(1, currentFaceConcurrency));
-      const entries = await mapWithConcurrency(candidates, canvasConcurrency, async (f): Promise<[string, Partial<MediaFile>]> => {
+      const reviewPipelineConcurrency = currentFastKeeperMode ? 1 : Math.min(24, Math.max(4, adaptive.pipelineLimit, currentFaceConcurrency));
+      const canvasConcurrency = currentFastKeeperMode ? 1 : Math.min(4, Math.max(2, adaptive.canvasLimit));
+      const withCanvasSlot = async <T,>(task: () => Promise<T>): Promise<T> => {
+        const gate = canvasReviewGateRef.current;
+        if (gate.active >= canvasConcurrency) {
+          await new Promise<void>((resolve) => gate.queue.push(resolve));
+        }
+        gate.active++;
+        try {
+          return await task();
+        } finally {
+          gate.active = Math.max(0, gate.active - 1);
+          gate.queue.shift()?.();
+        }
+      };
+      const entries = await mapWithConcurrency(candidates, reviewPipelineConcurrency, async (f): Promise<[string, Partial<MediaFile>]> => {
         if (reviewGeneration !== reviewGenerationRef.current) return [f.path, {}];
         const thumbnail = f.thumbnail as string;
+        const hasThumbnail = typeof thumbnail === 'string' && thumbnail.length > 0;
         const failureTag = `analysis-failed:${f.path}`;
         try {
-          const needsSharpness = typeof f.sharpnessScore !== 'number';
-          const needsVisualHash = currentReviewVisualDuplicates && !f.visualHash;
-          const needsSubject = currentReviewFaceAnalysis && !(typeof f.subjectSharpnessScore === 'number' && f.faceBoxes !== undefined);
+          // Canvas-derived signals require the thumbnail; ONNX does not. When a
+          // file is being analysed ahead of its thumbnail (large-import fast
+          // path) we run ONNX only and leave sharpness/hash/subject for the
+          // later pass once the thumbnail lands.
+          const needsSharpness = hasThumbnail && typeof f.sharpnessScore !== 'number';
+          const needsVisualHash = hasThumbnail && currentReviewVisualDuplicates && !f.visualHash;
+          const needsSubject = hasThumbnail && currentReviewFaceAnalysis && !(typeof f.subjectSharpnessScore === 'number' && f.faceBoxes !== undefined);
           const needsOnnx = shouldRunOnnxForReview(f, {
             reviewFaceAnalysis: currentReviewFaceAnalysis,
             reviewFaceMatching: currentReviewFaceMatching,
@@ -2849,15 +2919,17 @@ export function ThumbnailGrid() {
               : window.electronAPI.analyzeFaces(f.path).catch(
                   () => [] as Awaited<ReturnType<typeof window.electronAPI.analyzeFaces>>,
                 ),
-            analyzeThumbnailSignals(thumbnail, {
-              sharpness: needsSharpness,
-              visualHash: needsVisualHash,
-              subject: needsSubject,
-            }),
+            (!needsSharpness && !needsVisualHash && !needsSubject)
+              ? Promise.resolve({} as ThumbnailSignals)
+              : withCanvasSlot(() => analyzeThumbnailSignals(thumbnail, {
+                  sharpness: needsSharpness,
+                  visualHash: needsVisualHash,
+                  subject: needsSubject,
+                })),
           ]);
           const sharpnessScore = needsSharpness
             ? thumbnailSignals.sharpnessScore ?? 0
-            : f.sharpnessScore ?? 0;
+            : f.sharpnessScore;
           const hash = needsVisualHash
             ? thumbnailSignals.visualHash
             : f.visualHash;
@@ -2869,9 +2941,9 @@ export function ThumbnailGrid() {
                 subjectReasons: [],
               }
             : {
-                subjectSharpnessScore: f.subjectSharpnessScore ?? 0,
-                faceCount: f.faceCount ?? 0,
-                faceBoxes: f.faceBoxes ?? [],
+                subjectSharpnessScore: f.subjectSharpnessScore,
+                faceCount: f.faceCount,
+                faceBoxes: f.faceBoxes,
                 faceDetection: f.faceDetection,
                 faceSignature: f.faceSignature,
                 subjectReasons: f.subjectReasons ?? [],
@@ -2887,27 +2959,40 @@ export function ThumbnailGrid() {
             ...(onnxPersonBoxes.length > 0 ? ['person detected'] : []),
           ];
 
-          const resolvedFaceBoxes = onnxFaceBoxes.length > 0
+          const resolvedFaceBoxes = onnx
             ? onnxFaceBoxes
-            : (subject.faceBoxes ?? []);
+            : subject.faceBoxes;
 
           // Dispatch this single result immediately so the UI updates in real time
-          // rather than waiting for every file in the batch to complete.
-          const patch: Partial<MediaFile> = {
-            sharpnessScore,
-            visualHash: hash,
-            ...subject,
-            faceCount: resolvedFaceBoxes.length > 0 ? resolvedFaceBoxes.length : (subject.faceCount ?? 0),
-            faceBoxes: resolvedFaceBoxes,
-            faceDetection: onnxFaceBoxes.length > 0 ? 'native' : subject.faceDetection,
-            faceEmbedding: onnx?.embeddings?.[0] || f.faceEmbedding,
-            faceEmbeddings: onnx?.embeddings?.length ? onnx.embeddings : f.faceEmbeddings,
-            faceEmbeddingBoxes: onnxEmbeddingBoxes.length > 0 ? onnxEmbeddingBoxes : f.faceEmbeddingBoxes,
-            personCount: onnx ? onnxPersonBoxes.length : (f.personCount ?? f.personBoxes?.length ?? 0),
-            personBoxes: onnx ? onnxPersonBoxes : f.personBoxes,
-            poses: onnx?.poses?.length ? onnx.poses : f.poses,
-            subjectReasons: [...new Set(mergedReasons)],
-          };
+          // rather than waiting for every file in the batch to complete. Build
+          // the patch sparsely: review-score overlays are merged with object
+          // spread, so undefined fields would erase existing metadata.
+          const patch: Partial<MediaFile> = {};
+          if (hash !== undefined) patch.visualHash = hash;
+          if (sharpnessScore !== undefined) patch.sharpnessScore = sharpnessScore;
+          if (subject.subjectSharpnessScore !== undefined) patch.subjectSharpnessScore = subject.subjectSharpnessScore;
+          if (subject.faceSignature !== undefined) patch.faceSignature = subject.faceSignature;
+          if (resolvedFaceBoxes !== undefined) {
+            patch.faceCount = resolvedFaceBoxes.length;
+            patch.faceBoxes = resolvedFaceBoxes;
+          } else if (subject.faceCount !== undefined) {
+            patch.faceCount = subject.faceCount;
+          }
+          if (onnxFaceBoxes.length > 0) patch.faceDetection = 'native';
+          else if (!onnx && subject.faceDetection !== undefined) patch.faceDetection = subject.faceDetection;
+          if (onnx?.embeddings?.[0]) patch.faceEmbedding = onnx.embeddings[0];
+          if (onnx?.embeddings?.length) patch.faceEmbeddings = onnx.embeddings;
+          if (onnxEmbeddingBoxes.length > 0) patch.faceEmbeddingBoxes = onnxEmbeddingBoxes;
+          if (onnx) {
+            patch.personCount = onnxPersonBoxes.length;
+            patch.personBoxes = onnxPersonBoxes;
+          } else {
+            if (f.personCount !== undefined) patch.personCount = f.personCount;
+            if (f.personBoxes !== undefined) patch.personBoxes = f.personBoxes;
+          }
+          if (onnx?.poses?.length) patch.poses = onnx.poses;
+          else if (f.poses !== undefined) patch.poses = f.poses;
+          patch.subjectReasons = [...new Set(mergedReasons)];
           if (reviewGeneration === reviewGenerationRef.current) {
             dispatch({ type: 'SET_REVIEW_SCORES', scores: { [f.path]: patch } });
           }
@@ -2942,8 +3027,26 @@ export function ThumbnailGrid() {
         // is a no-op for already-dispatched entries but ensures nothing is missed.
         reviewBatchCounterRef.current += 1;
         if (reviewGeneration !== reviewGenerationRef.current) return;
-        const shouldRefreshGroups = entries.length < batchSize || reviewBatchCounterRef.current % 36 === 0;
+        const elapsed = Math.max(1, (typeof performance !== 'undefined' ? performance.now() : Date.now()) - runStartedAt);
+        const msPerFile = elapsed / Math.max(1, entries.length);
+        const nextAvg = adaptive.avgMsPerFile > 0 ? adaptive.avgMsPerFile * 0.75 + msPerFile * 0.25 : msPerFile;
+        adaptive.avgMsPerFile = nextAvg;
+        if (!currentFastKeeperMode) {
+          if (nextAvg > 650) {
+            adaptive.pipelineLimit = Math.max(4, Math.floor(adaptive.pipelineLimit * 0.75));
+            adaptive.canvasLimit = Math.max(1, adaptive.canvasLimit - 1);
+          } else if (nextAvg < 220) {
+            adaptive.pipelineLimit = Math.min(24, Math.max(adaptive.pipelineLimit + 2, currentFaceConcurrency));
+            adaptive.canvasLimit = Math.min(4, adaptive.canvasLimit + 1);
+          }
+        }
+        const now = Date.now();
+        const largeReview = currentFiles.length >= 5000;
+        const regroupIntervalMs = largeReview ? 15000 : 6000;
+        const finalBatch = entries.length < batchSize;
+        const shouldRefreshGroups = finalBatch || now - lastReviewRegroupAtRef.current >= regroupIntervalMs;
         if (shouldRefreshGroups && phaseRef.current !== 'importing') {
+          lastReviewRegroupAtRef.current = now;
           const regroup = () => {
             if (reviewGeneration !== reviewGenerationRef.current || phaseRef.current === 'importing') return;
             if (reviewFaceMatchingRef.current) dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10, embeddingThreshold: faceGroupEmbeddingThresholdRef.current });
