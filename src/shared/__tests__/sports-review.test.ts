@@ -307,6 +307,45 @@ describe('selectKeepersToTarget', () => {
     expect(result.keep).toHaveLength(10);
   });
 
+  it('suppresses visual near-duplicates that lack a burst id (RAW frames / RAW+JPEG)', () => {
+    // 6 near-identical frames (same perceptual hash) with NO burstId — simulates
+    // consecutive .RAF frames the burst detector missed. Plus 4 distinct frames.
+    const dupHash = 'ffffffffffffffff';
+    const near = 'fffffffffffffffe'; // 1 bit off → within threshold
+    const dups = [
+      file('/raf1.jpg', { visualHash: dupHash, sharpnessScore: 100, blurRisk: 'low' }),
+      file('/raf2.jpg', { visualHash: near, sharpnessScore: 99, blurRisk: 'low' }),
+      file('/raf3.jpg', { visualHash: dupHash, sharpnessScore: 98, blurRisk: 'low' }),
+      file('/raf4.jpg', { visualHash: near, sharpnessScore: 97, blurRisk: 'low' }),
+      file('/raf5.jpg', { visualHash: dupHash, sharpnessScore: 96, blurRisk: 'low' }),
+      file('/raf6.jpg', { visualHash: near, sharpnessScore: 95, blurRisk: 'low' }),
+    ];
+    const distinct = [
+      file('/d1.jpg', { visualHash: '0000000000000000', sharpnessScore: 90, blurRisk: 'low' }),
+      file('/d2.jpg', { visualHash: '00000000ffffffff', sharpnessScore: 89, blurRisk: 'low' }),
+      file('/d3.jpg', { visualHash: 'ffffffff00000000', sharpnessScore: 88, blurRisk: 'low' }),
+      file('/d4.jpg', { visualHash: '0f0f0f0f0f0f0f0f', sharpnessScore: 87, blurRisk: 'low' }),
+    ];
+    // Target = the 5 visually-distinct frames (1 dup-rep + 4 distinct), so the
+    // budget is met without a last-resort fill that would re-add near-dups.
+    const result = selectKeepersToTarget([...dups, ...distinct], { target: 5, dedupeHashDistance: 8 });
+    // Only ONE of the 6 near-identical frames should survive.
+    const keptDups = result.keep.filter((p) => p.startsWith('/raf'));
+    expect(keptDups).toHaveLength(1);
+    expect(result.dedupedNearDuplicates).toBeGreaterThanOrEqual(5);
+    // All 4 distinct frames kept.
+    for (const d of distinct) expect(result.keep).toContain(d.path);
+  });
+
+  it('still meets the budget by filling with near-duplicates only as a last resort', () => {
+    const dupHash = 'ffffffffffffffff';
+    const dups = Array.from({ length: 10 }, (_, i) =>
+      file(`/dup${i}.jpg`, { visualHash: dupHash, sharpnessScore: 100 - i, blurRisk: 'low' }));
+    // Target 4 but only 1 visually-distinct frame exists → fall back to fill budget.
+    const result = selectKeepersToTarget(dups, { target: 4, dedupeHashDistance: 8 });
+    expect(result.kept).toBe(4);
+  });
+
   it('keeps the strongest frame per burst group first for variety', () => {
     // Two bursts of 5; with target 2 and perGroupCap 1, expect one from each burst.
     const burstA = Array.from({ length: 5 }, (_, i) => athlete(`/A${i}.jpg`, 100 + i, 'burst-A'));

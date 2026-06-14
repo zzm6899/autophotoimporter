@@ -4,7 +4,7 @@
 
 ### Added
 - **Taekwondo / martial-arts and Combat / contact-sports session types.** Action-first culling that rewards athlete-to-athlete contact (sparring/kick exchanges), frozen peak motion, emotion at impact, and clean team/group focus. New scene buckets: Sparring / contact, Kicks / action, Poomsae / form, Team / group.
-- **Cull to budget.** One-click reduce a huge batch to a hard keeper count (e.g. 25k → ~1000). Keeps the strongest frame per burst/visual/face group first for variety, always retains protected/rated/picked shots, and is undoable.
+- **Cull to budget.** One-click reduce a huge batch to a hard keeper count (e.g. 25k → ~1000). Keeps the strongest frame per burst/visual/face group first for variety, always retains protected/rated/picked shots, and is undoable. Also suppresses visual near-duplicates by perceptual hash, so consecutive near-identical frames and RAW+JPEG pairs collapse even when burst detection missed them (e.g. RAW files with no parseable capture time).
 - **Optional pose estimation (MoveNet).** When the optional `movenet_thunder.onnx` model is installed and a sports session type is active, scoring uses measured kick straightness (hip-knee-ankle extension) and real foot-to-torso contact instead of person-box proxies. Fully gated — zero cost and no behaviour change when the model is absent.
 
 ### Changed
