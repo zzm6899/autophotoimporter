@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.4.59 - 2026-06-25
+
+### Changed
+- **Unified release line.** Merged the `perf/review-loop-scaling` (AI review loop scaling, face-review cancellation on close, large-batch scheduling) and `feature/taekwondo-sports-culling` work into the photographer-schedule-import branch so all recent fixes and features ship together.
+
+### Fixed
+- Resolved a merge conflict in the destination folder preview so the `{photographerCode}` token is preserved end to end.
+- Made the import-engine format-conversion tests platform-aware: Linux now asserts the ImageMagick `convert` path, macOS keeps `sips`, and Windows keeps PowerShell. Previously the suite assumed `sips` on every non-Windows platform and failed on Linux/CI.
+
+### Repo health
+- Added `.gitattributes` to normalize line endings to LF, eliminating CRLF/LF churn that produced phantom whole-file diffs on Windows checkouts.
+
+### Verified
+- `npm run typecheck` — clean
+- `npm test` — 505 passed, 11 skipped (36 files)
+
 ## 1.4.53 - 2026-06-04
 
 ### Added
@@ -47,18 +63,4 @@
 ## 1.4.11 - 2026-05-01
 
 ### Added
-- Added Settings > Diagnostics with app version, update endpoint status, license status, saved settings path, last update check, and last update error.
-- Added Copy diagnostics and Repair updates actions for safer support and recovery.
-- Added user-safe update/TLS error messaging so temporary endpoint failures do not show scary raw protocol errors.
-- Added current-filter bulk actions for picking, rejecting, clearing, queueing, and importing visible files.
-- Added clearer import preflight details, metadata visibility, path safety warnings, Copy Report, and Export Manifest.
-- Added admin Health checks for required secrets, release artifact availability, update endpoint status, and latest Windows stable selection.
-- Added a release smoke script and release notes template for repeatable update publishing.
-
-### Changed
-- Preserved license and settings storage across update installs; no license schema changes.
-- Improved legacy update compatibility for Culler-hosted update clients.
-
-### Verified
-- `npm run verify`
-- `npm run release:smoke`
+- Added Settings > Diagnostics with app version, update endpoint status, license
