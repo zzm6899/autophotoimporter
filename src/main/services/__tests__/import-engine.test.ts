@@ -551,10 +551,17 @@ describe('importFiles', () => {
         expect.objectContaining({ timeout: 60000 }),
         expect.any(Function),
       );
-    } else {
+    } else if (process.platform === 'darwin') {
       expect(mockExecFile).toHaveBeenCalledWith(
         'sips',
         expect.arrayContaining(['-s', 'format', 'jpeg', '-s', 'formatOptions', '85']),
+        expect.objectContaining({ timeout: 60000 }),
+        expect.any(Function),
+      );
+    } else {
+      expect(mockExecFile).toHaveBeenCalledWith(
+        'convert',
+        expect.arrayContaining(['-quality', '85']),
         expect.objectContaining({ timeout: 60000 }),
         expect.any(Function),
       );
@@ -573,10 +580,17 @@ describe('importFiles', () => {
         expect.any(Object),
         expect.any(Function),
       );
-    } else {
+    } else if (process.platform === 'darwin') {
       expect(mockExecFile).toHaveBeenCalledWith(
         'sips',
         expect.arrayContaining(['-s', 'format', 'tiff']),
+        expect.any(Object),
+        expect.any(Function),
+      );
+    } else {
+      expect(mockExecFile).toHaveBeenCalledWith(
+        'convert',
+        expect.arrayContaining([expect.stringContaining('.tiff')]),
         expect.any(Object),
         expect.any(Function),
       );
@@ -594,10 +608,17 @@ describe('importFiles', () => {
         expect.any(Object),
         expect.any(Function),
       );
-    } else {
+    } else if (process.platform === 'darwin') {
       expect(mockExecFile).toHaveBeenCalledWith(
         'sips',
         expect.arrayContaining(['-s', 'format', 'heic']),
+        expect.any(Object),
+        expect.any(Function),
+      );
+    } else {
+      expect(mockExecFile).toHaveBeenCalledWith(
+        'convert',
+        expect.arrayContaining([expect.stringContaining('.heic')]),
         expect.any(Object),
         expect.any(Function),
       );
