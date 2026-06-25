@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.4.60 - 2026-06-25
+
+### Repo health
+- Renormalized all tracked text files to LF per `.gitattributes`, collapsing the phantom whole-file CRLF diffs that appeared on Windows checkouts.
+- Removed five deprecated completion-summary doc stubs (`GPU_CHANGES_SUMMARY`, `GPU_COMPLETE`, `IMPLEMENTATION_COMPLETE`, `RAW_CPU_COMPLETE`, `STATUS_COMPLETE`) that only redirected to `docs/architecture-status.md`.
+- Completed the truncated 1.4.11 changelog entry and reconciled `main` with the upstream taekwondo/sports-culling PR merges so the release line is unified.
+
+### Verified
+- `npm run verify` — typecheck clean, 505 passed / 11 skipped, runtime audit clear at the high threshold.
+
 ## 1.4.59 - 2026-06-25
 
 ### Changed
