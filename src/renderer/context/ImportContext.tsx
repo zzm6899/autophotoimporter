@@ -106,6 +106,8 @@ interface State {
   whiteBalanceTemperature?: number;
   whiteBalanceTint?: number;
   eventMode: EventMode;
+  scheduleCsvPath: string;
+  scheduleSheetUrl: string;
   cullConfidence: CullConfidence;
   groupPhotoEveryoneGood: boolean;
   keeperQuota: KeeperQuota;
@@ -214,7 +216,7 @@ export type Action =
   | { type: 'SET_WORKFLOW_STRING'; key:
       | 'protectedFolderName' | 'backupDestRoot' | 'autoImportDestRoot' | 'completeSoundPath'
       | 'metadataKeywords' | 'metadataTitle' | 'metadataCaption' | 'metadataCreator' | 'metadataCopyright'
-      | 'watermarkText' | 'watermarkImagePath' | 'conflictFolderName' | 'lastSessionId'; value: string }
+      | 'watermarkText' | 'watermarkImagePath' | 'conflictFolderName' | 'lastSessionId' | 'scheduleCsvPath' | 'scheduleSheetUrl'; value: string }
   | { type: 'SET_SOURCE_PROFILE'; profile: SourceProfile }
   | { type: 'SET_CONFLICT_POLICY'; policy: ImportConflictPolicy }
   | { type: 'SET_WATERMARK_NUMBER'; key: 'watermarkOpacity' | 'watermarkScale'; value: number }
@@ -384,6 +386,8 @@ const initialState: State = {
   whiteBalanceTemperature: 0,
   whiteBalanceTint: 0,
   eventMode: 'general',
+  scheduleCsvPath: '',
+  scheduleSheetUrl: '',
   cullConfidence: 'balanced',
   groupPhotoEveryoneGood: false,
   keeperQuota: 'best-1',

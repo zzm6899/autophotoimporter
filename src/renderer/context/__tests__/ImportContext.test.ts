@@ -99,6 +99,8 @@ function makeState(overrides: Record<string, unknown> = {}) {
     exposureMaxStops: 2,
     exposureAdjustmentStep: 0.33,
     eventMode: 'general' as const,
+    scheduleCsvPath: '',
+    scheduleSheetUrl: '',
     cullConfidence: 'balanced' as const,
     groupPhotoEveryoneGood: false,
     keeperQuota: 'best-1' as const,

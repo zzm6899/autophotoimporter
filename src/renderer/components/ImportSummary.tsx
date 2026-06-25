@@ -212,6 +212,10 @@ export function ImportSummary() {
     if (destination) window.electronAPI.openPath(destination);
   };
 
+  const handleOpenImportLog = () => {
+    if (importResult.importLogCsvPath) window.electronAPI.openPath(importResult.importLogCsvPath);
+  };
+
   const handleDismiss = () => {
     dispatch({ type: 'DISMISS_SUMMARY' });
   };
@@ -230,6 +234,7 @@ export function ImportSummary() {
     const report = [
       'Keptra import report',
       `Destination: ${destination || 'not set'}`,
+      importResult.importLogCsvPath ? `Import log: ${importResult.importLogCsvPath}` : 'Import log: not written',
       ...reportDetails,
       issueLines.length > 0 ? 'Issues:' : 'Issues: none',
       ...issueLines,
@@ -338,6 +343,14 @@ export function ImportSummary() {
               <span className="text-red-400 font-mono">{importResult.errors.length}</span>
             </div>
           )}
+          {importResult.importLogCsvPath && (
+            <div className="flex justify-between gap-3 text-sm">
+              <span className="text-text-secondary">Import log</span>
+              <span className="truncate text-right font-mono text-text" title={importResult.importLogCsvPath}>
+                {importResult.importLogCsvPath.split(/[/\\]/).pop()}
+              </span>
+            </div>
+          )}
           {summary.pendingCount > 0 && (
             <div className="flex justify-between text-sm">
               <span className="text-text-secondary">Pending retry</span>
@@ -402,6 +415,14 @@ export function ImportSummary() {
           >
             Export Manifest
           </button>
+          {importResult.importLogCsvPath && (
+            <button
+              onClick={handleOpenImportLog}
+              className="flex-1 min-w-[9rem] py-2 rounded text-sm bg-surface-raised hover:bg-accent/10 text-text transition-colors"
+            >
+              Open Import Log
+            </button>
+          )}
           {summary.issueCount > 0 && (
             <button
               onClick={handleRetry}

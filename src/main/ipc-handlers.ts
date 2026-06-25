@@ -675,6 +675,10 @@ async function persistImportLedger(config: ImportConfig, result: ImportResult): 
     checksumVerified: result.checksumVerified,
     totalBytes: result.totalBytes,
     durationMs: result.durationMs,
+    eventMode: config.eventMode,
+    importLogCsvPath: result.importLogCsvPath,
+    scheduleCsvPath: config.scheduleCsvPath,
+    scheduleSheetUrl: config.scheduleSheetUrl,
     items,
   };
   const dir = getLedgersDir();
@@ -978,6 +982,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   whiteBalanceTemperature: 0,
   whiteBalanceTint: 0,
   eventMode: 'general',
+  scheduleCsvPath: '',
+  scheduleSheetUrl: '',
   cullConfidence: 'balanced',
   groupPhotoEveryoneGood: false,
   keeperQuota: 'best-1',
@@ -1500,6 +1506,9 @@ async function runAutomatedFtpSync(trigger: 'manual' | 'launch' | 'interval'): P
       ftpDestConfig: sync.reuploadToFtpDest ? settings.ftpDestConfig : undefined,
       verifyChecksums: settings.verifyChecksums,
       normalizeExposure: settings.normalizeExposure,
+      eventMode: settings.eventMode,
+      scheduleCsvPath: settings.scheduleCsvPath || undefined,
+      scheduleSheetUrl: settings.scheduleSheetUrl || undefined,
       exposureMaxStops: settings.exposureMaxStops,
       metadata: buildImportMetadata(settings),
       metadataExportFlags: settings.metadataExport,
@@ -2392,6 +2401,7 @@ export function registerIpcHandlers(): void {
         sendToRenderer(IPC.IMPORT_PROGRESS, progress);
       });
       const ledger = await persistImportLedger(config, result);
+      result.importLogCsvPath = ledger.importLogCsvPath ?? result.importLogCsvPath;
       result.lightroomHandoff = await writePostImportLightroomHandoff(config, ledger)
         .catch((error) => {
           log.warn('[lightroom-handoff] post-import handoff failed', error);
@@ -2483,6 +2493,7 @@ export function registerIpcHandlers(): void {
     });
     const ledger = await persistImportLedger(retryConfig, result);
     result.recoveryCount = retryPaths.length;
+    result.importLogCsvPath = ledger.importLogCsvPath ?? result.importLogCsvPath;
     result.lightroomHandoff = await writePostImportLightroomHandoff(retryConfig, ledger)
       .catch((error) => {
         log.warn('[lightroom-handoff] retry handoff failed', error);
@@ -3367,6 +3378,9 @@ async function runAutoImport(volume: Volume, options: Omit<QueuedAutoImport, 'vo
       skipDuplicates: settings.skipDuplicates,
       saveFormat: settings.saveFormat,
       jpegQuality: settings.jpegQuality,
+      eventMode: settings.eventMode,
+      scheduleCsvPath: settings.scheduleCsvPath || undefined,
+      scheduleSheetUrl: settings.scheduleSheetUrl || undefined,
       separateProtected: settings.separateProtected,
       protectedFolderName: settings.protectedFolderName,
       backupDestRoot: settings.backupDestRoot || undefined,
@@ -3392,6 +3406,7 @@ async function runAutoImport(volume: Volume, options: Omit<QueuedAutoImport, 'vo
       sendToRenderer(IPC.IMPORT_PROGRESS, progress);
     });
     const ledger = await persistImportLedger(importConfig, result);
+    result.importLogCsvPath = ledger.importLogCsvPath ?? result.importLogCsvPath;
     result.lightroomHandoff = await writePostImportLightroomHandoff(importConfig, ledger)
       .catch((error) => {
         log.warn('[lightroom-handoff] auto import handoff failed', error);

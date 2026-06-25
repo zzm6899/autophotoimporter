@@ -7,7 +7,7 @@ import { app, nativeImage } from 'electron';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import type { MediaFile } from '../../shared/types';
-import { resolvePattern } from '../../shared/types';
+import { detectPhotographerFromFilename, resolvePattern } from '../../shared/types';
 import { computeEV100 } from '../../shared/exposure';
 
 const execFileAsync = promisify(execFile);
@@ -190,6 +190,8 @@ export async function parseExifDate(
 ): Promise<{
   dateTaken?: string;
   destPath?: string;
+  photographerCode?: string;
+  photographerName?: string;
   orientation?: number;
   iso?: number;
   aperture?: number;
@@ -264,13 +266,16 @@ export async function parseExifDate(
   const fsProtected = await isFileProtected(file.path);
   const isProtected = fsProtected || exifProtected;
 
+  const photographer = detectPhotographerFromFilename(file.name);
   const pattern = folderPattern || '{YYYY}-{MM}-{DD}/{filename}';
-  const destPath = resolvePattern(pattern, dateTaken, file.name, file.extension, rating);
+  const destPath = resolvePattern(pattern, dateTaken, file.name, file.extension, rating, photographer);
   const exposureValue = computeEV100(aperture, shutterSpeed, iso);
   const locationName = locationLabelFromGps(gps);
   return {
     dateTaken: dateTaken.toISOString(),
     destPath,
+    photographerCode: photographer?.code,
+    photographerName: photographer?.name,
     orientation,
     iso,
     aperture,

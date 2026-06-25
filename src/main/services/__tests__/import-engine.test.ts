@@ -1,13 +1,15 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
 import type { MediaFile, ImportConfig, ImportProgress, WatermarkConfig } from '../../../shared/types';
 
 // Mocks
 vi.mock('node:fs/promises', () => ({
   copyFile: vi.fn(),
   mkdir: vi.fn(),
+  readFile: vi.fn(),
   rename: vi.fn(),
   stat: vi.fn(),
   unlink: vi.fn(),
+  writeFile: vi.fn(),
 }));
 
 vi.mock('node:child_process', () => ({
@@ -22,18 +24,21 @@ vi.mock('../duplicate-detector', () => ({
   isDuplicate: vi.fn(),
 }));
 
-import { copyFile, mkdir, rename, stat, unlink } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { isDuplicate } from '../duplicate-detector';
 import { importFiles, cancelImport, convertedDestPath, planImportFiles, watermarkPositionForOrientation } from '../import-engine';
 
 const mockCopyFile = vi.mocked(copyFile);
 const mockMkdir = vi.mocked(mkdir);
+const mockReadFile = vi.mocked(readFile);
 const mockRename = vi.mocked(rename);
 const mockStat = vi.mocked(stat);
 const mockUnlink = vi.mocked(unlink);
+const mockWriteFile = vi.mocked(writeFile);
 const mockExecFile = vi.mocked(execFile);
 const mockIsDuplicate = vi.mocked(isDuplicate);
+const originalFetch = globalThis.fetch;
 
 function makeFile(overrides: Partial<MediaFile> = {}): MediaFile {
   return {
@@ -258,8 +263,10 @@ describe('importFiles', () => {
     mockMkdir.mockResolvedValue(undefined);
     mockCopyFile.mockResolvedValue(undefined);
     mockRename.mockResolvedValue(undefined);
+    mockReadFile.mockRejectedValue(Object.assign(new Error('missing'), { code: 'ENOENT' }));
     mockStat.mockResolvedValue({ size: 5000 } as any);
     mockUnlink.mockResolvedValue(undefined);
+    mockWriteFile.mockResolvedValue(undefined);
     mockIsDuplicate.mockResolvedValue(false);
     mockExecFile.mockImplementation((_file: any, _args: any, _options: any, callback?: any) => {
       callback?.(null, '', '');
@@ -281,6 +288,121 @@ describe('importFiles', () => {
     ]);
     expect(mockMkdir).toHaveBeenCalledWith(expect.stringContaining('2024-01-15'), { recursive: true });
     expect(mockCopyFile).toHaveBeenCalledOnce();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('writes a local import log with photographer and event columns', async () => {
+    const result = await importFiles([
+      makeFile({
+        path: '/src/ZMO_0001.JPG',
+        name: 'ZMO_0001.JPG',
+        photographerCode: 'ZMO',
+        photographerName: 'Zac Morgan',
+      }),
+    ], makeConfig({ eventMode: 'stage' }), onProgress);
+
+    expect(result.importLogCsvPath).toContain('_Keptra Logs');
+    expect(mockWriteFile).toHaveBeenCalledWith(
+      expect.stringContaining('import-log-'),
+      expect.stringContaining('stage,ZMO,Zac Morgan'),
+      'utf8',
+    );
+    expect(result.ledgerItems?.[0]).toEqual(expect.objectContaining({
+      photographerCode: 'ZMO',
+      photographerName: 'Zac Morgan',
+    }));
+  });
+
+  it('enriches the import log from a schedule CSV when photographer and capture time match', async () => {
+    mockReadFile.mockResolvedValue([
+      'Day,Start,End,Location,Event,N Covered,Covered by',
+      'Saturday,14:00,16:00,Performance Stage,Idol Showcase,1,Zac',
+    ].join('\n'));
+
+    const result = await importFiles([
+      makeFile({
+        path: '/src/ZMO_0001.JPG',
+        name: 'ZMO_0001.JPG',
+        photographerCode: 'ZMO',
+        photographerName: 'Zac Morgan',
+        dateTaken: '2026-06-27T15:00:00',
+      }),
+    ], makeConfig({ eventMode: 'stage', scheduleCsvPath: '/schedule.csv' }), onProgress);
+
+    expect(result.ledgerItems?.[0]).toEqual(expect.objectContaining({
+      scheduleLocation: 'Performance Stage',
+      scheduleEvent: 'Idol Showcase',
+      scheduleCoveredBy: 'Zac',
+    }));
+    expect(mockWriteFile).toHaveBeenCalledWith(
+      expect.stringContaining('import-log-'),
+      expect.stringContaining('Performance Stage,Idol Showcase,Zac,2026-06-27T15:00:00'),
+      'utf8',
+    );
+  });
+
+  it('fetches a live Google Sheet CSV export before matching schedule rows', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      text: async () => [
+        'Day,Start,End,Location,Event,N Covered,Covered by',
+        'Saturday,14:00,16:00,Main Stage,Guest Panel,1,ZMO',
+      ].join('\n'),
+    })) as unknown as typeof fetch;
+    globalThis.fetch = fetchMock;
+
+    const result = await importFiles([
+      makeFile({
+        path: '/src/ZMO_0001.JPG',
+        name: 'ZMO_0001.JPG',
+        photographerCode: 'ZMO',
+        photographerName: 'Zac Morgan',
+        dateTaken: '2026-06-27T15:00:00',
+      }),
+    ], makeConfig({
+      scheduleSheetUrl: 'https://docs.google.com/spreadsheets/d/abc123/edit?gid=20260624#gid=20260624',
+    }), onProgress);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://docs.google.com/spreadsheets/d/abc123/export?format=csv&gid=20260624',
+      expect.any(Object),
+    );
+    expect(result.ledgerItems?.[0]).toEqual(expect.objectContaining({
+      scheduleLocation: 'Main Stage',
+      scheduleEvent: 'Guest Panel',
+      scheduleCoveredBy: 'ZMO',
+    }));
+  });
+
+  it('reports a schedule-source issue when the live Google Sheet is not exportable', async () => {
+    globalThis.fetch = vi.fn(async () => ({
+      ok: false,
+      status: 401,
+      text: async () => '',
+    })) as unknown as typeof fetch;
+
+    const result = await importFiles([
+      makeFile({
+        path: '/src/ZMO_0001.JPG',
+        name: 'ZMO_0001.JPG',
+        photographerCode: 'ZMO',
+        photographerName: 'Zac Morgan',
+        dateTaken: '2026-06-27T15:00:00',
+      }),
+    ], makeConfig({
+      scheduleSheetUrl: 'https://docs.google.com/spreadsheets/d/private/edit?gid=20260624',
+    }), onProgress);
+
+    expect(result.imported).toBe(1);
+    expect(result.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        file: 'schedule-source',
+        error: expect.stringContaining('401'),
+      }),
+    ]));
   });
 
   it('defers importing a source that changed after scan', async () => {

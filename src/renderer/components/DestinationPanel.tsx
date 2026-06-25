@@ -737,7 +737,14 @@ export function DestinationPanel() {
     for (const f of importFiles) {
       if (!f.dateTaken) continue;
       const date = new Date(f.dateTaken);
-      let resolved = resolvePattern(activePattern, date, f.name, f.extension, f.rating);
+      let resolved = resolvePattern(
+        activePattern,
+        date,
+        f.name,
+        f.extension,
+        f.rating,
+        { code: f.photographerCode, name: f.photographerName },
+      );
       resolved = applyFormat(resolved, saveFormat);
       // Apply protected-folder prefix in the preview
       if (f.isProtected && separateProtected) {
@@ -1163,7 +1170,7 @@ export function DestinationPanel() {
               className="w-full px-1.5 py-1 text-[11px] font-mono bg-surface-raised border border-border rounded text-text placeholder-text-muted focus:border-text focus:outline-none"
             />
             <p className="text-[9px] text-text-muted mt-0.5">
-              {'{YYYY}'} {'{MM}'} {'{DD}'} {'{filename}'} {'{name}'} {'{ext}'} {'{rating}'}
+              {'{YYYY}'} {'{MM}'} {'{DD}'} {'{filename}'} {'{name}'} {'{ext}'} {'{rating}'} {'{photographerCode}'}
             </p>
           </div>
         )}

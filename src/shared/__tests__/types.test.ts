@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { PHOTO_EXTENSIONS, VIDEO_EXTENSIONS, ALL_MEDIA_EXTENSIONS, FOLDER_PRESETS, IPC } from '../types';
+import { PHOTO_EXTENSIONS, VIDEO_EXTENSIONS, ALL_MEDIA_EXTENSIONS, FOLDER_PRESETS, IPC, detectPhotographerFromFilename, resolvePattern } from '../types';
 
 describe('Extension sets', () => {
   it('PHOTO_EXTENSIONS contains common RAW and JPEG formats', () => {
@@ -30,7 +30,7 @@ describe('Extension sets', () => {
 describe('FOLDER_PRESETS', () => {
   it('has expected preset keys', () => {
     expect(Object.keys(FOLDER_PRESETS)).toEqual(
-      expect.arrayContaining(['date-flat', 'date-nested', 'year-month', 'year', 'flat']),
+      expect.arrayContaining(['date-flat', 'date-nested', 'year-month', 'year', 'photographer-date', 'flat']),
     );
   });
 
@@ -41,6 +41,30 @@ describe('FOLDER_PRESETS', () => {
       expect(typeof preset.label).toBe('string');
       expect(typeof preset.pattern).toBe('string');
     }
+  });
+});
+
+describe('photographer codes', () => {
+  it('detects a known filename prefix case-insensitively', () => {
+    expect(detectPhotographerFromFilename('zmo_0001.JPG')).toEqual({
+      code: 'ZMO',
+      name: 'Zac Morgan',
+    });
+  });
+
+  it('ignores unknown or unprefixed filenames', () => {
+    expect(detectPhotographerFromFilename('ABC_0001.JPG')).toBeUndefined();
+    expect(detectPhotographerFromFilename('IMG_0001.JPG')).toBeUndefined();
+    expect(detectPhotographerFromFilename('ZMO0001.JPG')).toBeUndefined();
+  });
+
+  it('resolves photographer folder tokens with an unassigned fallback', () => {
+    const date = new Date('2026-06-25T10:00:00.000Z');
+    expect(resolvePattern('{photographerCode}/{photographerName}/{filename}', date, 'ZMO_0001.JPG', '.jpg', undefined, {
+      code: 'ZMO',
+      name: 'Zac Morgan',
+    })).toBe('ZMO/Zac Morgan/ZMO_0001.JPG');
+    expect(resolvePattern('{photographerCode}/{filename}', date, 'IMG_0001.JPG', '.jpg')).toBe('Unassigned/IMG_0001.JPG');
   });
 });
 

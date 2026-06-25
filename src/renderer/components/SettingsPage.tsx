@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import type { AppDiagnosticsSnapshot, AppSettings, CullConfidence, KeeperQuota, SaveFormat, KeybindMap, MacFirstRunDoctor, MetadataExportFlags, WatermarkMode, WatermarkPosition } from '../../shared/types';
-import { DEFAULT_KEYBINDS, FOLDER_PRESETS } from '../../shared/types';
+import { DEFAULT_KEYBINDS, DEFAULT_PHOTOGRAPHER_CODES, FOLDER_PRESETS } from '../../shared/types';
 import { formatWhiteBalanceKelvin, kelvinToWhiteBalanceTemperature, WHITE_BALANCE_MAX_KELVIN, WHITE_BALANCE_MIN_KELVIN, whiteBalanceTemperatureToKelvin } from '../../shared/exposure';
 import { playCompletionSound } from '../utils/completionSound';
 import { useUpdateNotification } from '../hooks/useUpdateNotification';
@@ -156,6 +156,8 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     jpegQuality,
     folderPreset,
     customPattern,
+    scheduleCsvPath,
+    scheduleSheetUrl,
     separateProtected,
     protectedFolderName,
     backupDestRoot,
@@ -417,6 +419,26 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const handleCustomPattern = (pattern: string) => {
     dispatch({ type: 'SET_CUSTOM_PATTERN', pattern });
     set('customPattern', pattern);
+  };
+
+  const handleChooseScheduleCsv = async () => {
+    const filePath = await window.electronAPI.selectFile('Choose schedule CSV', [
+      { name: 'CSV files', extensions: ['csv'] },
+      { name: 'All files', extensions: ['*'] },
+    ]);
+    if (!filePath) return;
+    dispatch({ type: 'SET_WORKFLOW_STRING', key: 'scheduleCsvPath', value: filePath });
+    set('scheduleCsvPath', filePath);
+  };
+
+  const handleClearScheduleCsv = () => {
+    dispatch({ type: 'SET_WORKFLOW_STRING', key: 'scheduleCsvPath', value: '' });
+    set('scheduleCsvPath', '');
+  };
+
+  const handleScheduleSheetUrl = (value: string) => {
+    dispatch({ type: 'SET_WORKFLOW_STRING', key: 'scheduleSheetUrl', value });
+    set('scheduleSheetUrl', value);
   };
 
   const handleFormat = (format: SaveFormat) => {
@@ -1536,10 +1558,54 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                   className="w-full px-2 py-1 text-xs font-mono bg-surface-raised border border-border rounded text-text placeholder-text-muted focus:border-text focus:outline-none"
                 />
                 <p className="text-[10px] text-text-muted mt-0.5">
-                  {'{YYYY}'} {'{MM}'} {'{DD}'} {'{filename}'} {'{name}'} {'{ext}'}
+                  {'{YYYY}'} {'{MM}'} {'{DD}'} {'{filename}'} {'{name}'} {'{ext}'} {'{rating}'} {'{photographerCode}'}
                 </p>
               </div>
             )}
+            <div className="mt-2 rounded border border-border bg-surface px-2 py-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-text-secondary">Photographer Codes</span>
+                <span className="text-[10px] text-text-muted">{DEFAULT_PHOTOGRAPHER_CODES.length} saved</span>
+              </div>
+              <p className="mt-1 text-[10px] text-text-muted">
+                Files named like ZMO_0001.JPG can use {'{photographerCode}'} in folder patterns and import logs.
+              </p>
+              <p className="mt-1 line-clamp-2 text-[10px] font-mono text-text-secondary">
+                {DEFAULT_PHOTOGRAPHER_CODES.map((item) => item.code).join(' · ')}
+              </p>
+            </div>
+            <div className="mt-2 rounded border border-border bg-surface px-2 py-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-text-secondary">Schedule Source</span>
+                {scheduleCsvPath && (
+                  <button
+                    type="button"
+                    onClick={handleClearScheduleCsv}
+                    className="text-[10px] text-text-muted hover:text-text"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              <p className="mt-1 text-[10px] text-text-muted">
+                Match import logs to roster rows with Day, Start, End, Location, Event, and Covered by columns. Live Google Sheet URL wins over the CSV fallback.
+              </p>
+              <input
+                type="url"
+                value={scheduleSheetUrl}
+                onChange={(e) => handleScheduleSheetUrl(e.target.value)}
+                placeholder="https://docs.google.com/spreadsheets/d/.../edit?gid=..."
+                className="mt-1.5 w-full rounded border border-border bg-surface-raised px-2 py-1 text-[10px] text-text placeholder-text-muted focus:border-text focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => { void handleChooseScheduleCsv(); }}
+                className="mt-1.5 w-full truncate rounded bg-surface-raised px-2 py-1 text-left text-[10px] text-text-secondary hover:bg-border"
+                title={scheduleCsvPath || 'Choose schedule CSV'}
+              >
+                {scheduleCsvPath || 'Choose schedule CSV'}
+              </button>
+            </div>
           </section>
 
           {/* Save format */}

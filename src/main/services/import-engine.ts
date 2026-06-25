@@ -1,4 +1,4 @@
-import { copyFile, mkdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { constants, createReadStream } from 'node:fs';
@@ -37,6 +37,17 @@ type SourceSnapshot = {
   size: number;
   mtimeMs?: number;
 };
+
+type ScheduleEntry = {
+  day: string;
+  startMinutes: number;
+  endMinutes: number;
+  location: string;
+  event: string;
+  coveredBy: string;
+};
+
+type ScheduleMatch = Pick<ImportLedgerItem, 'scheduleLocation' | 'scheduleEvent' | 'scheduleCoveredBy'>;
 
 function importPlanWarnings(file: MediaFile): string[] {
   const warnings: string[] = [];
@@ -335,6 +346,247 @@ async function removeFileIfExists(filePath: string | null): Promise<void> {
   } catch {
     // Best-effort cleanup for temp outputs; the import result should still report the root cause.
   }
+}
+
+function parseCsvRows(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = '';
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (quoted) {
+      if (char === '"' && text[i + 1] === '"') {
+        cell += '"';
+        i++;
+      } else if (char === '"') {
+        quoted = false;
+      } else {
+        cell += char;
+      }
+      continue;
+    }
+    if (char === '"') {
+      quoted = true;
+    } else if (char === ',') {
+      row.push(cell);
+      cell = '';
+    } else if (char === '\n') {
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = '';
+    } else if (char !== '\r') {
+      cell += char;
+    }
+  }
+  row.push(cell);
+  if (row.some((value) => value.length > 0)) rows.push(row);
+  return rows;
+}
+
+function normalizeHeader(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function parseTimeMinutes(value: string): number | undefined {
+  const match = /^(\d{1,2}):(\d{2})(?:\s*([ap]m))?$/i.exec(value.trim());
+  if (!match) return undefined;
+  let hour = Number(match[1]);
+  const minute = Number(match[2]);
+  const meridiem = match[3]?.toLowerCase();
+  if (!Number.isFinite(hour) || !Number.isFinite(minute) || minute < 0 || minute > 59) return undefined;
+  if (meridiem === 'pm' && hour < 12) hour += 12;
+  if (meridiem === 'am' && hour === 12) hour = 0;
+  if (hour < 0 || hour > 23) return undefined;
+  return hour * 60 + minute;
+}
+
+function weekdayName(date: Date): string {
+  return ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][date.getDay()];
+}
+
+function parseScheduleCsv(text: string): ScheduleEntry[] {
+  const rows = parseCsvRows(text);
+  const headerIndex = rows.findIndex((row) => {
+    const headers = row.map(normalizeHeader);
+    return headers.includes('day') && headers.includes('start') && headers.includes('end') && headers.includes('location');
+  });
+  if (headerIndex < 0) return [];
+  const headers = rows[headerIndex].map(normalizeHeader);
+  const col = (name: string) => headers.indexOf(name);
+  const dayCol = col('day');
+  const startCol = col('start');
+  const endCol = col('end');
+  const locationCol = col('location');
+  const eventCol = col('event');
+  const coveredByCol = col('covered by');
+  const entries: ScheduleEntry[] = [];
+  for (const row of rows.slice(headerIndex + 1)) {
+    const start = parseTimeMinutes(row[startCol] ?? '');
+    const end = parseTimeMinutes(row[endCol] ?? '');
+    const day = (row[dayCol] ?? '').trim();
+    const location = (row[locationCol] ?? '').trim();
+    if (!day || start === undefined || end === undefined || !location) continue;
+    entries.push({
+      day,
+      startMinutes: start,
+      endMinutes: end > start ? end : end + 24 * 60,
+      location,
+      event: eventCol >= 0 ? (row[eventCol] ?? '').trim() : '',
+      coveredBy: coveredByCol >= 0 ? (row[coveredByCol] ?? '').trim() : '',
+    });
+  }
+  return entries;
+}
+
+function googleSheetCsvExportUrl(source: string): string | undefined {
+  const trimmed = source.trim();
+  if (!trimmed) return undefined;
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol !== 'https:') return undefined;
+    if (url.hostname !== 'docs.google.com') {
+      return trimmed.toLowerCase().endsWith('.csv') ? trimmed : undefined;
+    }
+    const match = /^\/spreadsheets\/d\/([^/]+)/.exec(url.pathname);
+    if (!match) return undefined;
+    const gid = url.searchParams.get('gid') || /^#gid=(\d+)/.exec(url.hash)?.[1];
+    const exportUrl = new URL(`https://docs.google.com/spreadsheets/d/${match[1]}/export`);
+    exportUrl.searchParams.set('format', 'csv');
+    if (gid) exportUrl.searchParams.set('gid', gid);
+    return exportUrl.toString();
+  } catch {
+    return undefined;
+  }
+}
+
+async function fetchScheduleCsv(scheduleSheetUrl?: string): Promise<string | undefined> {
+  const exportUrl = scheduleSheetUrl ? googleSheetCsvExportUrl(scheduleSheetUrl) : undefined;
+  if (!exportUrl) return undefined;
+  const response = await fetch(exportUrl, {
+    headers: { accept: 'text/csv,text/plain,*/*' },
+  });
+  if (!response.ok) throw new Error(`Schedule fetch failed (${response.status})`);
+  return response.text();
+}
+
+async function loadScheduleEntries(
+  scheduleCsvPath?: string,
+  scheduleSheetUrl?: string,
+): Promise<{ entries: ScheduleEntry[]; error?: string }> {
+  let liveError: string | undefined;
+  try {
+    const liveCsv = await fetchScheduleCsv(scheduleSheetUrl);
+    if (liveCsv) return { entries: parseScheduleCsv(liveCsv) };
+  } catch (error) {
+    liveError = error instanceof Error ? error.message : 'Live schedule fetch failed';
+  }
+  const csvPath = scheduleCsvPath?.trim();
+  if (!csvPath) return { entries: [], error: liveError };
+  try {
+    return { entries: parseScheduleCsv(await readFile(csvPath, 'utf8')), error: liveError };
+  } catch (error) {
+    const fileError = error instanceof Error ? error.message : 'Schedule CSV read failed';
+    return { entries: [], error: liveError ? `${liveError}; fallback CSV failed: ${fileError}` : fileError };
+  }
+}
+
+function normalizeRosterText(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function photographerRosterAliases(file: MediaFile): string[] {
+  const aliases = new Set<string>();
+  if (file.photographerCode) aliases.add(file.photographerCode);
+  if (file.photographerName) {
+    aliases.add(file.photographerName);
+    for (const part of file.photographerName.split(/\s+/)) {
+      const cleaned = part.replace(/[^a-z0-9]/gi, '');
+      if (cleaned.length >= 2) aliases.add(cleaned);
+    }
+  }
+  return [...aliases].map(normalizeRosterText).filter(Boolean);
+}
+
+function rosterCoversPhotographer(coveredBy: string, file: MediaFile): boolean {
+  const normalized = normalizeRosterText(coveredBy);
+  if (!normalized || normalized === '—' || normalized === '-') return false;
+  const aliases = photographerRosterAliases(file);
+  return aliases.some((alias) => normalized.split(/\s+/).includes(alias) || normalized.includes(alias));
+}
+
+function matchSchedule(file: MediaFile, entries: ScheduleEntry[]): ScheduleMatch | undefined {
+  if (!file.dateTaken || entries.length === 0) return undefined;
+  const date = new Date(file.dateTaken);
+  if (Number.isNaN(date.getTime())) return undefined;
+  const day = weekdayName(date).toLowerCase();
+  const minutes = date.getHours() * 60 + date.getMinutes();
+  const match = entries.find((entry) =>
+    entry.day.trim().toLowerCase() === day
+    && minutes >= entry.startMinutes
+    && minutes < entry.endMinutes
+    && rosterCoversPhotographer(entry.coveredBy, file)
+  );
+  if (!match) return undefined;
+  return {
+    scheduleLocation: match.location,
+    scheduleEvent: match.event,
+    scheduleCoveredBy: match.coveredBy,
+  };
+}
+
+function csvCell(value: unknown): string {
+  const text = value == null ? '' : String(value);
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function importLogName(): string {
+  return `import-log-${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+}
+
+async function writeImportLogCsv(config: ImportConfig, items: ImportLedgerItem[]): Promise<string | undefined> {
+  if (config.dryRun || items.length === 0) return undefined;
+  const outputDir = path.join(config.destRoot, '_Keptra Logs');
+  const outputPath = path.join(outputDir, importLogName());
+  const importedAt = new Date().toISOString();
+  const headers = [
+    'importedAt',
+    'eventMode',
+    'photographerCode',
+    'photographerName',
+    'scheduleLocation',
+    'scheduleEvent',
+    'scheduleCoveredBy',
+    'dateTaken',
+    'sourceFile',
+    'destinationFile',
+    'status',
+    'sizeBytes',
+    'error',
+  ];
+  const rows = items.map((item) => [
+    importedAt,
+    config.eventMode ?? '',
+    item.photographerCode ?? '',
+    item.photographerName ?? '',
+    item.scheduleLocation ?? '',
+    item.scheduleEvent ?? '',
+    item.scheduleCoveredBy ?? '',
+    item.dateTaken ?? '',
+    item.sourcePath,
+    item.destFullPath ?? item.destRelPath ?? '',
+    item.status,
+    item.size,
+    item.error ?? '',
+  ]);
+  await mkdir(outputDir, { recursive: true });
+  await writeFile(
+    outputPath,
+    [headers, ...rows].map((row) => row.map(csvCell).join(',')).join('\n') + '\n',
+    'utf8',
+  );
+  return outputPath;
 }
 
 export function convertedDestPath(destPath: string, format: SaveFormat): string {
@@ -984,15 +1236,25 @@ export async function importFiles(
   let straightenMissing = 0;
   let whiteBalanceMissing = 0;
   const ledgerItemsBySource = new Map<string, ImportLedgerItem>();
+  const scheduleLoad = await loadScheduleEntries(config.scheduleCsvPath, config.scheduleSheetUrl);
+  const scheduleEntries = scheduleLoad.entries;
+  if (scheduleLoad.error) {
+    errors.push({ file: 'schedule-source', error: scheduleLoad.error });
+  }
   for (const file of files) {
     const plannedPaths = fullDestPaths(file, config);
+    const scheduleMatch = matchSchedule(file, scheduleEntries);
     ledgerItemsBySource.set(file.path, {
       sourcePath: file.path,
       name: file.name,
       size: file.size,
+      dateTaken: file.dateTaken,
       destRelPath: plannedPaths.destRelPath,
       destFullPath: plannedPaths.destFullPath,
       backupFullPath: plannedPaths.backupFullPath,
+      photographerCode: file.photographerCode,
+      photographerName: file.photographerName,
+      ...scheduleMatch,
       status: 'pending',
     });
   }
@@ -1033,13 +1295,18 @@ export async function importFiles(
 
   async function importOne(file: MediaFile): Promise<void> {
     const plannedPaths = fullDestPaths(file, config);
+    const scheduleMatch = matchSchedule(file, scheduleEntries);
     const ledgerBase: ImportLedgerItem = {
       sourcePath: file.path,
       name: file.name,
       size: file.size,
+      dateTaken: file.dateTaken,
       destRelPath: plannedPaths.destRelPath,
       destFullPath: plannedPaths.destFullPath,
       backupFullPath: plannedPaths.backupFullPath,
+      photographerCode: file.photographerCode,
+      photographerName: file.photographerName,
+      ...scheduleMatch,
       status: 'pending',
     };
     if (plannedPaths.error) {
@@ -1418,6 +1685,18 @@ export async function importFiles(
   }
   if (currentJob === job) currentJob = null;
 
+  let importLogCsvPath: string | undefined;
+  try {
+    if (imported + skipped > 0) {
+      importLogCsvPath = await writeImportLogCsv(config, [...ledgerItemsBySource.values()]);
+    }
+  } catch (logErr) {
+    errors.push({
+      file: 'import-log',
+      error: logErr instanceof Error ? logErr.message : 'Could not write local import log CSV',
+    });
+  }
+
   return {
     imported,
     skipped,
@@ -1426,6 +1705,7 @@ export async function importFiles(
     errors,
     totalBytes: bytesTransferred,
     durationMs: Date.now() - startTime,
+    importLogCsvPath,
     ledgerItems: [...ledgerItemsBySource.values()],
   };
 }

@@ -19,6 +19,8 @@ export interface MediaFile {
   extension: string;
   dateTaken?: string;
   destPath?: string;
+  photographerCode?: string;
+  photographerName?: string;
   thumbnail?: string; // base64 data URI
   duplicate?: boolean;
   duplicateMemory?: {
@@ -251,6 +253,54 @@ export interface SelectionSet {
   createdAt: string;
 }
 
+export interface PhotographerCode {
+  firstName: string;
+  lastName: string;
+  code: string;
+}
+
+export const DEFAULT_PHOTOGRAPHER_CODES: PhotographerCode[] = [
+  { firstName: 'Oscar', lastName: 'Lupton', code: 'OLU' },
+  { firstName: 'David', lastName: 'Eammano', code: 'DEA' },
+  { firstName: 'Zac', lastName: 'Morgan', code: 'ZMO' },
+  { firstName: 'Morgan', lastName: 'Zhong', code: 'MZH' },
+  { firstName: 'Gabriel (Nina)', lastName: 'Setiawan', code: 'GSE' },
+  { firstName: 'River', lastName: 'Waller', code: 'RWA' },
+  { firstName: 'Yingyin (Psyche)', lastName: 'Zhang', code: 'YZH' },
+  { firstName: 'William', lastName: 'Zhang', code: 'WZH' },
+  { firstName: 'Leo', lastName: 'Cheung', code: 'LCH' },
+  { firstName: 'Charlie', lastName: 'Faleolo', code: 'CFA' },
+  { firstName: 'Christopher', lastName: 'Ly', code: 'CLY' },
+  { firstName: 'Jacky', lastName: 'Lin', code: 'JLI' },
+  { firstName: 'KIM (THUAN THANH)', lastName: 'PHAM', code: 'KPH' },
+  { firstName: 'Maryam', lastName: 'Hasaan', code: 'MHA' },
+  { firstName: 'ERMUND', lastName: 'WONG', code: 'EWO' },
+  { firstName: 'Diaval', lastName: 'Bermingham', code: 'DBE' },
+  { firstName: 'Ryan', lastName: 'Lin', code: 'RLI' },
+  { firstName: 'Sean', lastName: 'Lee', code: 'SLE' },
+  { firstName: 'Jonathan', lastName: 'TANDOC', code: 'JTA' },
+  { firstName: 'CHRISTOPHER', lastName: 'PHAM', code: 'CPH' },
+  { firstName: 'Oliver', lastName: 'Yu', code: 'OYU' },
+];
+
+export function photographerDisplayName(photographer: Pick<PhotographerCode, 'firstName' | 'lastName'>): string {
+  return `${photographer.firstName} ${photographer.lastName}`.trim();
+}
+
+const PHOTOGRAPHER_CODE_PREFIX = /^([A-Z]{2,5})_/i;
+
+export function detectPhotographerFromFilename(
+  fileName: string,
+  codes: PhotographerCode[] = DEFAULT_PHOTOGRAPHER_CODES,
+): { code: string; name: string } | undefined {
+  const match = PHOTOGRAPHER_CODE_PREFIX.exec(fileName);
+  if (!match) return undefined;
+  const code = match[1].toUpperCase();
+  const photographer = codes.find((item) => item.code.toUpperCase() === code);
+  if (!photographer) return undefined;
+  return { code: photographer.code.toUpperCase(), name: photographerDisplayName(photographer) };
+}
+
 export type WatermarkPosition = 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left' | 'center';
 export type WatermarkMode = 'text' | 'image';
 
@@ -316,6 +366,7 @@ export const FOLDER_PRESETS: Record<string, { label: string; pattern: string }> 
   'date-nested':    { label: 'YYYY / MM / DD',           pattern: '{YYYY}/{MM}/{DD}/{filename}' },
   'year-month':     { label: 'YYYY / MM',                pattern: '{YYYY}/{MM}/{filename}' },
   'year':           { label: 'YYYY',                      pattern: '{YYYY}/{filename}' },
+  'photographer-date': { label: 'Photographer / YYYY-MM-DD', pattern: '{photographerCode}/{YYYY}-{MM}-{DD}/{filename}' },
   'star':           { label: '★ Rating (1-star … 5-star)', pattern: '{rating}/{filename}' },
   'date-star':      { label: 'YYYY-MM-DD / ★ Rating',    pattern: '{YYYY}-{MM}-{DD}/{rating}/{filename}' },
   'star-date':      { label: '★ Rating / YYYY-MM-DD',    pattern: '{rating}/{YYYY}-{MM}-{DD}/{filename}' },
@@ -373,6 +424,12 @@ export interface ImportConfig {
    * with `original` we can't rewrite pixels so the setting is ignored.
    */
   normalizeExposure?: boolean;
+  /** Event/capture mode recorded into local import logs. */
+  eventMode?: EventMode;
+  /** Optional exported schedule CSV used to enrich import logs by capture time and photographer roster. */
+  scheduleCsvPath?: string;
+  /** Optional live Google Sheets URL fetched as CSV at import time. */
+  scheduleSheetUrl?: string;
   exposureAnchorEV?: number;
   /**
    * Hard clamp on how much brightness the normalizer is allowed to shift, in
@@ -436,6 +493,7 @@ export interface ImportResult {
   ledgerId?: string;
   recoveryCount?: number;
   ledgerItems?: ImportLedgerItem[];
+  importLogCsvPath?: string;
   lightroomHandoff?: LightroomHandoffResult;
 }
 
@@ -509,6 +567,12 @@ export interface ImportLedgerItem {
   destRelPath?: string;
   destFullPath?: string;
   backupFullPath?: string;
+  photographerCode?: string;
+  photographerName?: string;
+  dateTaken?: string;
+  scheduleLocation?: string;
+  scheduleEvent?: string;
+  scheduleCoveredBy?: string;
   status: ImportLedgerStatus;
   error?: string;
 }
@@ -528,6 +592,10 @@ export interface ImportLedger {
   checksumVerified?: number;
   totalBytes: number;
   durationMs: number;
+  eventMode?: EventMode;
+  importLogCsvPath?: string;
+  scheduleCsvPath?: string;
+  scheduleSheetUrl?: string;
   items: ImportLedgerItem[];
 }
 
@@ -953,6 +1021,10 @@ export interface AppSettings {
   whiteBalanceTemperature?: number;
   whiteBalanceTint?: number;
   eventMode?: EventMode;
+  /** Local exported CSV schedule path. Expected columns: Day, Start, End, Location, Event, Covered by. */
+  scheduleCsvPath?: string;
+  /** Live Google Sheets URL. Expected columns: Day, Start, End, Location, Event, Covered by. */
+  scheduleSheetUrl?: string;
   /** How strongly auto-cull rejects weaker burst/group alternates. */
   cullConfidence?: CullConfidence;
   /** Group-photo mode prefers frames where every detected face/person is usable. */
@@ -1201,7 +1273,14 @@ export const ALL_MEDIA_EXTENSIONS = new Set([
   ...VIDEO_EXTENSIONS,
 ]);
 
-export function resolvePattern(pattern: string, date: Date, fileName: string, ext: string, rating?: number): string {
+export function resolvePattern(
+  pattern: string,
+  date: Date,
+  fileName: string,
+  ext: string,
+  rating?: number,
+  photographer?: { code?: string; name?: string },
+): string {
   const y = date.getFullYear().toString();
   const m = (date.getMonth() + 1).toString().padStart(2, '0');
   const d = date.getDate().toString().padStart(2, '0');
@@ -1210,6 +1289,8 @@ export function resolvePattern(pattern: string, date: Date, fileName: string, ex
   const ratingStr = (rating ?? 0) > 0
     ? `${rating}-star${rating !== 1 ? 's' : ''}`
     : 'unrated';
+  const photographerCode = photographer?.code?.trim() || 'Unassigned';
+  const photographerName = photographer?.name?.trim() || 'Unassigned';
   return pattern
     .replace(/\{YYYY\}/g, y)
     .replace(/\{MM\}/g, m)
@@ -1217,7 +1298,9 @@ export function resolvePattern(pattern: string, date: Date, fileName: string, ex
     .replace(/\{filename\}/g, fileName)
     .replace(/\{name\}/g, baseName)
     .replace(/\{ext\}/g, ext.replace('.', ''))
-    .replace(/\{rating\}/g, ratingStr);
+    .replace(/\{rating\}/g, ratingStr)
+    .replace(/\{photographerCode\}/g, photographerCode)
+    .replace(/\{photographerName\}/g, photographerName);
 }
 
 export const IPC = {

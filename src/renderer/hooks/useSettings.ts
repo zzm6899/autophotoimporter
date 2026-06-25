@@ -111,6 +111,12 @@ export function useSettings() {
       if (settings.eventMode) {
         dispatch({ type: 'SET_EVENT_MODE', mode: settings.eventMode });
       }
+      if (typeof settings.scheduleCsvPath === 'string') {
+        dispatch({ type: 'SET_WORKFLOW_STRING', key: 'scheduleCsvPath', value: settings.scheduleCsvPath });
+      }
+      if (typeof settings.scheduleSheetUrl === 'string') {
+        dispatch({ type: 'SET_WORKFLOW_STRING', key: 'scheduleSheetUrl', value: settings.scheduleSheetUrl });
+      }
       if (settings.cullConfidence) {
         dispatch({ type: 'SET_CULL_CONFIDENCE', confidence: settings.cullConfidence });
       }
