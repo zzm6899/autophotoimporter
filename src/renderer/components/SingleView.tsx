@@ -316,6 +316,7 @@ export function SingleView({ file, files, index, total, aiPaused = false }: Sing
                   faceEmbeddingBoxes: embeddingBoxes.length > 0 ? embeddingBoxes : file.faceEmbeddingBoxes,
                   personCount: result.personBoxes.length,
                   personBoxes,
+                  poses: result.poses?.length ? result.poses : file.poses,
                   subjectReasons: [
                     ...(file.subjectReasons ?? []),
                     ...(result.boxes.length > 0 ? ['single-photo face scan'] : []),
@@ -351,6 +352,7 @@ export function SingleView({ file, files, index, total, aiPaused = false }: Sing
                   faceEmbeddingBoxes: embeddingBoxes.length > 0 ? embeddingBoxes : mate.faceEmbeddingBoxes,
                   personCount: result.personBoxes.length,
                   personBoxes,
+                  poses: result.poses?.length ? result.poses : mate.poses,
                   subjectReasons: [
                     ...(mate.subjectReasons ?? []),
                     ...(result.boxes.length > 0 ? ['burst face scan'] : []),

@@ -48,6 +48,16 @@ const MODELS = [
     url: 'https://huggingface.co/onnxmodelzoo/ssd_mobilenet_v1_12/resolve/main/ssd_mobilenet_v1_12.onnx?download=true',
     sha256: null,
   },
+  {
+    // Optional: pose estimation for sports modes (measured kick straightness +
+    // foot-to-torso contact). MoveNet SinglePose Thunder, 17 COCO keypoints,
+    // 256x256 input. The app runs fine without it — sports scoring falls back
+    // to person-box proxies when this file is absent.
+    name: 'movenet_thunder.onnx',
+    url: 'https://huggingface.co/Xenova/movenet-singlepose-thunder/resolve/main/onnx/model.onnx?download=true',
+    sha256: null,
+    optional: true,
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -140,8 +150,12 @@ for (const model of MODELS) {
     console.log(`[ok]   ${model.name}`);
   } catch (err) {
     process.stdout.write('\n');
-    console.error(`[FAIL] ${model.name} — ${err.message}`);
-    allOk = false;
+    if (model.optional) {
+      console.warn(`[warn] ${model.name} — optional model failed to download (${err.message}); skipping.`);
+    } else {
+      console.error(`[FAIL] ${model.name} — ${err.message}`);
+      allOk = false;
+    }
   }
 }
 

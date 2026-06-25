@@ -3,7 +3,8 @@ import { readFile, writeFile, mkdir, open, rm, rename, statfs, readdir, stat, co
 import { execFile, spawn } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 import path from 'node:path';
-import { DEFAULT_VIEW_OVERLAY_PREFERENCES, IPC, PHOTO_EXTENSIONS } from '../shared/types';
+import { DEFAULT_VIEW_OVERLAY_PREFERENCES, IPC, PHOTO_EXTENSIONS, isSportsEventMode } from '../shared/types';
+import { configurePoseAnalysis } from './services/pose-engine';
 import type { ImportConfig, ImportResult, ImportBenchmarkQuery, ImportBenchmarkResult, AppSettings, MediaFile, FtpConfig, FtpSyncStatus, Volume, UpdateState, ImportLedger, ImportHealthSummary, MacFirstRunDoctor, AppDiagnosticsSnapshot, UpdateRepairResult, AppSession, WatchFolder, CatalogBrowserQuery, CatalogFaceSearchQuery, ScanDiagnostics } from '../shared/types';
 import { listVolumes, startWatching, stopWatching } from './services/volume-watcher';
 import { scanFiles, cancelScan, pauseScan, resumeScan, type FileScanDiagnostics } from './services/file-scanner';
@@ -1142,6 +1143,9 @@ function applyRuntimeSettings(settings: AppSettings): void {
   setRawPreviewCache(settings.rawPreviewCache ?? true);
   setFaceConcurrency(settings.faceConcurrency ?? 1);
   setPreviewConcurrency(settings.previewConcurrency ?? 2);
+  // Pose estimation auto-enables for sports event modes; the engine is still a
+  // no-op unless the optional MoveNet model is installed (isPoseAnalysisEnabled).
+  configurePoseAnalysis(isSportsEventMode(settings.eventMode));
 }
 
 function resolvePreviewConcurrency(
@@ -2141,6 +2145,8 @@ export function registerIpcHandlers(): void {
   }).catch(() => undefined);
 
   app.on('before-quit', () => {
+    cancelPendingFaceJobs();
+    clearImageDecodeCache();
     stopWatching();
     watchFolderManager?.stop();
     clearFtpSyncTimer();
@@ -3129,6 +3135,7 @@ export function registerIpcHandlers(): void {
             personBoxes,
             embeddings,
             embeddingBoxes,
+            poses: cached.result.poses ?? [],
             faceCount: cached.result.boxes.length,
             personCount: personBoxes.length,
           });
@@ -3153,9 +3160,12 @@ export function registerIpcHandlers(): void {
           throw err;
         }
         try {
-          const { boxes, personBoxes, embeddings, embeddingBoxes, features } = await analyzeFaces(filePath);
+          const { boxes, personBoxes, embeddings, embeddingBoxes, poses, features } = await analyzeFaces(filePath);
+          if (capturedGen !== faceQueueGeneration) {
+            return { path: filePath, boxes: [], personBoxes: [], embeddings: [], embeddingBoxes: [], poses: [], faceCount: 0, personCount: 0 };
+          }
           const hexEmbeddings = embeddings.map(serializeEmbedding);
-          await setCachedFaceResult(filePath, { boxes, personBoxes, embeddings, embeddingBoxes, features }, hexEmbeddings).catch(() => undefined);
+          await setCachedFaceResult(filePath, { boxes, personBoxes, embeddings, embeddingBoxes, poses, features }, hexEmbeddings).catch(() => undefined);
           await new Promise<void>((resolve) => setImmediate(resolve));
           return {
             path: filePath,
@@ -3163,6 +3173,7 @@ export function registerIpcHandlers(): void {
             personBoxes,
             embeddings: hexEmbeddings,
             embeddingBoxes: embeddingBoxes ?? [],
+            poses: poses ?? [],
             faceCount: boxes.length,
             personCount: personBoxes.length,
           };

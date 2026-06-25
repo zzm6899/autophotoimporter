@@ -3,7 +3,7 @@ import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, Sourc
 import { FOLDER_PRESETS, DEFAULT_KEYBINDS, DEFAULT_METADATA_EXPORT, DEFAULT_VIEW_OVERLAY_PREFERENCES } from '../../shared/types';
 import { groupBursts } from '../../shared/burst';
 import { clampStops, normalizeExposureStops } from '../../shared/exposure';
-import { FACE_GROUP_EMBEDDING_THRESHOLD, assignSceneBuckets, autoCullGroup, bestInGroup, clearEmbeddingCache, groupByFaceSimilarity, groupByVisualHash, humanMomentQuality, isUsablyFocused, rankBestShots, scoreReview } from '../../shared/review';
+import { FACE_GROUP_EMBEDDING_THRESHOLD, assignSceneBuckets, autoCullGroup, bestInGroup, clearEmbeddingCache, configureReviewProfile, groupByFaceSimilarity, groupByVisualHash, humanMomentQuality, isUsablyFocused, rankBestShots, scoreReview, selectKeepersToTarget } from '../../shared/review';
 import { isPathInsideSourceRoot } from '../utils/sourcePath';
 
 export type AppPhase = 'idle' | 'scanning' | 'ready' | 'importing' | 'complete';
@@ -246,6 +246,7 @@ export type Action =
   | { type: 'NUDGE_EXPOSURE_ADJUSTMENT'; filePaths: string[]; delta: number }
   | { type: 'NORMALIZE_SELECTION_TO_FOCUSED'; filePaths: string[]; anchorPath: string }
   | { type: 'PICK_BURST_KEEPERS' }
+  | { type: 'CULL_TO_TARGET'; target: number; perGroupCap?: number }
   | { type: 'SET_SHARPNESS_BATCH'; scores: Record<string, number> }
   | { type: 'SET_REVIEW_SCORES'; scores: Record<string, Partial<MediaFile>> }
   | { type: 'RESOLVE_SECOND_PASS'; filePaths: string[]; pick: 'selected' | 'rejected' }
@@ -1043,6 +1044,25 @@ export function reducer(state: State, action: Action): State {
           : f,
       ));
     }
+    case 'CULL_TO_TARGET': {
+      // Cull the whole batch down to a hard keeper budget. Keeps the strongest
+      // frame per burst/visual/face group first (variety), always retains
+      // protected/rated/picked files, and rejects the rest. Photos only —
+      // videos are left untouched.
+      const photos = state.files.filter((f) => f.type === 'photo');
+      if (photos.length === 0) return state;
+      const { keep } = selectKeepersToTarget(photos, {
+        target: action.target,
+        perGroupCap: action.perGroupCap,
+        eventMode: state.eventMode,
+      });
+      const keepSet = new Set(keep);
+      return withFileHistory(state, state.files.map((f) =>
+        f.type === 'photo'
+          ? { ...f, pick: keepSet.has(f.path) ? 'selected' : 'rejected' }
+          : f,
+      ));
+    }
     case 'SET_SHARPNESS_BATCH':
       return {
         ...state,
@@ -1513,6 +1533,12 @@ export function ImportProvider({ children }: { children: ReactNode }) {
   useEffect(() => () => {
     if (reviewVersionTimerRef.current) clearTimeout(reviewVersionTimerRef.current);
   }, []);
+
+  // Keep the shared review scorer's profile in sync with the active event mode
+  // so best-shot/keeper ranking in the grid reflects sports-action weighting.
+  useEffect(() => {
+    configureReviewProfile(state.eventMode);
+  }, [state.eventMode]);
 
   // Intercept SET_REVIEW_SCORES before it hits the reducer.
   const dispatch = useCallback<Dispatch<Action>>((action) => {

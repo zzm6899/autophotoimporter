@@ -177,6 +177,7 @@ export function DestinationPanel() {
   const { startImport } = useImport();
   const isPro = experienceMode === 'pro';
   const [freeBytes, setFreeBytes] = useState<number | null>(null);
+  const [cullTarget, setCullTarget] = useState(1000);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showTransforms, setShowTransforms] = useState(false);
   const [outputMode, setOutputMode] = useState<OutputPanelMode>('import');
@@ -1009,6 +1010,53 @@ export function DestinationPanel() {
       </div>
       )}
 
+      {outputMode === 'import' && (() => {
+        const photoCount = files.reduce((n, f) => n + (f.type === 'photo' ? 1 : 0), 0);
+        const safeTarget = Math.max(1, Math.min(cullTarget || 1, photoCount || 1));
+        const runCull = () => {
+          if (photoCount === 0) return;
+          const ok = window.confirm(
+            `Cull ${photoCount.toLocaleString()} photos down to the strongest ${safeTarget.toLocaleString()}?\n\n` +
+            `Keeps one best frame per burst/similar group first for variety, always keeps protected and rated shots, ` +
+            `and marks the rest as rejected. You can undo this.`,
+          );
+          if (ok) dispatch({ type: 'CULL_TO_TARGET', target: safeTarget });
+        };
+        return (
+          <div className="px-2.5 mb-2.5">
+            <div className="rounded border border-border bg-surface-alt px-2 py-2">
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <h3 className="text-[10px] text-text-secondary uppercase tracking-wider">Cull to budget</h3>
+                <span className="text-[9px] text-text-muted">{photoCount.toLocaleString()} photos</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="number"
+                  min={1}
+                  max={Math.max(1, photoCount)}
+                  value={cullTarget}
+                  onChange={(e) => setCullTarget(Math.max(1, Math.floor(Number(e.target.value) || 0)))}
+                  className="w-20 px-1.5 py-1 text-[11px] bg-surface-raised border border-border rounded text-text focus:border-text focus:outline-none"
+                  title="How many keepers to end up with"
+                />
+                <button
+                  type="button"
+                  onClick={runCull}
+                  disabled={photoCount === 0}
+                  className="flex-1 px-2 py-1 text-[11px] rounded bg-violet-600 text-white hover:bg-violet-500 disabled:opacity-40 disabled:cursor-not-allowed"
+                  title="Reject everything except the strongest N keepers, with per-group variety"
+                >
+                  Cull to {safeTarget.toLocaleString()}
+                </button>
+              </div>
+              <p className="text-[10px] text-text-muted mt-1">
+                Keeps the best frame per burst/similar group first; protects rated &amp; protected shots. Undoable.
+              </p>
+            </div>
+          </div>
+        );
+      })()}
+
       {phase === 'importing' && (
         <div className="mx-2.5 mb-2.5 rounded border border-accent/30 bg-accent/10 px-2 py-1.5">
           <div className="flex items-center justify-between gap-2 text-[10px] text-text-secondary">
@@ -1794,3 +1842,4 @@ export function DestinationPanel() {
     </div>
   );
 }
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 
