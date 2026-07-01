@@ -72,7 +72,14 @@ export function useSettings() {
         dispatch({ type: 'SET_SOURCE_PROFILE', profile: settings.sourceProfile });
       }
       if (settings.defaultConflictPolicy) {
-        dispatch({ type: 'SET_CONFLICT_POLICY', policy: settings.defaultConflictPolicy });
+        const cardSource = settings.sourceProfile === 'usb' || settings.sourceProfile === 'ssd';
+        const policy = cardSource && settings.defaultConflictPolicy === 'skip'
+          ? 'rename'
+          : settings.defaultConflictPolicy;
+        dispatch({ type: 'SET_CONFLICT_POLICY', policy });
+        if (policy !== settings.defaultConflictPolicy) {
+          void window.electronAPI.setSettings({ defaultConflictPolicy: policy });
+        }
       }
       if (typeof settings.conflictFolderName === 'string') {
         dispatch({ type: 'SET_WORKFLOW_STRING', key: 'conflictFolderName', value: settings.conflictFolderName });

@@ -300,6 +300,13 @@ function buildWatermarkConfig(settings: AppSettings): ImportConfig['watermark'] 
   };
 }
 
+function conflictPolicyForSettings(settings: AppSettings): NonNullable<ImportConfig['conflictPolicy']> {
+  if ((settings.sourceProfile === 'usb' || settings.sourceProfile === 'ssd') && settings.defaultConflictPolicy === 'skip') {
+    return 'rename';
+  }
+  return settings.defaultConflictPolicy ?? 'rename';
+}
+
 function execFileAsync(
   file: string,
   args: string[],
@@ -969,7 +976,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   sourceProfile: 'auto',
   watchFolders: [],
   lastSessionId: '',
-  defaultConflictPolicy: 'skip',
+  defaultConflictPolicy: 'rename',
   conflictFolderName: '_Conflicts',
   autoImport: false,
   autoImportDestRoot: '',
@@ -1497,11 +1504,12 @@ async function runAutomatedFtpSync(trigger: 'manual' | 'launch' | 'interval'): P
 
     const importConfig: ImportConfig = {
       sourcePath: stagingDir,
+      sourceProfile: settings.sourceProfile,
       destRoot: sync.localDestRoot,
       skipDuplicates: settings.skipDuplicates,
       saveFormat: settings.saveFormat,
       jpegQuality: settings.jpegQuality,
-      conflictPolicy: settings.defaultConflictPolicy,
+      conflictPolicy: conflictPolicyForSettings(settings),
       conflictFolderName: settings.conflictFolderName,
       separateProtected: settings.separateProtected,
       protectedFolderName: settings.protectedFolderName,
@@ -3385,10 +3393,13 @@ async function runAutoImport(volume: Volume, options: Omit<QueuedAutoImport, 'vo
 
     const importConfig: ImportConfig = {
       sourcePath: volume.path,
+      sourceProfile: settings.sourceProfile,
       destRoot,
       skipDuplicates: settings.skipDuplicates,
       saveFormat: settings.saveFormat,
       jpegQuality: settings.jpegQuality,
+      conflictPolicy: conflictPolicyForSettings(settings),
+      conflictFolderName: settings.conflictFolderName,
       eventMode: settings.eventMode,
       scheduleCsvPath: settings.scheduleCsvPath || undefined,
       scheduleSheetUrl: settings.scheduleSheetUrl || undefined,

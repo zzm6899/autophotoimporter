@@ -176,6 +176,23 @@ export function shouldOpenBestOfSelectionPanel(paths: readonly string[]): boolea
   return paths.length > 0;
 }
 
+export function getReviewStartTarget(
+  files: readonly Pick<MediaFile, 'path' | 'pick'>[],
+  currentFocusedPath?: string | null,
+): { filter: FilterMode; path: string; index: number } | null {
+  if (files.length === 0) return null;
+  const unmarked = files.filter((file) => !file.pick);
+  const candidates = unmarked.length > 0 ? unmarked : files;
+  const filter: FilterMode = unmarked.length > 0 ? 'unmarked' : 'all';
+  const focusedCandidate = currentFocusedPath
+    ? candidates.find((file) => file.path === currentFocusedPath)
+    : undefined;
+  const path = focusedCandidate?.path ?? candidates[0]?.path;
+  if (!path) return null;
+  const index = candidates.findIndex((file) => file.path === path);
+  return { filter, path, index: Math.max(0, index) };
+}
+
 export function summarizeReviewFlowHealth({
   blurCount,
   catalogMatchCount,
@@ -5221,12 +5238,14 @@ export function ThumbnailGrid() {
           <ActionButton
             icon={ListChecks}
             onClick={() => {
+              const target = getReviewStartTarget(sortedFiles, focusedPath);
+              if (!target) return;
               setReviewSprintMode(true);
-              dispatch({ type: 'SET_FILTER', filter: 'unmarked' });
+              dispatch({ type: 'SET_FILTER', filter: target.filter });
               dispatch({ type: 'SET_VIEW_MODE', mode: 'single' });
-              if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0);
+              setFocused(target.index, target.path);
             }}
-            title="Open single-photo view filtered to unmarked files. Use P to pick, X to reject, arrows to navigate."
+            title="Open single-photo review. Uses unmarked files when available, otherwise opens the visible set. Use P to pick, X to reject, arrows to navigate."
           >
             Review
           </ActionButton>

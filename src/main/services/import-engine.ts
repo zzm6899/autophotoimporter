@@ -29,6 +29,8 @@ function execFileAsync(
 let currentJob: JobController | null = null;
 
 const RAW_COPY_CONCURRENCY = 6;
+const USB_CARD_COPY_CONCURRENCY = 8;
+const SSD_COPY_CONCURRENCY = 12;
 const MIRRORED_COPY_CONCURRENCY = 3;
 const HEAVY_IMPORT_CONCURRENCY = 2;
 const SOURCE_MTIME_TOLERANCE_MS = 1;
@@ -289,7 +291,17 @@ function resolveImportConcurrency(config: ImportConfig): number {
   if (config.verifyChecksums || !!config.backupDestRoot || !!config.ftpDestEnabled) {
     return MIRRORED_COPY_CONCURRENCY;
   }
+  if (config.sourceProfile === 'ssd') return SSD_COPY_CONCURRENCY;
+  if (config.sourceProfile === 'usb') return USB_CARD_COPY_CONCURRENCY;
   return RAW_COPY_CONCURRENCY;
+}
+
+function shouldCheckSourceStability(config: ImportConfig): boolean {
+  return config.sourceProfile !== 'usb' && config.sourceProfile !== 'ssd';
+}
+
+function isCardImport(config: ImportConfig): boolean {
+  return config.sourceProfile === 'usb' || config.sourceProfile === 'ssd';
 }
 
 function isPortraitOrientation(orientation?: number): boolean {
@@ -658,7 +670,8 @@ type ResolvedImportPaths = ReturnType<typeof fullDestPaths> & {
 type DestinationReservations = Set<string>;
 
 function conflictPolicyFor(config: ImportConfig): ImportConflictPolicy {
-  return config.conflictPolicy ?? 'skip';
+  if (isCardImport(config) && config.conflictPolicy === 'skip') return 'rename';
+  return config.conflictPolicy ?? 'rename';
 }
 
 function cleanConflictFolderName(config: ImportConfig): string {
@@ -814,11 +827,13 @@ export async function planImportFiles(files: MediaFile[], config: ImportConfig):
       items.push({ ...base, status: 'invalid', reason: paths.error });
       continue;
     }
-    const unstableSource = await sourceStabilityError(file);
-    if (unstableSource) {
-      invalid++;
-      items.push({ ...base, status: 'invalid', reason: unstableSource });
-      continue;
+    if (shouldCheckSourceStability(config)) {
+      const unstableSource = await sourceStabilityError(file);
+      if (unstableSource) {
+        invalid++;
+        items.push({ ...base, status: 'invalid', reason: unstableSource });
+        continue;
+      }
     }
     if (config.skipDuplicates && paths.destRelPath && await isDuplicate(config.destRoot, paths.destRelPath, file.size, file.sourceModifiedAtMs)) {
       duplicates++;
@@ -1328,7 +1343,7 @@ export async function importFiles(
     }
 
     let sourceBeforeCopy: SourceSnapshot | null = null;
-    if (!config.dryRun) {
+    if (!config.dryRun && shouldCheckSourceStability(config)) {
       const sourceCheck = await getStableSourceSnapshot(file);
       if (sourceCheck.error) {
         errors.push({ file: file.name, error: sourceCheck.error });
@@ -1349,9 +1364,7 @@ export async function importFiles(
       }
     }
 
-    const resolvedPaths = (config.dryRun || config.conflictPolicy || sourceBeforeCopy)
-      ? await resolveImportDestPaths(file, config, destinationReservations)
-      : { ...plannedPaths, conflict: false, policy: conflictPolicyFor(config) };
+    const resolvedPaths = await resolveImportDestPaths(file, config, destinationReservations);
     const resolvedLedgerBase: ImportLedgerItem = {
       ...ledgerBase,
       destRelPath: resolvedPaths.destRelPath,

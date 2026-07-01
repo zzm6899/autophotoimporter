@@ -53,7 +53,7 @@ export function resolveImportPaths({
 
 export function useImport() {
   const {
-    selectedSource, destination, skipDuplicates, saveFormat, jpegQuality, phase,
+    selectedSource, sourceProfile, destination, skipDuplicates, saveFormat, jpegQuality, phase,
     files, selectedPaths, queuedPaths,
     separateProtected, protectedFolderName, backupDestRoot, ftpDestEnabled, ftpDestConfig,
     autoEject, playSoundOnComplete, completeSoundPath, openFolderOnComplete,
@@ -172,6 +172,7 @@ export function useImport() {
     try {
       const config = {
         sourcePath: selectedSource,
+        sourceProfile,
         destRoot: destination,
         skipDuplicates,
         saveFormat,
@@ -256,7 +257,7 @@ export function useImport() {
       });
     }
   }, [
-    selectedSource, destination, skipDuplicates, saveFormat, jpegQuality, phase, dispatch,
+    selectedSource, sourceProfile, destination, skipDuplicates, saveFormat, jpegQuality, phase, dispatch,
     files, selectedPaths, queuedPaths,
     separateProtected, protectedFolderName, backupDestRoot,
     ftpDestEnabled, ftpDestConfig,

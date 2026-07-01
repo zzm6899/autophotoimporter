@@ -647,6 +647,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const handleFastRawIngest = () => {
     dispatch({ type: 'SET_SAVE_FORMAT', format: 'original' });
     dispatch({ type: 'SET_SKIP_DUPLICATES', value: false });
+    dispatch({ type: 'SET_CONFLICT_POLICY', policy: 'rename' });
     dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'verifyChecksums', value: false });
     dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'ftpDestEnabled', value: false });
     dispatch({ type: 'SET_WORKFLOW_STRING', key: 'backupDestRoot', value: '' });
@@ -657,6 +658,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     void window.electronAPI.setSettings({
       saveFormat: 'original',
       skipDuplicates: false,
+      defaultConflictPolicy: 'rename',
       verifyChecksums: false,
       ftpDestEnabled: false,
       backupDestRoot: '',

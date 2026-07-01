@@ -437,6 +437,7 @@ export const FOLDER_PRESETS: Record<string, { label: string; pattern: string }> 
 
 export interface ImportConfig {
   sourcePath: string;
+  sourceProfile?: SourceProfile;
   destRoot: string;
   skipDuplicates: boolean;
   /**

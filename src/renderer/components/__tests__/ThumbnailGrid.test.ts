@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { alignBestOfBatchOffset, shouldOpenBestOfSelectionPanel, shouldQueueVisibleImportablePaths, shouldRunOnnxForReview, sliceBestOfBatchPathPage, summarizeBestOfBatchPage, summarizeReviewFlowHealth, summarizeReviewFlowNextStep } from '../ThumbnailGrid';
+import { alignBestOfBatchOffset, getReviewStartTarget, shouldOpenBestOfSelectionPanel, shouldQueueVisibleImportablePaths, shouldRunOnnxForReview, sliceBestOfBatchPathPage, summarizeBestOfBatchPage, summarizeReviewFlowHealth, summarizeReviewFlowNextStep } from '../ThumbnailGrid';
 import type { MediaFile } from '../../../shared/types';
 
 describe('summarizeReviewFlowNextStep', () => {
@@ -183,6 +183,31 @@ describe('shouldOpenBestOfSelectionPanel', () => {
   it('blocks hidden best-of state when there are no candidate paths', () => {
     expect(shouldOpenBestOfSelectionPanel([])).toBe(false);
     expect(shouldOpenBestOfSelectionPanel(['/photos/visible.jpg'])).toBe(true);
+  });
+});
+
+describe('getReviewStartTarget', () => {
+  it('opens the focused unmarked photo when review candidates exist', () => {
+    expect(getReviewStartTarget([
+      { path: '/photos/a.jpg', pick: 'selected' },
+      { path: '/photos/b.jpg' },
+      { path: '/photos/c.jpg' },
+    ], '/photos/c.jpg')).toEqual({
+      filter: 'unmarked',
+      path: '/photos/c.jpg',
+      index: 1,
+    });
+  });
+
+  it('falls back to all visible files when everything is already marked', () => {
+    expect(getReviewStartTarget([
+      { path: '/photos/a.jpg', pick: 'selected' },
+      { path: '/photos/b.jpg', pick: 'rejected' },
+    ], '/photos/b.jpg')).toEqual({
+      filter: 'all',
+      path: '/photos/b.jpg',
+      index: 1,
+    });
   });
 });
 

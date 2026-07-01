@@ -600,6 +600,15 @@ export function SingleView({ file, files, index, total, aiPaused = false }: Sing
             </svg>
             <div className="text-sm text-text-secondary">{loadError ? 'Preview could not be loaded' : 'Preparing preview...'}</div>
             <div className="max-w-72 truncate text-[11px] text-text-muted" title={file.path}>{file.name}</div>
+            {loadError && (
+              <button
+                type="button"
+                onClick={() => { void window.electronAPI.openPath(file.path); }}
+                className="mt-1 rounded border border-border bg-surface-raised px-3 py-1 text-xs text-text-secondary hover:border-blue-500/40 hover:text-text"
+              >
+                Open file
+              </button>
+            )}
           </div>
         )}
 
@@ -776,6 +785,14 @@ export function SingleView({ file, files, index, total, aiPaused = false }: Sing
             title="Rotate this view 90 degrees. Shortcut: Alt+R, Alt+Shift+R."
           >
             rotate
+          </button>
+          <button
+            type="button"
+            onClick={() => { void window.electronAPI.openPath(file.path); }}
+            className="rounded bg-black/65 px-2 py-1 text-[10px] font-mono text-white/90 hover:bg-black/80"
+            title="Open the original source file in the system viewer."
+          >
+            open
           </button>
         </div>
       )}

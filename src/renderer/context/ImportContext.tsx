@@ -371,7 +371,7 @@ const initialState: State = {
   openFolderOnComplete: false,
   verifyChecksums: false,
   sourceProfile: 'auto',
-  conflictPolicy: 'skip',
+  conflictPolicy: 'rename',
   conflictFolderName: '_Conflicts',
   lastSessionId: '',
   autoImport: false,
@@ -884,11 +884,12 @@ export function reducer(state: State, action: Action): State {
     case 'SET_WORKFLOW_STRING':
       return { ...state, [action.key]: action.value } as State;
     case 'SET_SOURCE_PROFILE': {
+      const cardSafeConflictPolicy = state.conflictPolicy === 'skip' ? 'rename' : state.conflictPolicy;
       if (action.profile === 'ssd') {
-        return { ...state, sourceProfile: action.profile, previewConcurrency: Math.max(4, state.previewConcurrency), faceConcurrency: Math.max(2, state.faceConcurrency), rawPreviewQuality: Math.max(78, state.rawPreviewQuality) };
+        return { ...state, sourceProfile: action.profile, conflictPolicy: cardSafeConflictPolicy, previewConcurrency: Math.max(4, state.previewConcurrency), faceConcurrency: Math.max(2, state.faceConcurrency), rawPreviewQuality: Math.max(78, state.rawPreviewQuality) };
       }
       if (action.profile === 'usb') {
-        return { ...state, sourceProfile: action.profile, previewConcurrency: 1, faceConcurrency: Math.min(state.faceConcurrency, 1), rawPreviewQuality: Math.min(state.rawPreviewQuality, 65) };
+        return { ...state, sourceProfile: action.profile, conflictPolicy: cardSafeConflictPolicy, previewConcurrency: 1, faceConcurrency: Math.min(state.faceConcurrency, 1), rawPreviewQuality: Math.min(state.rawPreviewQuality, 65) };
       }
       if (action.profile === 'nas') {
         return { ...state, sourceProfile: action.profile, previewConcurrency: 1, faceConcurrency: Math.min(state.faceConcurrency, 1), rawPreviewCache: true, rawPreviewQuality: Math.min(state.rawPreviewQuality, 68) };

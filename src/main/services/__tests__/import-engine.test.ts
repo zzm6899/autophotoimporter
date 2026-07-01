@@ -189,16 +189,22 @@ describe('planImportFiles', () => {
     expect(plan.items[0].warnings).not.toContain('Selected before AI review completed');
   });
 
-  it('marks destination conflicts as skipped by default', async () => {
-    mockStat.mockResolvedValue({ size: 1234 } as any);
+  it('renames destination conflicts by default', async () => {
+    mockStat.mockImplementation(async (p) => {
+      if (String(p).includes('IMG_001 (1).jpg')) {
+        throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+      }
+      return { size: 1234 } as any;
+    });
 
     const plan = await planImportFiles([makeFile()], makeConfig());
 
-    expect(plan.willImport).toBe(0);
+    expect(plan.willImport).toBe(1);
     expect(plan.conflicts).toBe(1);
     expect(plan.items[0]).toEqual(expect.objectContaining({
-      status: 'conflict',
-      reason: 'Destination file already exists',
+      status: 'will-import',
+      reason: 'Destination exists; will rename',
+      destFullPath: expect.stringContaining('IMG_001 (1).jpg'),
     }));
   });
 
@@ -257,18 +263,41 @@ describe('planImportFiles', () => {
 
 describe('importFiles', () => {
   let onProgress: ReturnType<typeof vi.fn<(progress: ImportProgress) => void>>;
+  let writtenTargets: Set<string>;
 
   beforeEach(() => {
     onProgress = vi.fn();
+    writtenTargets = new Set<string>();
     mockMkdir.mockResolvedValue(undefined);
-    mockCopyFile.mockResolvedValue(undefined);
-    mockRename.mockResolvedValue(undefined);
+    mockCopyFile.mockImplementation(async (_source, target) => {
+      writtenTargets.add(String(target));
+    });
+    mockRename.mockImplementation(async (_source, target) => {
+      writtenTargets.add(String(target));
+    });
     mockReadFile.mockRejectedValue(Object.assign(new Error('missing'), { code: 'ENOENT' }));
-    mockStat.mockResolvedValue({ size: 5000 } as any);
+    mockStat.mockImplementation(async (target) => {
+      const pathText = String(target);
+      if (pathText.startsWith('/src') || pathText.includes('\\src\\')) return { size: 5000, mtimeMs: 1000 } as any;
+      if (writtenTargets.has(pathText)) return { size: 5000, mtimeMs: 1000 } as any;
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+    });
     mockUnlink.mockResolvedValue(undefined);
     mockWriteFile.mockResolvedValue(undefined);
     mockIsDuplicate.mockResolvedValue(false);
-    mockExecFile.mockImplementation((_file: any, _args: any, _options: any, callback?: any) => {
+    mockExecFile.mockImplementation((file: any, args: any, _options: any, callback?: any) => {
+      const argList = Array.isArray(args) ? args.map(String) : [];
+      if (String(file) === 'sips') {
+        const outIndex = argList.indexOf('--out');
+        if (outIndex >= 0 && argList[outIndex + 1]) writtenTargets.add(argList[outIndex + 1]);
+      } else if (String(file) === 'powershell.exe') {
+        const script = argList[argList.indexOf('-Command') + 1] ?? '';
+        const match = /\.Save\('([^']+)'/.exec(script);
+        if (match?.[1]) writtenTargets.add(match[1]);
+      } else {
+        const maybeOutput = argList[argList.length - 1];
+        if (maybeOutput && /\.(jpe?g|tiff?|heic)$/i.test(maybeOutput)) writtenTargets.add(maybeOutput);
+      }
       callback?.(null, '', '');
       return {} as any;
     });
@@ -492,6 +521,22 @@ describe('importFiles', () => {
     );
   });
 
+  it('uses direct copy for scanned USB card sources without backup or checksum work', async () => {
+    const result = await importFiles([
+      makeFile({ sourceModifiedAtMs: 1000 }),
+    ], makeConfig({ sourceProfile: 'usb' }), onProgress);
+
+    expect(result.imported).toBe(1);
+    expect(result.errors).toHaveLength(0);
+    expect(mockCopyFile).toHaveBeenCalledWith(
+      '/src/IMG_001.jpg',
+      expect.stringContaining('IMG_001.jpg'),
+      expect.any(Number),
+    );
+    expect(String(mockCopyFile.mock.calls[0]?.[1])).not.toContain('.keptra-');
+    expect(mockRename).not.toHaveBeenCalled();
+  });
+
   it('dry-run records planned ledger items without writing files', async () => {
     mockStat.mockRejectedValue(Object.assign(new Error('missing'), { code: 'ENOENT' }));
 
@@ -510,10 +555,6 @@ describe('importFiles', () => {
       makeFile({ path: '/src/a.jpg', name: 'a.jpg', size: 1000, destPath: '2024/a.jpg' }),
       makeFile({ path: '/src/b.jpg', name: 'b.jpg', size: 2000, destPath: '2024/b.jpg' }),
     ];
-    mockStat.mockImplementation(async (p) => {
-      if (String(p).includes('a.jpg')) return { size: 1000 } as any;
-      return { size: 2000 } as any;
-    });
 
     const result = await importFiles(files, makeConfig(), onProgress);
 
@@ -881,6 +922,40 @@ describe('importFiles', () => {
     expect(new Set(copyTargets).size).toBe(2);
   });
 
+  it('renames colliding card filenames even when an old skip setting is saved', async () => {
+    const writtenTargets = new Set<string>();
+    mockStat.mockImplementation(async (target) => {
+      const pathText = String(target);
+      if (pathText.startsWith('/src') || pathText.includes('\\src\\')) return { size: 5000 } as any;
+      if (writtenTargets.has(pathText)) return { size: 5000 } as any;
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+    });
+    mockCopyFile.mockImplementation(async (_source, target) => {
+      writtenTargets.add(String(target));
+    });
+
+    const files = [
+      makeFile({ path: '/src/card-a/IMG_0001.JPG', name: 'IMG_0001.JPG', destPath: '2026/Stage/IMG_0001.JPG' }),
+      makeFile({ path: '/src/card-b/IMG_0001.JPG', name: 'IMG_0001.JPG', destPath: '2026/Stage/IMG_0001.JPG', size: 7000 }),
+    ];
+
+    const result = await importFiles(files, makeConfig({
+      sourceProfile: 'usb',
+      conflictPolicy: 'skip',
+      skipDuplicates: false,
+    }), onProgress);
+
+    expect(result.imported).toBe(2);
+    expect(result.skipped).toBe(0);
+    expect(result.errors).toHaveLength(0);
+    const copyTargets = mockCopyFile.mock.calls.map(([, target]) => String(target)).sort();
+    expect(copyTargets).toEqual([
+      expect.stringContaining('IMG_0001 (1).JPG'),
+      expect.stringContaining('IMG_0001.JPG'),
+    ]);
+    expect(new Set(copyTargets).size).toBe(2);
+  });
+
   it('overwrite conflict policy replaces the existing destination', async () => {
     mockStat.mockResolvedValue({ size: 1234 } as any);
 
@@ -921,14 +996,16 @@ describe('importFiles', () => {
 
   it('EACCES is recorded as error and continues to next file', async () => {
     const eacces = Object.assign(new Error('permission denied'), { code: 'EACCES' });
-    mockCopyFile.mockRejectedValueOnce(eacces).mockResolvedValueOnce(undefined);
+    mockCopyFile
+      .mockRejectedValueOnce(eacces)
+      .mockImplementationOnce(async (_source, target) => {
+        writtenTargets.add(String(target));
+      });
 
     const files = [
       makeFile({ path: '/src/a.jpg', name: 'a.jpg', destPath: '2024/a.jpg' }),
       makeFile({ path: '/src/b.jpg', name: 'b.jpg', size: 3000, destPath: '2024/b.jpg' }),
     ];
-    mockStat.mockResolvedValue({ size: 3000 } as any);
-
     const result = await importFiles(files, makeConfig(), onProgress);
 
     expect(result.errors).toEqual([{ file: 'a.jpg', error: 'permission denied' }]);
@@ -979,7 +1056,11 @@ describe('importFiles', () => {
   });
 
   it('errors from one file do not affect subsequent files', async () => {
-    mockCopyFile.mockRejectedValueOnce(new Error('fail first')).mockResolvedValueOnce(undefined);
+    mockCopyFile
+      .mockRejectedValueOnce(new Error('fail first'))
+      .mockImplementationOnce(async (_source, target) => {
+        writtenTargets.add(String(target));
+      });
 
     const files = [
       makeFile({ path: '/src/a.jpg', name: 'a.jpg', destPath: '2024/a.jpg' }),
@@ -1000,7 +1081,8 @@ describe('importFiles', () => {
       makeFile({ path: '/src/b.jpg', name: 'b.jpg', destPath: '2024/b.jpg' }),
     ];
     // First call starts import; copy for first file triggers cancel
-    mockCopyFile.mockImplementation(async () => {
+    mockCopyFile.mockImplementation(async (_source, target) => {
+      writtenTargets.add(String(target));
       cancelImport();
     });
 

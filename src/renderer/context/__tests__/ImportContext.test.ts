@@ -83,7 +83,7 @@ function makeState(overrides: Record<string, unknown> = {}) {
     openFolderOnComplete: false,
     verifyChecksums: false,
     sourceProfile: 'auto' as const,
-    conflictPolicy: 'skip' as const,
+    conflictPolicy: 'rename' as const,
     conflictFolderName: '_Conflicts',
     lastSessionId: '',
     autoImport: false,
