@@ -1519,7 +1519,17 @@ export async function importFiles(
       let finalStatus: ImportLedgerItem['status'] = 'imported';
       try {
         const s = await stat(destFullPath);
-        if (s.size > 0 || saveFormat !== 'original') verified++;
+        if (saveFormat === 'original' && s.size !== file.size) {
+          errors.push({ file: `${file.name} (verify)`, error: `Primary copy size mismatch (${s.size} != ${file.size})` });
+        } else if (s.size > 0 || saveFormat !== 'original') {
+          verified++;
+        }
+        if (backupFullPath) {
+          const backupStat = await stat(backupFullPath);
+          if (saveFormat === 'original' && backupStat.size !== file.size) {
+            errors.push({ file: `${file.name} (backup verify)`, error: `Backup copy size mismatch (${backupStat.size} != ${file.size})` });
+          }
+        }
         if (config.verifyChecksums && saveFormat === 'original') {
           const [srcHash, destHash] = await Promise.all([
             sha256File(file.path),

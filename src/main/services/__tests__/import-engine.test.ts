@@ -552,14 +552,14 @@ describe('importFiles', () => {
 
   it('copies multiple files and tracks bytesTransferred', async () => {
     const files = [
-      makeFile({ path: '/src/a.jpg', name: 'a.jpg', size: 1000, destPath: '2024/a.jpg' }),
-      makeFile({ path: '/src/b.jpg', name: 'b.jpg', size: 2000, destPath: '2024/b.jpg' }),
+      makeFile({ path: '/src/a.jpg', name: 'a.jpg', destPath: '2024/a.jpg' }),
+      makeFile({ path: '/src/b.jpg', name: 'b.jpg', destPath: '2024/b.jpg' }),
     ];
 
     const result = await importFiles(files, makeConfig(), onProgress);
 
     expect(result.imported).toBe(2);
-    expect(result.totalBytes).toBe(3000);
+    expect(result.totalBytes).toBe(10000);
   });
 
   it('sends progress callbacks per batch', async () => {
@@ -844,7 +844,7 @@ describe('importFiles', () => {
     let primaryCopied = false;
     mockStat.mockImplementation(async (target) => {
       const pathText = String(target);
-      if (pathText.includes('/backup/') || pathText.includes('\\backup\\')) return { size: 1234 } as any;
+      if (pathText.includes('/backup/') || pathText.includes('\\backup\\')) return { size: 5000 } as any;
       if (primaryCopied) return { size: 5000 } as any;
       throw Object.assign(new Error('missing primary'), { code: 'ENOENT' });
     });
@@ -923,15 +923,16 @@ describe('importFiles', () => {
   });
 
   it('renames colliding card filenames even when an old skip setting is saved', async () => {
-    const writtenTargets = new Set<string>();
+    const writtenTargets = new Map<string, number>();
     mockStat.mockImplementation(async (target) => {
       const pathText = String(target);
+      if (pathText.includes('card-b')) return { size: 7000 } as any;
       if (pathText.startsWith('/src') || pathText.includes('\\src\\')) return { size: 5000 } as any;
-      if (writtenTargets.has(pathText)) return { size: 5000 } as any;
+      if (writtenTargets.has(pathText)) return { size: writtenTargets.get(pathText) } as any;
       throw Object.assign(new Error('missing'), { code: 'ENOENT' });
     });
-    mockCopyFile.mockImplementation(async (_source, target) => {
-      writtenTargets.add(String(target));
+    mockCopyFile.mockImplementation(async (source, target) => {
+      writtenTargets.set(String(target), String(source).includes('card-b') ? 7000 : 5000);
     });
 
     const files = [
@@ -957,7 +958,11 @@ describe('importFiles', () => {
   });
 
   it('overwrite conflict policy replaces the existing destination', async () => {
-    mockStat.mockResolvedValue({ size: 1234 } as any);
+    let copied = false;
+    mockStat.mockImplementation(async () => ({ size: copied ? 5000 : 1234 }) as any);
+    mockCopyFile.mockImplementation(async () => {
+      copied = true;
+    });
 
     const result = await importFiles([makeFile()], makeConfig({ conflictPolicy: 'overwrite' }), onProgress);
 
@@ -1004,7 +1009,7 @@ describe('importFiles', () => {
 
     const files = [
       makeFile({ path: '/src/a.jpg', name: 'a.jpg', destPath: '2024/a.jpg' }),
-      makeFile({ path: '/src/b.jpg', name: 'b.jpg', size: 3000, destPath: '2024/b.jpg' }),
+      makeFile({ path: '/src/b.jpg', name: 'b.jpg', destPath: '2024/b.jpg' }),
     ];
     const result = await importFiles(files, makeConfig(), onProgress);
 
