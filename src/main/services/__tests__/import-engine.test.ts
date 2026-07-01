@@ -1025,6 +1025,32 @@ describe('importFiles', () => {
     expect(mockStat).toHaveBeenCalledWith(expect.stringContaining('IMG_001.jpg'));
   });
 
+  it('marks size verification mismatches as failed ledger items', async () => {
+    mockCopyFile.mockImplementation(async (_source, target) => {
+      writtenTargets.add(String(target));
+    });
+    mockStat.mockImplementation(async (target) => {
+      const pathText = String(target);
+      if (pathText.startsWith('/src') || pathText.includes('\\src\\')) return { size: 5000, mtimeMs: 1000 } as any;
+      if (writtenTargets.has(pathText)) return { size: 1234, mtimeMs: 1000 } as any;
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+    });
+
+    const result = await importFiles([makeFile()], makeConfig(), onProgress);
+
+    expect(result.imported).toBe(1);
+    expect(result.errors).toEqual([
+      { file: 'IMG_001.jpg (verify)', error: 'Primary copy size mismatch (1234 != 5000)' },
+    ]);
+    expect(result.ledgerItems).toEqual([
+      expect.objectContaining({
+        sourcePath: '/src/IMG_001.jpg',
+        status: 'failed',
+        error: 'Primary copy size mismatch (1234 != 5000)',
+      }),
+    ]);
+  });
+
   it('file with no destPath records error', async () => {
     const file = makeFile({ destPath: undefined });
     const result = await importFiles([file], makeConfig(), onProgress);

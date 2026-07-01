@@ -1475,6 +1475,12 @@ export async function importFiles(
 
       const flags = resolveFlags(config.metadataExportFlags);
       const primarySidecarPath = await writeMetadataSidecar(destFullPath, config.metadata, flags, file.rating, file.pick, file);
+      const postCopyErrors: ImportError[] = [];
+      const recordPostCopyError = (suffix: string, error: string) => {
+        const issue = { file: `${file.name} (${suffix})`, error };
+        postCopyErrors.push(issue);
+        errors.push(issue);
+      };
 
       // Mirror to backup destination after primary copy succeeds. Mirror
       // failures are recorded but don't roll back the primary — the user
@@ -1492,7 +1498,7 @@ export async function importFiles(
         } catch (mirrorErr: unknown) {
           const e = mirrorErr as NodeJS.ErrnoException;
           if (e.code !== 'EEXIST') {
-            errors.push({ file: `${file.name} (backup)`, error: e.message || 'Backup copy failed' });
+            recordPostCopyError('backup', e.message || 'Backup copy failed');
           }
         }
       }
@@ -1520,14 +1526,14 @@ export async function importFiles(
       try {
         const s = await stat(destFullPath);
         if (saveFormat === 'original' && s.size !== file.size) {
-          errors.push({ file: `${file.name} (verify)`, error: `Primary copy size mismatch (${s.size} != ${file.size})` });
+          recordPostCopyError('verify', `Primary copy size mismatch (${s.size} != ${file.size})`);
         } else if (s.size > 0 || saveFormat !== 'original') {
           verified++;
         }
         if (backupFullPath) {
           const backupStat = await stat(backupFullPath);
           if (saveFormat === 'original' && backupStat.size !== file.size) {
-            errors.push({ file: `${file.name} (backup verify)`, error: `Backup copy size mismatch (${backupStat.size} != ${file.size})` });
+            recordPostCopyError('backup verify', `Backup copy size mismatch (${backupStat.size} != ${file.size})`);
           }
         }
         if (config.verifyChecksums && saveFormat === 'original') {
@@ -1536,7 +1542,7 @@ export async function importFiles(
             sha256File(destFullPath),
           ]);
           if (srcHash !== destHash) {
-            errors.push({ file: `${file.name} (checksum)`, error: 'Primary copy checksum mismatch' });
+            recordPostCopyError('checksum', 'Primary copy checksum mismatch');
           } else {
             checksumVerified++;
             finalStatus = 'verified';
@@ -1544,16 +1550,21 @@ export async function importFiles(
           if (backupFullPath) {
             const backupHash = await sha256File(backupFullPath);
             if (backupHash !== srcHash) {
-              errors.push({ file: `${file.name} (backup checksum)`, error: 'Backup copy checksum mismatch' });
+              recordPostCopyError('backup checksum', 'Backup copy checksum mismatch');
             }
           }
         }
       } catch (verifyErr: unknown) {
         const e = verifyErr as NodeJS.ErrnoException;
-        errors.push({ file: `${file.name} (verify)`, error: e.message || 'Verification failed' });
+        recordPostCopyError('verify', e.message || 'Verification failed');
       }
       bytesTransferred += file.size;
-      recordLedgerItem(file, { ...resolvedLedgerBase, status: finalStatus });
+      if (postCopyErrors.length > 0) finalStatus = 'failed';
+      recordLedgerItem(file, {
+        ...resolvedLedgerBase,
+        status: finalStatus,
+        error: postCopyErrors.map((issue) => issue.error).join('; ') || undefined,
+      });
     } catch (err: unknown) {
       await removeFileIfExists(primaryTempPath);
       const error = err as NodeJS.ErrnoException;
