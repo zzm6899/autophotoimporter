@@ -3161,9 +3161,12 @@ export function registerIpcHandlers(): void {
         try {
           await acquireFaceSemaphore(capturedGen);
         } catch (err: unknown) {
-          // Stale job (scan source changed) — return empty result silently.
+          // Stale job (scan source changed) — the file was never actually analysed.
+          // Mark it with `error` (not a bare empty result) so callers don't confuse
+          // "cancelled before running" with "ran and found zero faces" — the renderer
+          // relies on that distinction to decide whether the file is retryable.
           if ((err as Error).message === STALE_FACE_JOB) {
-            return { path: filePath, boxes: [], personBoxes: [], embeddings: [], embeddingBoxes: [], faceCount: 0, personCount: 0 };
+            return { path: filePath, boxes: [], personBoxes: [], embeddings: [], embeddingBoxes: [], faceCount: 0, personCount: 0, error: STALE_FACE_JOB };
           }
           throw err;
         }

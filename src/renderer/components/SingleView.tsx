@@ -300,7 +300,12 @@ export function SingleView({ file, files, index, total, aiPaused = false }: Sing
           const results = await window.electronAPI.analyzeFaces(file.path);
           if (cancelled) return;
           const result = results[0];
-          if (result && result.path === file.path) {
+          // An `error` result (models not ready, stale job, decode/timeout failure)
+          // means this photo was never actually analysed — don't dispatch it as a
+          // confirmed "no faces" result, or it will never be retried.
+          if (result?.error) {
+            console.warn(`[single-view] face analysis failed for ${file.path}: ${result.error}`);
+          } else if (result && result.path === file.path) {
             const faceBoxes = normalizeFaceEngineBoxes(result.boxes);
             const embeddingBoxes = normalizeFaceEngineBoxes(result.embeddingBoxes);
             const personBoxes = normalizeFaceEngineBoxes(result.personBoxes);
@@ -336,7 +341,9 @@ export function SingleView({ file, files, index, total, aiPaused = false }: Sing
           const results = await window.electronAPI.analyzeFaces(mate.path);
           if (cancelled) break;
           const result = results[0];
-          if (result && result.path === mate.path) {
+          if (result?.error) {
+            console.warn(`[single-view] face analysis failed for ${mate.path}: ${result.error}`);
+          } else if (result && result.path === mate.path) {
             const faceBoxes = normalizeFaceEngineBoxes(result.boxes);
             const embeddingBoxes = normalizeFaceEngineBoxes(result.embeddingBoxes);
             const personBoxes = normalizeFaceEngineBoxes(result.personBoxes);

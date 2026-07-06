@@ -2967,16 +2967,26 @@ export function ThumbnailGrid() {
               };
 
           const onnx = onnxArr[0]; // single-path call always returns 1 result
-          const onnxFaceBoxes = normalizeFaceEngineBoxes(onnx?.boxes);
-          const onnxEmbeddingBoxes = normalizeFaceEngineBoxes(onnx?.embeddingBoxes);
-          const onnxPersonBoxes = normalizeFaceEngineBoxes(onnx?.personBoxes);
+          // onnx.error covers: models not downloaded yet (new device first run),
+          // a stale/cancelled job from a source switch, a decode failure, or an
+          // inference timeout. None of these mean "this photo has zero faces" —
+          // treat them the same as "onnx didn't run this round" so the file
+          // stays a retry candidate instead of being locked in as "confirmed:
+          // no faces" forever.
+          if (onnx?.error) {
+            console.warn(`[review-loop] face analysis failed for ${f.path}: ${onnx.error}`);
+          }
+          const onnxOk = !!onnx && !onnx.error;
+          const onnxFaceBoxes = normalizeFaceEngineBoxes(onnxOk ? onnx.boxes : undefined);
+          const onnxEmbeddingBoxes = normalizeFaceEngineBoxes(onnxOk ? onnx.embeddingBoxes : undefined);
+          const onnxPersonBoxes = normalizeFaceEngineBoxes(onnxOk ? onnx.personBoxes : undefined);
           const mergedReasons = [
             ...(subject.subjectReasons ?? []),
             ...(onnxFaceBoxes.length > 0 ? ['onnx faces'] : []),
             ...(onnxPersonBoxes.length > 0 ? ['person detected'] : []),
           ];
 
-          const resolvedFaceBoxes = onnx
+          const resolvedFaceBoxes = onnxOk
             ? onnxFaceBoxes
             : subject.faceBoxes;
 
@@ -2996,18 +3006,18 @@ export function ThumbnailGrid() {
             patch.faceCount = subject.faceCount;
           }
           if (onnxFaceBoxes.length > 0) patch.faceDetection = 'native';
-          else if (!onnx && subject.faceDetection !== undefined) patch.faceDetection = subject.faceDetection;
-          if (onnx?.embeddings?.[0]) patch.faceEmbedding = onnx.embeddings[0];
-          if (onnx?.embeddings?.length) patch.faceEmbeddings = onnx.embeddings;
+          else if (!onnxOk && subject.faceDetection !== undefined) patch.faceDetection = subject.faceDetection;
+          if (onnxOk && onnx?.embeddings?.[0]) patch.faceEmbedding = onnx.embeddings[0];
+          if (onnxOk && onnx?.embeddings?.length) patch.faceEmbeddings = onnx.embeddings;
           if (onnxEmbeddingBoxes.length > 0) patch.faceEmbeddingBoxes = onnxEmbeddingBoxes;
-          if (onnx) {
+          if (onnxOk) {
             patch.personCount = onnxPersonBoxes.length;
             patch.personBoxes = onnxPersonBoxes;
           } else {
             if (f.personCount !== undefined) patch.personCount = f.personCount;
             if (f.personBoxes !== undefined) patch.personBoxes = f.personBoxes;
           }
-          if (onnx?.poses?.length) patch.poses = onnx.poses;
+          if (onnxOk && onnx?.poses?.length) patch.poses = onnx.poses;
           else if (f.poses !== undefined) patch.poses = f.poses;
           patch.subjectReasons = [...new Set(mergedReasons)];
           if (reviewGeneration === reviewGenerationRef.current) {
@@ -3380,6 +3390,14 @@ export function ThumbnailGrid() {
           const results = await window.electronAPI.analyzeFaces(f.path);
           const result = results[0];
           if (!result) return;
+          // A per-file `error` (models not ready, stale job, decode/timeout failure)
+          // means this photo was never actually analysed — skip the dispatch so
+          // faceBoxes stays undefined and the file remains a retry candidate for
+          // the main review loop, instead of being locked in as "confirmed: no faces".
+          if (result.error) {
+            console.warn(`[panel-scan] face analysis failed for ${f.path}: ${result.error}`);
+            return;
+          }
           const faceBoxes = normalizeFaceEngineBoxes(result.boxes);
           const embeddingBoxes = normalizeFaceEngineBoxes(result.embeddingBoxes);
           const personBoxes = normalizeFaceEngineBoxes(result.personBoxes);
