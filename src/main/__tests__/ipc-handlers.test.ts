@@ -25,6 +25,10 @@ vi.mock('electron', () => ({
     checkForUpdates: vi.fn(),
     quitAndInstall: vi.fn(),
   },
+  protocol: {
+    handle: vi.fn(),
+    registerSchemesAsPrivileged: vi.fn(),
+  },
 }));
 
 vi.mock('node:fs/promises', () => ({
@@ -58,6 +62,11 @@ vi.mock('../services/duplicate-detector', () => ({
 
 vi.mock('../services/exif-parser', () => ({
   generatePreview: vi.fn(),
+  generatePreviewPayload: vi.fn(),
+  getThumbnailPayload: vi.fn(async () => undefined),
+  isSharpAvailable: vi.fn(() => false),
+  peekPreviewFile: vi.fn(async () => undefined),
+  getRawPreviewQualitySetting: vi.fn(() => 70),
   setRawPreviewQuality: vi.fn(),
   setRawPreviewCache: vi.fn(),
   getRawPreviewCacheDiagnostics: vi.fn(() => ({
@@ -119,7 +128,7 @@ import { registerIpcHandlers } from '../ipc-handlers';
 import { importFiles } from '../services/import-engine';
 import { scanFiles } from '../services/file-scanner';
 import { isDuplicate } from '../services/duplicate-detector';
-import { generatePreview, setRawPreviewCache, setRawPreviewQuality } from '../services/exif-parser';
+import { generatePreview, generatePreviewPayload, setRawPreviewCache, setRawPreviewQuality } from '../services/exif-parser';
 import { checkForUpdate, fetchUpdateHistory, readLastKnownGoodUpdateMetadata } from '../services/update-checker';
 import { readFile, writeFile, chmod } from 'node:fs/promises';
 
@@ -127,6 +136,7 @@ const mockImportFiles = vi.mocked(importFiles);
 const mockScanFiles = vi.mocked(scanFiles);
 const mockIsDuplicate = vi.mocked(isDuplicate);
 const mockGeneratePreview = vi.mocked(generatePreview);
+const mockGeneratePreviewPayload = vi.mocked(generatePreviewPayload);
 const mockSetRawPreviewCache = vi.mocked(setRawPreviewCache);
 const mockSetRawPreviewQuality = vi.mocked(setRawPreviewQuality);
 const mockReadFile = vi.mocked(readFile);
@@ -474,17 +484,21 @@ describe('IPC Handlers', () => {
         const ready = waiters.splice(0);
         for (const resolve of ready) resolve();
       };
-      mockGeneratePreview.mockImplementation((async (filePath: string, variant?: string) => {
+      mockGeneratePreviewPayload.mockImplementation((async (filePath: string, variant?: string) => {
         active++;
         maxActive = Math.max(maxActive, active);
-        return await new Promise<string>((resolve) => {
+        return await new Promise<{ kind: 'buffer'; buffer: Buffer; persisted: boolean }>((resolve) => {
           releases.push(() => {
             active--;
-            resolve(`preview:${variant ?? 'preview'}:${filePath}`);
+            resolve({
+              kind: 'buffer',
+              buffer: Buffer.from(`preview:${variant ?? 'preview'}:${filePath}`),
+              persisted: false,
+            });
           });
           notify();
         });
-      }) as typeof mockGeneratePreview);
+      }) as typeof mockGeneratePreviewPayload);
       return {
         releases,
         maxActive: () => maxActive,

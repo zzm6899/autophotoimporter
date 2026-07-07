@@ -16,7 +16,7 @@ import { ShortcutsOverlay } from './ShortcutsOverlay';
 import { BestOfSelectionPanel, rankBestOfSelection } from './BestOfSelectionPanel';
 import { REVIEW_COMMAND_EVENT } from './CommandPalette';
 import { ActionButton, ToolbarGroup } from './ui';
-import { getCachedPreview, getPreviewCacheStats, setBackgroundPreviewPaused, warmPreviews } from '../utils/previewCache';
+import { applyCanvasSafeCrossOrigin, getCachedPreview, getPreviewCacheStats, setBackgroundPreviewPaused, warmPreviews } from '../utils/previewCache';
 import { getSourceFolderLabel, isPathInsideSourceRoot } from '../utils/sourcePath';
 import { clampStops, getEffectiveExposureStops, getNormalizedExposureStops, normalizeExposureStops } from '../../shared/exposure';
 import { buildFaceIdentityGroups, cosineSimilarity, deserializeEmbedding, FACE_GROUP_EMBEDDING_THRESHOLD, faceSignalConfidence, focusQuality, humanMomentQuality, isUsablyFocused, type FaceIdentityGroup } from '../../shared/review';
@@ -743,6 +743,7 @@ function canvasToPreviewUrl(canvas: HTMLCanvasElement, quality: number): Promise
 
 async function buildFaceCropImage(source: string, box: MediaFaceBox | undefined, size = 360): Promise<string> {
   const img = new Image();
+  applyCanvasSafeCrossOrigin(img, source);
   img.decoding = 'async';
   const loaded = new Promise<void>((resolve, reject) => {
     img.onload = () => resolve();
@@ -1444,6 +1445,7 @@ function detectSubjectBoxes(
 
 async function scoreSharpness(src: string): Promise<number> {
   const img = new Image();
+  applyCanvasSafeCrossOrigin(img, src);
   img.decoding = 'async';
   const loaded = new Promise<void>((resolve, reject) => {
     img.onload = () => resolve();
@@ -1545,6 +1547,7 @@ type ThumbnailSignals = {
 
 function loadReviewImage(src: string): Promise<HTMLImageElement> {
   const img = new Image();
+  applyCanvasSafeCrossOrigin(img, src);
   img.decoding = 'async';
   const loaded = new Promise<HTMLImageElement>((resolve, reject) => {
     img.onload = () => resolve(img);
@@ -1890,6 +1893,7 @@ async function analyzeSubject(src: string): Promise<{
   subjectReasons: string[];
 }> {
   const img = new Image();
+  applyCanvasSafeCrossOrigin(img, src);
   img.decoding = 'async';
   const loaded = new Promise<void>((resolve, reject) => {
     img.onload = () => resolve();
@@ -1942,6 +1946,7 @@ async function analyzeSubject(src: string): Promise<{
 
 async function visualHash(src: string): Promise<string> {
   const img = new Image();
+  applyCanvasSafeCrossOrigin(img, src);
   img.decoding = 'async';
   const loaded = new Promise<void>((resolve, reject) => {
     img.onload = () => resolve();

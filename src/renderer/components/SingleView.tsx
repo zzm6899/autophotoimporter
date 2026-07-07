@@ -21,7 +21,7 @@ import {
 } from '../../shared/exposure';
 import { bestShotScore } from '../../shared/review';
 import { Histogram } from './Histogram';
-import { decodeImage, getCachedPreview } from '../utils/previewCache';
+import { applyCanvasSafeCrossOrigin, decodeImage, getCachedPreview } from '../utils/previewCache';
 import { buildAiReasons } from '../utils/aiReasons';
 import { getSourceFolderLabel } from '../utils/sourcePath';
 
@@ -531,6 +531,7 @@ export function SingleView({ file, files, index, total, aiPaused = false }: Sing
     let cancelled = false;
     const timer = window.setTimeout(() => {
       const img = new Image();
+      applyCanvasSafeCrossOrigin(img, imageSrc);
       img.decoding = 'async';
       img.onload = () => {
         if (cancelled) return;

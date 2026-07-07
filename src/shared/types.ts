@@ -49,7 +49,7 @@ export interface MediaFile {
   destPath?: string;
   photographerCode?: string;
   photographerName?: string;
-  thumbnail?: string; // base64 data URI
+  thumbnail?: string; // keptra-preview:// URL (or base64 data URI fallback)
   duplicate?: boolean;
   duplicateMemory?: {
     kind: 'previous-import' | 'previous-reject' | 'same-visual';
@@ -1365,6 +1365,10 @@ export function resolvePattern(
     .replace(/\{photographerCode\}/g, photographerCode)
     .replace(/\{photographerName\}/g, photographerName);
 }
+
+// Custom Electron protocol scheme that streams preview JPEGs from the main
+// process disk cache to the renderer (replaces base64 data URIs over IPC).
+export const PREVIEW_PROTOCOL_SCHEME = 'keptra-preview';
 
 export const IPC = {
   // Volumes

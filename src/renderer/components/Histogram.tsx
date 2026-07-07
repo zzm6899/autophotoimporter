@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { applyCanvasSafeCrossOrigin } from '../utils/previewCache';
 
 interface HistogramProps {
   src?: string;
@@ -25,6 +26,7 @@ export function Histogram({ src, filter }: HistogramProps) {
     const run = () => {
       if (cancelled) return;
       const img = new Image();
+      applyCanvasSafeCrossOrigin(img, src);
       img.decoding = 'async';
       img.onload = () => {
         if (cancelled) return;

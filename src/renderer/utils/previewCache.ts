@@ -1,4 +1,14 @@
+import { PREVIEW_PROTOCOL_SCHEME } from '../../shared/types';
+
 type PreviewVariant = 'preview' | 'detail';
+
+// Marks an image element safe for canvas readback when its source is served
+// by the preview protocol (which responds with Access-Control-Allow-Origin).
+// Without this, drawing a protocol-served image taints the canvas and
+// getImageData/toBlob throw.
+export function applyCanvasSafeCrossOrigin(img: HTMLImageElement, src: string): void {
+  if (src.startsWith(`${PREVIEW_PROTOCOL_SCHEME}:`)) img.crossOrigin = 'anonymous';
+}
 type PreviewPriority = 'high' | 'normal' | 'low';
 
 const previewCache = new Map<string, string | undefined>();
@@ -208,11 +218,14 @@ export function getCachedPreview(
     key,
     () => { entry.canceled = true; },
   )
-    .then((preview) => {
-      if (preview !== undefined) {
-        rememberPreview(filePath, variant, preview);
+    .then((response) => {
+      // Main returns { src } (protocol URL, or data URI when the RAW preview
+      // cache is disabled). Plain strings are tolerated for older callers.
+      const src = typeof response === 'string' ? response : response?.src;
+      if (src !== undefined) {
+        rememberPreview(filePath, variant, src);
       }
-      return preview;
+      return src;
     })
     .finally(() => {
       if (previewInflight.get(key)?.id === id) {
@@ -228,6 +241,7 @@ export async function decodeImage(src: string): Promise<void> {
   const cacheKey = src.length > 512 ? `${src.slice(0, 64)}:${src.length}` : src;
   if (decodedCache.has(cacheKey)) return;
   const img = new Image();
+  applyCanvasSafeCrossOrigin(img, src);
   img.decoding = 'async';
   img.src = src;
   if (typeof img.decode === 'function') {

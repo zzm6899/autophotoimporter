@@ -1,7 +1,8 @@
 import { copyFile, mkdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import path from 'node:path';
-import { constants, createReadStream } from 'node:fs';
+import { constants, createReadStream, createWriteStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
 import { createHash } from 'node:crypto';
 import { Client } from 'basic-ftp';
 import type { MediaFile, ImportConfig, ImportProgress, ImportResult, ImportError, SaveFormat, BatchMetadata, WatermarkConfig, WatermarkPosition, MetadataExportFlags, ImportLedgerItem, ImportPreflight, ImportPlanItem, ImportConflictPolicy } from '../../shared/types';
@@ -9,6 +10,7 @@ import { DEFAULT_METADATA_EXPORT } from '../../shared/types';
 import { isDuplicate } from './duplicate-detector';
 import { stopsToSafeMultiplier, getEffectiveExposureStops, hasWhiteBalanceAdjustment, whiteBalanceMultipliers } from '../../shared/exposure';
 import { JobController } from './job-controller';
+import { getSharpModule, isSharpAvailable } from './sharp-loader';
 
 function execFileAsync(
   file: string,
@@ -33,6 +35,9 @@ const USB_CARD_COPY_CONCURRENCY = 8;
 const SSD_COPY_CONCURRENCY = 12;
 const MIRRORED_COPY_CONCURRENCY = 3;
 const HEAVY_IMPORT_CONCURRENCY = 2;
+// sharp converts in-process on libvips worker threads (no process spawn), so
+// converted imports can run wider without flooding the system with spawns.
+const SHARP_IMPORT_CONCURRENCY = 4;
 const SOURCE_MTIME_TOLERANCE_MS = 1;
 
 type SourceSnapshot = {
@@ -287,7 +292,9 @@ function hasRenderableWatermark(watermark?: WatermarkConfig): boolean {
 }
 
 function resolveImportConcurrency(config: ImportConfig): number {
-  if (config.saveFormat !== 'original') return HEAVY_IMPORT_CONCURRENCY;
+  if (config.saveFormat !== 'original') {
+    return isSharpAvailable() ? SHARP_IMPORT_CONCURRENCY : HEAVY_IMPORT_CONCURRENCY;
+  }
   if (config.verifyChecksums || !!config.backupDestRoot || !!config.ftpDestEnabled) {
     return MIRRORED_COPY_CONCURRENCY;
   }
@@ -333,6 +340,24 @@ function rotateFlipType(orientation?: number): string | null {
     case 8: return 'Rotate270FlipNone';
     default: return null;
   }
+}
+
+// Copy while computing the source SHA-256 in the same pass. Used for
+// checksum-verified imports so the source — usually the slowest device in the
+// chain (an SD card) — is read exactly once instead of twice (copy, then a
+// second full read just to hash). Cuts verified-import I/O by roughly a third.
+// The 'wx' flag mirrors COPYFILE_EXCL semantics (fails with EEXIST).
+async function copyFileWithSourceHash(
+  srcPath: string,
+  destPath: string,
+  exclusive: boolean,
+): Promise<string> {
+  const hash = createHash('sha256');
+  const src = createReadStream(srcPath);
+  src.on('data', (chunk) => hash.update(chunk as Buffer));
+  const dest = createWriteStream(destPath, { flags: exclusive ? 'wx' : 'w' });
+  await pipeline(src, dest);
+  return hash.digest('hex');
 }
 
 async function sha256File(filePath: string): Promise<string> {
@@ -1144,6 +1169,173 @@ async function convertWithImageMagick(
   };
 }
 
+// One-time probe: SVG text rendering needs fontconfig to find system fonts.
+// If unavailable (e.g. stripped-down Linux), text watermarks fall back to the
+// platform tools rather than silently rendering nothing.
+let sharpTextProbe: Promise<boolean> | null = null;
+function sharpCanRenderText(sharpFn: NonNullable<ReturnType<typeof getSharpModule>>): Promise<boolean> {
+  if (!sharpTextProbe) {
+    sharpTextProbe = (async () => {
+      try {
+        const svg = Buffer.from(
+          '<svg width="64" height="32" xmlns="http://www.w3.org/2000/svg">'
+          + '<rect width="64" height="32" fill="black"/>'
+          + '<text x="4" y="24" font-family="Arial, sans-serif" font-weight="bold" font-size="24" fill="white">Xg</text></svg>',
+        );
+        const { data, info } = await sharpFn(svg).raw().toBuffer({ resolveWithObject: true });
+        for (let i = 0; i < data.length; i += info.channels) {
+          if (data[i] > 64) return true;
+        }
+        return false;
+      } catch {
+        return false;
+      }
+    })();
+  }
+  return sharpTextProbe;
+}
+
+function watermarkTextSvg(
+  width: number,
+  height: number,
+  text: string,
+  pointSize: number,
+  opacity: number,
+  shadowOpacity: number,
+  gravity: string,
+): string {
+  const margin = Math.max(12, Math.round(pointSize * 0.7));
+  let anchor = 'end';
+  let x = width - margin;
+  let y = height - margin;
+  switch (gravity) {
+    case 'southwest': anchor = 'start'; x = margin; y = height - margin; break;
+    case 'northeast': anchor = 'end'; x = width - margin; y = margin + Math.round(pointSize * 0.8); break;
+    case 'northwest': anchor = 'start'; x = margin; y = margin + Math.round(pointSize * 0.8); break;
+    case 'center': anchor = 'middle'; x = Math.round(width / 2); y = Math.round(height / 2 + pointSize * 0.35); break;
+    default: break; // southeast
+  }
+  const t = escapeXml(text);
+  const font = `text-anchor="${anchor}" font-family="Arial, sans-serif" font-weight="bold" font-size="${pointSize}"`;
+  return `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">`
+    + `<text x="${x + 2}" y="${y + 2}" ${font} fill="rgba(0,0,0,${shadowOpacity.toFixed(3)})">${t}</text>`
+    + `<text x="${x}" y="${y}" ${font} fill="rgba(255,255,255,${opacity.toFixed(3)})">${t}</text>`
+    + '</svg>';
+}
+
+function overlayPosition(
+  gravity: string,
+  baseW: number,
+  baseH: number,
+  wmW: number,
+  wmH: number,
+  margin: number,
+): { left: number; top: number } {
+  switch (gravity) {
+    case 'southwest': return { left: margin, top: baseH - wmH - margin };
+    case 'northeast': return { left: baseW - wmW - margin, top: margin };
+    case 'northwest': return { left: margin, top: margin };
+    case 'center': return { left: Math.round((baseW - wmW) / 2), top: Math.round((baseH - wmH) / 2) };
+    default: return { left: baseW - wmW - margin, top: baseH - wmH - margin };
+  }
+}
+
+// In-process libvips conversion: format/quality, exposure + white balance via
+// per-channel linear multipliers (same encoded-domain semantics as the GDI+
+// ColorMatrix and ImageMagick -evaluate Multiply paths), EXIF-orientation
+// baking, and image/text watermarks. Throws for anything it can't do
+// faithfully (HEIC output, RAW input, missing fonts) so the caller falls back
+// to the platform tools.
+async function convertWithSharp(
+  srcPath: string,
+  destFullPath: string,
+  format: Exclude<SaveFormat, 'original'>,
+  jpegQuality: number,
+  brightness: number,
+  whiteBalance: ImportConfig['whiteBalance'] | undefined,
+  orientation: number | undefined,
+  watermark: WatermarkConfig | undefined,
+  autoStraighten: boolean,
+): Promise<ConvertResult> {
+  const sharpFn = getSharpModule();
+  if (!sharpFn) throw new Error('sharp unavailable');
+  if (format === 'heic') throw new Error('sharp path does not encode HEIC');
+
+  const wb = whiteBalanceMultipliers(whiteBalance);
+  const whiteBalanced = hasWhiteBalanceAdjustment(whiteBalance);
+  const red = brightness * wb.red;
+  const green = brightness * wb.green;
+  const blue = brightness * wb.blue;
+  const needsMatrix = [red, green, blue].some((v) => Math.abs(v - 1) > 0.001);
+  const hasWatermark = hasRenderableWatermark(watermark);
+
+  if (hasWatermark && watermark?.mode !== 'image' && !(await sharpCanRenderText(sharpFn))) {
+    throw new Error('sharp SVG text rendering unavailable');
+  }
+
+  const meta = await sharpFn(srcPath, { failOn: 'none' }).metadata();
+  if (!meta.width || !meta.height) throw new Error('unreadable image dimensions');
+  const exifOrientation = meta.orientation ?? orientation ?? 1;
+  // Windows GDI+ always baked EXIF rotation into converted output; mirror
+  // that. Elsewhere only when auto-straighten is on (ImageMagick parity).
+  const shouldStraighten = (autoStraighten || process.platform === 'win32') && exifOrientation > 1;
+  const swapAxes = shouldStraighten && exifOrientation >= 5;
+  const outWidth = swapAxes ? meta.height : meta.width;
+  const outHeight = swapAxes ? meta.width : meta.height;
+
+  let pipeline = sharpFn(srcPath, { failOn: 'none' });
+  if (shouldStraighten) pipeline = pipeline.rotate();
+  if (needsMatrix) pipeline = pipeline.linear([red, green, blue], [0, 0, 0]);
+
+  if (hasWatermark && watermark) {
+    const gravity = watermarkGravity(watermarkPositionForOrientation(watermark, orientation));
+    const opacity = Math.max(0.05, Math.min(1, watermark.opacity ?? 0.3));
+    if (watermark.mode === 'image' && watermark.imagePath?.trim()) {
+      const targetWidth = Math.max(48, Math.round(outWidth * (watermarkImageScalePercent(watermark.scale) / 100)));
+      const { data, info } = await sharpFn(watermark.imagePath)
+        .resize({ width: targetWidth })
+        .ensureAlpha()
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+      // Multiply the existing alpha channel by the configured opacity —
+      // preserves the logo's own transparency like the GDI+ ColorMatrix path.
+      for (let i = 3; i < data.length; i += info.channels) {
+        data[i] = Math.round(data[i] * opacity);
+      }
+      const overlay = await sharpFn(data, { raw: { width: info.width, height: info.height, channels: 4 } })
+        .png()
+        .toBuffer();
+      const { left, top } = overlayPosition(gravity, outWidth, outHeight, info.width, info.height, 24);
+      pipeline = pipeline.composite([{ input: overlay, left: Math.max(0, left), top: Math.max(0, top) }]);
+    } else if (watermark.text?.trim()) {
+      const shadowOpacity = Math.max(0.05, Math.min(0.6, (watermark.opacity ?? 0.3) * 0.6));
+      const svg = watermarkTextSvg(
+        outWidth,
+        outHeight,
+        watermark.text,
+        watermarkPointSize(watermark.scale),
+        opacity,
+        shadowOpacity,
+        gravity,
+      );
+      pipeline = pipeline.composite([{ input: Buffer.from(svg), left: 0, top: 0 }]);
+    }
+  }
+
+  // Preserve EXIF/ICC like the platform encoders do. After .rotate(), sharp
+  // resets the orientation tag so straightened output displays correctly.
+  pipeline = pipeline.withMetadata();
+  pipeline = format === 'jpeg' ? pipeline.jpeg({ quality: jpegQuality }) : pipeline.tiff();
+  await pipeline.toFile(destFullPath);
+
+  return {
+    normalized: Math.abs(brightness - 1) > 0.001,
+    watermarked: hasWatermark,
+    straightened: shouldStraighten,
+    whiteBalanced,
+  };
+}
+
 async function convertAndCopy(
   srcPath: string,
   destFullPath: string,
@@ -1155,6 +1347,16 @@ async function convertAndCopy(
   watermark?: WatermarkConfig,
   autoStraighten = false,
 ): Promise<ConvertResult> {
+  // Fast path: in-process libvips conversion (no PowerShell/ImageMagick
+  // spawn), several times faster and off the event loop. Falls back to the
+  // platform tools for HEIC output, camera-RAW input, or missing fonts.
+  if (format !== 'heic' && getSharpModule()) {
+    try {
+      return await convertWithSharp(srcPath, destFullPath, format, jpegQuality, brightness, whiteBalance, orientation, watermark, !!autoStraighten);
+    } catch {
+      // fall through to the platform-specific paths below
+    }
+  }
   const needsBrightness = Math.abs(brightness - 1) > 0.001;
   const wantsWhiteBalance = hasWhiteBalanceAdjustment(whiteBalance);
   const wantsWatermark = hasRenderableWatermark(watermark);
@@ -1402,13 +1604,24 @@ export async function importFiles(
     }
 
     let primaryTempPath: string | null = null;
+    let sourceHashFromCopy: string | null = null;
     try {
       await ensureDir(path.dirname(destFullPath));
       primaryTempPath = sourceBeforeCopy ? tempOutputPath(destFullPath) : null;
       const primaryWritePath = primaryTempPath ?? destFullPath;
 
       if (saveFormat === 'original') {
-        await copyFile(file.path, primaryWritePath, primaryTempPath ? constants.COPYFILE_EXCL : copyMode);
+        if (config.verifyChecksums) {
+          // Streamed copy hashing the source inline — avoids a second full
+          // read of the source during the checksum verification step below.
+          sourceHashFromCopy = await copyFileWithSourceHash(
+            file.path,
+            primaryWritePath,
+            primaryTempPath ? true : copyMode !== undefined,
+          );
+        } else {
+          await copyFile(file.path, primaryWritePath, primaryTempPath ? constants.COPYFILE_EXCL : copyMode);
+        }
       } else {
         const brightness = brightnessFor(file);
         const whiteBalance = whiteBalanceFor(file);
@@ -1538,7 +1751,7 @@ export async function importFiles(
         }
         if (config.verifyChecksums && saveFormat === 'original') {
           const [srcHash, destHash] = await Promise.all([
-            sha256File(file.path),
+            sourceHashFromCopy ?? sha256File(file.path),
             sha256File(destFullPath),
           ]);
           if (srcHash !== destHash) {

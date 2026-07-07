@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.5.0 - 2026-07-07
+
+### Performance overhaul — previews, culling, import, and export
+
+### Added
+- **sharp (libvips) image engine.** Previews, thumbnails, and format conversions now run in-process on worker threads instead of spawning PowerShell/sips/ImageMagick per file (~4x faster than ImageMagick, far more vs PowerShell spawn overhead, and no longer blocking the main-process event loop). Loads lazily with automatic fallback to the previous platform tools when unavailable (foreign-arch builds, HEIC output, camera-RAW input).
+- **`keptra-preview://` protocol.** Grid thumbnails and loupe/detail previews stream from the main-process disk/memory cache straight into `<img>` tags. No more base64 payloads over IPC (+33% size, structured-clone stalls) and no more multi-hundred-MB preview strings in renderer memory on 10k+ file scans. Canvas consumers (histogram, clipping, face crops, sharpness analysis) load protocol images with `crossOrigin="anonymous"` against ACAO-enabled responses so readback never taints.
+- **Video grid thumbnails via system ffmpeg.** When ffmpeg is on PATH, videos get a real frame in the grid (t=1s, falling back to t=0 for short clips); without it they keep the placeholder as before. Keptra still ships no ffmpeg.
+
+### Changed
+- **Checksum-verified imports read the source card once, not twice.** The copy stream hashes the source inline; only the destination is re-read for verification. Roughly a third less I/O per verified import.
+- **Sharp-powered converted imports.** JPEG/TIFF exports with exposure normalization, white balance, watermarks (image and SVG-text with a one-time font probe), and EXIF-orientation baking — pixel-parity multipliers with the old GDI+/ImageMagick paths, with EXIF/ICC preserved. Converted-import concurrency 2 → 4 when sharp is active.
+- Detail-preview lane 1 → 2 concurrent when sharp is active; scanner slow-lane thumbnails 4 → 10 wide.
+- Directory walk stats files in batches of 16 instead of one at a time.
+- Embedded RAW previews are persisted to the disk cache (previously re-extracted from the RAW on every request); cached previews are served without occupying a generation slot.
+- Contact sheet preview hydration runs 6-wide (was fully sequential for up to 500 files).
+
+### Verified
+- `npm run typecheck` — clean
+- `npm test` — 510 passed, 11 skipped (36 files)
+- sharp conversion parity validated pixel-exact on synthetic images (per-channel multipliers, EXIF rotation baking, watermark compositing, metadata preservation)
+
 ## 1.4.60 - 2026-06-25
 
 ### Repo health
