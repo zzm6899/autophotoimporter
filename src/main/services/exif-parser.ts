@@ -7,10 +7,55 @@ import { app, nativeImage } from 'electron';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import type { MediaFile } from '../../shared/types';
-import { detectPhotographerFromFilename, resolvePattern } from '../../shared/types';
+import { detectPhotographerFromFilename, resolvePattern, VIDEO_EXTENSIONS } from '../../shared/types';
 import { computeEV100 } from '../../shared/exposure';
 
 const execFileAsync = promisify(execFile);
+
+// Lazy-loaded sharp (libvips). Decodes and resizes on libuv worker threads
+// instead of the main process event loop, and replaces per-file process
+// spawns (sips/PowerShell/ImageMagick) which cost ~300ms–2s each on Windows.
+// Loader lives in sharp-loader so the import/export pipeline can share it.
+import { getSharpModule } from './sharp-loader';
+export { isSharpAvailable } from './sharp-loader';
+
+function getSharp() {
+  return getSharpModule();
+}
+
+// IMPORTANT: no .rotate() here — the renderer ignores embedded EXIF orientation
+// (imageOrientation: 'none') and applies rotation via CSS from file.orientation,
+// so preview pixels must stay exactly as stored in the file.
+async function sharpResizeFile(
+  srcPath: string,
+  outPath: string,
+  width: number,
+  quality: number,
+): Promise<void> {
+  const sharp = getSharp();
+  if (!sharp) throw new Error('sharp unavailable');
+  await sharp(srcPath, { failOn: 'none' })
+    .resize({ width, withoutEnlargement: true })
+    .jpeg({ quality })
+    .toFile(outPath);
+}
+
+async function sharpResizeBufferToBuffer(
+  jpeg: Buffer,
+  width: number,
+  quality: number,
+): Promise<Buffer | undefined> {
+  const sharp = getSharp();
+  if (!sharp) return undefined;
+  try {
+    return await sharp(jpeg, { failOn: 'none' })
+      .resize({ width, withoutEnlargement: true })
+      .jpeg({ quality })
+      .toBuffer();
+  } catch {
+    return undefined;
+  }
+}
 
 export const EXIFR_SUPPORTED = new Set([
   '.jpg', '.jpeg', '.heic', '.heif', '.tif', '.tiff',
@@ -69,21 +114,22 @@ const MAX_DIRECT_THUMB_BYTES = 512 * 1024;
 const MAX_DIRECT_PREVIEW_BYTES = 6 * 1024 * 1024;
 
 // In-memory thumbnail result cache — avoids re-reading RAW files across
-// repeated scans of the same source. Keyed by "path|mtime|size".
-// Max 2000 entries (~160MB at 80KB/thumb average) — evict oldest on overflow.
-const thumbMemCache = new Map<string, string>();
+// repeated scans of the same source. Keyed by "path|mtime|size". Stores raw
+// JPEG buffers (served by the preview protocol); max 2000 entries (~120MB at
+// 60KB/thumb average) — evict oldest on overflow.
+const thumbMemCache = new Map<string, Buffer>();
 const THUMB_MEM_CACHE_MAX = 2000;
 
 function thumbMemCacheKey(filePath: string, mtimeMs: number, size: number): string {
   return `${filePath}|${mtimeMs}|${size}`;
 }
 
-function thumbMemCacheSet(key: string, dataUri: string): void {
+function thumbMemCacheSet(key: string, buffer: Buffer): void {
   if (thumbMemCache.size >= THUMB_MEM_CACHE_MAX) {
     // Evict oldest entry
     thumbMemCache.delete(thumbMemCache.keys().next().value as string);
   }
-  thumbMemCache.set(key, dataUri);
+  thumbMemCache.set(key, buffer);
 }
 
 export function clearThumbnailMemCache(): void {
@@ -292,10 +338,10 @@ export async function parseExifDate(
   };
 }
 
-export async function extractEmbeddedThumbnail(
+async function extractEmbeddedThumbnailBuffer(
   filePath: string,
   extension: string,
-): Promise<string | undefined> {
+): Promise<Buffer | undefined> {
   if (!EXIFR_SUPPORTED.has(extension)) return undefined;
   try {
     // Check memory cache first — avoids re-reading the same RAW on repeated scans.
@@ -309,23 +355,39 @@ export async function extractEmbeddedThumbnail(
     const thumbData = await exifr.thumbnail(filePath);
     if (!thumbData || thumbData.byteLength === 0) return undefined;
     const buffer = Buffer.isBuffer(thumbData) ? thumbData : Buffer.from(thumbData);
-    let result: string | undefined;
+    let result: Buffer | undefined;
     if (buffer.length > MAX_DIRECT_THUMB_BYTES) {
-      // Larger than ideal for a grid thumbnail — resize in-process (no process spawn).
-      const img = nativeImage.createFromBuffer(buffer);
-      if (!img.isEmpty()) {
-        const resized = img.resize({ width: THUMB_WIDTH });
-        const small = resized.toJPEG(70);
-        result = `data:image/jpeg;base64,${small.toString('base64')}`;
-      }
+      // Larger than ideal for a grid thumbnail — resize in-process (no process
+      // spawn; sharp with a nativeImage fallback).
+      result = await resizeEmbeddedJpegToBuffer(buffer, undefined, THUMB_WIDTH, 70);
     } else {
-      result = `data:image/jpeg;base64,${buffer.toString('base64')}`;
+      result = buffer;
     }
     if (result && memKey) thumbMemCacheSet(memKey, result);
     return result;
   } catch {
     return undefined;
   }
+}
+
+export async function extractEmbeddedThumbnail(
+  filePath: string,
+  extension: string,
+): Promise<string | undefined> {
+  const buf = await extractEmbeddedThumbnailBuffer(filePath, extension);
+  return buf ? `data:image/jpeg;base64,${buf.toString('base64')}` : undefined;
+}
+
+// Ensure-style variants used by the scanner: they generate/cache the
+// thumbnail bytes but return only success — the renderer receives a
+// keptra-preview:// URL and fetches the bytes via the protocol instead of a
+// base64 payload over IPC.
+export async function ensureEmbeddedThumbnail(filePath: string, extension: string): Promise<boolean> {
+  return !!(await extractEmbeddedThumbnailBuffer(filePath, extension));
+}
+
+export async function ensureGeneratedThumbnail(filePath: string): Promise<boolean> {
+  return !!(await generateThumbnailBuffer(filePath));
 }
 
 async function sipsResize(
@@ -413,34 +475,50 @@ async function platformResize(
   quality: number,
   timeoutMs: number,
 ): Promise<void> {
+  // Fast path: in-process libvips resize (no process spawn, off the event
+  // loop). Falls through to the platform tools for formats sharp can't decode
+  // (e.g. HEIC without libheif, camera RAW).
+  if (getSharp()) {
+    try {
+      await sharpResizeFile(srcPath, outPath, width, quality);
+      return;
+    } catch {
+      // unsupported format — fall back to platform tools below
+    }
+  }
   if (process.platform === 'darwin') return sipsResize(srcPath, outPath, width, quality, timeoutMs);
   if (process.platform === 'win32') return powershellResize(srcPath, outPath, width, quality, timeoutMs);
   return linuxResize(srcPath, outPath, width, quality, timeoutMs);
 }
 
-async function readJpegDataUri(filePath: string): Promise<string> {
-  const buf = await readFile(filePath);
-  return `data:image/jpeg;base64,${buf.toString('base64')}`;
-}
-
 // Resize an already-decoded JPEG buffer in-process using Electron's nativeImage.
 // No process spawn needed — this is ~100x faster than PowerShell/sips per call.
-async function resizeEmbeddedJpegToDataUri(
+async function resizeEmbeddedJpegToBuffer(
   jpeg: Buffer,
-  outPath: string,
+  outPath: string | undefined,
   width: number,
   quality: number,
-): Promise<string | undefined> {
-  try {
-    const img = nativeImage.createFromBuffer(jpeg);
-    if (img.isEmpty()) return undefined;
-    const resized = img.resize({ width });
-    const buf = resized.toJPEG(quality);
-    await writeFile(outPath, buf).catch(() => undefined);
-    return `data:image/jpeg;base64,${buf.toString('base64')}`;
-  } catch {
-    return undefined;
+): Promise<Buffer | undefined> {
+  // Prefer sharp: runs on worker threads instead of blocking the main process
+  // event loop the way the synchronous nativeImage resize below does.
+  let buf = await sharpResizeBufferToBuffer(jpeg, width, quality);
+  if (!buf) {
+    try {
+      const img = nativeImage.createFromBuffer(jpeg);
+      if (img.isEmpty()) return undefined;
+      buf = img.resize({ width }).toJPEG(quality);
+    } catch {
+      return undefined;
+    }
   }
+  if (outPath) {
+    try {
+      await writeFile(outPath, buf);
+    } catch {
+      // best-effort cache write
+    }
+  }
+  return buf;
 }
 
 // Most RAW files (NEF, CR2, ARW, DNG, RAF, ORF, RW2...) embed one or more JPEG
@@ -540,23 +618,29 @@ function findJpegEnd(buf: Buffer, start: number): number {
   return -1;
 }
 
-async function embeddedFallback(
+async function embeddedFallbackBuffer(
   filePath: string,
   extension: string,
   width: number,
   quality: number,
-  outPath?: string,
-): Promise<string | undefined> {
+  persistPath?: string,
+): Promise<Buffer | undefined> {
   if (!EXIFR_SUPPORTED.has(extension)) return undefined;
 
   try {
     const big = await extractLargestEmbeddedJpeg(filePath);
     if (big && big.length > 32 * 1024) {
-      if (outPath && big.length > MAX_DIRECT_PREVIEW_BYTES) {
-        const resized = await resizeEmbeddedJpegToDataUri(big, outPath, width, quality);
+      if (big.length > MAX_DIRECT_PREVIEW_BYTES) {
+        const resized = await resizeEmbeddedJpegToBuffer(big, persistPath, width, quality);
         if (resized) return resized;
       }
-      return `data:image/jpeg;base64,${big.toString('base64')}`;
+      // Copy out of the (up to 12MB) scan buffer so it can be GC'd, and
+      // persist so the preview protocol can serve future requests from disk.
+      const buf = Buffer.from(big);
+      if (persistPath) {
+        try { await writeFile(persistPath, buf); } catch { /* best-effort */ }
+      }
+      return buf;
     }
   } catch {
     // fall through
@@ -565,8 +649,11 @@ async function embeddedFallback(
   try {
     const thumbData = await exifr.thumbnail(filePath);
     if (!thumbData || thumbData.byteLength === 0) return undefined;
-    const buffer = Buffer.isBuffer(thumbData) ? thumbData : Buffer.from(thumbData);
-    return `data:image/jpeg;base64,${buffer.toString('base64')}`;
+    const buffer = Buffer.from(thumbData);
+    if (persistPath) {
+      try { await writeFile(persistPath, buffer); } catch { /* best-effort */ }
+    }
+    return buffer;
   } catch {
     return undefined;
   }
@@ -583,7 +670,7 @@ async function embeddedFallbackForThumbnail(
   filePath: string,
   extension: string,
   outPath?: string,
-): Promise<string | undefined> {
+): Promise<Buffer | undefined> {
   if (!EXIFR_SUPPORTED.has(extension)) return undefined;
 
   // Check memory cache first.
@@ -599,11 +686,11 @@ async function embeddedFallbackForThumbnail(
     const thumbData = await exifr.thumbnail(filePath);
     if (thumbData && thumbData.byteLength > 0) {
       const buffer = Buffer.isBuffer(thumbData) ? thumbData : Buffer.from(thumbData);
-      let result: string | undefined;
+      let result: Buffer | undefined;
       if (outPath && buffer.length > MAX_DIRECT_THUMB_BYTES) {
-        result = await resizeEmbeddedJpegToDataUri(buffer, outPath, THUMB_WIDTH, 60);
+        result = await resizeEmbeddedJpegToBuffer(buffer, outPath, THUMB_WIDTH, 60);
       }
-      if (!result) result = `data:image/jpeg;base64,${buffer.toString('base64')}`;
+      if (!result) result = buffer;
       // Accept any size — even a small IFD1 thumb is instantly usable in the grid.
       if (memKey) thumbMemCacheSet(memKey, result);
       return result;
@@ -619,10 +706,10 @@ async function embeddedFallbackForThumbnail(
     const big = await extractLargestEmbeddedJpeg(filePath);
     if (big && big.length > 32 * 1024) {
       const resized = outPath
-        ? await resizeEmbeddedJpegToDataUri(big, outPath, THUMB_WIDTH, 60)
+        ? await resizeEmbeddedJpegToBuffer(big, outPath, THUMB_WIDTH, 60)
         : undefined;
       const result = resized
-        ?? (big.length <= MAX_DIRECT_THUMB_BYTES ? `data:image/jpeg;base64,${big.toString('base64')}` : undefined);
+        ?? (big.length <= MAX_DIRECT_THUMB_BYTES ? Buffer.from(big) : undefined);
       if (result && memKey) thumbMemCacheSet(memKey, result);
       return result;
     }
@@ -660,29 +747,64 @@ async function previewCacheKeyFor(
     .slice(0, 16);
 }
 
-const inflightPreviews = new Map<string, Promise<string | undefined>>();
+export type PreviewPayload =
+  | { kind: 'file'; diskPath: string }
+  | { kind: 'buffer'; buffer: Buffer; persisted: boolean };
 
-export async function generatePreview(
+const inflightPreviews = new Map<string, Promise<PreviewPayload | undefined>>();
+
+export function getRawPreviewQualitySetting(): number {
+  return rawPreviewQuality;
+}
+
+function previewVariantParams(variant: 'preview' | 'detail'): { width: number; quality: number; suffix: string } {
+  return {
+    width: variant === 'detail' ? DETAIL_PREVIEW_WIDTH : PREVIEW_WIDTH,
+    quality: variant === 'detail' ? DETAIL_PREVIEW_QUALITY : rawPreviewQuality,
+    suffix: variant === 'detail' ? 'detail' : 'preview',
+  };
+}
+
+// Returns the on-disk cache path for a preview if (and only if) it has
+// already been generated. Lets the preview protocol and the SCAN_PREVIEW
+// fast path serve cached previews without occupying a generation slot.
+export async function peekPreviewFile(
   filePath: string,
   variant: 'preview' | 'detail' = 'preview',
 ): Promise<string | undefined> {
   const ext = path.extname(filePath).toLowerCase();
+  if (!rawPreviewCacheEnabled && RAW_EXTENSIONS.has(ext)) return undefined;
+  try {
+    const { width, quality, suffix } = previewVariantParams(variant);
+    const dir = await getThumbDir();
+    const key = await previewCacheKeyFor(filePath, variant, width, quality);
+    const outPath = path.join(dir, `${key}_${suffix}.jpg`);
+    await stat(outPath);
+    return outPath;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function generatePreviewPayload(
+  filePath: string,
+  variant: 'preview' | 'detail' = 'preview',
+): Promise<PreviewPayload | undefined> {
+  const ext = path.extname(filePath).toLowerCase();
   const isRawPreview = RAW_EXTENSIONS.has(ext);
   const cacheEnabled = rawPreviewCacheEnabled || !isRawPreview;
-  const width = variant === 'detail' ? DETAIL_PREVIEW_WIDTH : PREVIEW_WIDTH;
-  const quality = variant === 'detail' ? DETAIL_PREVIEW_QUALITY : rawPreviewQuality;
+  const { width, quality, suffix } = previewVariantParams(variant);
   const inflightKey = `${filePath}|${variant}|q${quality}|${cacheEnabled ? 'cache' : 'nocache'}`;
   const existing = inflightPreviews.get(inflightKey);
   if (existing) return existing;
 
-  const promise = (async () => {
+  const promise = (async (): Promise<PreviewPayload | undefined> => {
     let outPath: string | null = null;
     try {
       const dir = await getThumbDir();
       const key = cacheEnabled
         ? await previewCacheKeyFor(filePath, variant, width, quality)
         : crypto.createHash('md5').update(`${filePath}|${variant}|${quality}`).digest('hex').slice(0, 16);
-      const suffix = variant === 'detail' ? 'detail' : 'preview';
       outPath = cacheEnabled
         ? path.join(dir, `${key}_${suffix}.jpg`)
         : path.join(dir, `${key}_${suffix}_${process.pid}_${Date.now()}.jpg`);
@@ -691,9 +813,8 @@ export async function generatePreview(
       if (cacheEnabled) {
         try {
           await stat(outPath);
-          const cached = await readFile(outPath);
           if (isRawPreview) rawPreviewCacheCounters.hits++;
-          return `data:image/jpeg;base64,${cached.toString('base64')}`;
+          return { kind: 'file', diskPath: outPath };
         } catch {
           if (isRawPreview) rawPreviewCacheCounters.misses++;
           // not cached
@@ -701,23 +822,24 @@ export async function generatePreview(
       }
 
       if (isRawPreview) {
-        const fallback = await embeddedFallback(filePath, ext, width, quality, outPath);
+        const fallback = await embeddedFallbackBuffer(filePath, ext, width, quality, cacheEnabled ? outPath : undefined);
         if (fallback) {
           rawPreviewCacheCounters.embeddedFallbacks++;
-          return fallback;
+          return { kind: 'buffer', buffer: fallback, persisted: cacheEnabled };
         }
       }
 
       try {
         await platformResize(filePath, outPath, width, quality, 30000);
-        const preview = await readJpegDataUri(outPath);
         if (isRawPreview) rawPreviewCacheCounters.platformResizes++;
-        return preview;
+        if (cacheEnabled) return { kind: 'file', diskPath: outPath };
+        const transient = await readFile(outPath);
+        return { kind: 'buffer', buffer: transient, persisted: false };
       } catch {
-        const fallback = await embeddedFallback(filePath, ext, width, quality, outPath);
+        const fallback = await embeddedFallbackBuffer(filePath, ext, width, quality, cacheEnabled ? outPath : undefined);
         if (fallback && isRawPreview) rawPreviewCacheCounters.embeddedFallbacks++;
         if (!fallback && isRawPreview) rawPreviewCacheCounters.failures++;
-        return fallback;
+        return fallback ? { kind: 'buffer', buffer: fallback, persisted: cacheEnabled } : undefined;
       }
     } catch {
       if (isRawPreview) rawPreviewCacheCounters.failures++;
@@ -739,7 +861,21 @@ export async function generatePreview(
   }
 }
 
-export async function generateThumbnail(filePath: string, _fileName: string): Promise<string | undefined> {
+export async function generatePreview(
+  filePath: string,
+  variant: 'preview' | 'detail' = 'preview',
+): Promise<string | undefined> {
+  try {
+    const payload = await generatePreviewPayload(filePath, variant);
+    if (!payload) return undefined;
+    const buf = payload.kind === 'buffer' ? payload.buffer : await readFile(payload.diskPath);
+    return `data:image/jpeg;base64,${buf.toString('base64')}`;
+  } catch {
+    return undefined;
+  }
+}
+
+async function generateThumbnailBuffer(filePath: string): Promise<Buffer | undefined> {
   try {
     const dir = await getThumbDir();
     const key = await cacheKeyFor(filePath);
@@ -748,8 +884,7 @@ export async function generateThumbnail(filePath: string, _fileName: string): Pr
 
     try {
       await stat(outPath);
-      const buf = await readFile(outPath);
-      return `data:image/jpeg;base64,${buf.toString('base64')}`;
+      return await readFile(outPath);
     } catch {
       // not cached
     }
@@ -761,11 +896,149 @@ export async function generateThumbnail(filePath: string, _fileName: string): Pr
 
     try {
       await platformResize(filePath, outPath, THUMB_WIDTH, 60, 15000);
-      return readJpegDataUri(outPath);
+      return await readFile(outPath);
     } catch {
       return embeddedFallbackForThumbnail(filePath, ext, outPath);
     }
   } catch {
     return undefined;
+  }
+}
+
+export async function generateThumbnail(filePath: string, _fileName: string): Promise<string | undefined> {
+  const buf = await generateThumbnailBuffer(filePath);
+  return buf ? `data:image/jpeg;base64,${buf.toString('base64')}` : undefined;
+}
+
+// ---- Video thumbnails (system ffmpeg, optional) ----------------------------
+// Keptra doesn't ship ffmpeg; if the user has it on PATH we use it to grab a
+// grid frame for videos, otherwise videos keep their placeholder as before.
+
+let ffmpegBinaryPromise: Promise<string | null> | null = null;
+
+function detectFfmpeg(): Promise<string | null> {
+  if (!ffmpegBinaryPromise) {
+    ffmpegBinaryPromise = (async () => {
+      try {
+        await execFileAsync('ffmpeg', ['-version'], { timeout: 5000, windowsHide: true });
+        return 'ffmpeg';
+      } catch {
+        return null;
+      }
+    })();
+  }
+  return ffmpegBinaryPromise;
+}
+
+export async function isVideoThumbnailSupported(): Promise<boolean> {
+  return (await detectFfmpeg()) !== null;
+}
+
+async function videoThumbnailToFile(filePath: string, outPath: string): Promise<boolean> {
+  const bin = await detectFfmpeg();
+  if (!bin) return false;
+  // Try a frame at t=1s first (skips black lead-ins); retry at t=0 for clips
+  // shorter than a second.
+  for (const seek of [true, false]) {
+    try {
+      await execFileAsync(
+        bin,
+        ['-y', ...(seek ? ['-ss', '1'] : []), '-i', filePath, '-frames:v', '1', '-vf', `scale=${THUMB_WIDTH}:-2`, '-q:v', '5', outPath],
+        { timeout: 15000, windowsHide: true },
+      );
+      await stat(outPath);
+      return true;
+    } catch {
+      // try the next strategy
+    }
+  }
+  return false;
+}
+
+export async function ensureVideoThumbnail(filePath: string): Promise<boolean> {
+  try {
+    const dir = await getThumbDir();
+    const key = await cacheKeyFor(filePath);
+    const outPath = path.join(dir, `${key}.jpg`);
+    try {
+      await stat(outPath);
+      return true;
+    } catch {
+      // not cached
+    }
+    return await videoThumbnailToFile(filePath, outPath);
+  } catch {
+    return false;
+  }
+}
+
+// ---- Thumbnail payloads for the preview protocol ---------------------------
+// Bounded independently of the preview/detail lanes so a burst of grid
+// <img> fetches can't stampede RAW byte-scans or ffmpeg spawns.
+
+const inflightThumbPayloads = new Map<string, Promise<PreviewPayload | undefined>>();
+const THUMB_FETCH_CONCURRENCY = 6;
+let thumbFetchActive = 0;
+const thumbFetchQueue: Array<() => void> = [];
+
+async function acquireThumbFetchSlot(): Promise<void> {
+  if (thumbFetchActive < THUMB_FETCH_CONCURRENCY) {
+    thumbFetchActive++;
+    return;
+  }
+  await new Promise<void>((resolve) => thumbFetchQueue.push(resolve));
+}
+
+function releaseThumbFetchSlot(): void {
+  thumbFetchActive = Math.max(0, thumbFetchActive - 1);
+  if (thumbFetchQueue.length > 0 && thumbFetchActive < THUMB_FETCH_CONCURRENCY) {
+    thumbFetchActive++;
+    thumbFetchQueue.shift()?.();
+  }
+}
+
+export async function getThumbnailPayload(filePath: string): Promise<PreviewPayload | undefined> {
+  const existing = inflightThumbPayloads.get(filePath);
+  if (existing) return existing;
+
+  const promise = (async (): Promise<PreviewPayload | undefined> => {
+    await acquireThumbFetchSlot();
+    try {
+      const ext = path.extname(filePath).toLowerCase();
+      const dir = await getThumbDir();
+      const key = await cacheKeyFor(filePath);
+      const outPath = path.join(dir, `${key}.jpg`);
+
+      // Scan-time embedded thumbnails live in the memory cache.
+      const s = await stat(filePath).catch(() => null);
+      if (s) {
+        const cached = thumbMemCache.get(thumbMemCacheKey(filePath, s.mtimeMs, s.size));
+        if (cached) return { kind: 'buffer', buffer: cached, persisted: false };
+      }
+      try {
+        await stat(outPath);
+        return { kind: 'file', diskPath: outPath };
+      } catch {
+        // not on disk
+      }
+
+      if (VIDEO_EXTENSIONS.has(ext)) {
+        const ok = await videoThumbnailToFile(filePath, outPath);
+        return ok ? { kind: 'file', diskPath: outPath } : undefined;
+      }
+      const embedded = await extractEmbeddedThumbnailBuffer(filePath, ext);
+      if (embedded) return { kind: 'buffer', buffer: embedded, persisted: false };
+      const generated = await generateThumbnailBuffer(filePath);
+      return generated ? { kind: 'buffer', buffer: generated, persisted: false } : undefined;
+    } finally {
+      releaseThumbFetchSlot();
+    }
+  })();
+
+  inflightThumbPayloads.set(filePath, promise);
+  try {
+    return await promise;
+  } finally {
+    inflightThumbPayloads.delete(filePath);
   }
 }

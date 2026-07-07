@@ -8,21 +8,24 @@ vi.mock('node:fs/promises', () => ({
 
 vi.mock('../exif-parser', () => ({
   parseExifDate: vi.fn(),
-  extractEmbeddedThumbnail: vi.fn(),
-  generateThumbnail: vi.fn(),
+  ensureEmbeddedThumbnail: vi.fn(),
+  ensureGeneratedThumbnail: vi.fn(),
+  ensureVideoThumbnail: vi.fn(async () => false),
+  isVideoThumbnailSupported: vi.fn(async () => false),
   clearThumbnailMemCache: vi.fn(),
+  isSharpAvailable: vi.fn(() => false),
   EXIFR_SUPPORTED: new Set(['.jpg', '.jpeg', '.heic', '.dng', '.cr2', '.cr3', '.arw', '.nef', '.raf']),
 }));
 
 import { readdir, stat } from 'node:fs/promises';
-import { parseExifDate, extractEmbeddedThumbnail, generateThumbnail } from '../exif-parser';
+import { parseExifDate, ensureEmbeddedThumbnail, ensureGeneratedThumbnail } from '../exif-parser';
 import { scanFiles, cancelScan } from '../file-scanner';
 
 const mockReaddir = vi.mocked(readdir);
 const mockStat = vi.mocked(stat);
 const mockParseExifDate = vi.mocked(parseExifDate);
-const mockExtractEmbeddedThumbnail = vi.mocked(extractEmbeddedThumbnail);
-const mockGenerateThumbnail = vi.mocked(generateThumbnail);
+const mockEnsureEmbeddedThumbnail = vi.mocked(ensureEmbeddedThumbnail);
+const mockEnsureGeneratedThumbnail = vi.mocked(ensureGeneratedThumbnail);
 
 function makeDirent(name: string, isDir: boolean, isFile: boolean) {
   return {
@@ -41,14 +44,14 @@ function makeDirent(name: string, isDir: boolean, isFile: boolean) {
 
 describe('scanFiles', () => {
   let onBatch: ReturnType<typeof vi.fn<(files: MediaFile[]) => void>>;
-  let onThumbnail: ReturnType<typeof vi.fn<(filePath: string, thumbnail: string) => void>>;
+  let onThumbnail: ReturnType<typeof vi.fn<(filePath: string) => void>>;
 
   beforeEach(() => {
     onBatch = vi.fn();
     onThumbnail = vi.fn();
     mockParseExifDate.mockResolvedValue({ dateTaken: '2024-01-15T00:00:00.000Z', destPath: '2024-01-15/test.jpg' });
-    mockExtractEmbeddedThumbnail.mockResolvedValue(undefined);
-    mockGenerateThumbnail.mockResolvedValue(undefined);
+    mockEnsureEmbeddedThumbnail.mockResolvedValue(false);
+    mockEnsureGeneratedThumbnail.mockResolvedValue(false);
   });
 
   it('walks directory and finds media files', async () => {
@@ -145,30 +148,30 @@ describe('scanFiles', () => {
     );
   });
 
-  it('sends embedded thumbnail when exifr succeeds', async () => {
+  it('signals the thumbnail when the embedded extract succeeds', async () => {
     mockReaddir.mockResolvedValue([makeDirent('photo.jpg', false, true)] as any);
     mockStat.mockResolvedValue({ size: 1000 } as any);
-    mockExtractEmbeddedThumbnail.mockResolvedValue('data:image/jpeg;base64,abc');
+    mockEnsureEmbeddedThumbnail.mockResolvedValue(true);
 
     await scanFiles('/source', onBatch, onThumbnail);
     // Thumbnails load in the background — flush microtasks
     await new Promise((r) => setTimeout(r, 0));
 
-    expect(onThumbnail).toHaveBeenCalledWith(expect.stringContaining('photo.jpg'), 'data:image/jpeg;base64,abc');
+    expect(onThumbnail).toHaveBeenCalledWith(expect.stringContaining('photo.jpg'));
   });
 
-  it('falls back to sips thumbnail when exifr returns undefined', async () => {
+  it('falls back to the generated thumbnail when the embedded extract fails', async () => {
     mockReaddir.mockResolvedValue([makeDirent('photo.jpg', false, true)] as any);
     mockStat.mockResolvedValue({ size: 1000 } as any);
-    mockExtractEmbeddedThumbnail.mockResolvedValue(undefined);
-    mockGenerateThumbnail.mockResolvedValue('data:image/jpeg;base64,sips');
+    mockEnsureEmbeddedThumbnail.mockResolvedValue(false);
+    mockEnsureGeneratedThumbnail.mockResolvedValue(true);
 
     await scanFiles('/source', onBatch, onThumbnail);
     // Thumbnails load in the background — flush microtasks
     await new Promise((r) => setTimeout(r, 0));
 
-    expect(mockGenerateThumbnail).toHaveBeenCalled();
-    expect(onThumbnail).toHaveBeenCalledWith(expect.stringContaining('photo.jpg'), 'data:image/jpeg;base64,sips');
+    expect(mockEnsureGeneratedThumbnail).toHaveBeenCalled();
+    expect(onThumbnail).toHaveBeenCalledWith(expect.stringContaining('photo.jpg'));
   });
 
   it('returns total count', async () => {

@@ -1,10 +1,11 @@
-import { app, BrowserWindow, Menu, globalShortcut, shell, session } from 'electron';
+import { app, BrowserWindow, Menu, globalShortcut, shell, session, protocol } from 'electron';
 import path from 'node:path';
 import { existsSync, writeFileSync } from 'node:fs';
 import started from 'electron-squirrel-startup';
 import { registerIpcHandlers } from './ipc-handlers';
 import { ensureModelsDownloaded } from './services/model-downloader';
 import { initializeLogging, log } from './logger';
+import { PREVIEW_PROTOCOL_SCHEME } from '../shared/types';
 
 if (started) {
   app.quit();
@@ -29,6 +30,17 @@ if (packageSmokeMode) {
 }
 
 initializeLogging();
+
+// Preview streaming scheme (registered in ipc-handlers once the app is
+// ready). Privileges must be declared before app 'ready' fires. corsEnabled +
+// ACAO response headers keep canvas readback (histograms, face crops) from
+// tainting when previews are drawn with crossOrigin="anonymous".
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: PREVIEW_PROTOCOL_SCHEME,
+    privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true },
+  },
+]);
 
 // ONNX DirectML runs in the main process and is independent of Chromium
 // compositing. Keep the renderer on Chromium defaults unless support needs to
@@ -138,7 +150,7 @@ function rendererContentSecurityPolicy(): string {
     "form-action 'none'",
     "script-src 'self'",
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: file: blob:",
+    `img-src 'self' data: file: blob: ${PREVIEW_PROTOCOL_SCHEME}:`,
     "media-src 'self' file: blob:",
     "font-src 'self' data:",
     "connect-src 'self' https://keptra.z2hs.au https://updates.keptra.z2hs.au https://admin.keptra.z2hs.au https://checkout.stripe.com",

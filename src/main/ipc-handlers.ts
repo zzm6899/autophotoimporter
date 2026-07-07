@@ -1,9 +1,9 @@
-import { ipcMain, dialog, shell, app, BrowserWindow, autoUpdater } from 'electron';
+import { ipcMain, dialog, shell, app, BrowserWindow, autoUpdater, protocol } from 'electron';
 import { readFile, writeFile, mkdir, open, rm, rename, statfs, readdir, stat, copyFile, chmod } from 'node:fs/promises';
 import { execFile, spawn } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 import path from 'node:path';
-import { DEFAULT_VIEW_OVERLAY_PREFERENCES, IPC, PHOTO_EXTENSIONS, isSportsEventMode } from '../shared/types';
+import { DEFAULT_VIEW_OVERLAY_PREFERENCES, IPC, PHOTO_EXTENSIONS, PREVIEW_PROTOCOL_SCHEME, isSportsEventMode } from '../shared/types';
 import { configurePoseAnalysis } from './services/pose-engine';
 import type { ImportConfig, ImportResult, ImportBenchmarkQuery, ImportBenchmarkResult, AppSettings, MediaFile, FtpConfig, FtpSyncStatus, Volume, UpdateState, ImportLedger, ImportHealthSummary, MacFirstRunDoctor, AppDiagnosticsSnapshot, UpdateRepairResult, AppSession, WatchFolder, CatalogBrowserQuery, CatalogFaceSearchQuery, ScanDiagnostics } from '../shared/types';
 import { listVolumes, startWatching, stopWatching } from './services/volume-watcher';
@@ -11,7 +11,7 @@ import { scanFiles, cancelScan, pauseScan, resumeScan, type FileScanDiagnostics 
 import { importFiles, cancelImport, planImportFiles } from './services/import-engine';
 import { writeLightroomHandoff } from './services/lightroom-handoff';
 import { isDuplicate } from './services/duplicate-detector';
-import { generatePreview } from './services/exif-parser';
+import { generatePreview, generatePreviewPayload, getThumbnailPayload, peekPreviewFile, getRawPreviewQualitySetting, isSharpAvailable } from './services/exif-parser';
 import { checkForUpdate, fetchUpdateHistory, readLastKnownGoodUpdateMetadata } from './services/update-checker';
 import { probeFtp, mirrorFtp } from './services/ftp-source';
 import { activateLicenseInput, checkHostedLicenseStatus, validateLicenseKey } from './services/license';
@@ -1126,7 +1126,13 @@ function releaseFaceSemaphore(): void {
 const previewActiveByVariant: Record<'preview' | 'detail', number> = { preview: 0, detail: 0 };
 const previewQueueByVariant: Record<'preview' | 'detail', Array<() => void>> = { preview: [], detail: [] };
 const PREVIEW_CONCURRENCY_HARD_MAX = 12;
-const previewConcurrencyByVariant: Record<'preview' | 'detail', number> = { preview: 3, detail: 1 };
+// With sharp, detail decodes run on libvips worker threads instead of a
+// per-file process spawn, so a second in-flight detail preview no longer
+// risks starving UI IPC.
+const previewConcurrencyByVariant: Record<'preview' | 'detail', number> = {
+  preview: 3,
+  detail: isSharpAvailable() ? 2 : 1,
+};
 
 function clampPreviewConcurrency(n: unknown, fallback = 1): number {
   const requested = isNumber(n) ? n : fallback;
@@ -1202,6 +1208,58 @@ async function acquirePreviewSlot(variant: 'preview' | 'detail'): Promise<void> 
     return;
   }
   await new Promise<void>((resolve) => previewQueueByVariant[variant].push(resolve));
+}
+
+// URL served by the keptra-preview protocol. `v` embeds source identity and
+// the current preview quality so Chromium's HTTP cache naturally invalidates
+// when the file or quality changes.
+function previewProtocolUrl(filePath: string, variant: 'preview' | 'detail' | 'thumb'): string {
+  const file = scannedFilesByPath.get(filePath);
+  const version = `${file?.size ?? 0}-${file?.sourceModifiedAtMs ?? 0}-q${getRawPreviewQualitySetting()}`;
+  return `${PREVIEW_PROTOCOL_SCHEME}://media/?path=${encodeURIComponent(filePath)}&variant=${variant}&v=${encodeURIComponent(version)}`;
+}
+
+// Streams preview JPEGs to <img> tags without base64 or IPC payloads. The
+// renderer holds only URL strings; Chromium fetches, caches, and decodes the
+// bytes off the main thread. ACAO lets canvas readback (histograms, face
+// crops) work with crossOrigin="anonymous" images.
+function registerPreviewProtocol(): void {
+  protocol.handle(PREVIEW_PROTOCOL_SCHEME, async (request) => {
+    try {
+      const url = new URL(request.url);
+      const filePath = url.searchParams.get('path') ?? '';
+      const variantParam = url.searchParams.get('variant');
+      if (!filePath || !scannedFilesByPath.has(filePath)) {
+        return new Response('Not found', { status: 404 });
+      }
+      const headers = {
+        'Content-Type': 'image/jpeg',
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'private, max-age=3600',
+      };
+      if (variantParam === 'thumb') {
+        // Grid thumbnails: mem-cache/disk-cache hit in the common case; a
+        // bounded lane in exif-parser guards regeneration stampedes.
+        const payload = await getThumbnailPayload(filePath);
+        if (!payload) return new Response('Thumbnail unavailable', { status: 404 });
+        const body = payload.kind === 'buffer' ? payload.buffer : await readFile(payload.diskPath);
+        return new Response(new Uint8Array(body), { headers });
+      }
+      const variant: 'preview' | 'detail' = variantParam === 'detail' ? 'detail' : 'preview';
+      // Cached on disk: serve immediately without taking a generation slot.
+      const cachedPath = await peekPreviewFile(filePath, variant);
+      if (cachedPath) {
+        return new Response(new Uint8Array(await readFile(cachedPath)), { headers });
+      }
+      const payload = await withPreviewSlot(variant, () => generatePreviewPayload(filePath, variant));
+      if (!payload) return new Response('Preview unavailable', { status: 404 });
+      const body = payload.kind === 'buffer' ? payload.buffer : await readFile(payload.diskPath);
+      return new Response(new Uint8Array(body), { headers });
+    } catch (error) {
+      log.warn('[preview-protocol] request failed', error);
+      return new Response('Preview error', { status: 500 });
+    }
+  });
 }
 
 async function withPreviewSlot<T>(variant: 'preview' | 'detail', task: () => Promise<T>): Promise<T> {
@@ -2052,23 +2110,33 @@ function stripManifestMediaFile(file: MediaFile): Omit<MediaFile, 'thumbnail'> {
 
 async function contactSheetFiles(files: MediaFile[]): Promise<MediaFile[]> {
   const sheetFiles = files.slice(0, 500);
-  const hydrated: MediaFile[] = [];
-  for (const file of sheetFiles) {
-    if (file.thumbnail || file.type !== 'photo') {
-      hydrated.push(file);
-      continue;
+  // Hydrate missing previews with bounded parallelism instead of one at a
+  // time — a 500-file sheet of RAW files was previously fully sequential.
+  const CONTACT_SHEET_CONCURRENCY = 6;
+  const hydrated: MediaFile[] = new Array(sheetFiles.length);
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < sheetFiles.length) {
+      const index = cursor++;
+      const file = sheetFiles[index];
+      if (file.thumbnail || file.type !== 'photo') {
+        hydrated[index] = file;
+        continue;
+      }
+      try {
+        hydrated[index] = { ...file, thumbnail: await generatePreview(file.path) };
+      } catch {
+        hydrated[index] = file;
+      }
     }
-    try {
-      hydrated.push({ ...file, thumbnail: await generatePreview(file.path) });
-    } catch {
-      hydrated.push(file);
-    }
-  }
+  };
+  await Promise.all(Array.from({ length: CONTACT_SHEET_CONCURRENCY }, () => worker()));
   return hydrated;
 }
 
 export function registerIpcHandlers(): void {
   // Composition root: domain modules are registered here.
+  registerPreviewProtocol();
   registerSettingsHandlers();
   registerScanHandlers();
   registerImportHandlers();
@@ -2212,12 +2280,16 @@ export function registerIpcHandlers(): void {
           for (const file of batch) scannedFilesByPath.set(file.path, file);
           sendToRenderer(IPC.SCAN_BATCH, scanId, batch);
         },
-        (filePath, thumbnail) => {
+        (filePath) => {
           if (scanGeneration !== scanEventGeneration) return;
           const file = scannedFilesByPath.get(filePath);
           if (!file) return;
-          file.thumbnail = thumbnail;
-          thumbnailBuffer.set(filePath, thumbnail);
+          // The scanner cached the thumbnail bytes (memory or disk); ship
+          // only a protocol URL — no base64 over IPC, no giant renderer
+          // strings on 10k+ file scans.
+          const url = previewProtocolUrl(filePath, 'thumb');
+          file.thumbnail = url;
+          thumbnailBuffer.set(filePath, url);
           scheduleThumbnailFlush();
         },
         folderPattern,
@@ -2295,7 +2367,18 @@ export function registerIpcHandlers(): void {
     if (variant !== undefined && variant !== 'preview' && variant !== 'detail') return undefined;
     if (!scannedFilesByPath.has(filePath)) return undefined;
     const requestedVariant = variant ?? 'preview';
-    return withPreviewSlot(requestedVariant, () => generatePreview(filePath, requestedVariant));
+    // Fast path: already cached on disk — hand back a protocol URL without
+    // waiting for a generation slot or shipping bytes over IPC.
+    const cached = await peekPreviewFile(filePath, requestedVariant);
+    if (cached) return { src: previewProtocolUrl(filePath, requestedVariant) };
+    const payload = await withPreviewSlot(requestedVariant, () => generatePreviewPayload(filePath, requestedVariant));
+    if (!payload) return undefined;
+    if (payload.kind === 'file' || payload.persisted) {
+      return { src: previewProtocolUrl(filePath, requestedVariant) };
+    }
+    // Transient (RAW preview cache disabled): nothing stays on disk for the
+    // protocol to serve later, so ship the bytes directly as before.
+    return { src: `data:image/jpeg;base64,${payload.buffer.toString('base64')}` };
   });
 
   handleIpc(IPC.SCAN_CANCEL, async () => {
@@ -3379,12 +3462,13 @@ async function runAutoImport(volume: Volume, options: Omit<QueuedAutoImport, 'vo
         for (const file of batch) scannedFilesByPath.set(file.path, file);
         sendToRenderer(IPC.SCAN_BATCH, scanId, batch);
       },
-      (filePath, thumbnail) => {
+      (filePath) => {
         if (scanGeneration !== scanEventGeneration) return;
         const file = scannedFilesByPath.get(filePath);
         if (!file) return;
-        file.thumbnail = thumbnail;
-        thumbnailBuffer.set(filePath, thumbnail);
+        const url = previewProtocolUrl(filePath, 'thumb');
+        file.thumbnail = url;
+        thumbnailBuffer.set(filePath, url);
         scheduleThumbnailFlush();
       },
       pattern,

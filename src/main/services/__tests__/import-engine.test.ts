@@ -20,6 +20,11 @@ vi.mock('node:util', () => ({
   promisify: (fn: unknown) => fn,
 }));
 
+vi.mock('../sharp-loader', () => ({
+  getSharpModule: vi.fn(() => null),
+  isSharpAvailable: vi.fn(() => false),
+}));
+
 vi.mock('../duplicate-detector', () => ({
   isDuplicate: vi.fn(),
 }));

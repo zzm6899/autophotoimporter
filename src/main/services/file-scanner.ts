@@ -2,7 +2,7 @@ import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { PHOTO_EXTENSIONS, VIDEO_EXTENSIONS } from '../../shared/types';
 import type { MediaFile } from '../../shared/types';
-import { parseExifDate, generateThumbnail, extractEmbeddedThumbnail, EXIFR_SUPPORTED, clearThumbnailMemCache } from './exif-parser';
+import { parseExifDate, ensureGeneratedThumbnail, ensureEmbeddedThumbnail, ensureVideoThumbnail, isVideoThumbnailSupported, EXIFR_SUPPORTED, clearThumbnailMemCache, isSharpAvailable } from './exif-parser';
 import { JobController } from './job-controller';
 
 const BATCH_SIZE = 50;
@@ -10,6 +10,7 @@ const FAST_THUMB_CONCURRENCY_MIN = 4;
 const FAST_THUMB_CONCURRENCY_DEFAULT = 24;
 const FAST_THUMB_CONCURRENCY_MAX = 48;
 const SLOW_THUMB_CONCURRENCY = 4;   // PowerShell resize — one per process, keep low
+const SHARP_THUMB_CONCURRENCY = 10; // sharp resizes in-process on worker threads — no spawn cost
 const SLOW_THUMB_TIMEOUT_MS = 8000; // Per-file timeout; corrupted/huge files abort
 
 /** Wraps a promise with a hard deadline — rejects if it exceeds timeoutMs. */
@@ -76,46 +77,61 @@ async function walkDirectory(
     return;
   }
 
+  const subdirectories: string[] = [];
+  const mediaEntries: Array<{ name: string; fullPath: string; ext: string; type: 'photo' | 'video' }> = [];
   for (const entry of entries) {
     if (signal.aborted) return;
-    await waitIfPaused(signal);
-
-    const fullPath = path.join(dirPath, entry.name);
 
     if (entry.name.startsWith('.')) {
       diagnostics.hiddenOrSystemEntriesSkipped++;
       continue;
     }
-
+    const fullPath = path.join(dirPath, entry.name);
     if (entry.isDirectory()) {
-      await walkDirectory(fullPath, files, signal, diagnostics);
+      subdirectories.push(fullPath);
     } else if (entry.isFile()) {
       const ext = path.extname(entry.name).toLowerCase();
       const type = getFileType(ext);
-      if (type) {
-        try {
-          const fileStat = await stat(fullPath);
-          files.push({
-            path: fullPath,
-            name: entry.name,
-            size: fileStat.size,
-            sourceModifiedAtMs: fileStat.mtimeMs,
-            type,
-            extension: ext,
-          });
-        } catch {
-          diagnostics.statFailures++;
-          // Skip files we can't stat
-        }
-      }
+      if (type) mediaEntries.push({ name: entry.name, fullPath, ext, type });
     }
+  }
+
+  // Stat media files in bounded batches — on cards with thousands of files a
+  // sequential stat-per-file walk left most of the bus idle.
+  const STAT_BATCH = 16;
+  for (let i = 0; i < mediaEntries.length; i += STAT_BATCH) {
+    if (signal.aborted) return;
+    await waitIfPaused(signal);
+    const batch = mediaEntries.slice(i, i + STAT_BATCH);
+    const stats = await Promise.all(batch.map((entry) => stat(entry.fullPath).catch(() => null)));
+    for (let j = 0; j < batch.length; j++) {
+      const fileStat = stats[j];
+      if (!fileStat) {
+        diagnostics.statFailures++;
+        continue; // Skip files we can't stat
+      }
+      files.push({
+        path: batch[j].fullPath,
+        name: batch[j].name,
+        size: fileStat.size,
+        sourceModifiedAtMs: fileStat.mtimeMs,
+        type: batch[j].type,
+        extension: batch[j].ext,
+      });
+    }
+  }
+
+  for (const subdirectory of subdirectories) {
+    if (signal.aborted) return;
+    await waitIfPaused(signal);
+    await walkDirectory(subdirectory, files, signal, diagnostics);
   }
 }
 
 export async function scanFiles(
   sourcePath: string,
   onBatch: (files: MediaFile[]) => void,
-  onThumbnail: (filePath: string, thumbnail: string) => void,
+  onThumbnail: (filePath: string) => void,
   folderPattern?: string,
   options?: FileScanOptions,
 ): Promise<number> {
@@ -209,7 +225,7 @@ function createFastThumbConcurrencyController(): FastThumbConcurrencyController 
 
 function generateThumbnailsInBackground(
   allFiles: MediaFile[],
-  onThumbnail: (filePath: string, thumbnail: string) => void,
+  onThumbnail: (filePath: string) => void,
   signal: AbortSignal,
 ): void {
   const run = async () => {
@@ -235,12 +251,12 @@ function generateThumbnailsInBackground(
         batch.map(async (file) => {
           if (signal.aborted) return;
           try {
-            const thumbnail = await withTimeout(
-              extractEmbeddedThumbnail(file.path, file.extension),
+            const ok = await withTimeout(
+              ensureEmbeddedThumbnail(file.path, file.extension),
               5000, // embedded JPEG extract should be near-instant
             );
-            if (thumbnail) {
-              onThumbnail(file.path, thumbnail);
+            if (ok) {
+              onThumbnail(file.path);
             } else {
               slowFiles.push(file); // exifr failed, fall back to slow path
             }
@@ -260,26 +276,52 @@ function generateThumbnailsInBackground(
       ...photos.filter((f) => !EXIFR_SUPPORTED.has(f.extension)),
       ...slowFiles,
     ].filter((f) => f.type === 'photo'); // never slow-thumb videos
-    for (let i = 0; i < sipsFiles.length; i += SLOW_THUMB_CONCURRENCY) {
+    // sharp handles these in-process (no per-file process spawn), so it can
+    // safely run wider than the PowerShell/sips fallback.
+    const slowConcurrency = isSharpAvailable() ? SHARP_THUMB_CONCURRENCY : SLOW_THUMB_CONCURRENCY;
+    for (let i = 0; i < sipsFiles.length; i += slowConcurrency) {
       if (signal.aborted) break;
       await waitIfPaused(signal);
-      const batch = sipsFiles.slice(i, i + SLOW_THUMB_CONCURRENCY);
+      const batch = sipsFiles.slice(i, i + slowConcurrency);
       await Promise.all(
         batch.map(async (file) => {
           if (signal.aborted) return;
           try {
             // Hard per-file timeout so a single corrupted/huge file can't
             // block the entire thumbnail queue indefinitely.
-            const thumbnail = await withTimeout(
-              generateThumbnail(file.path, file.name),
+            const ok = await withTimeout(
+              ensureGeneratedThumbnail(file.path),
               SLOW_THUMB_TIMEOUT_MS,
             );
-            if (thumbnail) onThumbnail(file.path, thumbnail);
+            if (ok) onThumbnail(file.path);
           } catch {
             // Corrupted file or timeout — skip silently, grid shows placeholder
           }
         }),
       );
+    }
+
+    // Phase 2C: video thumbnails via system ffmpeg, when available. Keptra
+    // doesn't ship ffmpeg — without it, videos keep their placeholder.
+    const videos = allFiles.filter((f) => f.type === 'video');
+    if (videos.length > 0 && !signal.aborted && await isVideoThumbnailSupported()) {
+      const VIDEO_THUMB_CONCURRENCY = 2;
+      for (let i = 0; i < videos.length; i += VIDEO_THUMB_CONCURRENCY) {
+        if (signal.aborted) break;
+        await waitIfPaused(signal);
+        const batch = videos.slice(i, i + VIDEO_THUMB_CONCURRENCY);
+        await Promise.all(
+          batch.map(async (file) => {
+            if (signal.aborted) return;
+            try {
+              const ok = await withTimeout(ensureVideoThumbnail(file.path), 20000);
+              if (ok) onThumbnail(file.path);
+            } catch {
+              // Corrupt clip or ffmpeg stall — placeholder stays.
+            }
+          }),
+        );
+      }
     }
   };
 
