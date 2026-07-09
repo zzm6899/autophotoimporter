@@ -64,8 +64,8 @@ const api = {
     ipcRenderer.on(IPC.SCAN_DIAGNOSTICS, handler);
     return () => ipcRenderer.removeListener(IPC.SCAN_DIAGNOSTICS, handler);
   },
-  getPreview: (filePath: string, variant?: 'preview' | 'detail'): Promise<{ src: string } | undefined> =>
-    ipcRenderer.invoke(IPC.SCAN_PREVIEW, filePath, variant),
+  getPreview: (filePath: string, variant?: 'preview' | 'detail', priority?: 'high' | 'normal' | 'low'): Promise<{ src: string } | undefined> =>
+    ipcRenderer.invoke(IPC.SCAN_PREVIEW, filePath, variant, priority),
   cancelScan: (): Promise<void> =>
     ipcRenderer.invoke(IPC.SCAN_CANCEL),
   pauseScan: (): Promise<void> =>

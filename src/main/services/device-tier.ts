@@ -76,7 +76,7 @@ export function detectDeviceTier(override?: PerfTierSetting): DeviceProfile {
           tier: 'balanced',
           cpuCores,
           totalMemGB,
-          previewConcurrency: Math.min(3, Math.max(2, Math.floor(cpuCores / 4))),
+          previewConcurrency: Math.min(4, Math.max(3, Math.floor(cpuCores / 4))),
           faceConcurrency: 3,
           cpuOptimization: false,
           rawPreviewQuality: 70,

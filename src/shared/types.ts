@@ -1142,6 +1142,10 @@ export interface AppSettings {
   performancePromptSeenVersion?: string;
   /** Fast Keeper Mode: score using sharpness/exposure/ratings only, skip ONNX */
   fastKeeperMode?: boolean;
+  /** Master switch for the AI review pipeline (face/person analysis, sharpness
+   * scoring, visual duplicates). Off = pure manual culling, zero background
+   * analysis cost. */
+  aiReviewEnabled?: boolean;
   /** Automatically switches to low-end review settings if live AI throughput is too slow. */
   autoSpeedMode?: boolean;
   /** Renderer concurrency hint from device-tier (runtime only, not persisted) */

@@ -206,6 +206,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     reviewPersonDetection,
     reviewVisualDuplicates,
     autoSpeedMode,
+    aiReviewEnabled,
     perfTier,
     fastKeeperMode,
     cullConfidence,
@@ -512,6 +513,14 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const handlePerformanceOption = (key: 'gpuFaceAcceleration' | 'rawPreviewCache' | 'cpuOptimization', value: boolean) => {
     dispatch({ type: 'SET_PERFORMANCE_OPTION', key, value });
     void window.electronAPI.setSettings({ [key]: value });
+  };
+  const handleAiReviewEnabled = (enabled: boolean) => {
+    dispatch({ type: 'SET_AI_REVIEW_ENABLED', enabled });
+    void window.electronAPI.setSettings({ aiReviewEnabled: enabled });
+    if (!enabled) {
+      // Drop any queued/in-flight analysis immediately.
+      void window.electronAPI.cancelFaceAnalysis?.().catch(() => undefined);
+    }
   };
   const handleReviewPerformanceOption = (
     key: 'reviewFaceAnalysis' | 'reviewFaceMatching' | 'reviewPersonDetection' | 'reviewVisualDuplicates',
@@ -2694,7 +2703,20 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
               <label className="mb-1 flex items-center gap-2 cursor-pointer">
                 <input
                   type="checkbox"
-                  checked={reviewFaceAnalysis}
+                  checked={aiReviewEnabled}
+                  onChange={(e) => handleAiReviewEnabled(e.target.checked)}
+                />
+                <span className="text-xs font-medium text-text">AI review (master switch)</span>
+              </label>
+              <p className="mb-2 ml-6 text-[11px] text-text-muted">
+                Off = pure manual culling: no face/person scans, no sharpness or duplicate scoring, zero
+                background analysis while you flip through images.
+              </p>
+              <label className={`mb-1 flex items-center gap-2 ${aiReviewEnabled ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
+                <input
+                  type="checkbox"
+                  checked={aiReviewEnabled && reviewFaceAnalysis}
+                  disabled={!aiReviewEnabled}
                   onChange={(e) => handleReviewPerformanceOption('reviewFaceAnalysis', e.target.checked)}
                 />
                 <span className="text-xs text-text">Native face scan</span>

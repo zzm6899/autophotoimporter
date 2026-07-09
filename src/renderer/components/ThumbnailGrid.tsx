@@ -1978,7 +1978,7 @@ async function visualHash(src: string): Promise<string> {
 }
 
 export function ThumbnailGrid() {
-  const { phase, selectedSource, scanError, focusedIndex, focusedPath, viewMode, filter, gridSortOrder, thumbnailSize, importFailedPaths, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, exposureAdjustmentStep, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused, fastKeeperMode, autoSpeedMode, faceConcurrency, gpuFaceAcceleration, reviewFaceAnalysis, reviewFaceMatching, reviewPersonDetection, reviewVisualDuplicates, keybinds, metadataKeywords, whiteBalanceTemperature, whiteBalanceTint, destination, skipDuplicates, licenseStatus, ftpDestEnabled, ftpDestConfig, experienceMode } = useAppState();
+  const { phase, selectedSource, scanError, focusedIndex, focusedPath, viewMode, filter, gridSortOrder, thumbnailSize, importFailedPaths, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, exposureAdjustmentStep, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused, fastKeeperMode, aiReviewEnabled, autoSpeedMode, faceConcurrency, gpuFaceAcceleration, reviewFaceAnalysis, reviewFaceMatching, reviewPersonDetection, reviewVisualDuplicates, keybinds, metadataKeywords, whiteBalanceTemperature, whiteBalanceTint, destination, skipDuplicates, licenseStatus, ftpDestEnabled, ftpDestConfig, experienceMode } = useAppState();
   const isPro = experienceMode === 'pro';
   // useMergedFiles() overlays face/review scores without re-running the full
   // reducer map — O(n) only when scores.size > 0, otherwise returns the same array.
@@ -2064,6 +2064,12 @@ export function ThumbnailGrid() {
   const reviewPausedRef = useRef(false);
   const reviewWaitingRef = useRef(false);
   const fastKeeperModeRef = useRef(fastKeeperMode);
+  const aiReviewEnabledRef = useRef(aiReviewEnabled);
+  // Timestamp of the user's last focus/navigation event. The review loop
+  // stays quiet for a short window after navigation so ONNX + canvas scoring
+  // never competes with preview loading while the user is actively culling.
+  const lastNavAtRef = useRef(0);
+  const navRetryTimerRef = useRef<number | null>(null);
   const faceConcurrencyRef = useRef(faceConcurrency);
   const gpuFaceAccelerationRef = useRef(gpuFaceAcceleration);
   const reviewFaceAnalysisRef = useRef(reviewFaceAnalysis);
@@ -2666,6 +2672,7 @@ export function ThumbnailGrid() {
   useEffect(() => { reviewPausedRef.current = reviewPaused; }, [reviewPaused]);
   useEffect(() => { reviewWaitingRef.current = reviewWaitingForThumbnails; }, [reviewWaitingForThumbnails]);
   useEffect(() => { fastKeeperModeRef.current = fastKeeperMode; }, [fastKeeperMode]);
+  useEffect(() => { aiReviewEnabledRef.current = aiReviewEnabled; }, [aiReviewEnabled]);
   useEffect(() => { faceConcurrencyRef.current = faceConcurrency; }, [faceConcurrency]);
   useEffect(() => { gpuFaceAccelerationRef.current = gpuFaceAcceleration; }, [gpuFaceAcceleration]);
   useEffect(() => { reviewFaceAnalysisRef.current = reviewFaceAnalysis; }, [reviewFaceAnalysis]);
@@ -2783,7 +2790,21 @@ export function ThumbnailGrid() {
   useEffect(() => {
     if (sharpnessInFlightRef.current) return;
     if (reviewPausedRef.current) return;
+    if (!aiReviewEnabledRef.current) return;
     if (phaseRef.current === 'importing') return;
+    // Navigation quiet window: while the user is flipping through images,
+    // defer analysis batches entirely and retry once input goes idle.
+    const NAV_QUIET_MS = 1200;
+    const sinceNav = Date.now() - lastNavAtRef.current;
+    if (lastNavAtRef.current > 0 && sinceNav < NAV_QUIET_MS) {
+      if (navRetryTimerRef.current == null) {
+        navRetryTimerRef.current = window.setTimeout(() => {
+          navRetryTimerRef.current = null;
+          setReviewLoopTick((value) => value + 1);
+        }, NAV_QUIET_MS - sinceNav + 50);
+      }
+      return;
+    }
     // Don't start analysis until at least one thumbnail is ready — the candidate
     // filter requires f.thumbnail to be truthy. If we bail with 0 candidates here
     // the sharpnessInFlightRef is NOT set, so the loop will re-fire correctly once
@@ -3384,6 +3405,7 @@ export function ThumbnailGrid() {
 
   // Trigger ONNX face scan for any unscanned photos about to appear in a panel.
   const scanUnscannedPanelFiles = useCallback((paths: string[]) => {
+    if (!aiReviewEnabledRef.current) return;
     if (!reviewFaceAnalysisRef.current || fastKeeperModeRef.current) return;
     const unscanned = files
       .filter((f) => paths.includes(f.path) && f.type === 'photo' && f.faceBoxes === undefined);
@@ -4241,6 +4263,14 @@ export function ThumbnailGrid() {
       splitVirtualizer.scrollToIndex(focusedIndex, { align: 'auto' });
     }
   }, [focusedIndex, rowVirtualizer, splitVirtualizer, viewMode, virtualGridColumns, virtualGridEnabled]);
+
+  // Record navigation so the review loop yields to preview loading.
+  useEffect(() => {
+    lastNavAtRef.current = Date.now();
+  }, [focusedIndex]);
+  useEffect(() => () => {
+    if (navRetryTimerRef.current != null) window.clearTimeout(navRetryTimerRef.current);
+  }, []);
 
   // Preload adjacent photos so SingleView navigation feels instant.
   // Fire-and-forget: generatePreview deduplicates in-flight requests.

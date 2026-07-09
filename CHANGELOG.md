@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.5.1 - 2026-07-09
+
+### Culling responsiveness
+
+### Added
+- **AI review master switch.** Settings → performance now has a single toggle that fully disables the AI review pipeline: no face/person scans, no sharpness or duplicate scoring, zero background analysis while culling. Previously even Fast Keeper mode kept canvas-based scoring running.
+- **Navigation quiet window.** The review loop now goes completely quiet for ~1.2s after every focus/navigation event and resumes when input goes idle. Flipping through images no longer competes with ONNX inference and canvas scoring — this was the main cause of 1–3s full-preview loads on capable hardware.
+
+### Changed
+- **Focused-image previews skip every queue.** High-priority (focused) preview requests borrow an extra renderer worker slot and bypass the main-process generation lane, so navigation never waits behind background preview warms.
+- Re-opening an image whose preview is already cached now renders immediately (the 80–220ms debounce only applies to first loads).
+- Default preview workers 2 → 3 (and balanced-tier hardware profile floors at 3) — sharp resizes run off-thread, so the extra lane is free responsiveness.
+
+### Fixed
+- The `v1.5.0` tag was cut from a commit that predated the face-recognition fix for new devices/external sources/JPEGs (`daee8c5`); 1.5.1 includes it.
+
+### Verified
+- `npm run typecheck` — clean
+- `npm test` — 510 passed, 11 skipped (36 files)
+
 ## 1.5.0 - 2026-07-07
 
 ### Performance overhaul — previews, culling, import, and export

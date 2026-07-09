@@ -142,6 +142,7 @@ interface State {
   autoSpeedMode: boolean;
   perfTier: 'auto' | 'low' | 'balanced' | 'high';
   fastKeeperMode: boolean;
+  aiReviewEnabled: boolean;
   previewConcurrency: number;
   faceConcurrency: number;
   // Keybind customization
@@ -283,6 +284,7 @@ export type Action =
   | { type: 'SET_RAW_PREVIEW_QUALITY'; quality: number }
   | { type: 'SET_PERF_TIER'; tier: 'auto' | 'low' | 'balanced' | 'high' }
   | { type: 'SET_FAST_KEEPER_MODE'; enabled: boolean }
+  | { type: 'SET_AI_REVIEW_ENABLED'; enabled: boolean }
   | { type: 'SET_AUTO_SPEED_MODE'; enabled: boolean }
   | { type: 'SET_PREVIEW_CONCURRENCY'; concurrency: number }
   | { type: 'SET_FACE_CONCURRENCY'; concurrency: number }
@@ -422,7 +424,8 @@ const initialState: State = {
   autoSpeedMode: false,
   perfTier: 'auto',
   fastKeeperMode: false,
-  previewConcurrency: 2,
+  aiReviewEnabled: true,
+  previewConcurrency: 3,
   faceConcurrency: 2,
   keybinds: { ...DEFAULT_KEYBINDS },
   metadataExport: { ...DEFAULT_METADATA_EXPORT },
@@ -1398,6 +1401,8 @@ export function reducer(state: State, action: Action): State {
       return { ...state, perfTier: action.tier };
     case 'SET_FAST_KEEPER_MODE':
       return { ...state, fastKeeperMode: action.enabled };
+    case 'SET_AI_REVIEW_ENABLED':
+      return { ...state, aiReviewEnabled: action.enabled };
     case 'SET_AUTO_SPEED_MODE':
       return { ...state, autoSpeedMode: action.enabled };
     case 'SET_REVIEW_PERFORMANCE_OPTION':

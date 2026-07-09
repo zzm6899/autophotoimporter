@@ -82,6 +82,7 @@ function enqueueQueuedRequest(request: {
 function takeNextQueuedRequest(): (() => void) | undefined {
   const priorityOrder: Array<'high' | 'normal' | 'low'> = ['high', 'normal', 'low'];
   for (const priority of priorityOrder) {
+    if (activeRequests >= activeLimitFor(priority)) continue;
     for (let i = 0; i < queuedRequests.length; i++) {
       const next = queuedRequests[i];
       if (next.priority !== priority) continue;
@@ -98,8 +99,15 @@ function takeNextQueuedRequest(): (() => void) | undefined {
   return undefined;
 }
 
+// High-priority (focused image) requests may borrow one slot beyond the
+// configured worker count so culling navigation never waits behind a full
+// lane of background warms.
+function activeLimitFor(priority: PreviewPriority): number {
+  return priority === 'high' ? maxActiveRequests + 1 : maxActiveRequests;
+}
+
 function drainQueue(): void {
-  while (activeRequests < maxActiveRequests) {
+  for (;;) {
     const run = takeNextQueuedRequest();
     if (!run) return;
     run();
@@ -170,7 +178,7 @@ function schedule<T>(
       resolve(undefined as T);
     };
     const request = { key, priority, run, cancel };
-    if (activeRequests < maxActiveRequests) {
+    if (activeRequests < activeLimitFor(priority)) {
       run();
     } else {
       enqueueQueuedRequest(request);
@@ -182,6 +190,12 @@ export function setPreviewConcurrency(concurrency: number): void {
   const next = Number.isFinite(concurrency) ? Math.round(concurrency) : 6;
   maxActiveRequests = Math.max(1, Math.min(12, next));
   drainQueue();
+}
+
+// Synchronous cache probe — lets views skip debounce delays when the source
+// is already resolved (e.g. flipping back to an image just viewed).
+export function hasCachedPreview(filePath: string, variant: PreviewVariant = 'preview'): boolean {
+  return previewCache.has(previewKey(filePath, variant));
 }
 
 export function getCachedPreview(
@@ -213,7 +227,7 @@ export function getCachedPreview(
     promise: Promise.resolve(undefined as string | undefined),
   };
   const promise = schedule(
-    () => window.electronAPI.getPreview(filePath, variant),
+    () => window.electronAPI.getPreview(filePath, variant, priority),
     priority,
     key,
     () => { entry.canceled = true; },

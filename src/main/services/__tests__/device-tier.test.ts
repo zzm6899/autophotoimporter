@@ -73,7 +73,7 @@ describe('detectDeviceTier', () => {
     const profile = detectDeviceTier();
 
     expect(profile.tier).toBe('balanced');
-    expect(profile.previewConcurrency).toBe(2);
+    expect(profile.previewConcurrency).toBe(3);
     expect(profile.faceConcurrency).toBe(3);
     expect(profile.rawPreviewQuality).toBe(70);
   });

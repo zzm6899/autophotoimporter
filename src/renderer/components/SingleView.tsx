@@ -21,7 +21,7 @@ import {
 } from '../../shared/exposure';
 import { bestShotScore } from '../../shared/review';
 import { Histogram } from './Histogram';
-import { applyCanvasSafeCrossOrigin, decodeImage, getCachedPreview } from '../utils/previewCache';
+import { applyCanvasSafeCrossOrigin, decodeImage, getCachedPreview, hasCachedPreview } from '../utils/previewCache';
 import { buildAiReasons } from '../utils/aiReasons';
 import { getSourceFolderLabel } from '../utils/sourcePath';
 
@@ -242,7 +242,7 @@ export function SingleView({ file, files, index, total, aiPaused = false }: Sing
           setLoadError(!file.thumbnail);
         }
       });
-    }, file.thumbnail ? (rawPreview ? 220 : 80) : 0);
+    }, hasCachedPreview(file.path, 'preview') ? 0 : (file.thumbnail ? (rawPreview ? 220 : 80) : 0));
 
     return () => {
       cancelled = true;

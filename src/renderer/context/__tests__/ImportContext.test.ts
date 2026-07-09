@@ -134,6 +134,7 @@ function makeState(overrides: Record<string, unknown> = {}) {
     autoSpeedMode: false,
     perfTier: 'auto' as const,
     fastKeeperMode: false,
+    aiReviewEnabled: true,
     previewConcurrency: 2,
     faceConcurrency: 1,
     keybinds: { pick: 'p', reject: 'x', unflag: 'u', nextPhoto: 'ArrowRight', prevPhoto: 'ArrowLeft', rateOne: '1', rateTwo: '2', rateThree: '3', rateFour: '4', rateFive: '5', clearRating: '0', compareMode: 'c', burstSelect: 'b', burstCollapse: 'g', queuePhoto: 'q', jumpUnreviewed: 'Tab', batchRejectBurst: 'r' },

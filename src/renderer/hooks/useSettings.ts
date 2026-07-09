@@ -212,6 +212,9 @@ export function useSettings() {
       if (typeof settings.fastKeeperMode === 'boolean') {
         dispatch({ type: 'SET_FAST_KEEPER_MODE', enabled: settings.fastKeeperMode });
       }
+      if (typeof settings.aiReviewEnabled === 'boolean') {
+        dispatch({ type: 'SET_AI_REVIEW_ENABLED', enabled: settings.aiReviewEnabled });
+      }
       if (typeof settings.autoSpeedMode === 'boolean') {
         dispatch({ type: 'SET_AUTO_SPEED_MODE', enabled: settings.autoSpeedMode });
       }

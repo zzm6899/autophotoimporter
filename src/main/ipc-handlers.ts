@@ -175,6 +175,7 @@ function isSettingsPatch(value: unknown): value is Partial<AppSettings> {
   if (value.lastDestination != null && typeof value.lastDestination !== 'string') return false;
   if (value.experienceMode != null && !['simple', 'pro'].includes(String(value.experienceMode))) return false;
   if (value.firstRunWizardSeen != null && typeof value.firstRunWizardSeen !== 'boolean') return false;
+  if (value.aiReviewEnabled != null && typeof value.aiReviewEnabled !== 'boolean') return false;
   if (value.sourceProfile != null && !['auto', 'ssd', 'usb', 'nas'].includes(String(value.sourceProfile))) return false;
   if (value.defaultConflictPolicy != null && !['skip', 'rename', 'overwrite', 'conflicts-folder'].includes(String(value.defaultConflictPolicy))) return false;
   if (value.conflictFolderName != null && typeof value.conflictFolderName !== 'string') return false;
@@ -1029,7 +1030,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   performancePromptSeenVersion: '',
   fastKeeperMode: false,
   autoSpeedMode: false,
-  previewConcurrency: 2,
+  aiReviewEnabled: true,
+  previewConcurrency: 3,
   faceConcurrency: 2,
   viewOverlayPreferences: { ...DEFAULT_VIEW_OVERLAY_PREFERENCES },
 };
@@ -2362,7 +2364,7 @@ export function registerIpcHandlers(): void {
     }
   });
 
-  handleIpc(IPC.SCAN_PREVIEW, async (_event, filePath: string, variant?: 'preview' | 'detail') => {
+  handleIpc(IPC.SCAN_PREVIEW, async (_event, filePath: string, variant?: 'preview' | 'detail', priority?: string) => {
     if (typeof filePath !== 'string') return undefined;
     if (variant !== undefined && variant !== 'preview' && variant !== 'detail') return undefined;
     if (!scannedFilesByPath.has(filePath)) return undefined;
@@ -2371,7 +2373,12 @@ export function registerIpcHandlers(): void {
     // waiting for a generation slot or shipping bytes over IPC.
     const cached = await peekPreviewFile(filePath, requestedVariant);
     if (cached) return { src: previewProtocolUrl(filePath, requestedVariant) };
-    const payload = await withPreviewSlot(requestedVariant, () => generatePreviewPayload(filePath, requestedVariant));
+    // Focused-image requests bypass the generation lane entirely so culling
+    // navigation never waits behind queued background warms. generatePreview
+    // deduplicates in flight, so overcommit is bounded by navigation speed.
+    const payload = priority === 'high'
+      ? await generatePreviewPayload(filePath, requestedVariant)
+      : await withPreviewSlot(requestedVariant, () => generatePreviewPayload(filePath, requestedVariant));
     if (!payload) return undefined;
     if (payload.kind === 'file' || payload.persisted) {
       return { src: previewProtocolUrl(filePath, requestedVariant) };
