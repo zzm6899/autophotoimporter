@@ -181,6 +181,10 @@ export function ImportResumeView({ tone = 'panel' }: ImportResumeViewProps) {
 
   const handleRestoreReviewSession = () => {
     if (!session) return;
+    // Re-arm main-process preview serving for the restored file set BEFORE
+    // the grid mounts and starts requesting thumbnails, otherwise every
+    // preview request is rejected by the scan-set path guard.
+    void window.electronAPI.registerSessionFiles?.(session.files).catch(() => undefined);
     dispatch({ type: 'RESTORE_SESSION', session });
     setMessage('Restored the last review session.');
   };

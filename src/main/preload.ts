@@ -64,7 +64,7 @@ const api = {
     ipcRenderer.on(IPC.SCAN_DIAGNOSTICS, handler);
     return () => ipcRenderer.removeListener(IPC.SCAN_DIAGNOSTICS, handler);
   },
-  getPreview: (filePath: string, variant?: 'preview' | 'detail', priority?: 'high' | 'normal' | 'low'): Promise<{ src: string } | undefined> =>
+  getPreview: (filePath: string, variant?: 'preview' | 'detail' | 'thumb', priority?: 'high' | 'normal' | 'low'): Promise<{ src: string } | undefined> =>
     ipcRenderer.invoke(IPC.SCAN_PREVIEW, filePath, variant, priority),
   cancelScan: (): Promise<void> =>
     ipcRenderer.invoke(IPC.SCAN_CANCEL),
@@ -90,6 +90,8 @@ const api = {
     ipcRenderer.invoke(IPC.SESSION_SAVE, session),
   getLatestSession: (): Promise<AppSession | null> =>
     ipcRenderer.invoke(IPC.SESSION_LATEST),
+  registerSessionFiles: (files: MediaFile[]): Promise<{ registered: number }> =>
+    ipcRenderer.invoke(IPC.SESSION_REGISTER_FILES, files),
   onImportProgress: (cb: (progress: ImportProgress) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, progress: ImportProgress) => cb(progress);
     ipcRenderer.on(IPC.IMPORT_PROGRESS, handler);

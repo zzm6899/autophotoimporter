@@ -1401,6 +1401,7 @@ export const IPC = {
   IMPORT_HEALTH_SUMMARY: 'import:health-summary',
   SESSION_SAVE: 'session:save',
   SESSION_LATEST: 'session:latest',
+  SESSION_REGISTER_FILES: 'session:register-files',
   CATALOG_STATS: 'catalog:stats',
   CATALOG_BROWSE: 'catalog:browse',
   CATALOG_SEARCH_FACES: 'catalog:search-faces',

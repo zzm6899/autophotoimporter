@@ -2364,10 +2364,18 @@ export function registerIpcHandlers(): void {
     }
   });
 
-  handleIpc(IPC.SCAN_PREVIEW, async (_event, filePath: string, variant?: 'preview' | 'detail', priority?: string) => {
+  handleIpc(IPC.SCAN_PREVIEW, async (_event, filePath: string, variant?: 'preview' | 'detail' | 'thumb', priority?: string) => {
     if (typeof filePath !== 'string') return undefined;
-    if (variant !== undefined && variant !== 'preview' && variant !== 'detail') return undefined;
+    if (variant !== undefined && variant !== 'preview' && variant !== 'detail' && variant !== 'thumb') return undefined;
     if (!scannedFilesByPath.has(filePath)) return undefined;
+    if (variant === 'thumb') {
+      // Grid-cell hydration: ensure the (cheap, embedded) thumbnail bytes are
+      // cached, then let the protocol serve them — much lighter than a full
+      // 1920px preview per cell on restored 10k+ file sessions.
+      const payload = await getThumbnailPayload(filePath);
+      if (!payload) return undefined;
+      return { src: previewProtocolUrl(filePath, 'thumb') };
+    }
     const requestedVariant = variant ?? 'preview';
     // Fast path: already cached on disk — hand back a protocol URL without
     // waiting for a generation slot or shipping bytes over IPC.
@@ -2486,6 +2494,21 @@ export function registerIpcHandlers(): void {
   handleIpc(IPC.SESSION_LATEST, async () => {
     return readLatestAppSession();
   });
+
+  // Re-arms the main process after a renderer session restore. The preview
+  // protocol and SCAN_PREVIEW only serve paths in the active scan set; after
+  // an app restart that set is empty, which left restored review sessions
+  // with blank thumbnails and previews (every request 404'd the path guard).
+  handleIpc(IPC.SESSION_REGISTER_FILES, async (_event, files: MediaFile[]) => {
+    scanEventGeneration++;
+    cancelScan(); // drop any stale background thumbnail work from an old source
+    scannedFiles = files;
+    scannedFilesByPath = new Map(files.map((file) => [file.path, file]));
+    return { registered: files.length };
+  }, ([files]) =>
+    Array.isArray(files) && files.length <= 500000 && files.every((file) => isRecord(file) && isNonEmptyString(file.path))
+      ? null
+      : ipcError('VALIDATION_ERROR', 'Invalid session file registration payload.'));
 
   handleIpc(IPC.IMPORT_START, async (_event, config: ImportConfig) => {
     try {

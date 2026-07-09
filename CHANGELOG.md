@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.5.2 - 2026-07-10
+
+### Fixed
+- **Blank thumbnails/previews in restored review sessions.** Session restore only rebuilt renderer state; after an app restart the main process had an empty scan set, so its security path-guard rejected every thumbnail and preview request — the grid showed metadata and badges but no images (most visible on RAW-heavy sessions). Restoring a session now re-registers the file set with the main process, and thumbnails/previews regenerate on demand from the source files.
+- Grid-cell rehydration now requests the lightweight embedded thumbnail instead of a full 1920px preview per cell — restored 10k+ file sessions fill the grid far faster (a RAW preview costs a multi-MB byte-scan; the embedded thumb is near-free).
+
+### Added
+- End-to-end main-process pipeline test using a synthetic NEF (real scanner, exifr, sharp, and the keptra-preview protocol handler — only Electron mocked), covering live scans, the app-restart/restore case, and both thumb and loupe variants.
+
+### Verified
+- `npm run typecheck` — clean
+- `npm test` — 514 passed, 11 skipped (37 files)
+
 ## 1.5.1 - 2026-07-09
 
 ### Culling responsiveness

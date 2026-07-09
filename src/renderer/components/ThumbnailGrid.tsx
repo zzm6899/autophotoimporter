@@ -4335,7 +4335,7 @@ export function ThumbnailGrid() {
 
     const id = window.setTimeout(() => {
       for (const file of candidates) {
-        void getCachedPreview(file.path, 'preview', 'low')
+        void getCachedPreview(file.path, 'thumb', 'low')
           .then((preview) => {
             if (cancelled || !preview) return;
             updates[file.path] = preview;

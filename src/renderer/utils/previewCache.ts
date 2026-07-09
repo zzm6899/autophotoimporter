@@ -1,6 +1,6 @@
 import { PREVIEW_PROTOCOL_SCHEME } from '../../shared/types';
 
-type PreviewVariant = 'preview' | 'detail';
+type PreviewVariant = 'preview' | 'detail' | 'thumb';
 
 // Marks an image element safe for canvas readback when its source is served
 // by the preview protocol (which responds with Access-Control-Allow-Origin).
