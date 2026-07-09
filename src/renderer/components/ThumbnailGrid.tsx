@@ -3619,10 +3619,12 @@ export function ThumbnailGrid() {
           importVisible();
           return;
         case 'ai.toggle':
+          if (!aiReviewEnabledRef.current) return;
           if (reviewPaused) resumeAiReview();
           else pauseAiReview();
           return;
         case 'ai.overview':
+          if (!aiReviewEnabledRef.current) return;
           setShowAiReviewStrip(true);
           return;
         case 'best.burst':
@@ -5420,7 +5422,7 @@ export function ThumbnailGrid() {
         <span className="shrink-0 text-[10px] text-text-faint">
           {isPro ? 'Ctrl/Cmd+K for all commands' : 'Simple mode'}
         </span>
-        {isPro && totalPhotoCount > 0 && (
+        {isPro && aiReviewEnabled && totalPhotoCount > 0 && (
           <button
             type="button"
             onClick={() => setShowAiReviewStrip((value) => !value)}
@@ -5434,7 +5436,7 @@ export function ThumbnailGrid() {
             AI {reviewStats.analyzed}/{reviewStats.total}{aiOverview.faceScanEta ? ` ETA ${aiOverview.faceScanEta.label}` : ''}
           </button>
         )}
-        {isPro && totalPhotoCount > 0 && (
+        {isPro && aiReviewEnabled && totalPhotoCount > 0 && (
           <button
             type="button"
             onClick={handleAutoSpeedToggle}
@@ -5475,13 +5477,15 @@ export function ThumbnailGrid() {
             >
               {reviewSprintMode ? `Focus ${sprintRemaining}` : 'Focus'}
             </ActionButton>
-            <ActionButton
-              icon={Wand2}
-              onClick={() => openBestOfBatch(0)}
-              title={`Rank eligible visible photos one page at a time, up to ${BEST_OF_BATCH_PAGE_SIZE} per page; actions affect the current page. AI: ${reviewStats.analyzed}/${reviewStats.total}, faces: ${reviewStats.faces}.`}
-            >
-              Best Page
-            </ActionButton>
+            {aiReviewEnabled && (
+              <ActionButton
+                icon={Wand2}
+                onClick={() => openBestOfBatch(0)}
+                title={`Rank eligible visible photos one page at a time, up to ${BEST_OF_BATCH_PAGE_SIZE} per page; actions affect the current page. AI: ${reviewStats.analyzed}/${reviewStats.total}, faces: ${reviewStats.faces}.`}
+              >
+                Best Page
+              </ActionButton>
+            )}
             <ActionButton
               icon={ListChecks}
               onClick={() => {
@@ -5492,26 +5496,28 @@ export function ThumbnailGrid() {
             >
               Needs Review
             </ActionButton>
-            <ActionButton
-              icon={reviewPaused ? Play : Pause}
-              tone={reviewPaused ? 'warning' : 'neutral'}
-              onClick={() => {
-                if (reviewWaitingForThumbnails) return;
-                if (reviewPaused) resumeAiReview();
-                else pauseAiReview();
-              }}
-              title={reviewWaitingForThumbnails
-                ? `AI review starts once the first thumbnails are ready. Ready: ${readyThumbnailCount}/${totalPhotoCount}.`
-                : reviewPaused
-                  ? `Resume AI analysis and preview loading. Done ${reviewStats.analyzed}/${reviewStats.total}.`
-                  : `Pause AI analysis and preview loading. Done ${reviewStats.analyzed}/${reviewStats.total}.`}
-            >
-              {reviewWaitingForThumbnails
-                ? `AI waiting ${readyThumbnailCount}/${totalPhotoCount}`
-                : reviewPaused
-                  ? `Resume AI ${reviewStats.analyzed}/${reviewStats.total}`
-                  : `Pause AI ${reviewStats.analyzed}/${reviewStats.total}`}
-            </ActionButton>
+            {aiReviewEnabled && (
+              <ActionButton
+                icon={reviewPaused ? Play : Pause}
+                tone={reviewPaused ? 'warning' : 'neutral'}
+                onClick={() => {
+                  if (reviewWaitingForThumbnails) return;
+                  if (reviewPaused) resumeAiReview();
+                  else pauseAiReview();
+                }}
+                title={reviewWaitingForThumbnails
+                  ? `AI review starts once the first thumbnails are ready. Ready: ${readyThumbnailCount}/${totalPhotoCount}.`
+                  : reviewPaused
+                    ? `Resume AI analysis and preview loading. Done ${reviewStats.analyzed}/${reviewStats.total}.`
+                    : `Pause AI analysis and preview loading. Done ${reviewStats.analyzed}/${reviewStats.total}.`}
+              >
+                {reviewWaitingForThumbnails
+                  ? `AI waiting ${readyThumbnailCount}/${totalPhotoCount}`
+                  : reviewPaused
+                    ? `Resume AI ${reviewStats.analyzed}/${reviewStats.total}`
+                    : `Pause AI ${reviewStats.analyzed}/${reviewStats.total}`}
+              </ActionButton>
+            )}
             <ActionButton
               icon={AlertTriangle}
               onClick={() => dispatch({ type: 'SET_FILTER', filter: 'blur-risk' })}
@@ -6004,7 +6010,7 @@ export function ThumbnailGrid() {
         </div>
       )}
 
-      {totalPhotoCount > 0 && showAiReviewStrip && (
+      {aiReviewEnabled && totalPhotoCount > 0 && showAiReviewStrip && (
         <div className="shrink-0 border-b border-border bg-surface-alt/55 px-3 py-1.5">
           <div className="flex flex-wrap items-center gap-2 text-[10px] text-text-muted">
             <span className="font-semibold uppercase tracking-wide text-text-secondary">AI Overview</span>

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.5.3 - 2026-07-10
+
+### Changed
+- **AI UI hides when AI review is disabled.** With the AI review master switch off, the toolbar no longer shows the "AI x/y" counter, "Auto speed", "Pause/Resume AI", or "Best Page" buttons, and the AI Overview strip stays hidden — no more "Analyzing 0/16449" while analysis is intentionally off. The `ai.toggle`/`ai.overview` keybinds become no-ops too. Everything reappears when the switch is turned back on.
+
+### Verified
+- `npm run typecheck` — clean
+- `npm test` — 514 passed, 11 skipped (37 files)
+
 ## 1.5.2 - 2026-07-10
 
 ### Fixed
