@@ -176,7 +176,7 @@ jobs:
 
       - run: npm run package:smoke
         env:
-          PACKAGE_SMOKE_LAUNCH: "0"
+          PACKAGE_SMOKE_LAUNCH: "1"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -265,6 +265,7 @@ jobs:
               --endpoint "$UPDATE_ADMIN_ENDPOINT" \
               --token "$UPDATE_ADMIN_API_TOKEN" \
               --platform windows \
+              --version "$VERSION" \
               --file "$WINDOWS_NUPKG" \
               --upload-only
           fi
@@ -281,6 +282,7 @@ jobs:
               --endpoint "$UPDATE_ADMIN_ENDPOINT" \
               --token "$UPDATE_ADMIN_API_TOKEN" \
               --platform windows \
+              --version "$VERSION" \
               --file "$WINDOWS_ZIP" \
               --upload-only
           fi
@@ -289,6 +291,7 @@ jobs:
               --endpoint "$UPDATE_ADMIN_ENDPOINT" \
               --token "$UPDATE_ADMIN_API_TOKEN" \
               --platform macos \
+              --version "$VERSION" \
               --file "$MAC_ZIP" \
               --upload-only
           fi

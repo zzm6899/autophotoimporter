@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { basename } from 'node:path';
+import { basename, extname } from 'node:path';
 import { readFile } from 'node:fs/promises';
 
 const args = process.argv.slice(2);
@@ -83,8 +83,19 @@ async function fetchWithEndpointFallback(path, options) {
 
 let resolvedArtifactUrl = artifactUrl;
 
+function versionedArtifactFilename(file, releaseVersion) {
+  if (!releaseVersion || file === 'RELEASES') return file;
+  const normalizedVersion = String(releaseVersion).replace(/^v/i, '');
+  if (!normalizedVersion || file.toLowerCase().includes(normalizedVersion.toLowerCase())) return file;
+  const extension = extname(file);
+  const stem = extension ? file.slice(0, -extension.length) : file;
+  return `${stem}-${normalizedVersion}${extension}`;
+}
+
 if (!resolvedArtifactUrl && filePath) {
-  const filename = basename(filePath);
+  // Release installers must have immutable URLs. Reusing Keptra-Setup.exe made
+  // browsers and CDNs serve an older build after the release record advanced.
+  const filename = versionedArtifactFilename(basename(filePath), version);
   const buffer = await readFile(filePath);
   const uploadResponse = await fetchWithEndpointFallback(
     `/admin/api/artifacts/upload?platform=${encodeURIComponent(platform)}&filename=${encodeURIComponent(filename)}`,

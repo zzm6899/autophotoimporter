@@ -207,6 +207,11 @@ class SqliteSessionStore implements SessionStoreBackend {
   // Promise-chain mutex: each save() appends to this chain so SQLite
   // BEGIN/COMMIT calls from concurrent async callers never interleave.
   private saveMutex: Promise<unknown> = Promise.resolve();
+  private readonly persistedSessions = new Map<string, {
+    files: Map<string, string>;
+    selected: string;
+    queued: string;
+  }>();
 
   constructor(sqlite: SqliteModule, public readonly sqlitePath: string) {
     this.db = new sqlite.DatabaseSync(sqlitePath);
@@ -312,7 +317,12 @@ class SqliteSessionStore implements SessionStoreBackend {
     const insertFile = this.db.prepare(`
       INSERT INTO session_files (session_id, path, sort_index, metadata_json)
       VALUES (?, ?, ?, ?)
+      ON CONFLICT(session_id, path) DO UPDATE SET
+        sort_index = excluded.sort_index,
+        metadata_json = excluded.metadata_json
     `);
+    const deleteFile = this.db.prepare('DELETE FROM session_files WHERE session_id = ? AND path = ?');
+    const deleteFaces = this.db.prepare('DELETE FROM session_face_embeddings WHERE session_id = ? AND path = ?');
     const insertFace = this.db.prepare(`
       INSERT INTO session_face_embeddings (session_id, path, face_index, embedding, box_json)
       VALUES (?, ?, ?, ?, ?)
@@ -347,15 +357,21 @@ class SqliteSessionStore implements SessionStoreBackend {
         stats.queued,
         stats.reviewed,
       );
-      deleteFiles.run(next.id);
-      deleteSelected.run(next.id);
-      deleteQueued.run(next.id);
+      const previous = this.persistedSessions.get(next.id);
+      if (!previous) deleteFiles.run(next.id);
+      const nextFileSignatures = new Map<string, string>();
 
       for (let index = 0; index < next.files.length; index++) {
         const originalFile = session.files[index] ?? next.files[index];
         const file = next.files[index];
-        insertFile.run(next.id, file.path, index, JSON.stringify(stripSqliteMediaFile(file)));
         const embeddings = faceEmbeddingsFor(originalFile);
+        const metadataJson = JSON.stringify(stripSqliteMediaFile(file));
+        const boxesJson = JSON.stringify(originalFile.faceEmbeddingBoxes ?? []);
+        const signature = `${index}:${metadataJson}:${embeddings.join(',')}:${boxesJson}`;
+        nextFileSignatures.set(file.path, signature);
+        if (previous?.files.get(file.path) === signature) continue;
+        insertFile.run(next.id, file.path, index, metadataJson);
+        deleteFaces.run(next.id, file.path);
         for (let faceIndex = 0; faceIndex < embeddings.length; faceIndex++) {
           const hex = embeddings[faceIndex];
           if (!/^[0-9a-f]+$/i.test(hex) || hex.length < 8 || hex.length % 2 !== 0) continue;
@@ -369,10 +385,34 @@ class SqliteSessionStore implements SessionStoreBackend {
         }
       }
 
-      next.selectedPaths.forEach((filePath, index) => insertSelected.run(next.id, filePath, index));
-      next.queuedPaths.forEach((filePath, index) => insertQueued.run(next.id, filePath, index));
+      if (previous) {
+        for (const previousPath of previous.files.keys()) {
+          if (!nextFileSignatures.has(previousPath)) deleteFile.run(next.id, previousPath);
+        }
+      }
+
+      const selectedSignature = next.selectedPaths.join('\n');
+      const queuedSignature = next.queuedPaths.join('\n');
+      if (!previous || previous.selected !== selectedSignature) {
+        deleteSelected.run(next.id);
+        next.selectedPaths.forEach((filePath, index) => insertSelected.run(next.id, filePath, index));
+      }
+      if (!previous || previous.queued !== queuedSignature) {
+        deleteQueued.run(next.id);
+        next.queuedPaths.forEach((filePath, index) => insertQueued.run(next.id, filePath, index));
+      }
       upsertMeta.run(next.id);
       this.db.exec('COMMIT');
+      this.persistedSessions.set(next.id, {
+        files: nextFileSignatures,
+        selected: selectedSignature,
+        queued: queuedSignature,
+      });
+      while (this.persistedSessions.size > 8) {
+        const oldest = this.persistedSessions.keys().next().value as string | undefined;
+        if (!oldest) break;
+        this.persistedSessions.delete(oldest);
+      }
     } catch (error) {
       this.db.exec('ROLLBACK');
       throw error;

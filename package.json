@@ -1,7 +1,7 @@
 {
   "name": "keptra",
   "productName": "Keptra",
-  "version": "1.5.3",
+  "version": "1.5.4",
   "description": "AI-assisted photo culling, import, and keeper selection",
   "main": ".vite/build/main.js",
   "private": true,
@@ -74,5 +74,10 @@
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "sharp": "^0.35.3"
+  },
+  "overrides": {
+    "onnxruntime-node": {
+      "tar": "7.5.19"
+    }
   }
 }

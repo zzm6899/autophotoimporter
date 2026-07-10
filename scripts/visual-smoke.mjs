@@ -165,10 +165,15 @@ function buildManifest() {
   const buildFiles = requiredBuildFiles.map(fileStatus);
   const uiFiles = requiredUiFiles.map(fileStatus);
   const indexHtml = path.join(rendererDir, 'index.html');
+  const rendererReferences = existsSync(indexHtml)
+    ? [readText(indexHtml), ...assetPaths.filter((assetPath) => assetPath.endsWith('.js')).map(readText)].join('\n')
+    : '';
   const indexReferences = existsSync(indexHtml)
     ? assetPaths.map((assetPath) => ({
       asset: rel(assetPath),
-      referenced: readText(indexHtml).includes(path.basename(assetPath)),
+      // Worker and lazy chunks are referenced by the main JavaScript bundle,
+      // not directly by index.html.
+      referenced: rendererReferences.includes(path.basename(assetPath)),
     }))
     : [];
 

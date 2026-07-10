@@ -11,7 +11,7 @@ import { scanFiles, cancelScan, pauseScan, resumeScan, type FileScanDiagnostics 
 import { importFiles, cancelImport, planImportFiles } from './services/import-engine';
 import { writeLightroomHandoff } from './services/lightroom-handoff';
 import { isDuplicate } from './services/duplicate-detector';
-import { generatePreview, generatePreviewPayload, getThumbnailPayload, peekPreviewFile, getRawPreviewQualitySetting, isSharpAvailable } from './services/exif-parser';
+import { generatePreview, generatePreviewPayload, getThumbnailPayload, peekPreviewFile, getPreviewCacheDirectory, getRawPreviewQualitySetting, isSharpAvailable } from './services/exif-parser';
 import { checkForUpdate, fetchUpdateHistory, readLastKnownGoodUpdateMetadata } from './services/update-checker';
 import { probeFtp, mirrorFtp } from './services/ftp-source';
 import { activateLicenseInput, checkHostedLicenseStatus, validateLicenseKey } from './services/license';
@@ -29,6 +29,9 @@ import { registerUpdateHandlers } from './ipc/update-handlers';
 import { registerFtpHandlers } from './ipc/ftp-handlers';
 import { registerLicenseHandlers } from './ipc/license-handlers';
 import { registerFaceHandlers } from './ipc/face-handlers';
+import { maintainPreviewCache, type CacheLifecycleReport } from './services/cache-lifecycle';
+import { getPerformanceMetrics, measurePerformance } from './services/performance-metrics';
+import { writeManifestFile } from './services/manifest-export';
 import { log } from './logger';
 
 
@@ -355,6 +358,24 @@ let lastFtpSyncStatus: FtpSyncStatus = {
 let watchFolderManager: WatchFolderManager | null = null;
 let catalogService: Promise<CatalogService> | null = null;
 let sessionStoreService: Promise<SessionStoreService> | null = null;
+let previewCacheLifecycle: CacheLifecycleReport | null = null;
+let persistentServicesClosed = false;
+
+async function closePersistentServices(): Promise<void> {
+  if (persistentServicesClosed) return;
+  persistentServicesClosed = true;
+  const closeTasks: Array<Promise<void>> = [];
+  if (catalogService) closeTasks.push(catalogService.then((service) => service.close()));
+  if (sessionStoreService) closeTasks.push(sessionStoreService.then((service) => service.close()));
+  await Promise.allSettled(closeTasks);
+  catalogService = null;
+  sessionStoreService = null;
+}
+
+async function runPreviewCacheMaintenance(): Promise<CacheLifecycleReport> {
+  previewCacheLifecycle = await maintainPreviewCache(await getPreviewCacheDirectory());
+  return previewCacheLifecycle;
+}
 
 function getCatalogService(): Promise<CatalogService> {
   catalogService ??= openCatalog(path.join(app.getPath('userData'), 'catalog'));
@@ -1715,6 +1736,8 @@ async function buildDiagnosticsSnapshot(): Promise<AppDiagnosticsSnapshot> {
       },
       previewQueue: getPreviewQueueDiagnostics(),
       rawPreviewCache: getRawPreviewCacheDiagnostics(),
+      cacheLifecycle: previewCacheLifecycle,
+      metrics: getPerformanceMetrics(),
     },
   };
 }
@@ -2094,22 +2117,6 @@ function contactSheetHtml(files: MediaFile[]): string {
     </html>`;
 }
 
-function stripManifestMediaFile(file: MediaFile): Omit<MediaFile, 'thumbnail'> {
-  const {
-    thumbnail: _thumbnail,
-    faceEmbedding: _faceEmbedding,
-    faceEmbeddings: _faceEmbeddings,
-    faceEmbeddingBoxes: _faceEmbeddingBoxes,
-    faceBoxes: _faceBoxes,
-    personBoxes: _personBoxes,
-    reviewReasons: _reviewReasons,
-    subjectReasons: _subjectReasons,
-    duplicateMemory: _duplicateMemory,
-    ...metadata
-  } = file;
-  return metadata;
-}
-
 async function contactSheetFiles(files: MediaFile[]): Promise<MediaFile[]> {
   const sheetFiles = files.slice(0, 500);
   // Hydrate missing previews with bounded parallelism instead of one at a
@@ -2222,13 +2229,19 @@ export function registerIpcHandlers(): void {
     }
   }).catch(() => undefined);
 
-  app.on('before-quit', () => {
+  let shutdownInProgress = false;
+  app.on('before-quit', (event) => {
     cancelPendingFaceJobs();
     clearImageDecodeCache();
     stopWatching();
     watchFolderManager?.stop();
     clearFtpSyncTimer();
     ftpSyncAbort?.abort();
+    if (!persistentServicesClosed && !shutdownInProgress) {
+      event.preventDefault();
+      shutdownInProgress = true;
+      void closePersistentServices().finally(() => app.quit());
+    }
   });
 
   // Scanning
@@ -2274,7 +2287,7 @@ export function registerIpcHandlers(): void {
       statFailures: 0,
     };
     try {
-      const total = await scanFiles(
+      const total = await measurePerformance('scan.total', () => scanFiles(
         sourcePath,
         (batch) => {
           if (scanGeneration !== scanEventGeneration) return;
@@ -2300,7 +2313,7 @@ export function registerIpcHandlers(): void {
             fileDiagnostics = diagnostics;
           },
         },
-      );
+      ));
       console.log(`[scan] Complete: ${total} files`);
       const catalogDuplicatesMarked = await applyCatalogScanMemory(sourcePath, scanId).catch((error) => {
         log.warn('[catalog] scan memory failed', error);
@@ -2384,9 +2397,9 @@ export function registerIpcHandlers(): void {
     // Focused-image requests bypass the generation lane entirely so culling
     // navigation never waits behind queued background warms. generatePreview
     // deduplicates in flight, so overcommit is bounded by navigation speed.
-    const payload = priority === 'high'
-      ? await generatePreviewPayload(filePath, requestedVariant)
-      : await withPreviewSlot(requestedVariant, () => generatePreviewPayload(filePath, requestedVariant));
+    const payload = await measurePerformance(`preview.${requestedVariant}`, () => priority === 'high'
+      ? generatePreviewPayload(filePath, requestedVariant)
+      : withPreviewSlot(requestedVariant, () => generatePreviewPayload(filePath, requestedVariant)));
     if (!payload) return undefined;
     if (payload.kind === 'file' || payload.persisted) {
       return { src: previewProtocolUrl(filePath, requestedVariant) };
@@ -2444,11 +2457,11 @@ export function registerIpcHandlers(): void {
   });
 
   handleIpc(IPC.CATALOG_BROWSE, async (_event, query: CatalogBrowserQuery = {}) => {
-    return (await getCatalogService()).browse(query);
+    return measurePerformance('catalog.browse', async () => (await getCatalogService()).browse(query));
   }, ([query]) => isCatalogBrowserQuery(query) ? null : ipcError('VALIDATION_ERROR', 'Invalid catalog query payload.'));
 
   handleIpc(IPC.CATALOG_SEARCH_FACES, async (_event, query: CatalogFaceSearchQuery) => {
-    return (await getCatalogService()).searchFaces(query);
+    return measurePerformance('catalog.face-search', async () => (await getCatalogService()).searchFaces(query));
   }, ([query]) => isCatalogFaceSearchQuery(query) ? null : ipcError('VALIDATION_ERROR', 'Invalid face search payload.'));
 
   handleIpc(IPC.CATALOG_UPSERT_FACE_METADATA, async (_event, files: MediaFile[], sessionId?: string) => {
@@ -3086,27 +3099,7 @@ export function registerIpcHandlers(): void {
     });
     if (result.canceled || !result.filePath) return null;
 
-    if (format === 'json') {
-      await writeFile(result.filePath, JSON.stringify(scannedFiles.map(stripManifestMediaFile), null, 2));
-    } else {
-      const headers = [
-        'name', 'path', 'size', 'type', 'extension', 'dateTaken',
-        'destPath', 'pick', 'rating', 'isProtected', 'duplicate',
-        'cameraMake', 'cameraModel', 'lensModel', 'iso', 'aperture',
-        'shutterSpeed', 'focalLength', 'exposureValue', 'normalizeToAnchor',
-        'exposureAdjustmentStops',
-      ];
-      const esc = (v: unknown) => {
-        if (v == null) return '';
-        const s = String(v);
-        return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-      };
-      const lines = [headers.join(',')];
-      for (const f of scannedFiles) {
-        lines.push(headers.map((h) => esc((f as unknown as Record<string, unknown>)[h])).join(','));
-      }
-      await writeFile(result.filePath, lines.join('\n'));
-    }
+    await measurePerformance('export.manifest', () => writeManifestFile(result.filePath!, scannedFiles, format));
     return result.filePath;
   });
 
@@ -3342,11 +3335,14 @@ export function registerIpcHandlers(): void {
       const tmpDir = path.join(app.getPath('temp'), 'photo-importer-thumbs');
       await rm(tmpDir, { recursive: true, force: true });
       await mkdir(tmpDir, { recursive: true });
+      await runPreviewCacheMaintenance();
       return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
   });
+
+  void runPreviewCacheMaintenance().catch((error) => log.warn('[cache] startup maintenance failed', error));
 
   // Clear the persistent face-analysis result cache
   handleIpc(IPC.FACE_CACHE_CLEAR, async () => {

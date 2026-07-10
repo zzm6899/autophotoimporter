@@ -19,8 +19,9 @@ import { ActionButton, ToolbarGroup } from './ui';
 import { applyCanvasSafeCrossOrigin, getCachedPreview, getPreviewCacheStats, setBackgroundPreviewPaused, warmPreviews } from '../utils/previewCache';
 import { getSourceFolderLabel, isPathInsideSourceRoot } from '../utils/sourcePath';
 import { clampStops, getEffectiveExposureStops, getNormalizedExposureStops, normalizeExposureStops } from '../../shared/exposure';
-import { buildFaceIdentityGroups, cosineSimilarity, deserializeEmbedding, FACE_GROUP_EMBEDDING_THRESHOLD, faceSignalConfidence, focusQuality, humanMomentQuality, isUsablyFocused, type FaceIdentityGroup } from '../../shared/review';
+import { cosineSimilarity, deserializeEmbedding, FACE_GROUP_EMBEDDING_THRESHOLD, faceSignalConfidence, focusQuality, humanMomentQuality, isUsablyFocused, type FaceIdentityGroup } from '../../shared/review';
 import { needsSecondPass } from '../../shared/review-lane';
+import { useFaceIdentityWorker } from '../hooks/useFaceIdentityWorker';
 
 const SIMPLE_FILTERS = new Set<string>([
   'all',
@@ -2077,7 +2078,6 @@ export function ThumbnailGrid() {
   const reviewPersonDetectionRef = useRef(reviewPersonDetection);
   const reviewVisualDuplicatesRef = useRef(reviewVisualDuplicates);
   const faceGroupEmbeddingThresholdRef = useRef(FACE_GROUP_EMBEDDING_THRESHOLD);
-  const faceIdentityCacheRef = useRef<{ key: string; groups: FaceIdentityGroup[] } | null>(null);
   const importPausedReviewRef = useRef(false);
   const autoSpeedTriggeredRef = useRef(false);
   const reviewScanCursorRef = useRef(0);
@@ -2119,18 +2119,13 @@ export function ThumbnailGrid() {
     () => faceMatchFingerprint(files, shouldBuildFaceIdentityGroups),
     [files, shouldBuildFaceIdentityGroups],
   );
-  const faceIdentityGroups = useMemo(() => {
-    if (!shouldBuildFaceIdentityGroups) return [];
-    const key = `${faceIdentityFingerprint}:${faceGroupEmbeddingThreshold}:${includeFaceIdentitySingletons ? 1 : 0}`;
-    const cached = faceIdentityCacheRef.current;
-    if (cached?.key === key) return cached.groups;
-    const groups = buildFaceIdentityGroups(files, faceGroupEmbeddingThreshold, includeFaceIdentitySingletons);
-    faceIdentityCacheRef.current = { key, groups };
-    return groups;
-  // files is intentionally read through the face-data fingerprint so unrelated
-  // review score updates do not rebuild identity clusters on the renderer thread.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [faceGroupEmbeddingThreshold, faceIdentityFingerprint, includeFaceIdentitySingletons, shouldBuildFaceIdentityGroups]);
+  const faceIdentityGroups = useFaceIdentityWorker(
+    files,
+    faceIdentityFingerprint,
+    faceGroupEmbeddingThreshold,
+    includeFaceIdentitySingletons,
+    shouldBuildFaceIdentityGroups,
+  );
   const filesByPath = useMemo(() => new Map(files.map((file) => [file.path, file])), [files]);
   const displayFaceIdentityGroups = useMemo(() => {
     if (faceIdentityGroups.length === 0 && manualFaceGroups.length === 0) return [];
@@ -2711,7 +2706,6 @@ export function ThumbnailGrid() {
     setCatalogFaceSearch(null);
     setFaceCoverOverrides({});
     setFaceThresholdOverrides({});
-    faceIdentityCacheRef.current = null;
     lastCatalogFacePersistRef.current = '';
     lastCatalogFaceFileFingerprintsRef.current.clear();
     mediaDateSortCache.clear();

@@ -120,7 +120,9 @@ function imageSmokeStatus(image: Electron.NativeImage) {
     sampled,
     nonDarkRatio: Number(nonDarkRatio.toFixed(4)),
     lumaRange: maxLuma - minLuma,
-    ok: width > 0 && height > 0 && nonDarkRatio > 0.01 && (maxLuma - minLuma) > 8,
+    // Keptra's dark theme is intentionally near-black; a small bright-text
+    // ratio plus meaningful contrast is enough to prove the renderer painted.
+    ok: width > 0 && height > 0 && nonDarkRatio > 0.002 && (maxLuma - minLuma) > 8,
   };
 }
 
@@ -344,6 +346,23 @@ const createWindow = () => {
             .join(' ')
             .replace(/\\s+/g, ' ')
             .trim();
+          const accessibilityIssues = [];
+          for (const button of visibleButtons()) {
+            if (!buttonLabel(button)) accessibilityIssues.push('Visible button has no accessible name');
+          }
+          for (const image of Array.from(document.querySelectorAll('img'))) {
+            const rect = image.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0 && !image.hasAttribute('alt')) {
+              accessibilityIssues.push('Visible image is missing alt text');
+            }
+          }
+          for (const control of Array.from(document.querySelectorAll('input, select, textarea'))) {
+            const rect = control.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) continue;
+            const labelled = control.getAttribute('aria-label') || control.getAttribute('aria-labelledby') ||
+              control.getAttribute('title') || control.closest('label') || control.labels?.length;
+            if (!labelled) accessibilityIssues.push('Visible form control has no accessible label');
+          }
           const findButton = (pattern) => visibleButtons()
             .find((button) => pattern.test(buttonLabel(button)));
           const clickButton = async (name, pattern, expectedPatterns = []) => {
@@ -382,10 +401,11 @@ const createWindow = () => {
           };
           await dismiss();
           const interactions = [];
+          interactions.push(await clickButton('pro experience mode', /^Pro\\b/i, [/PRO WORKFLOW|FTP|Catalog/i]));
           interactions.push(await clickButton('source ftp tab', /(^|\\s)FTP(\\s|$)/i, [/FTP Source/i, /Host/i, /Mirror and scan/i]));
           interactions.push(await clickButton('source drive tab', /(^|\\s)Drive(\\s|$)/i, [/Choose Folder/i, /HOW IT WORKS/i]));
           interactions.push(await clickButton('settings page', /(^|\\s)Settings(\\s|$)/i, [/General/i, /Workflow/i, /Account/i]));
-          interactions.push(await clickButton('settings workflow tab', /(^|\\s)Workflow(\\s|$)/i, [/Backup Copy/i, /Folder/i]));
+          interactions.push(await clickButton('settings workflow tab', /^Workflow$/i, [/Backup Copy/i, /Folder/i]));
           interactions.push(await clickButton('settings account tab', /(^|\\s)Account(\\s|$)/i, [/License/i, /Buy license|Activate|Manage/i]));
           interactions.push(await clickButton('settings close', /Back|Close/i, [/HOW IT WORKS|Choose Folder/i]));
           await dismiss();
@@ -411,6 +431,7 @@ const createWindow = () => {
             visibleButtonCount: visibleButtons().length,
             visibleButtonsSample: visibleButtons().slice(0, 80).map(buttonLabel),
             interactions,
+            accessibilityIssues,
             smokeErrors,
             bodyTextLength: bodyText.length,
             bodyTextSample: bodyText.slice(0, 1000),
@@ -432,6 +453,7 @@ const createWindow = () => {
           ? preload.interactions.filter((item: { ok?: boolean }) => !item.ok)
           : [{ name: 'interactions unavailable' }];
         const smokeErrors = Array.isArray(preload?.smokeErrors) ? preload.smokeErrors : [];
+        const accessibilityIssues = Array.isArray(preload?.accessibilityIssues) ? preload.accessibilityIssues : ['Accessibility audit unavailable'];
         void mainWindow?.webContents.capturePage().then((image) => {
           const imageStatus = imageSmokeStatus(image);
           const output = process.env.KEPTRA_PACKAGE_SMOKE_OUTPUT;
@@ -447,6 +469,7 @@ const createWindow = () => {
               rendererMounted &&
               interactionFailures.length === 0 &&
               smokeErrors.length === 0 &&
+              accessibilityIssues.length === 0 &&
               imageStatus.ok &&
               resources.onnxRuntimeNode &&
               missingModels.length === 0,
@@ -456,6 +479,7 @@ const createWindow = () => {
               rendererMounted,
               interactionFailures,
               smokeErrors,
+              accessibilityIssues,
               imageStatus,
               resources,
               missingModels,

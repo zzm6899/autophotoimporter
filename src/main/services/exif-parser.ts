@@ -160,6 +160,10 @@ async function getThumbDir(): Promise<string> {
   return thumbDir;
 }
 
+export async function getPreviewCacheDirectory(): Promise<string> {
+  return getThumbDir();
+}
+
 export function setRawPreviewQuality(quality: number): void {
   const requested = typeof quality === 'number' && Number.isFinite(quality) ? quality : PREVIEW_QUALITY;
   rawPreviewQuality = Math.max(30, Math.min(100, requested));

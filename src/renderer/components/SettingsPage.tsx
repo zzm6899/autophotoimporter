@@ -1760,6 +1760,22 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                       preview {diagnosticsSnapshot.performance.previewQueue.preview.active}/{diagnosticsSnapshot.performance.previewQueue.preview.queued} · detail {diagnosticsSnapshot.performance.previewQueue.detail.active}/{diagnosticsSnapshot.performance.previewQueue.detail.queued} · face {diagnosticsSnapshot.performance.faceQueue.active}/{diagnosticsSnapshot.performance.faceQueue.queued}
                     </span>
                   </div>
+                  <div>
+                    Preview disk cache: <span className="text-text-secondary">
+                      {diagnosticsSnapshot.performance.cacheLifecycle
+                        ? `${Math.round(diagnosticsSnapshot.performance.cacheLifecycle.bytes / 1024 / 1024)} MB · ${diagnosticsSnapshot.performance.cacheLifecycle.files} files · ${diagnosticsSnapshot.performance.cacheLifecycle.reason}`
+                        : 'measuring'}
+                    </span>
+                  </div>
+                  {Object.entries(diagnosticsSnapshot.performance.metrics).length > 0 && (
+                    <div>
+                      Timings: <span className="text-text-secondary">
+                        {Object.entries(diagnosticsSnapshot.performance.metrics)
+                          .map(([name, metric]) => `${name} ${metric.averageMs}ms avg`)
+                          .join(' · ')}
+                      </span>
+                    </div>
+                  )}
                   {diagnosticsSnapshot.update.message && (
                     <div className="text-yellow-300">Update note: {diagnosticsSnapshot.update.message}</div>
                   )}

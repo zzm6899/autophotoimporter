@@ -112,6 +112,28 @@ describe('SessionStore default storage', () => {
     await store.close();
   });
 
+  it('persists changed and removed files across incremental saves', async () => {
+    const sessionDir = await tempSessionDir();
+    const store = await openSessionStore(sessionDir);
+    const first = makeFile();
+    const second = makeFile({ path: '/card/DCIM/IMG_0002.JPG', name: 'IMG_0002.JPG', pick: undefined });
+    await store.save(makeSession({ files: [first, second], selectedPaths: [first.path], queuedPaths: [first.path, second.path] }));
+    await store.save(makeSession({
+      updatedAt: '2026-05-06T00:01:00.000Z',
+      files: [{ ...first, rating: 5, pick: 'rejected' }],
+      selectedPaths: [],
+      queuedPaths: [],
+      stats: { totalFiles: 1, picked: 0, rejected: 1, queued: 0, reviewed: 1 },
+    }));
+
+    const restored = await store.readLatest();
+    expect(restored?.files).toHaveLength(1);
+    expect(restored?.files[0]).toEqual(expect.objectContaining({ path: first.path, rating: 5, pick: 'rejected' }));
+    expect(restored?.selectedPaths).toEqual([]);
+    expect(restored?.queuedPaths).toEqual([]);
+    await store.close();
+  });
+
   it('migrates an old latest.json session into SQLite when SQLite is available', async () => {
     const sessionDir = await tempSessionDir();
     const legacy = makeSession({ id: 'legacy-session' });

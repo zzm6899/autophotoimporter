@@ -85,7 +85,13 @@ vi.mock('../services/face-engine', () => ({
   runFaceGpuStressTest: vi.fn(),
 }));
 vi.mock('../services/pose-engine', () => ({ configurePoseAnalysis: vi.fn() }));
-vi.mock('../services/catalog', () => ({ openCatalog: vi.fn() }));
+vi.mock('../services/catalog', () => ({
+  openCatalog: vi.fn(async () => ({
+    upsertMediaFiles: vi.fn(async () => ({ upserted: 0, duplicateCandidates: [] })),
+    findDuplicateMemory: vi.fn(async () => []),
+    close: vi.fn(async () => undefined),
+  })),
+}));
 vi.mock('../services/face-cache', () => ({
   getCachedFaceResult: vi.fn(),
   setCachedFaceResult: vi.fn(),

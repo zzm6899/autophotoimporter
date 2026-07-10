@@ -77,6 +77,12 @@ for (const base of hosts) {
     if (download.contentLength > 0 && download.contentLength < 1024 * 1024) {
       throw new Error(`installer content-length looks too small: ${download.contentLength}`);
     }
+    if (expectedLatestVersion) {
+      const finalName = decodeURIComponent(new URL(download.finalUrl).pathname.split('/').pop() || '');
+      if (!finalName.includes(expectedLatestVersion)) {
+        throw new Error(`installer URL is not version-specific: expected ${expectedLatestVersion} in ${finalName}`);
+      }
+    }
     results.push({
       host: base,
       latestVersion,

@@ -354,7 +354,17 @@ function apiCors(req, res, next) {
 // Apply CORS to all public /api/v1/* routes
 app.use('/api/v1', apiCors);
 app.use('/stripe', apiCors);
-app.use('/artifacts', express.static(artifactsRoot));
+app.use('/artifacts', express.static(artifactsRoot, {
+  setHeaders(res, filePath) {
+    const filename = path.basename(filePath);
+    if (/\d+\.\d+\.\d+/.test(filename)) {
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    } else {
+      // Legacy generic names (Keptra-Setup.exe and RELEASES) are overwritten.
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    }
+  },
+}));
 app.use(express.static(path.join(__dirname, 'web')));
 
 function htmlPage(title, body) {
@@ -1381,12 +1391,23 @@ async function liveReleases({ platform = null, channel = 'stable', limit = 10 } 
 }
 
 function serializePublicRelease(row) {
+  const artifactUrl = normalizePublicKeptraUrl(row.artifact_url);
+  let publicArtifactUrl = artifactUrl;
+  try {
+    const parsed = new URL(artifactUrl);
+    if (!/\d+\.\d+\.\d+/.test(path.basename(parsed.pathname))) {
+      parsed.searchParams.set('v', String(row.version || 'latest'));
+      publicArtifactUrl = parsed.toString();
+    }
+  } catch {
+    // normalizeArtifactUrl validates download targets before redirecting.
+  }
   return {
     version: row.version,
     releaseName: row.release_name,
     notes: row.release_notes,
     releaseUrl: normalizePublicKeptraUrl(row.release_url),
-    artifactUrl: normalizePublicKeptraUrl(row.artifact_url),
+    artifactUrl: publicArtifactUrl,
     publishedAt: row.published_at,
     channel: row.channel,
     platform: row.platform,
@@ -3230,7 +3251,9 @@ app.post('/admin/api/artifacts/upload', requireAdminApiToken, express.raw({ type
       return res.status(400).json({ error: 'Invalid artifact path.' });
     }
     await fs.promises.mkdir(platformDir, { recursive: true });
-    await fs.promises.writeFile(targetPath, body);
+    const temporaryPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
+    await fs.promises.writeFile(temporaryPath, body);
+    await fs.promises.rename(temporaryPath, targetPath);
 
     return res.json({
       ok: true,
@@ -3588,7 +3611,8 @@ app.get('/api/v1/app/download/:releaseId', async (req, res) => {
     });
     // Set Content-Disposition so the client can parse the real filename
     // before following the redirect (path.basename of the token URL is just the release ID).
-    const artifactUrl = normalizeArtifactUrl(release.rows[0].artifact_url, release.rows[0].platform);
+    const publicRelease = serializePublicRelease(release.rows[0]);
+    const artifactUrl = normalizeArtifactUrl(publicRelease.artifactUrl, release.rows[0].platform);
     const artifactFilename = decodeURIComponent(path.basename(new URL(artifactUrl).pathname));
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Content-Disposition', `attachment; filename="${artifactFilename}"`);

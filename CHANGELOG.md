@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.5.4 - 2026-07-11
+
+### Fixed
+- **1.5.3 downloads no longer fall back to cached 1.5.2 installers.** Release installers now use version-specific filenames, while legacy generic artifact URLs get a version cache-buster and explicit no-cache headers.
+- Artifact uploads are now atomic, preventing a download from receiving a partially-written installer while a release is being published.
+- Release smoke tests now reject a supposedly current installer whose final URL does not contain the expected release version.
+- Catalog and session databases now close cleanly before Electron exits instead of relying on file-handle garbage collection.
+
+### Performance
+- Face identity clustering now runs in a dedicated renderer worker, keeping large face-gallery regrouping off the UI thread.
+- Face-clustering worker messages now contain only identity signals instead of cloning complete media/EXIF records.
+- Session autosaves update only changed and removed SQLite rows instead of deleting and rebuilding an entire large shoot.
+- CSV and JSON manifests now stream to disk in bounded chunks rather than building the complete export in memory.
+- Preview cache maintenance enforces a 2 GB budget, removes entries older than 30 days, and frees additional space when the disk has less than 5 GB available.
+- Local diagnostics now summarize scan, preview, and catalog timings without uploading telemetry.
+
+### Quality
+- Packaged release smoke now launches the application in CI, exercises key navigation paths, and fails on visible unnamed buttons, missing image alt text, or unlabeled form controls.
+- Cache lifecycle and performance metrics were extracted into focused services with unit coverage.
+- CSV exports neutralize spreadsheet formula prefixes, and the shipped ONNX runtime dependency is pinned to a patched `tar` release.
+
+### Verified
+- `npm run typecheck` — clean
+- `npm test` — 520 passed, 11 skipped (40 files)
+- Packaged Windows launch, interaction, visual, accessibility, and runtime dependency audits — clean
+
 ## 1.5.3 - 2026-07-10
 
 ### Changed

@@ -1283,6 +1283,23 @@ export interface AppDiagnosticsSnapshot {
       failures: number;
       cleanups: number;
     };
+    cacheLifecycle: {
+      directory: string;
+      files: number;
+      bytes: number;
+      removedFiles: number;
+      removedBytes: number;
+      maxBytes: number;
+      freeBytes?: number;
+      reason: 'inspect' | 'age' | 'budget' | 'low-disk';
+    } | null;
+    metrics: Record<string, {
+      count: number;
+      totalMs: number;
+      averageMs: number;
+      maxMs: number;
+      lastMs: number;
+    }>;
   };
 }
 

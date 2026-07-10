@@ -66,6 +66,7 @@ vi.mock('../services/exif-parser', () => ({
   getThumbnailPayload: vi.fn(async () => undefined),
   isSharpAvailable: vi.fn(() => false),
   peekPreviewFile: vi.fn(async () => undefined),
+  getPreviewCacheDirectory: vi.fn(async () => '/tmp/photo-importer-thumbs'),
   getRawPreviewQualitySetting: vi.fn(() => 70),
   setRawPreviewQuality: vi.fn(),
   setRawPreviewCache: vi.fn(),
@@ -79,6 +80,18 @@ vi.mock('../services/exif-parser', () => ({
     platformResizes: 0,
     failures: 0,
     cleanups: 0,
+  })),
+}));
+
+vi.mock('../services/cache-lifecycle', () => ({
+  maintainPreviewCache: vi.fn(async (directory: string) => ({
+    directory,
+    files: 0,
+    bytes: 0,
+    removedFiles: 0,
+    removedBytes: 0,
+    maxBytes: 2 * 1024 * 1024 * 1024,
+    reason: 'inspect',
   })),
 }));
 
