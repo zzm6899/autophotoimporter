@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.5.6 - 2026-07-11
+
+### Fixed
+- **Import Files no longer creates Lightroom handoff files by default.** Settings -> Workflow now has "Create Lightroom handoff after import" for users who want automatic helper artifacts, while the existing LR Handoff button remains available for manual export.
+- Release CI no longer GUI-launches unsigned macOS packages on GitHub-hosted runners; macOS still verifies packaged runtime assets, while Windows keeps the full packaged launch smoke.
+
+### Verified
+- `npm run verify` - clean
+- `npm run package` - clean
+- `npm run package:smoke` - clean
+- `npm run make` - clean
+- `npm run release:manifest` - clean
+
 ## 1.5.5 - 2026-07-11
 
 ### Fixed
