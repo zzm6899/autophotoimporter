@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.5.5 - 2026-07-11
+
+### Fixed
+- **Import Files no longer creates Lightroom handoff files by default.** Settings -> Workflow now has "Create Lightroom handoff after import" for users who want automatic helper artifacts, while the existing LR Handoff button remains available for manual export.
+
+### Verified
+- `npm run typecheck` - clean
+- `npx vitest run src/renderer/context/__tests__/ImportContext.test.ts` - 98 passed
+
 ## 1.5.4 - 2026-07-11
 
 ### Fixed

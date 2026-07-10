@@ -86,6 +86,7 @@ interface State {
   playSoundOnComplete: boolean;
   completeSoundPath: string;
   openFolderOnComplete: boolean;
+  autoLightroomHandoff: boolean;
   verifyChecksums: boolean;
   sourceProfile: SourceProfile;
   conflictPolicy: ImportConflictPolicy;
@@ -213,7 +214,7 @@ export type Action =
       | 'separateProtected' | 'autoEject' | 'playSoundOnComplete'
       | 'openFolderOnComplete' | 'autoImport'
       | 'burstGrouping' | 'normalizeExposure' | 'verifyChecksums' | 'ftpDestEnabled'
-      | 'watermarkEnabled' | 'autoStraighten'; value: boolean }
+      | 'watermarkEnabled' | 'autoStraighten' | 'autoLightroomHandoff'; value: boolean }
   | { type: 'SET_WORKFLOW_STRING'; key:
       | 'protectedFolderName' | 'backupDestRoot' | 'autoImportDestRoot' | 'completeSoundPath'
       | 'metadataKeywords' | 'metadataTitle' | 'metadataCaption' | 'metadataCreator' | 'metadataCopyright'
@@ -371,6 +372,7 @@ const initialState: State = {
   playSoundOnComplete: false,
   completeSoundPath: '',
   openFolderOnComplete: false,
+  autoLightroomHandoff: false,
   verifyChecksums: false,
   sourceProfile: 'auto',
   conflictPolicy: 'rename',

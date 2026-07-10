@@ -1065,6 +1065,8 @@ export interface AppSettings {
   playSoundOnComplete: boolean;
   completeSoundPath: string;
   openFolderOnComplete: boolean;
+  /** Write Lightroom helper artifacts automatically after imports complete. */
+  autoLightroomHandoff: boolean;
   verifyChecksums: boolean;
   // Auto-import on device insert
   autoImport: boolean;

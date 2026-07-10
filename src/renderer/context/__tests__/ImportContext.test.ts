@@ -81,6 +81,7 @@ function makeState(overrides: Record<string, unknown> = {}) {
     playSoundOnComplete: false,
     completeSoundPath: '',
     openFolderOnComplete: false,
+    autoLightroomHandoff: false,
     verifyChecksums: false,
     sourceProfile: 'auto' as const,
     conflictPolicy: 'rename' as const,
@@ -1132,6 +1133,11 @@ describe('ImportContext reducer', () => {
     it('SET_CUSTOM_PATTERN', () => {
       const next = reducer(makeState(), { type: 'SET_CUSTOM_PATTERN', pattern: '{YYYY}/{name}.{ext}' });
       expect(next.customPattern).toBe('{YYYY}/{name}.{ext}');
+    });
+
+    it('SET_WORKFLOW_OPTION supports automatic Lightroom handoff', () => {
+      const next = reducer(makeState(), { type: 'SET_WORKFLOW_OPTION', key: 'autoLightroomHandoff', value: true });
+      expect(next.autoLightroomHandoff).toBe(true);
     });
 
     it('SET_LICENSE_STATUS', () => {

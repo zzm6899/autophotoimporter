@@ -65,6 +65,9 @@ export function useSettings() {
       if (typeof settings.openFolderOnComplete === 'boolean') {
         dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'openFolderOnComplete', value: settings.openFolderOnComplete });
       }
+      if (typeof settings.autoLightroomHandoff === 'boolean') {
+        dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'autoLightroomHandoff', value: settings.autoLightroomHandoff });
+      }
       if (typeof settings.verifyChecksums === 'boolean') {
         dispatch({ type: 'SET_WORKFLOW_OPTION', key: 'verifyChecksums', value: settings.verifyChecksums });
       }

@@ -169,6 +169,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     playSoundOnComplete,
     completeSoundPath,
     openFolderOnComplete,
+    autoLightroomHandoff,
     verifyChecksums,
     selectedSource,
     phase,
@@ -460,7 +461,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const handleWorkflowBool = (
     key: 'separateProtected' | 'autoEject' | 'playSoundOnComplete' | 'openFolderOnComplete'
       | 'autoImport' | 'burstGrouping' | 'normalizeExposure' | 'verifyChecksums'
-      | 'watermarkEnabled' | 'autoStraighten',
+      | 'watermarkEnabled' | 'autoStraighten' | 'autoLightroomHandoff',
     value: boolean,
   ) => {
     dispatch({ type: 'SET_WORKFLOW_OPTION', key, value });
@@ -1916,6 +1917,14 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                   onChange={(e) => handleWorkflowBool('openFolderOnComplete', e.target.checked)}
                 />
                 <span className="text-xs text-text">Open destination folder on complete</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={autoLightroomHandoff}
+                  onChange={(e) => handleWorkflowBool('autoLightroomHandoff', e.target.checked)}
+                />
+                <span className="text-xs text-text">Create Lightroom handoff after import</span>
               </label>
               <div className="ml-5">
                 <button

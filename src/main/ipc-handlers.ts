@@ -730,7 +730,8 @@ async function readLatestImportLedger(): Promise<ImportLedger | null> {
 }
 
 async function writePostImportLightroomHandoff(config: ImportConfig, ledger: ImportLedger): Promise<ImportResult['lightroomHandoff'] | undefined> {
-  if (!scannedFiles.length) return undefined;
+  const settings = await loadSettings();
+  if (!settings.autoLightroomHandoff || !scannedFiles.length) return undefined;
   return writeLightroomHandoff(scannedFiles, {
     config,
     ledger,
@@ -994,6 +995,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   playSoundOnComplete: false,
   completeSoundPath: '',
   openFolderOnComplete: false,
+  autoLightroomHandoff: false,
   verifyChecksums: false,
   sourceProfile: 'auto',
   watchFolders: [],
