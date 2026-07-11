@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import path from 'node:path';
 import type { AppSession, ImportConfig, ImportLedger, ImportResult, MediaFile } from '../../shared/types';
 
 // Mocks
@@ -919,11 +920,12 @@ describe('IPC Handlers', () => {
       mockOpenPath.mockResolvedValue('No application is associated with the specified file.');
       mockStat.mockResolvedValue({ isFile: () => true } as any);
       const handler = getHandler('dialog:open-path');
+      const photoPath = path.resolve('test-fixtures/photo.jpg');
 
-      const result = await handler({}, 'C:\\Users\\test\\photo.jpg') as any;
+      const result = await handler({}, photoPath) as any;
 
-      expect(mockOpenPath).toHaveBeenCalledWith('C:\\Users\\test\\photo.jpg');
-      expect(mockShowItemInFolder).toHaveBeenCalledWith('C:\\Users\\test\\photo.jpg');
+      expect(mockOpenPath).toHaveBeenCalledWith(photoPath);
+      expect(mockShowItemInFolder).toHaveBeenCalledWith(photoPath);
       expect(result).toEqual({
         ok: false,
         code: 'INTERNAL_ERROR',
