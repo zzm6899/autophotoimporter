@@ -1,11 +1,23 @@
 import { useCallback, useRef } from 'react';
-
-type NormalizedJobState = 'queued' | 'running' | 'paused' | 'cancelled' | 'completed' | 'failed';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import { playCompletionSound } from '../utils/completionSound';
-import { eventModeKeywords, type MediaFile } from '../../shared/types';
+import { eventModeKeywords, type ImportConfig, type MediaFile } from '../../shared/types';
 
 let latestImportRunId = 0;
+
+type NormalizedJobState = 'queued' | 'running' | 'paused' | 'cancelled' | 'completed' | 'failed';
+
+type QueuedImportJob = {
+  config: ImportConfig;
+  retryFailed: boolean;
+  destination: string;
+  playSoundOnComplete: boolean;
+  completeSoundPath: string;
+  openFolderOnComplete: boolean;
+};
+
+const queuedImportJobs: QueuedImportJob[] = [];
+let importRunnerActive = false;
 
 type StartImportOptions = {
   retryFailed?: boolean;
@@ -53,7 +65,7 @@ export function resolveImportPaths({
 
 export function useImport() {
   const {
-    selectedSource, sourceProfile, destination, skipDuplicates, saveFormat, jpegQuality, phase,
+    selectedSource, sourceProfile, destination, skipDuplicates, saveFormat, jpegQuality, phase, importRunning,
     files, selectedPaths, queuedPaths,
     separateProtected, protectedFolderName, backupDestRoot, ftpDestEnabled, ftpDestConfig,
     autoEject, playSoundOnComplete, completeSoundPath, openFolderOnComplete,
@@ -68,6 +80,58 @@ export function useImport() {
   } = useAppState();
   const dispatch = useAppDispatch();
   const importStateRef = useRef<NormalizedJobState>('queued');
+  const runImportJobRef = useRef<((job: QueuedImportJob) => Promise<void>) | null>(null);
+
+  const runImportJob = useCallback(async (job: QueuedImportJob) => {
+    const runId = ++latestImportRunId;
+    importRunnerActive = true;
+    importStateRef.current = 'running';
+    dispatch({ type: 'IMPORT_START' });
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+    try {
+      const result = job.retryFailed
+        ? await window.electronAPI.retryFailedImport(job.config)
+        : await window.electronAPI.startImport(job.config);
+      if (runId !== latestImportRunId) return;
+      importStateRef.current = result.errors.length > 0 ? 'failed' : 'completed';
+      dispatch({ type: 'IMPORT_COMPLETE', result });
+
+      if (result.errors.length === 0 || result.imported > 0) {
+        if (job.playSoundOnComplete) {
+          playCompletionSound(job.completeSoundPath);
+        }
+        if (job.openFolderOnComplete && job.destination) {
+          void window.electronAPI.openPath(job.destination).catch(() => undefined);
+        }
+      }
+    } catch (err: unknown) {
+      if (runId !== latestImportRunId) return;
+      const message = err instanceof Error ? err.message : 'Import failed unexpectedly';
+      importStateRef.current = 'failed';
+      dispatch({
+        type: 'IMPORT_COMPLETE',
+        result: {
+          imported: 0,
+          skipped: 0,
+          errors: [{ file: 'system', error: message }],
+          totalBytes: 0,
+          durationMs: 0,
+        },
+      });
+    } finally {
+      if (runId === latestImportRunId) {
+        importRunnerActive = false;
+        const nextJob = queuedImportJobs.shift();
+        dispatch({ type: 'SET_IMPORT_QUEUE_DEPTH', count: queuedImportJobs.length });
+        if (nextJob) {
+          void runImportJobRef.current?.(nextJob);
+        }
+      }
+    }
+  }, [dispatch]);
+
+  runImportJobRef.current = runImportJob;
 
   const startImport = useCallback(async (options?: StartImportOptions) => {
     if (!selectedSource || !destination) return;
@@ -90,11 +154,6 @@ export function useImport() {
     if (phase === 'scanning') {
       await window.electronAPI.cancelScan();
     }
-
-    const runId = ++latestImportRunId;
-    importStateRef.current = 'running';
-    dispatch({ type: 'IMPORT_START' });
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
     // Selection priority:
     //   1. Explicit override from a button flow.
@@ -169,8 +228,7 @@ export function useImport() {
       ...smartKeywords,
     ].filter((value, index, all) => value && all.findIndex((other) => other.toLowerCase() === value.toLowerCase()) === index);
 
-    try {
-      const config = {
+    const config: ImportConfig = {
         sourcePath: selectedSource,
         sourceProfile,
         destRoot: destination,
@@ -225,39 +283,25 @@ export function useImport() {
         autoStraighten,
         dryRun: !!options?.dryRun,
       };
-      const result = options?.retryFailed
-        ? await window.electronAPI.retryFailedImport(config)
-        : await window.electronAPI.startImport(config);
-      if (runId !== latestImportRunId) return;
-      importStateRef.current = result.errors.length > 0 ? 'failed' : 'completed';
-      dispatch({ type: 'IMPORT_COMPLETE', result });
 
-      // Optional post-import actions, renderer-side
-      if (result.errors.length === 0 || result.imported > 0) {
-        if (playSoundOnComplete) {
-          playCompletionSound(completeSoundPath);
-        }
-        if (openFolderOnComplete && destination) {
-          void window.electronAPI.openPath(destination).catch(() => undefined);
-        }
-      }
-    } catch (err: unknown) {
-      if (runId !== latestImportRunId) return;
-      const message = err instanceof Error ? err.message : 'Import failed unexpectedly';
-      importStateRef.current = 'failed';
-      dispatch({
-        type: 'IMPORT_COMPLETE',
-        result: {
-          imported: 0,
-          skipped: 0,
-          errors: [{ file: 'system', error: message }],
-          totalBytes: 0,
-          durationMs: 0,
-        },
-      });
+    const job: QueuedImportJob = {
+      config,
+      retryFailed: !!options?.retryFailed,
+      destination,
+      playSoundOnComplete,
+      completeSoundPath,
+      openFolderOnComplete,
+    };
+
+    if (importRunning || importRunnerActive || importStateRef.current === 'running') {
+      queuedImportJobs.push(job);
+      dispatch({ type: 'SET_IMPORT_QUEUE_DEPTH', count: queuedImportJobs.length });
+      return;
     }
+
+    void runImportJob(job);
   }, [
-    selectedSource, sourceProfile, destination, skipDuplicates, saveFormat, jpegQuality, phase, dispatch,
+    selectedSource, sourceProfile, destination, skipDuplicates, saveFormat, jpegQuality, phase, importRunning, dispatch, runImportJob,
     files, selectedPaths, queuedPaths,
     separateProtected, protectedFolderName, backupDestRoot,
     ftpDestEnabled, ftpDestConfig,
@@ -270,8 +314,10 @@ export function useImport() {
 
   const cancelImport = useCallback(async () => {
     importStateRef.current = 'cancelled';
+    queuedImportJobs.length = 0;
+    dispatch({ type: 'SET_IMPORT_QUEUE_DEPTH', count: 0 });
     await window.electronAPI.cancelImport();
-  }, []);
+  }, [dispatch]);
 
   return { startImport, cancelImport };
 }

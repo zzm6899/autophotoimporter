@@ -6,6 +6,8 @@ import { formatSize, formatSpeed, formatEta } from '../utils/formatters';
 export function ImportProgress() {
   const {
     phase,
+    importRunning,
+    importQueuedCount,
     importProgress,
     volumeImportQueue,
     saveFormat,
@@ -21,11 +23,11 @@ export function ImportProgress() {
   const [collapsed, setCollapsed] = useState(true);
 
   useEffect(() => {
-    if (phase === 'importing') setCollapsed(true);
-  }, [phase]);
+    if (importRunning) setCollapsed(true);
+  }, [importRunning]);
 
   useEffect(() => {
-    if (phase !== 'importing' || !importProgress) return;
+    if (!importRunning || !importProgress) return;
     const handleKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.defaultPrevented) return;
       const target = e.target;
@@ -39,9 +41,9 @@ export function ImportProgress() {
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [phase, importProgress, cancelImport]);
+  }, [importRunning, importProgress, cancelImport]);
 
-  if (phase !== 'importing') return null;
+  if (!importRunning) return null;
 
   const percent = importProgress && importProgress.totalFiles > 0
     ? Math.round((importProgress.currentIndex / importProgress.totalFiles) * 100)
@@ -50,6 +52,9 @@ export function ImportProgress() {
   const queueLabel = volumeImportQueue.length > 1
     ? ` — Card 1 of ${volumeImportQueue.length}`
     : '';
+  const importQueueLabel = importQueuedCount > 0
+    ? `${importQueuedCount} queued`
+    : null;
   const metadataSidecarsEnabled = Object.values(metadataExport ?? {}).some((enabled) => enabled);
   const activeCosts = [
     saveFormat !== 'original' ? 'conversion' : null,
@@ -93,6 +98,9 @@ export function ImportProgress() {
         {queueLabel && (
           <span className="text-[10px] text-text-muted shrink-0">{queueLabel.replace(' — ', '')}</span>
         )}
+        {importQueueLabel && (
+          <span className="text-[10px] text-accent shrink-0">{importQueueLabel}</span>
+        )}
         <button
           onClick={() => setCollapsed(false)}
           className="shrink-0 p-0.5 rounded text-text-muted hover:text-text transition-colors"
@@ -121,9 +129,16 @@ export function ImportProgress() {
       <div className="bg-surface-alt rounded-lg border border-border p-6 max-w-md w-full mx-4 shadow-2xl">
         {/* Header */}
         <div className="flex items-center justify-between mb-5">
-          <h2 className="text-base font-semibold text-text">
-            Importing Photos{queueLabel}
-          </h2>
+          <div className="flex items-center gap-2 min-w-0">
+            <h2 className="text-base font-semibold text-text truncate">
+              Importing Photos{queueLabel}
+            </h2>
+            {importQueueLabel && (
+              <span className="shrink-0 rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 text-[11px] font-medium text-accent">
+                {importQueueLabel}
+              </span>
+            )}
+          </div>
           <button
             onClick={() => setCollapsed(true)}
             className="p-1 rounded text-text-muted hover:text-text hover:bg-surface-raised transition-colors"

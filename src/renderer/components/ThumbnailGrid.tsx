@@ -2006,7 +2006,7 @@ async function visualHash(src: string): Promise<string> {
 }
 
 export function ThumbnailGrid() {
-  const { phase, selectedSource, scanError, focusedIndex, focusedPath, viewMode, filter, gridSortOrder, thumbnailSize, importFailedPaths, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, exposureAdjustmentStep, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused, fastKeeperMode, aiReviewEnabled, autoSpeedMode, faceConcurrency, gpuFaceAcceleration, reviewFaceAnalysis, reviewFaceMatching, reviewPersonDetection, reviewVisualDuplicates, keybinds, metadataKeywords, whiteBalanceTemperature, whiteBalanceTint, destination, skipDuplicates, licenseStatus, ftpDestEnabled, ftpDestConfig, experienceMode } = useAppState();
+  const { phase, importRunning, selectedSource, scanError, focusedIndex, focusedPath, viewMode, filter, gridSortOrder, thumbnailSize, importFailedPaths, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, exposureAdjustmentStep, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused, fastKeeperMode, aiReviewEnabled, autoSpeedMode, faceConcurrency, gpuFaceAcceleration, reviewFaceAnalysis, reviewFaceMatching, reviewPersonDetection, reviewVisualDuplicates, keybinds, metadataKeywords, whiteBalanceTemperature, whiteBalanceTint, destination, skipDuplicates, licenseStatus, ftpDestEnabled, ftpDestConfig, experienceMode } = useAppState();
   const isPro = experienceMode === 'pro';
   // useMergedFiles() overlays face/review scores without re-running the full
   // reducer map — O(n) only when scores.size > 0, otherwise returns the same array.
@@ -2014,7 +2014,7 @@ export function ThumbnailGrid() {
   const { startScan } = useFileScanner();
   const { startImport } = useImport();
   const dispatch = useAppDispatch();
-  const queueActionsDisabled = phase === 'scanning' || phase === 'importing';
+  const queueActionsDisabled = phase === 'scanning';
   const gridRef = useRef<HTMLDivElement>(null);
   const flatScrollRef = useRef<HTMLDivElement>(null);
   const splitScrollRef = useRef<HTMLDivElement>(null);
@@ -3304,8 +3304,8 @@ export function ThumbnailGrid() {
             ? 'Queued files are rejected, duplicates, or missing destination paths.'
           : phase === 'scanning'
             ? 'Wait for scanning to finish before importing.'
-          : phase === 'importing'
-            ? 'Import already in progress.'
+          : importRunning
+            ? 'Queue all queued files to import after the current export finishes.'
             : 'Import all queued files to the destination folder set in the output panel.';
   const importVisibleDisabled =
     visibleImportablePaths.length === 0 ||

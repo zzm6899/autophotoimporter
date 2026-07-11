@@ -18,6 +18,8 @@ function makeState(overrides: Record<string, unknown> = {}) {
     jpegQuality: 90,
     folderPreset: 'date-flat',
     customPattern: FOLDER_PRESETS['date-flat'].pattern,
+    importRunning: false,
+    importQueuedCount: 0,
     importProgress: null as ImportProgress | null,
     importResult: null as ImportResult | null,
     focusedIndex: -1,
@@ -226,34 +228,46 @@ describe('ImportContext reducer', () => {
       expect(next.phase).toBe('idle');
     });
 
-    it('ready → importing on IMPORT_START', () => {
+    it('keeps ready phase and marks import running on IMPORT_START', () => {
       const state = makeState({ phase: 'ready' });
       const next = reducer(state, { type: 'IMPORT_START' });
-      expect(next.phase).toBe('importing');
+      expect(next.phase).toBe('ready');
+      expect(next.importRunning).toBe(true);
       expect(next.importProgress).toBeNull();
       expect(next.importResult).toBeNull();
     });
 
-    it('returns to grid view when import starts from detail view', () => {
+    it('tracks queued background imports as a non-negative whole number', () => {
+      const state = makeState({ importQueuedCount: 1 });
+      const next = reducer(state, { type: 'SET_IMPORT_QUEUE_DEPTH', count: 2.8 });
+      const reset = reducer(next, { type: 'SET_IMPORT_QUEUE_DEPTH', count: -3 });
+      expect(next.importQueuedCount).toBe(2);
+      expect(reset.importQueuedCount).toBe(0);
+    });
+
+    it('preserves detail view when background import starts', () => {
       const state = makeState({ phase: 'ready', viewMode: 'single', previousViewMode: 'split' });
       const next = reducer(state, { type: 'IMPORT_START' });
-      expect(next.phase).toBe('importing');
-      expect(next.viewMode).toBe('grid');
-      expect(next.previousViewMode).toBeNull();
+      expect(next.phase).toBe('ready');
+      expect(next.importRunning).toBe(true);
+      expect(next.viewMode).toBe('single');
+      expect(next.previousViewMode).toBe('split');
     });
 
     it('leaves expensive face filters when import starts', () => {
       const state = makeState({ phase: 'ready', filter: 'face-gallery' });
       const next = reducer(state, { type: 'IMPORT_START' });
-      expect(next.phase).toBe('importing');
+      expect(next.phase).toBe('ready');
+      expect(next.importRunning).toBe(true);
       expect(next.filter).toBe('all');
     });
 
     it('importing → complete on IMPORT_COMPLETE', () => {
       const result: ImportResult = { imported: 5, skipped: 0, errors: [], totalBytes: 1000, durationMs: 500 };
-      const state = makeState({ phase: 'importing' });
+      const state = makeState({ phase: 'ready', importRunning: true });
       const next = reducer(state, { type: 'IMPORT_COMPLETE', result });
       expect(next.phase).toBe('complete');
+      expect(next.importRunning).toBe(false);
       expect(next.importResult).toBe(result);
     });
 

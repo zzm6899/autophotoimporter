@@ -16,7 +16,7 @@ function getContextTip(phase: string, fileCount: number, picked: number, queued:
 export function HelpBar() {
   const {
     phase, scanPaused, filter, viewMode, selectedPaths, queuedPaths,
-    focusedIndex, importProgress, ftpSyncStatus,
+    focusedIndex, importRunning, importProgress, ftpSyncStatus,
   } = useAppState();
   const files = useMergedFiles();
   const dispatch = useAppDispatch();
@@ -72,7 +72,7 @@ export function HelpBar() {
     ? `${focusedIndex + 1} / ${files.length}`
     : `${files.length} photo${files.length !== 1 ? 's' : ''}`;
 
-  const isImporting = phase === 'importing' && importProgress;
+  const isImporting = importRunning && importProgress;
   const isScanning = phase === 'scanning';
   const tip = getContextTip(phase, files.length, picked, queuedPaths.length);
 

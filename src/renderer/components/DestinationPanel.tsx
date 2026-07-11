@@ -159,7 +159,7 @@ const SPEED_PROFILES: Array<{
 export function DestinationPanel() {
   const {
     destination, skipDuplicates, saveFormat, jpegQuality, folderPreset, customPattern,
-    files, phase, importProgress, importResult, selectedSource, selectedPaths, queuedPaths,
+    files, phase, importRunning, importProgress, importResult, selectedSource, selectedPaths, queuedPaths,
     separateProtected, protectedFolderName, backupDestRoot, ftpDestEnabled, ftpDestConfig,
     metadataKeywords, metadataTitle, metadataCaption, metadataCreator, metadataCopyright,
     watermarkEnabled, watermarkMode, watermarkText, watermarkImagePath, watermarkOpacity, watermarkPositionLandscape, watermarkPositionPortrait, watermarkScale,
@@ -436,7 +436,7 @@ export function DestinationPanel() {
   const hasPicks = pickedCount > 0;
   const hasClickSelection = selectedPaths.length > 0;
   const hasQueue = queuedPaths.length > 0;
-  const queueActionsDisabled = phase === 'scanning' || phase === 'importing';
+  const queueActionsDisabled = phase === 'scanning';
   const hasRenderableWatermark = watermarkEnabled && (
     (watermarkMode === 'image' && watermarkImagePath.trim()) ||
     (watermarkMode !== 'image' && watermarkText.trim())
@@ -1057,7 +1057,7 @@ export function DestinationPanel() {
         );
       })()}
 
-      {phase === 'importing' && (
+      {importRunning && (
         <div className="mx-2.5 mb-2.5 rounded border border-accent/30 bg-accent/10 px-2 py-1.5">
           <div className="flex items-center justify-between gap-2 text-[10px] text-text-secondary">
             <span>Importing</span>
@@ -1798,6 +1798,7 @@ export function DestinationPanel() {
               : destinationSameAsSource ? 'Destination cannot be the source folder'
               : backupSameAsPrimary ? 'Backup destination cannot match the primary destination'
               : backupSameAsSource ? 'Backup destination cannot be the source folder'
+              : importRunning ? 'Queue this export to run after the current one.'
               : !canImport ? `Cannot import while ${phase}`
               : undefined
           }

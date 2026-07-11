@@ -75,6 +75,7 @@ export interface CommandItem {
 
 export interface CommandBuildContext {
   phase: 'idle' | 'scanning' | 'ready' | 'importing' | 'complete';
+  importRunning?: boolean;
   scanPaused: boolean;
   fileCount: number;
   photoCount: number;
@@ -137,13 +138,13 @@ export function buildCommandItems(
   context: CommandBuildContext,
   handlers: Partial<Record<string, () => void | Promise<void>>> = {},
 ): CommandItem[] {
-  const busy = context.phase === 'scanning' || context.phase === 'importing';
+  const busy = context.phase === 'scanning';
   const needsFiles = context.fileCount === 0 ? 'Scan a source first.' : undefined;
   const needsPhoto = context.photoCount === 0 ? 'Scan photos first.' : undefined;
   const needsFocus = !context.focused ? 'Focus a photo first.' : undefined;
   const needsDestination = !context.destination ? 'Choose a destination first.' : undefined;
-  const busyReason = busy ? 'Wait for the current scan or import to finish.' : undefined;
-  const importingReason = context.phase === 'importing' ? 'Import is already running.' : undefined;
+  const busyReason = busy ? 'Wait for the current scan to finish.' : undefined;
+  const scanReason = context.phase === 'scanning' ? 'Wait for the current scan to finish.' : undefined;
   const queueReason = context.queuedCount === 0 ? 'Queue files first.' : undefined;
   const importQueueReason = context.queuedCount === 0
     ? 'Queue files first.'
@@ -440,7 +441,7 @@ export function buildCommandItems(
       group: 'Import',
       label: `Import Queue (${context.queuedImportableCount})`,
       icon: Download,
-      disabledReason: importingReason || importQueueReason || needsDestination,
+      disabledReason: scanReason || importQueueReason || needsDestination,
       run: handlers['import.queue'],
     },
     {
@@ -450,7 +451,7 @@ export function buildCommandItems(
       icon: Download,
       danger: 'bulk',
       confirmMessage: 'Import every currently visible file?',
-      disabledReason: importingReason || needsFiles || needsDestination,
+      disabledReason: scanReason || needsFiles || needsDestination,
       run: handlers['import.visible'],
     },
     {
@@ -620,6 +621,7 @@ export function CommandPalette() {
   const dispatch = useAppDispatch();
   const {
     phase,
+    importRunning,
     scanPaused,
     files,
     selectedSource,
@@ -794,6 +796,7 @@ export function CommandPalette() {
     if (!open) return [];
     return buildCommandItems({
       phase,
+      importRunning,
       scanPaused,
       fileCount: files.length,
       photoCount,
@@ -818,6 +821,7 @@ export function CommandPalette() {
     handlers,
     licenseStatus?.valid,
     phase,
+    importRunning,
     photoCount,
     queuedImportableCount,
     queuedPaths.length,

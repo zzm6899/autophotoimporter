@@ -137,7 +137,7 @@ function formatRecoveryBytes(bytes: number): string {
 
 export function ImportResumeView({ tone = 'panel' }: ImportResumeViewProps) {
   const dispatch = useAppDispatch();
-  const { selectedSource, destination, phase } = useAppState();
+  const { selectedSource, destination, phase, importRunning } = useAppState();
   const { startScan } = useFileScanner();
   const { startImport } = useImport();
   const [ledger, setLedger] = useState<ImportLedger | null>(null);
@@ -147,7 +147,7 @@ export function ImportResumeView({ tone = 'panel' }: ImportResumeViewProps) {
 
   const summary = useMemo(() => summarizeImportLedger(ledger), [ledger]);
   const currentSessionMatches = !!ledger && selectedSource === ledger.sourcePath && destination === ledger.destRoot;
-  const retryDisabled = !currentSessionMatches || summary.actionableCount === 0 || phase === 'importing' || phase === 'scanning';
+  const retryDisabled = !currentSessionMatches || summary.actionableCount === 0 || importRunning || phase === 'importing' || phase === 'scanning';
   const compact = tone === 'panel';
 
   const refreshLedger = async () => {
@@ -302,7 +302,7 @@ export function ImportResumeView({ tone = 'panel' }: ImportResumeViewProps) {
         )}
         <button
           onClick={handleRestoreSession}
-          disabled={phase === 'importing' || phase === 'scanning'}
+          disabled={importRunning || phase === 'importing' || phase === 'scanning'}
           className="rounded bg-surface-raised px-2 py-1 text-[10px] text-text-secondary hover:bg-border disabled:cursor-not-allowed disabled:opacity-50"
         >
           Restore Session

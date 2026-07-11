@@ -173,6 +173,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     verifyChecksums,
     selectedSource,
     phase,
+    importRunning,
     destination,
     autoImport,
     autoImportDestRoot,
@@ -1004,7 +1005,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   };
 
   const handleEjectCurrentSource = async () => {
-    if (!selectedSource || phase === 'scanning' || phase === 'importing') return;
+    if (!selectedSource || phase === 'scanning' || phase === 'importing' || importRunning) return;
     setPostImportStatus('Ejecting source...');
     const result = await window.electronAPI.ejectVolume(selectedSource);
     setPostImportStatus(result.ok ? 'Source ejected.' : `Eject failed: ${result.error || 'volume may be busy'}`);
@@ -1872,9 +1873,9 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
               <div className="ml-5">
                 <button
                   onClick={handleEjectCurrentSource}
-                  disabled={!selectedSource || phase === 'scanning' || phase === 'importing'}
+                  disabled={!selectedSource || phase === 'scanning' || phase === 'importing' || importRunning}
                   className="px-2 py-1 text-[10px] bg-surface-raised hover:bg-border rounded text-text-secondary transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                  title={phase === 'scanning' || phase === 'importing' ? 'Wait for the current scan/import before ejecting this source.' : 'Safely eject the current source'}
+                  title={phase === 'scanning' || phase === 'importing' || importRunning ? 'Wait for the current scan/import before ejecting this source.' : 'Safely eject the current source'}
                 >
                   Eject current source
                 </button>

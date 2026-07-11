@@ -78,7 +78,7 @@ export function useSessionPersistence() {
       window.clearTimeout(sessionSaveTimerRef.current);
       sessionSaveTimerRef.current = null;
     }
-    if (!selectedSource || files.length === 0 || phase === 'scanning' || phase === 'importing') return;
+    if (!selectedSource || files.length === 0 || phase === 'scanning') return;
     if (sessionSourceRef.current !== selectedSource || !sessionIdRef.current) {
       sessionSourceRef.current = selectedSource;
       sessionIdRef.current = sourceSessionId(selectedSource);
@@ -87,7 +87,7 @@ export function useSessionPersistence() {
     sessionSaveTimerRef.current = window.setTimeout(() => {
       sessionSaveTimerRef.current = null;
       const snapshot = sessionSnapshotRef.current;
-      if (!snapshot.selectedSource || snapshot.files.length === 0 || snapshot.phase === 'scanning' || snapshot.phase === 'importing') return;
+      if (!snapshot.selectedSource || snapshot.files.length === 0 || snapshot.phase === 'scanning') return;
       const sessionFocusedPath = snapshot.focusedPath ?? (
         snapshot.focusedIndex >= 0 ? snapshot.files[snapshot.focusedIndex]?.path : undefined
       );

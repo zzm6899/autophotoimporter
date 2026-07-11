@@ -35,6 +35,7 @@ export function Layout({ left, center, right }: LayoutProps) {
     showRightPanel,
     files,
     phase,
+    importRunning,
     scanPaused,
     viewMode,
     filter,
@@ -60,8 +61,8 @@ export function Layout({ left, center, right }: LayoutProps) {
   const activeFilter = filter === 'all' ? 'All photos' : filter.replace(/^face:/, 'Face ');
   const primaryStatus = phase === 'scanning'
     ? scanPaused ? 'Scan paused' : 'Scanning source'
-    : phase === 'importing'
-      ? 'Import running'
+    : importRunning
+      ? 'Export running'
       : phase === 'complete'
         ? 'Import complete'
         : files.length > 0

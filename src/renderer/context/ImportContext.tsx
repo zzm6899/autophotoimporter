@@ -43,6 +43,8 @@ interface State {
   jpegQuality: number;
   folderPreset: string;
   customPattern: string;
+  importRunning: boolean;
+  importQueuedCount: number;
   importProgress: ImportProgress | null;
   importResult: ImportResult | null;
   importFailedPaths: string[];
@@ -170,6 +172,7 @@ export type Action =
   | { type: 'SET_FOLDER_PRESET'; preset: string }
   | { type: 'SET_CUSTOM_PATTERN'; pattern: string }
   | { type: 'IMPORT_START' }
+  | { type: 'SET_IMPORT_QUEUE_DEPTH'; count: number }
   | { type: 'IMPORT_PROGRESS'; progress: ImportProgress }
   | { type: 'IMPORT_COMPLETE'; result: ImportResult }
   | { type: 'DISMISS_SUMMARY' }
@@ -312,6 +315,8 @@ const initialState: State = {
   jpegQuality: 90,
   folderPreset: 'date-flat',
   customPattern: FOLDER_PRESETS['date-flat'].pattern,
+  importRunning: false,
+  importQueuedCount: 0,
   importProgress: null,
   importResult: null,
   importFailedPaths: [],
@@ -662,21 +667,24 @@ export function reducer(state: State, action: Action): State {
     case 'IMPORT_START':
       return {
         ...state,
-        phase: 'importing',
-        viewMode: 'grid',
-        previousViewMode: null,
+        phase: state.phase === 'scanning' || state.phase === 'complete'
+          ? (state.files.length > 0 ? 'ready' : 'idle')
+          : state.phase,
         filter: isExpensiveImportFilter(state.filter) ? 'all' : state.filter,
+        importRunning: true,
         importProgress: null,
         importResult: null,
         importFailedPaths: [],
       };
+    case 'SET_IMPORT_QUEUE_DEPTH':
+      return { ...state, importQueuedCount: Math.max(0, Math.floor(action.count)) };
     case 'IMPORT_PROGRESS':
       return { ...state, importProgress: action.progress };
     case 'IMPORT_COMPLETE': {
       const failedPaths = (action.result.ledgerItems ?? [])
         .filter((item) => item.status === 'failed' || item.status === 'pending')
         .map((item) => item.sourcePath);
-      return { ...state, phase: 'complete', importResult: action.result, importFailedPaths: failedPaths };
+      return { ...state, phase: 'complete', importRunning: false, importResult: action.result, importFailedPaths: failedPaths };
     }
     case 'DISMISS_SUMMARY':
       // If there are no files in the list (e.g. after auto-import cleared them),
@@ -684,6 +692,8 @@ export function reducer(state: State, action: Action): State {
       return {
         ...state,
         phase: state.files.length > 0 ? 'ready' : 'idle',
+        importRunning: false,
+        importQueuedCount: 0,
         importResult: null,
         importProgress: null,
         filter: state.filter === 'import-failures' ? 'all' : state.filter,
@@ -1317,6 +1327,8 @@ export function reducer(state: State, action: Action): State {
         queuedPaths: [],
         selectedPaths: [],
         importResult: null,
+        importRunning: false,
+        importQueuedCount: 0,
         importProgress: null,
         fileHistory: [],
         focusedIndex: -1,
@@ -1456,6 +1468,8 @@ export function reducer(state: State, action: Action): State {
         focusedIndex,
         focusedPath,
         phase: restoredFiles.length > 0 ? 'ready' : 'idle',
+        importRunning: false,
+        importQueuedCount: 0,
         importProgress: null,
         importResult: null,
         lastSessionId: action.session.id,

@@ -74,10 +74,8 @@ export function SourcePanel() {
   const [watchFolders, setWatchFolders] = useState<WatchFolder[]>([]);
   const [watchNotice, setWatchNotice] = useState<string | null>(null);
   const [catalogNotice, setCatalogNotice] = useState<string | null>(null);
-  const sourceChangeLocked = phase === 'scanning' || phase === 'importing';
-  const sourceBusyTitle = phase === 'importing'
-    ? 'Import is running. Wait for it to finish before changing source.'
-    : 'Scan is running. Wait for it to finish before changing source.';
+  const sourceChangeLocked = phase === 'scanning';
+  const sourceBusyTitle = 'Scan is running. Wait for it to finish before changing source.';
 
   useEffect(() => {
     if (!isPro && sourceKind === 'ftp') {
@@ -123,7 +121,7 @@ export function SourcePanel() {
       if (noticeTimer != null) window.clearTimeout(noticeTimer);
       if (trigger.folder.autoImport) {
         setWatchNotice(`${label} queued for import`);
-      } else if (trigger.folder.autoScan && phase !== 'scanning' && phase !== 'importing') {
+      } else if (trigger.folder.autoScan && phase !== 'scanning') {
         dispatch({ type: 'SET_SOURCE_KIND', kind: 'volume' });
         dispatch({ type: 'SELECT_SOURCE', path: trigger.folder.path });
         if (dest) dispatch({ type: 'SET_DESTINATION', path: dest });
