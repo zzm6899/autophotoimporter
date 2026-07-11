@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { alignBestOfBatchOffset, getReviewStartTarget, getSelectedReviewStartTarget, shouldOpenBestOfSelectionPanel, shouldQueueVisibleImportablePaths, shouldRunOnnxForReview, sliceBestOfBatchPathPage, summarizeBestOfBatchPage, summarizeReviewFlowHealth, summarizeReviewFlowNextStep } from '../ThumbnailGrid';
+import { alignBestOfBatchOffset, getReviewStartTarget, getSelectedReviewStartTarget, isJpegFamilyPhoto, isRawFilterPhoto, shouldOpenBestOfSelectionPanel, shouldQueueVisibleImportablePaths, shouldRunOnnxForReview, sliceBestOfBatchPathPage, summarizeBestOfBatchPage, summarizeReviewFlowHealth, summarizeReviewFlowNextStep } from '../ThumbnailGrid';
 import type { MediaFile } from '../../../shared/types';
 
 describe('summarizeReviewFlowNextStep', () => {
@@ -232,6 +232,15 @@ describe('getSelectedReviewStartTarget', () => {
       path: '/photos/a.jpg',
       index: 0,
     });
+  });
+});
+
+describe('photo format filter helpers', () => {
+  it('treats Lumix HIF stills as JPEG-family photos, not RAW', () => {
+    const hif = { type: 'photo' as const, extension: '.hif' };
+
+    expect(isJpegFamilyPhoto(hif)).toBe(true);
+    expect(isRawFilterPhoto(hif)).toBe(false);
   });
 });
 

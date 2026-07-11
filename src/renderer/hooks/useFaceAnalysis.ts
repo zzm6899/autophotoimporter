@@ -114,7 +114,7 @@ export function useFaceAnalysis(): UseFaceAnalysisReturn {
     // Filter to photo files only (skip videos — onnxruntime can't decode them)
     // All RAW formats use embedded JPEG preview extraction in face-engine.ts
     const photoExts = new Set([
-      '.jpg', '.jpeg', '.png', '.heic', '.heif', '.webp', '.avif', '.tiff', '.tif',
+      '.jpg', '.jpeg', '.jpe', '.png', '.heic', '.heif', '.hif', '.webp', '.avif', '.tiff', '.tif',
       // Canon
       '.cr2', '.cr3', '.crw',
       // Nikon

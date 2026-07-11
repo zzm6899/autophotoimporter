@@ -58,7 +58,7 @@ async function sharpResizeBufferToBuffer(
 }
 
 export const EXIFR_SUPPORTED = new Set([
-  '.jpg', '.jpeg', '.heic', '.heif', '.tif', '.tiff',
+  '.jpg', '.jpeg', '.jpe', '.heic', '.heif', '.hif', '.tif', '.tiff',
   // Canon
   '.cr2', '.cr3', '.crw',
   // Nikon

@@ -80,6 +80,24 @@ describe('scanFiles', () => {
     expect(total).toBe(1);
   });
 
+  it('recognizes Lumix HIF stills as photo files', async () => {
+    mockReaddir.mockResolvedValue([
+      makeDirent('P1000123.HIF', false, true),
+    ] as any);
+    mockStat.mockResolvedValue({ size: 1000, mtimeMs: 12345 } as any);
+
+    const total = await scanFiles('/source', onBatch, onThumbnail, undefined, { generateThumbnails: false });
+
+    expect(total).toBe(1);
+    expect(onBatch).toHaveBeenCalledWith([
+      expect.objectContaining({
+        name: 'P1000123.HIF',
+        extension: '.hif',
+        type: 'photo',
+      }),
+    ]);
+  });
+
   it('skips hidden files', async () => {
     mockReaddir.mockResolvedValue([
       makeDirent('.hidden.jpg', false, true),

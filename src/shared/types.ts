@@ -1315,7 +1315,7 @@ export interface UpdateRepairResult {
 
 export const PHOTO_EXTENSIONS = new Set([
   // Common
-  '.jpg', '.jpeg', '.png', '.tif', '.tiff', '.heic', '.heif', '.webp', '.avif',
+  '.jpg', '.jpeg', '.jpe', '.png', '.tif', '.tiff', '.heic', '.heif', '.hif', '.webp', '.avif',
   // Canon
   '.cr2', '.cr3', '.crw',
   // Nikon

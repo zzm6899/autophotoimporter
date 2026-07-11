@@ -7,6 +7,7 @@ describe('Extension sets', () => {
     expect(PHOTO_EXTENSIONS.has('.cr2')).toBe(true);
     expect(PHOTO_EXTENSIONS.has('.arw')).toBe(true);
     expect(PHOTO_EXTENSIONS.has('.heic')).toBe(true);
+    expect(PHOTO_EXTENSIONS.has('.hif')).toBe(true);
     expect(PHOTO_EXTENSIONS.has('.nef')).toBe(true);
     expect(PHOTO_EXTENSIONS.has('.dng')).toBe(true);
   });

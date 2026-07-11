@@ -44,6 +44,17 @@ function isSimpleFilterMode(filter: FilterMode): boolean {
   return SIMPLE_FILTERS.has(filter) || filter.startsWith('rating-');
 }
 
+const JPEG_FAMILY_EXTENSIONS = new Set(['.jpg', '.jpeg', '.jpe', '.hif']);
+const NON_RAW_PHOTO_EXTENSIONS = new Set(['.jpg', '.jpeg', '.jpe', '.png', '.heic', '.heif', '.hif', '.webp', '.avif']);
+
+export function isJpegFamilyPhoto(file: Pick<MediaFile, 'type' | 'extension'>): boolean {
+  return file.type === 'photo' && JPEG_FAMILY_EXTENSIONS.has(file.extension.toLowerCase());
+}
+
+export function isRawFilterPhoto(file: Pick<MediaFile, 'type' | 'extension'>): boolean {
+  return file.type === 'photo' && !NON_RAW_PHOTO_EXTENSIONS.has(file.extension.toLowerCase());
+}
+
 // ── Laplacian sharpness-based subject detector ────────────────────────────
 // Uses focus sharpness (Laplacian variance) instead of colour/skin tone so it
 // works for helmeted fighters, animals, objects — anything that is in-focus.
@@ -2303,8 +2314,8 @@ export function ThumbnailGrid() {
         case 'adjusted': return typeof f.exposureAdjustmentStops === 'number' && Math.abs(f.exposureAdjustmentStops) >= 0.01;
         case 'photos': return f.type === 'photo';
         case 'videos': return f.type === 'video';
-        case 'jpeg': return f.type === 'photo' && ['.jpg', '.jpeg', '.jpe'].includes(f.extension.toLowerCase());
-        case 'raw': return !['.jpg', '.jpeg', '.jpe', '.png', '.heic', '.heif', '.webp', '.avif'].includes(f.extension.toLowerCase()) && f.type === 'photo';
+        case 'jpeg': return isJpegFamilyPhoto(f);
+        case 'raw': return isRawFilterPhoto(f);
         case 'rating-1':
         case 'rating-2':
         case 'rating-3':
@@ -5074,7 +5085,7 @@ export function ThumbnailGrid() {
           ) : (
             <>
               <p className="text-sm text-text-secondary">No supported files found</p>
-              <p className="text-xs text-text-muted">Supports JPG, RAW, HEIC, MOV, MP4</p>
+              <p className="text-xs text-text-muted">Supports JPG, HIF, RAW, HEIC, MOV, MP4</p>
             </>
           )}
           <button
@@ -5826,7 +5837,7 @@ export function ThumbnailGrid() {
               <optgroup label="Type">
                 <option value="photos">Photos only</option>
                 <option value="videos">Videos only</option>
-                <option value="jpeg">JPEG files</option>
+                <option value="jpeg">JPEG / HIF files</option>
                 <option value="raw">RAW files</option>
               </optgroup>
               <optgroup label="Stars">
