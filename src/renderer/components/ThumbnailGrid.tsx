@@ -36,6 +36,7 @@ const SIMPLE_FILTERS = new Set<string>([
   'best',
   'photos',
   'videos',
+  'jpeg',
   'raw',
 ]);
 
@@ -192,6 +193,21 @@ export function getReviewStartTarget(
   if (!path) return null;
   const index = candidates.findIndex((file) => file.path === path);
   return { filter, path, index: Math.max(0, index) };
+}
+
+export function getSelectedReviewStartTarget(
+  files: readonly Pick<MediaFile, 'path'>[],
+  selectedPaths: readonly string[],
+  currentFocusedPath?: string | null,
+): { path: string; index: number } | null {
+  if (files.length === 0 || selectedPaths.length === 0) return null;
+  const selected = new Set(selectedPaths);
+  const focusedIndex = currentFocusedPath && selected.has(currentFocusedPath)
+    ? files.findIndex((file) => file.path === currentFocusedPath)
+    : -1;
+  if (focusedIndex >= 0) return { path: files[focusedIndex].path, index: focusedIndex };
+  const index = files.findIndex((file) => selected.has(file.path));
+  return index >= 0 ? { path: files[index].path, index } : null;
 }
 
 export function summarizeReviewFlowHealth({
@@ -2287,7 +2303,8 @@ export function ThumbnailGrid() {
         case 'adjusted': return typeof f.exposureAdjustmentStops === 'number' && Math.abs(f.exposureAdjustmentStops) >= 0.01;
         case 'photos': return f.type === 'photo';
         case 'videos': return f.type === 'video';
-        case 'raw': return !['.jpg', '.jpeg', '.png', '.heic', '.heif', '.webp', '.avif'].includes(f.extension.toLowerCase()) && f.type === 'photo';
+        case 'jpeg': return f.type === 'photo' && ['.jpg', '.jpeg', '.jpe'].includes(f.extension.toLowerCase());
+        case 'raw': return !['.jpg', '.jpeg', '.jpe', '.png', '.heic', '.heif', '.webp', '.avif'].includes(f.extension.toLowerCase()) && f.type === 'photo';
         case 'rating-1':
         case 'rating-2':
         case 'rating-3':
@@ -3182,6 +3199,17 @@ export function ThumbnailGrid() {
   const setFocused = useCallback((index: number, pathOverride?: string | null) => {
     dispatch({ type: 'SET_FOCUSED', index, path: pathOverride !== undefined ? pathOverride : index >= 0 ? sortedFiles[index]?.path ?? null : null });
   }, [dispatch, sortedFiles]);
+
+  const openSelectedReview = useCallback(() => {
+    const target = getSelectedReviewStartTarget(sortedFiles, selectedPaths, focusedPath);
+    if (!target) return;
+    clearSelection();
+    multiClickSelectRef.current = false;
+    setMultiClickSelect(false);
+    setReviewSprintMode(true);
+    dispatch({ type: 'SET_VIEW_MODE', mode: 'single' });
+    setFocused(target.index, target.path);
+  }, [clearSelection, dispatch, focusedPath, selectedPaths, setFocused, sortedFiles]);
 
   const cyclePick = useCallback((index: number) => {
     if (index < 0 || index >= sortedFiles.length) return;
@@ -5104,6 +5132,13 @@ export function ThumbnailGrid() {
       {hasBatchSelection && (
         <>
           <span className="px-2.5 py-1.5 text-[11px] text-blue-400 font-medium">{selectedPaths.length}</span>
+          <button
+            onClick={openSelectedReview}
+            className="px-3 py-1.5 text-[11px] text-text-secondary hover:text-blue-300 hover:bg-blue-500/10 transition-colors"
+            title="Open the selected photos in individual review. Pick/reject will affect one photo at a time."
+          >
+            Review
+          </button>
           <div className="w-px h-4 bg-border" />
         </>
       )}
@@ -5791,6 +5826,7 @@ export function ThumbnailGrid() {
               <optgroup label="Type">
                 <option value="photos">Photos only</option>
                 <option value="videos">Videos only</option>
+                <option value="jpeg">JPEG files</option>
                 <option value="raw">RAW files</option>
               </optgroup>
               <optgroup label="Stars">

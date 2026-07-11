@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { alignBestOfBatchOffset, getReviewStartTarget, shouldOpenBestOfSelectionPanel, shouldQueueVisibleImportablePaths, shouldRunOnnxForReview, sliceBestOfBatchPathPage, summarizeBestOfBatchPage, summarizeReviewFlowHealth, summarizeReviewFlowNextStep } from '../ThumbnailGrid';
+import { alignBestOfBatchOffset, getReviewStartTarget, getSelectedReviewStartTarget, shouldOpenBestOfSelectionPanel, shouldQueueVisibleImportablePaths, shouldRunOnnxForReview, sliceBestOfBatchPathPage, summarizeBestOfBatchPage, summarizeReviewFlowHealth, summarizeReviewFlowNextStep } from '../ThumbnailGrid';
 import type { MediaFile } from '../../../shared/types';
 
 describe('summarizeReviewFlowNextStep', () => {
@@ -207,6 +207,30 @@ describe('getReviewStartTarget', () => {
       filter: 'all',
       path: '/photos/b.jpg',
       index: 1,
+    });
+  });
+});
+
+describe('getSelectedReviewStartTarget', () => {
+  it('opens the focused selected photo for individual review', () => {
+    expect(getSelectedReviewStartTarget([
+      { path: '/photos/a.jpg' },
+      { path: '/photos/b.jpg' },
+      { path: '/photos/c.jpg' },
+    ], ['/photos/a.jpg', '/photos/c.jpg'], '/photos/c.jpg')).toEqual({
+      path: '/photos/c.jpg',
+      index: 2,
+    });
+  });
+
+  it('falls back to the first selected visible photo', () => {
+    expect(getSelectedReviewStartTarget([
+      { path: '/photos/a.jpg' },
+      { path: '/photos/b.jpg' },
+      { path: '/photos/c.jpg' },
+    ], ['/photos/c.jpg', '/photos/a.jpg'], '/photos/missing.jpg')).toEqual({
+      path: '/photos/a.jpg',
+      index: 0,
     });
   });
 });

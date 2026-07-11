@@ -2674,7 +2674,13 @@ export function registerIpcHandlers(): void {
   });
 
   handleIpc(IPC.DIALOG_OPEN_PATH, async (_event, filePath: string) => {
-    await shell.openPath(filePath);
+    const error = await shell.openPath(filePath);
+    if (!error) return;
+    const targetStat = await stat(filePath).catch(() => null);
+    if (targetStat?.isFile()) {
+      shell.showItemInFolder(filePath);
+    }
+    throw new Error(`Could not open path: ${error}`);
   }, ([filePath]) => isSafeOpenPath(filePath) ? null : ipcError('VALIDATION_ERROR', 'Invalid path payload.'));
 
   handleIpc(IPC.BENCHMARK_SMOKE_RUN, async () => {

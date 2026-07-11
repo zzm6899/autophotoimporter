@@ -1130,6 +1130,11 @@ describe('ImportContext reducer', () => {
       expect(next.folderPreset).toBe('year-month');
     });
 
+    it('SET_FILTER supports JPEG-only imports', () => {
+      const next = reducer(makeState(), { type: 'SET_FILTER', filter: 'jpeg' });
+      expect(next.filter).toBe('jpeg');
+    });
+
     it('SET_CUSTOM_PATTERN', () => {
       const next = reducer(makeState(), { type: 'SET_CUSTOM_PATTERN', pattern: '{YYYY}/{name}.{ext}' });
       expect(next.customPattern).toBe('{YYYY}/{name}.{ext}');

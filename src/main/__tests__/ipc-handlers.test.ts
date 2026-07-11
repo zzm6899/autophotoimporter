@@ -7,6 +7,7 @@ const mockOn = vi.fn();
 const mockGetAllWindows = vi.fn(() => []);
 const mockShowOpenDialog = vi.fn();
 const mockOpenPath = vi.fn();
+const mockShowItemInFolder = vi.fn();
 const mockOpenExternal = vi.fn();
 const mockGetPath = vi.fn((_name: string) => '/tmp/userData');
 
@@ -15,6 +16,7 @@ vi.mock('electron', () => ({
   dialog: { showOpenDialog: (...args: unknown[]) => mockShowOpenDialog(...args) },
   shell: {
     openPath: (...args: unknown[]) => mockOpenPath(...args),
+    showItemInFolder: (...args: unknown[]) => mockShowItemInFolder(...args),
     openExternal: (...args: unknown[]) => mockOpenExternal(...args),
   },
   app: { getPath: (name: string) => mockGetPath(name), getVersion: () => '1.1.0', on: (event: string, cb: Function) => mockOn(event, cb) },
@@ -37,6 +39,7 @@ vi.mock('node:fs/promises', () => ({
   mkdir: vi.fn().mockResolvedValue(undefined),
   rename: vi.fn().mockResolvedValue(undefined),
   chmod: vi.fn().mockResolvedValue(undefined),
+  stat: vi.fn().mockRejectedValue(new Error('ENOENT')),
   statfs: vi.fn(),
 }));
 
@@ -143,7 +146,7 @@ import { scanFiles } from '../services/file-scanner';
 import { isDuplicate } from '../services/duplicate-detector';
 import { generatePreview, generatePreviewPayload, setRawPreviewCache, setRawPreviewQuality } from '../services/exif-parser';
 import { checkForUpdate, fetchUpdateHistory, readLastKnownGoodUpdateMetadata } from '../services/update-checker';
-import { readFile, writeFile, chmod } from 'node:fs/promises';
+import { readFile, writeFile, chmod, stat } from 'node:fs/promises';
 
 const mockImportFiles = vi.mocked(importFiles);
 const mockScanFiles = vi.mocked(scanFiles);
@@ -155,6 +158,7 @@ const mockSetRawPreviewQuality = vi.mocked(setRawPreviewQuality);
 const mockReadFile = vi.mocked(readFile);
 const mockWriteFile = vi.mocked(writeFile);
 const mockChmod = vi.mocked(chmod);
+const mockStat = vi.mocked(stat);
 const mockCheckForUpdate = vi.mocked(checkForUpdate);
 const mockFetchUpdateHistory = vi.mocked(fetchUpdateHistory);
 const mockReadLastKnownGoodUpdateMetadata = vi.mocked(readLastKnownGoodUpdateMetadata);
@@ -172,6 +176,7 @@ describe('IPC Handlers', () => {
     mockHandle.mockClear();
     mockOn.mockClear();
     mockOpenPath.mockClear();
+    mockShowItemInFolder.mockClear();
     mockOpenExternal.mockClear();
     mockImportFiles.mockReset();
     mockScanFiles.mockReset();
@@ -180,6 +185,8 @@ describe('IPC Handlers', () => {
     mockWriteFile.mockClear();
     mockChmod.mockReset();
     mockChmod.mockResolvedValue(undefined);
+    mockStat.mockReset();
+    mockStat.mockRejectedValue(new Error('ENOENT'));
     mockCheckForUpdate.mockReset();
     mockCheckForUpdate.mockResolvedValue({ status: 'up-to-date', currentVersion: '1.1.0', latestVersion: '1.1.0' });
     mockFetchUpdateHistory.mockReset();
@@ -906,6 +913,22 @@ describe('IPC Handlers', () => {
         message: 'Invalid path payload.',
       });
       expect(mockOpenPath).not.toHaveBeenCalled();
+    });
+
+    it('surfaces shell.openPath failures and selects failed files in the folder', async () => {
+      mockOpenPath.mockResolvedValue('No application is associated with the specified file.');
+      mockStat.mockResolvedValue({ isFile: () => true } as any);
+      const handler = getHandler('dialog:open-path');
+
+      const result = await handler({}, 'C:\\Users\\test\\photo.jpg') as any;
+
+      expect(mockOpenPath).toHaveBeenCalledWith('C:\\Users\\test\\photo.jpg');
+      expect(mockShowItemInFolder).toHaveBeenCalledWith('C:\\Users\\test\\photo.jpg');
+      expect(result).toEqual({
+        ok: false,
+        code: 'INTERNAL_ERROR',
+        message: 'Could not open path: No application is associated with the specified file.',
+      });
     });
 
     it('rejects invalid face analysis paths', async () => {

@@ -196,6 +196,7 @@ export function ImportSummary() {
   const dispatch = useAppDispatch();
   const { startImport } = useImport();
   const [handoffBusy, setHandoffBusy] = useState(false);
+  const [openError, setOpenError] = useState<string | null>(null);
 
   useEffect(() => {
     if (phase !== 'complete' || !importResult) return;
@@ -208,12 +209,22 @@ export function ImportSummary() {
 
   if (phase !== 'complete' || !importResult) return null;
 
+  const openPath = async (target?: string | null) => {
+    if (!target) return;
+    setOpenError(null);
+    try {
+      await window.electronAPI.openPath(target);
+    } catch (error) {
+      setOpenError(error instanceof Error ? error.message : 'Could not open that path.');
+    }
+  };
+
   const handleOpenDestination = () => {
-    if (destination) window.electronAPI.openPath(destination);
+    void openPath(destination);
   };
 
   const handleOpenImportLog = () => {
-    if (importResult.importLogCsvPath) window.electronAPI.openPath(importResult.importLogCsvPath);
+    void openPath(importResult.importLogCsvPath);
   };
 
   const handleDismiss = () => {
@@ -250,13 +261,13 @@ export function ImportSummary() {
     if (handoffBusy) return;
     const existingDir = importResult?.lightroomHandoff?.outputDir;
     if (existingDir) {
-      void window.electronAPI.openPath(existingDir);
+      void openPath(existingDir);
       return;
     }
     setHandoffBusy(true);
     try {
       const handoff = await window.electronAPI.exportLightroomHandoff(files);
-      if (handoff?.outputDir) void window.electronAPI.openPath(handoff.outputDir);
+      if (handoff?.outputDir) void openPath(handoff.outputDir);
     } finally {
       setHandoffBusy(false);
     }
@@ -265,6 +276,9 @@ export function ImportSummary() {
   const summary = summarizeImportResult(importResult);
   const flowSummary = summarizeReviewImportVisibility(importResult, files, selectedPaths.length, queuedPaths.length);
   const displayedIssues = summary.displayedIssues;
+  const importedOutputs = (importResult.ledgerItems ?? [])
+    .filter((item) => (item.status === 'imported' || item.status === 'verified') && (item.destFullPath || item.backupFullPath))
+    .slice(0, 6);
   const reportDetails = [
     `${importResult.imported} imported`,
     summary.skippedSummary.reportLabel,
@@ -374,6 +388,35 @@ export function ImportSummary() {
             </div>
           )}
         </div>
+
+        {/* Error list */}
+        {openError && (
+          <div className="mb-4 rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+            {openError}
+          </div>
+        )}
+
+        {importedOutputs.length > 0 && (
+          <div className="mb-6 max-h-36 overflow-y-auto rounded border border-border bg-surface px-3 py-2">
+            <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">Imported outputs</h3>
+            <div className="space-y-1">
+              {importedOutputs.map((item) => {
+                const target = item.destFullPath ?? item.backupFullPath;
+                return (
+                  <button
+                    key={`${item.sourcePath}-${target}`}
+                    type="button"
+                    onClick={() => { void openPath(target); }}
+                    className="block w-full truncate rounded px-1 py-0.5 text-left text-xs text-text-secondary hover:bg-surface-raised hover:text-text"
+                    title={target}
+                  >
+                    {item.name}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* Error list */}
         {displayedIssues.length > 0 && (
