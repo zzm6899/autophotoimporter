@@ -23,6 +23,7 @@ type StartImportOptions = {
   retryFailed?: boolean;
   dryRun?: boolean;
   selectedPathsOverride?: string[];
+  includeRejected?: boolean;
 };
 
 type ImportPathResolutionInput = {
@@ -31,6 +32,7 @@ type ImportPathResolutionInput = {
   queuedPaths: string[];
   skipDuplicates: boolean;
   selectedPathsOverride?: string[];
+  includeRejected?: boolean;
 };
 
 export function resolveImportPaths({
@@ -39,9 +41,10 @@ export function resolveImportPaths({
   queuedPaths,
   skipDuplicates,
   selectedPathsOverride,
+  includeRejected,
 }: ImportPathResolutionInput): string[] | undefined {
   const isImportableFile = (file: ImportPathResolutionInput['files'][number]) =>
-    !!file.destPath && file.pick !== 'rejected' && (!skipDuplicates || !file.duplicate);
+    !!file.destPath && (includeRejected || file.pick !== 'rejected') && (!skipDuplicates || !file.duplicate);
   const importablePathSet = new Set(files.filter(isImportableFile).map((file) => file.path));
   const filterImportablePaths = (paths: string[]) => paths.filter((path) => importablePathSet.has(path));
 
@@ -162,13 +165,14 @@ export function useImport() {
     //   4. Pick/reject flags.
     //   5. Everything that isn't rejected and (when enabled) isn't a duplicate.
     const isImportableFile = (file: typeof files[number]) =>
-      !!file.destPath && file.pick !== 'rejected' && (!skipDuplicates || !file.duplicate);
+      !!file.destPath && (options?.includeRejected || file.pick !== 'rejected') && (!skipDuplicates || !file.duplicate);
     const pathsToImport = resolveImportPaths({
       files,
       selectedPaths,
       queuedPaths,
       skipDuplicates,
       selectedPathsOverride: options?.selectedPathsOverride,
+      includeRejected: options?.includeRejected,
     });
 
     const importPathSet = pathsToImport ? new Set(pathsToImport) : null;
@@ -241,6 +245,7 @@ export function useImport() {
         conflictPolicy,
         conflictFolderName,
         selectedPaths: pathsToImport,
+        includeRejected: !!options?.includeRejected,
         separateProtected,
         protectedFolderName,
         backupDestRoot: backupDestRoot || undefined,

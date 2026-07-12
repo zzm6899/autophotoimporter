@@ -483,6 +483,10 @@ export function DestinationPanel() {
     }
     return files.filter(importable);
   }, [files, hasClickSelection, hasPicks, hasQueue, queuedPaths, skipDuplicates, selectedPaths]);
+  const allScannedImportFiles = useMemo(
+    () => files.filter((f) => f.destPath && (!skipDuplicates || !f.duplicate)),
+    [files, skipDuplicates],
+  );
 
   const buildImportConfig = (dryRun = false): ImportConfig | null => {
     if (!selectedSource || !destination) return null;
@@ -538,6 +542,8 @@ export function DestinationPanel() {
   const licenseValid = !!licenseStatus?.valid;
   const canImport = licenseValid && selectedSource && destination && ftpReady && importFiles.length > 0 && phase === 'ready';
   const totalSize = importFiles.reduce((sum, f) => sum + f.size, 0);
+  const allScannedTotalSize = allScannedImportFiles.reduce((sum, f) => sum + f.size, 0);
+  const importScopeIsSubset = allScannedImportFiles.length > importFiles.length || allScannedTotalSize > totalSize;
   const importScopePriorityNotice = summarizeImportScopePriority({
     selectedPathCount: selectedPaths.length,
     queuedPathCount: queuedPaths.length,
@@ -573,6 +579,8 @@ export function DestinationPanel() {
   const destinationSameAsSource = !!normalizedSource && !!normalizedDestination && normalizedDestination === normalizedSource;
   const backupSameAsSource = !!normalizedSource && !!normalizedBackup && normalizedBackup === normalizedSource;
   const outputPathBlocked = backupSameAsPrimary || destinationSameAsSource || backupSameAsSource;
+  const canImportAllScanned = licenseValid && selectedSource && destination && ftpReady && allScannedImportFiles.length > 0 && phase === 'ready';
+  const allScannedInsufficientSpace = freeBytes !== null && allScannedTotalSize > 0 && allScannedTotalSize > freeBytes;
   const metadataFieldLabels = isPro ? [
     metadataExport.keywords !== false && (metadataCount > 0 || activeEventKeywords.length > 0) ? `keywords (${metadataCount + activeEventKeywords.length})` : null,
     metadataExport.title !== false && metadataTitle.trim() ? 'title' : null,
@@ -685,6 +693,13 @@ export function DestinationPanel() {
 
   const handlePreviewImport = async () => {
     await refreshPreflight(true);
+  };
+  const handleImportAllScanned = async () => {
+    if (allScannedImportFiles.length === 0) return;
+    await startImport({
+      selectedPathsOverride: allScannedImportFiles.map((file) => file.path),
+      includeRejected: true,
+    });
   };
   const importScopeLabel = hasClickSelection
     ? 'Selection'
@@ -1619,6 +1634,11 @@ export function DestinationPanel() {
             {importScopePriorityNotice && (
               <div className="mt-1 text-[10px] text-blue-300">{importScopePriorityNotice}</div>
             )}
+            {importScopeIsSubset && (
+              <div className="mt-1 text-[10px] text-yellow-500">
+                Current scope is smaller than the scanned media: all scanned is {allScannedImportFiles.length} file{allScannedImportFiles.length !== 1 ? 's' : ''} · {formatSize(allScannedTotalSize)}.
+              </div>
+            )}
             {effectiveHasWhiteBalance && saveFormat !== 'original' && (
               <span className="text-cyan-300/80"> &middot; WB</span>
             )}
@@ -1808,6 +1828,22 @@ export function DestinationPanel() {
             : `Import ${importScopeLabel} ${importFiles.length > 0 ? `${importFiles.length} File${importFiles.length !== 1 ? 's' : ''}` : ''}`
           }
         </button>
+        {importScopeIsSubset && (
+          <button
+            onClick={() => { void handleImportAllScanned(); }}
+            disabled={!canImportAllScanned || allScannedInsufficientSpace || outputPathBlocked}
+            className="w-full mt-1 py-1 rounded text-[10px] bg-surface-raised hover:bg-border text-text-secondary transition-colors disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-surface-raised"
+            title={
+              allScannedInsufficientSpace
+                ? `Not enough free space for all scanned media — need ${formatSize(allScannedTotalSize)}.`
+                : skipDuplicates
+                  ? 'Import every scanned media file, including rejected files. Duplicate skipping is still on; disable Skip Duplicates for a byte-for-byte Explorer-style copy.'
+                  : 'Import every scanned media file, including rejected files.'
+            }
+          >
+            Import All Scanned {allScannedImportFiles.length} File{allScannedImportFiles.length !== 1 ? 's' : ''} · {formatSize(allScannedTotalSize)}
+          </button>
+        )}
         {hasQueue && (
           <button
             onClick={() => {

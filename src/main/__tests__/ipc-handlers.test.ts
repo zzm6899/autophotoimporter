@@ -268,6 +268,37 @@ describe('IPC Handlers', () => {
       );
     });
 
+    it('can include rejected selected paths for all-scanned imports', async () => {
+      mockReadFile.mockResolvedValue(JSON.stringify({ licenseKey: 'valid-key' }) as any);
+      const files: MediaFile[] = [
+        { path: '/src/keep.jpg', name: 'keep.jpg', size: 100, type: 'photo', extension: '.jpg', destPath: '2026/keep.jpg' },
+        { path: '/src/duplicate.jpg', name: 'duplicate.jpg', size: 100, type: 'photo', extension: '.jpg', destPath: '2026/duplicate.jpg', duplicate: true },
+        { path: '/src/rejected.jpg', name: 'rejected.jpg', size: 100, type: 'photo', extension: '.jpg', destPath: '2026/rejected.jpg', pick: 'rejected' },
+      ];
+      mockScanFiles.mockImplementation(async (_sourcePath, onBatch: (batch: MediaFile[]) => void) => {
+        onBatch(files);
+        return files.length;
+      });
+      mockImportFiles.mockResolvedValue({ imported: 2, skipped: 0, errors: [], totalBytes: 200, durationMs: 10 });
+
+      await getHandler('scan:start')({}, '/src');
+      await getHandler('import:start')({}, {
+        sourcePath: '/src',
+        destRoot: '/dest',
+        skipDuplicates: true,
+        saveFormat: 'original',
+        jpegQuality: 90,
+        selectedPaths: files.map((file) => file.path),
+        includeRejected: true,
+      });
+
+      expect(mockImportFiles).toHaveBeenLastCalledWith(
+        [files[0], files[2]],
+        expect.any(Object),
+        expect.any(Function),
+      );
+    });
+
     it('treats an empty selected path list as an explicit empty import scope', async () => {
       mockReadFile.mockResolvedValue(JSON.stringify({ licenseKey: 'valid-key' }) as any);
       const files: MediaFile[] = [

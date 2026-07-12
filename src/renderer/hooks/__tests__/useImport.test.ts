@@ -52,6 +52,27 @@ describe('resolveImportPaths', () => {
     })).toEqual(['/photos/ok.jpg']);
   });
 
+  it('can include rejected files for explicit all-scanned imports', () => {
+    const files = [
+      file({ path: '/photos/ok.jpg', destPath: '/dest/ok.jpg' }),
+      file({ path: '/photos/rejected.jpg', destPath: '/dest/rejected.jpg', pick: 'rejected' }),
+      file({ path: '/photos/duplicate.jpg', destPath: '/dest/duplicate.jpg', duplicate: true }),
+    ];
+
+    expect(resolveImportPaths({
+      files,
+      selectedPaths: [],
+      queuedPaths: [],
+      skipDuplicates: true,
+      selectedPathsOverride: [
+        '/photos/ok.jpg',
+        '/photos/rejected.jpg',
+        '/photos/duplicate.jpg',
+      ],
+      includeRejected: true,
+    })).toEqual(['/photos/ok.jpg', '/photos/rejected.jpg']);
+  });
+
   it('falls back to explicit non-rejected importable paths when nothing is selected, queued, or picked', () => {
     const files = [
       file({ path: '/photos/ok.jpg', destPath: '/dest/ok.jpg' }),

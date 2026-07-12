@@ -457,6 +457,12 @@ export interface ImportConfig {
    */
   selectedPaths?: string[];
   /**
+   * When true, selectedPaths may include rejected files. This is used by the
+   * explicit "Import All Scanned" path so the app can behave like a folder
+   * copy instead of a culling/export pass.
+   */
+  includeRejected?: boolean;
+  /**
    * When true, files flagged as protected (filesystem read-only or in-camera
    * Protect) are written under {destRoot}/{protectedFolderName}/{pattern} instead
    * of sharing the same date folders as the unprotected shots.

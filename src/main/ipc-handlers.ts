@@ -3403,7 +3403,7 @@ function filterFilesForImport(all: MediaFile[], config: ImportConfig): MediaFile
   return all.filter((f) => {
     if (!f.destPath) return false;
     if (selected && !selected.has(f.path)) return false;
-    if (f.pick === 'rejected') return false;
+    if (!config.includeRejected && f.pick === 'rejected') return false;
     if (config.skipDuplicates && f.duplicate) return false;
     return true;
   });
