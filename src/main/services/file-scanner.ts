@@ -12,6 +12,7 @@ const FAST_THUMB_CONCURRENCY_MAX = 48;
 const SLOW_THUMB_CONCURRENCY = 4;   // PowerShell resize — one per process, keep low
 const SHARP_THUMB_CONCURRENCY = 10; // sharp resizes in-process on worker threads — no spawn cost
 const SLOW_THUMB_TIMEOUT_MS = 8000; // Per-file timeout; corrupted/huge files abort
+const DIRECTORY_WALK_CONCURRENCY = 8;
 
 /** Wraps a promise with a hard deadline — rejects if it exceeds timeoutMs. */
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
@@ -121,10 +122,15 @@ async function walkDirectory(
     }
   }
 
-  for (const subdirectory of subdirectories) {
+  // Discover sibling folders concurrently. Camera cards frequently split a
+  // shoot across many DCIM subfolders; serial recursion made those folders
+  // appear to be missing until every earlier folder had finished.
+  for (let index = 0; index < subdirectories.length; index += DIRECTORY_WALK_CONCURRENCY) {
     if (signal.aborted) return;
     await waitIfPaused(signal);
-    await walkDirectory(subdirectory, files, signal, diagnostics);
+    await Promise.all(subdirectories
+      .slice(index, index + DIRECTORY_WALK_CONCURRENCY)
+      .map((subdirectory) => walkDirectory(subdirectory, files, signal, diagnostics)));
   }
 }
 

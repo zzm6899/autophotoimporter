@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.5.10 - 2026-07-19
+
+### Fixed
+- Catalog history no longer marks files as output-folder duplicates. Previously imported files remain labelled for context, while they can be culled or imported to a different selected destination.
+- Recursive scans now discover sibling media folders concurrently, improving multi-folder card scans.
+- Folder grouping now respects the selected capture-time, AI-score, or filename sort instead of replacing it with a rating-first order.
+
+### Changed
+- Added a manual **Recheck output** action and persistent kept/rejected/open culling counts in the main review toolbar.
+- Source-folder grouping is available in both Simple and Pro modes.
+
+### Verified
+- `npm test` — 531 passed, 11 skipped
+- `npm run typecheck` — clean
+
 ## 1.5.6 - 2026-07-11
 
 ### Fixed

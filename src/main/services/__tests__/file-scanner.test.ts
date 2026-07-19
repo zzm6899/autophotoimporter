@@ -148,6 +148,25 @@ describe('scanFiles', () => {
     expect(total).toBe(2);
   });
 
+  it('collects media from sibling subfolders in one scan', async () => {
+    mockReaddir
+      .mockResolvedValueOnce([
+        makeDirent('100MEDIA', true, false),
+        makeDirent('101MEDIA', true, false),
+        makeDirent('102MEDIA', true, false),
+      ] as any)
+      .mockResolvedValueOnce([makeDirent('a.jpg', false, true)] as any)
+      .mockResolvedValueOnce([makeDirent('b.jpg', false, true)] as any)
+      .mockResolvedValueOnce([makeDirent('c.jpg', false, true)] as any);
+    mockStat.mockResolvedValue({ size: 500, mtimeMs: 12345 } as any);
+
+    const total = await scanFiles('/source', onBatch, onThumbnail, undefined, { generateThumbnails: false });
+
+    expect(total).toBe(3);
+    expect(onBatch.mock.calls.flatMap(([batch]) => batch.map((file) => file.name)).sort())
+      .toEqual(['a.jpg', 'b.jpg', 'c.jpg']);
+  });
+
   it('enriches files with EXIF data via parseExifDate', async () => {
     mockReaddir.mockResolvedValue([makeDirent('photo.jpg', false, true)] as any);
     mockStat.mockResolvedValue({ size: 1000 } as any);

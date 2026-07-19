@@ -903,7 +903,10 @@ async function applyCatalogScanMemory(sourcePath: string, scanId: string): Promi
     const candidate = byPath.get(file.path);
     if (!candidate) continue;
     marked++;
-    file.duplicate = true;
+    // Catalog matches are history, not a collision in the currently selected
+    // output folder. The renderer keeps the catalog badge but leaves the file
+    // eligible for a different destination.
+    file.duplicate = false;
     file.duplicateMemory = {
       kind: candidate.importedCount > 0 ? 'previous-import' : 'same-visual',
       matchedPath: candidate.matchedPaths[0] ?? file.path,
@@ -2373,7 +2376,7 @@ export function registerIpcHandlers(): void {
         file.duplicate = true;
         sendToRenderer(IPC.SCAN_DUPLICATE, scanId, file.path);
       } else {
-        file.duplicate = isDuplicateMemoryMatch(file.duplicateMemory);
+        file.duplicate = false;
         sendToRenderer(IPC.SCAN_DUPLICATE, scanId, file.path, undefined, false);
       }
     }

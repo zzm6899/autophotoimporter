@@ -19,10 +19,6 @@ function isExpensiveImportFilter(filter: FilterMode): boolean {
   return filter === 'face-gallery' || filter === 'face-groups' || filter.startsWith('face:');
 }
 
-function isDuplicateMemoryMatch(memory?: MediaFile['duplicateMemory']): boolean {
-  return memory?.kind === 'previous-import' || memory?.kind === 'same-visual';
-}
-
 function reviewOverlayDelayMs(fileCount: number): number {
   if (fileCount >= 2500) return REVIEW_OVERLAY_LARGE_DELAY_MS;
   if (fileCount >= 800) return REVIEW_OVERLAY_MEDIUM_DELAY_MS;
@@ -725,9 +721,11 @@ export function reducer(state: State, action: Action): State {
           f.path === action.filePath
             ? {
               ...f,
-              duplicate: action.duplicate === false
-                ? isDuplicateMemoryMatch(f.duplicateMemory)
-                : action.duplicateMemory ? isDuplicateMemoryMatch(action.duplicateMemory) : true,
+              // `duplicate` is deliberately limited to the active output
+              // folder. Catalog memory is useful context, but it must not
+              // stop a photographer culling/importing the same source into a
+              // different destination.
+              duplicate: action.duplicate === true || (action.duplicate === undefined && !action.duplicateMemory),
               duplicateMemory: action.duplicateMemory ?? f.duplicateMemory,
             }
             : f,
@@ -736,7 +734,7 @@ export function reducer(state: State, action: Action): State {
     case 'CLEAR_DUPLICATES':
       return {
         ...state,
-        files: state.files.map((f) => ({ ...f, duplicate: isDuplicateMemoryMatch(f.duplicateMemory) })),
+        files: state.files.map((f) => ({ ...f, duplicate: false })),
       };
     case 'CLEAR_CATALOG_MEMORY_FOR_SOURCE':
       return {

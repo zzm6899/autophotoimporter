@@ -1,6 +1,6 @@
 import { useMemo, useEffect, useCallback, useRef, useState, useDeferredValue } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { AlertTriangle, ClipboardCheck, Copy, Download, Eye, Gauge, ListChecks, MoreHorizontal, Pause, Play, ShieldCheck, Sparkles, Trash2, Users, Wand2 } from 'lucide-react';
+import { AlertTriangle, ClipboardCheck, Copy, Download, Eye, Gauge, ListChecks, MoreHorizontal, Pause, Play, RefreshCw, ShieldCheck, Sparkles, Trash2, Users, Wand2 } from 'lucide-react';
 // Main grid / single / split view orchestrator.
 import { useAppState, useAppDispatch, useMergedFiles } from '../context/ImportContext';
 import type { FilterMode } from '../context/ImportContext';
@@ -2006,7 +2006,7 @@ async function visualHash(src: string): Promise<string> {
 }
 
 export function ThumbnailGrid() {
-  const { phase, importRunning, selectedSource, scanError, focusedIndex, focusedPath, viewMode, filter, gridSortOrder, thumbnailSize, importFailedPaths, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, exposureAdjustmentStep, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused, fastKeeperMode, aiReviewEnabled, autoSpeedMode, faceConcurrency, gpuFaceAcceleration, reviewFaceAnalysis, reviewFaceMatching, reviewPersonDetection, reviewVisualDuplicates, keybinds, metadataKeywords, whiteBalanceTemperature, whiteBalanceTint, destination, skipDuplicates, licenseStatus, ftpDestEnabled, ftpDestConfig, experienceMode } = useAppState();
+  const { phase, importRunning, selectedSource, scanError, focusedIndex, focusedPath, viewMode, filter, gridSortOrder, thumbnailSize, importFailedPaths, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, exposureAdjustmentStep, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused, fastKeeperMode, aiReviewEnabled, autoSpeedMode, faceConcurrency, gpuFaceAcceleration, reviewFaceAnalysis, reviewFaceMatching, reviewPersonDetection, reviewVisualDuplicates, keybinds, metadataKeywords, whiteBalanceTemperature, whiteBalanceTint, destination, activeScanId, skipDuplicates, licenseStatus, ftpDestEnabled, ftpDestConfig, experienceMode } = useAppState();
   const isPro = experienceMode === 'pro';
   // useMergedFiles() overlays face/review scores without re-running the full
   // reducer map — O(n) only when scores.size > 0, otherwise returns the same array.
@@ -2059,6 +2059,7 @@ export function ThumbnailGrid() {
   const [faceThresholdOverrides, setFaceThresholdOverrides] = useState<Record<string, number>>({});
   const [reviewSprintMode, setReviewSprintMode] = useState(false);
   const [flatGridWidth, setFlatGridWidth] = useState(0);
+  const [duplicateRefreshPending, setDuplicateRefreshPending] = useState(false);
   useEffect(() => {
     if (isPro) return;
     if (!isSimpleFilterMode(filter)) {
@@ -2069,7 +2070,6 @@ export function ThumbnailGrid() {
     }
     setShowAdvancedTools(false);
     setShowAiReviewStrip(false);
-    setGroupByFolder(false);
   }, [dispatch, filter, isPro, viewMode]);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const toolbarDragState = useRef<{ startMouseX: number; startMouseY: number; startLeft: number; startTop: number } | null>(null);
@@ -2088,6 +2088,16 @@ export function ThumbnailGrid() {
   const filesRef = useRef(files);
   const sortedFilesRef = useRef<typeof files>([]);
   const phaseRef = useRef(phase);
+  const refreshDuplicates = useCallback(async () => {
+    if (!destination || files.length === 0 || duplicateRefreshPending) return;
+    setDuplicateRefreshPending(true);
+    dispatch({ type: 'CLEAR_DUPLICATES' });
+    try {
+      await window.electronAPI.checkDuplicates(destination, activeScanId ?? undefined);
+    } finally {
+      setDuplicateRefreshPending(false);
+    }
+  }, [activeScanId, destination, dispatch, duplicateRefreshPending, files.length]);
   const multiClickSelectRef = useRef(false);
   const reviewPausedRef = useRef(false);
   const reviewWaitingRef = useRef(false);
@@ -2260,11 +2270,8 @@ export function ThumbnailGrid() {
     if (changed) setSelectedFaceGroupIds(next);
   }, [displayFaceIdentityGroups, selectedFaceGroupIds]);
 
-  // Sort order (top → bottom):
-  //   1. Protected / in-camera-locked / read-only files (fast-import priority)
-  //   2. Highest rating first (5★ before 1★)
-  //   3. Not-duplicates before duplicates
-  //   4. Stable by dateTaken (oldest first) so bursts stay grouped
+  // Date/time sorts are pure chronological orders: capture time first, then
+  // burst sequence and filename. This makes multi-folder shoots predictable.
   const sortedFiles = useMemo(() => {
     if (files.length === 0) return [];
     if (filter === 'face-gallery') return [];
@@ -2327,11 +2334,6 @@ export function ThumbnailGrid() {
       }
     });
     const sorted = [...filtered].sort((a, b) => {
-      // Protected files always surface first regardless of sort order.
-      const pa = a.isProtected ? 1 : 0;
-      const pb = b.isProtected ? 1 : 0;
-      if (pa !== pb) return pb - pa;
-
       if (gridSortOrder === 'score-desc') {
         const sa = a.reviewScore ?? 0;
         const sb = b.reviewScore ?? 0;
@@ -2339,22 +2341,6 @@ export function ThumbnailGrid() {
       } else if (gridSortOrder === 'name-asc') {
         const cmp = a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true });
         if (cmp !== 0) return cmp;
-      } else {
-        // capture-asc / capture-desc: rating then date
-        const ra = a.rating ?? 0;
-        const rb = b.rating ?? 0;
-        if (ra !== rb) return rb - ra;
-        if (filter === 'group-photos') {
-          const groupScoreA = groupPhotoReviewScore(a);
-          const groupScoreB = groupPhotoReviewScore(b);
-          if (groupScoreA !== groupScoreB) return groupScoreB - groupScoreA;
-          const subjectCountA = groupPhotoSubjectCount(a);
-          const subjectCountB = groupPhotoSubjectCount(b);
-          if (subjectCountA !== subjectCountB) return subjectCountB - subjectCountA;
-        }
-        const da = a.duplicate ? 1 : 0;
-        const db = b.duplicate ? 1 : 0;
-        if (da !== db) return da - db;
       }
 
       const ta = mediaDateSortMs(a);
@@ -4497,10 +4483,9 @@ export function ThumbnailGrid() {
     return m;
   }, [sortedFiles]);
 
-  // Folder groups — only computed when the folder-view toggle is on.
-  // Within each folder files are already pulled from sortedFiles (which sorts
-  // by rating desc, date asc) so the order is correct; we just re-sort
-  // to make sure star ranking is primary within the group.
+  // Folder groups preserve the grid's selected order. Previously this view
+  // silently re-sorted each folder by rating/date, so Capture time and Name
+  // sorting appeared broken as soon as folder grouping was enabled.
   const folderGroups = useMemo(() => {
     if (!groupByFolder || !selectedSource) return null;
     const groups = new Map<string, typeof sortedFiles>();
@@ -4508,17 +4493,6 @@ export function ThumbnailGrid() {
       const folder = getSourceFolderLabel(selectedSource, file.path);
       if (!groups.has(folder)) groups.set(folder, []);
       groups.get(folder)!.push(file);
-    }
-    // Sort files within each group: highest rating first, then by date
-    for (const arr of groups.values()) {
-      arr.sort((a, b) => {
-        const ra = a.rating ?? 0;
-        const rb = b.rating ?? 0;
-        if (ra !== rb) return rb - ra;
-        const ta = mediaDateSortMs(a);
-        const tb = mediaDateSortMs(b);
-        return ta - tb;
-      });
     }
     // Sort folder names alphabetically
     return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
@@ -5439,13 +5413,39 @@ export function ThumbnailGrid() {
           value={gridSortOrder}
           onChange={(e) => dispatch({ type: 'SET_GRID_SORT_ORDER', order: e.target.value as typeof gridSortOrder })}
           className="shrink-0 rounded border border-border bg-surface-raised px-1.5 py-0.5 text-[10px] text-text-muted focus:outline-none focus:border-blue-500/50 cursor-pointer"
-          title="Change the order photos appear in the grid"
+          aria-label="Sort photos"
+          title="Sort by capture date/time, AI score, or filename"
         >
-          <option value="capture-asc">Date ↑</option>
-          <option value="capture-desc">Date ↓</option>
-          <option value="score-desc">Score</option>
-          <option value="name-asc">Name</option>
+          <option value="capture-asc">Capture time · oldest</option>
+          <option value="capture-desc">Capture time · newest</option>
+          <option value="score-desc">AI score · highest</option>
+          <option value="name-asc">Filename · A–Z</option>
         </select>
+        {destination && files.length > 0 && (
+          <ActionButton
+            icon={RefreshCw}
+            tone="neutral"
+            onClick={() => void refreshDuplicates()}
+            disabled={duplicateRefreshPending}
+            title={duplicateRefreshPending
+              ? 'Refreshing output-folder duplicate status…'
+              : 'Recheck the selected output folder for existing files. Catalog history remains informational.'}
+          >
+            {duplicateRefreshPending ? 'Checking…' : 'Recheck output'}
+          </ActionButton>
+        )}
+        {reviewStats.total > 0 && (
+          <span
+            className="shrink-0 rounded border border-border bg-surface-raised px-2 py-1 text-[10px] font-mono text-text-muted"
+            title="Persistent culling progress for the current scan"
+          >
+            <span className="text-yellow-300">{reviewStats.picked} kept</span>
+            <span className="text-text-faint"> · </span>
+            <span className="text-red-300">{reviewStats.rejected} rejected</span>
+            <span className="text-text-faint"> · </span>
+            <span>{reviewStats.pending} open</span>
+          </span>
+        )}
         <div className="shrink-0 flex items-center gap-1" title={`Thumbnail size: ${thumbnailSize}px. Use the slider or Ctrl/Cmd+scroll in the grid.`}>
           <span className="text-[9px] text-text-faint">S</span>
           <input
@@ -5903,21 +5903,21 @@ export function ThumbnailGrid() {
               <button onClick={() => { dispatch({ type: 'SET_VIEW_MODE', mode: 'compare' }); if (focusedIndex < 0 && sortedFiles.length > 0) setFocused(0); }} className={`p-0.5 rounded transition-colors ${viewMode === 'compare' ? 'text-text bg-surface-raised' : 'text-text-muted hover:text-text'}`} title="Compare view (select 2+ photos, shows up to 4 at once)">
                 <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor"><path d="M2 4.5A2.5 2.5 0 014.5 2h4A2.5 2.5 0 0111 4.5v11A2.5 2.5 0 018.5 18h-4A2.5 2.5 0 012 15.5v-11zM12 4.5A2.5 2.5 0 0114.5 2h1A2.5 2.5 0 0118 4.5v11a2.5 2.5 0 01-2.5 2.5h-1a2.5 2.5 0 01-2.5-2.5v-11z" /></svg>
               </button>
-              <button
-                onClick={() => {
-                  setGroupByFolder((v) => !v);
-                  // Switch back to grid view if we're not already there
-                  if (viewMode !== 'grid') dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' });
-                }}
-                className={`p-0.5 rounded transition-colors ${groupByFolder ? 'text-text bg-surface-raised' : 'text-text-muted hover:text-text'}`}
-                title="Folder view - group files by directory, ranked by star rating"
-              >
-                <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
-                  <path fillRule="evenodd" d="M2 6a2 2 0 012-2h4l2 2h4a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" clipRule="evenodd" />
-                </svg>
-              </button>
             </>
           )}
+          <button
+            onClick={() => {
+              setGroupByFolder((v) => !v);
+              if (viewMode !== 'grid') dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' });
+            }}
+            aria-pressed={groupByFolder}
+            className={`p-0.5 rounded transition-colors ${groupByFolder ? 'text-text bg-surface-raised' : 'text-text-muted hover:text-text'}`}
+            title="Group files by source subfolder. Keeps the selected sort order."
+          >
+            <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M2 6a2 2 0 012-2h4l2 2h4a2 2 0 012 2v6a2 2 0 01-2-2V6z" clipRule="evenodd" />
+            </svg>
+          </button>
         </div>
 
       </div>
