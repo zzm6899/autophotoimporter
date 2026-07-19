@@ -144,7 +144,7 @@ function ThumbnailCardInner({
   const imageFilter = [previewFilter, whiteBalanceFilter].filter(Boolean).join(' ') || undefined;
   const orientation = orientationTransform(file.orientation);
   const { containerRef, activeSrc } = useLazySrc(file.thumbnail, forceLoad || focused || selected);
-  const duplicateBadge = file.duplicate && !file.pick
+  const duplicateBadge = (file.duplicate || file.duplicateMemory) && !file.pick
     ? {
         label: file.duplicateMemory?.kind === 'same-visual'
           ? 'CAT SIM'
@@ -155,7 +155,7 @@ function ThumbnailCardInner({
               : 'IMPORTED',
         title: file.duplicateMemory
           ? `Catalog match: ${file.duplicateMemory.matchedPath}${file.duplicateMemory.importedAt ? ` · imported ${new Date(file.duplicateMemory.importedAt).toLocaleString()}` : ''}`
-          : 'Already imported or exists at destination',
+          : 'Already exists in the selected output folder',
         className: file.duplicateMemory ? 'bg-cyan-600/90 text-white' : 'bg-yellow-600/80 text-white',
       }
     : null;

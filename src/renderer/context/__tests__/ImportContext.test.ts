@@ -468,7 +468,7 @@ describe('ImportContext reducer', () => {
 
       const next = reducer(state, { type: 'SET_DUPLICATE', filePath: '/photo.jpg', duplicate: false });
 
-      expect(next.files[0].duplicate).toBe(true);
+      expect(next.files[0].duplicate).toBe(false);
       expect(next.files[0].duplicateMemory).toEqual(file.duplicateMemory);
     });
 
@@ -490,7 +490,7 @@ describe('ImportContext reducer', () => {
         importedAt: '2026-05-01T00:00:00.000Z',
       };
       const next = reducer(state, { type: 'SET_DUPLICATE', filePath: '/photo.jpg', duplicateMemory });
-      expect(next.files[0].duplicate).toBe(true);
+      expect(next.files[0].duplicate).toBe(false);
       expect(next.files[0].duplicateMemory).toEqual(duplicateMemory);
     });
 
@@ -552,7 +552,7 @@ describe('ImportContext reducer', () => {
       expect(next.files.every((f) => f.duplicate === false)).toBe(true);
     });
 
-    it('keeps catalog duplicate flags so previous imports still skip', () => {
+    it('clears output-folder duplicate flags while keeping catalog history', () => {
       const files = [
         makeFile({
           path: '/a.jpg',
@@ -563,12 +563,12 @@ describe('ImportContext reducer', () => {
       ];
       const next = reducer(makeState({ files }), { type: 'CLEAR_DUPLICATES' });
 
-      expect(next.files[0].duplicate).toBe(true);
+      expect(next.files[0].duplicate).toBe(false);
       expect(next.files[0].duplicateMemory).toEqual({ kind: 'previous-import', matchedPath: '/archive/a.jpg' });
       expect(next.files[1].duplicate).toBe(false);
     });
 
-    it('keeps visual-match duplicates but clears previous rejects', () => {
+    it('clears output-folder flags while retaining visual-match history', () => {
       const files = [
         makeFile({
           path: '/same.jpg',
@@ -584,7 +584,7 @@ describe('ImportContext reducer', () => {
 
       const next = reducer(makeState({ files }), { type: 'CLEAR_DUPLICATES' });
 
-      expect(next.files[0].duplicate).toBe(true);
+      expect(next.files[0].duplicate).toBe(false);
       expect(next.files[1].duplicate).toBe(false);
     });
   });
