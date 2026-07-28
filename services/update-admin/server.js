@@ -71,6 +71,9 @@ const stripeSecretKey = process.env.STRIPE_SECRET_KEY || '';
 const stripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET || '';
 const stripePublishableKey = process.env.STRIPE_PUBLISHABLE_KEY || '';
 const stripePaymentLink = process.env.STRIPE_PAYMENT_LINK || '';
+// This Stripe account can also be used by other products.  Only fulfil
+// Checkout Sessions explicitly created by Keptra.
+const KEPTRA_STRIPE_APP = 'keptra';
 
 // --- SMTP email config ---
 // Uses nodemailer with any SMTP server (Gmail, Mailgun, etc.).
@@ -3943,6 +3946,14 @@ app.post(
 
     if (event.type === 'checkout.session.completed') {
       const session = event.data.object;
+      if (session.metadata?.app !== KEPTRA_STRIPE_APP) {
+        console.warn(`[stripe] Ignoring checkout ${session.id} created by another app`);
+        return res.json({ received: true, ignored: true });
+      }
+      if (session.metadata?.checkout_type !== 'license-purchase') {
+        console.log(`[stripe] Checkout ${session.id} is a Keptra ${session.metadata?.checkout_type || 'non-license'} payment; no new license will be issued`);
+        return res.json({ received: true, ignored: true });
+      }
       const sessionId = session.id;
       const customerEmail = session.customer_details?.email || session.customer_email || '';
       const customerName = session.customer_details?.name || 'Keptra Customer';
@@ -4027,6 +4038,11 @@ app.post(
         checkoutSession = null;
       }
 
+      if (checkoutSession?.metadata?.app !== KEPTRA_STRIPE_APP || checkoutSession?.metadata?.checkout_type !== 'license-purchase') {
+        console.warn(`[stripe] Ignoring payment intent for a checkout not created by Keptra`);
+        return res.json({ received: true, ignored: true });
+      }
+
       let customerEmail = checkoutSession?.customer_details?.email || paymentIntent.receipt_email || '';
       let customerName = checkoutSession?.customer_details?.name || paymentIntent.metadata?.customer_name || 'Keptra Customer';
       const plan = checkoutSession?.metadata?.plan || paymentIntent.metadata?.plan || 'lifetime';
@@ -4094,7 +4110,7 @@ app.post(
         console.error('  Message:', err.message);
         console.error('  Stack:', err.stack);
       }
-    } else if (event.type === 'charge.succeeded' && event.data.object.metadata?.activation_code) {
+    } else if (event.type === 'charge.succeeded' && event.data.object.metadata?.app === KEPTRA_STRIPE_APP && event.data.object.metadata?.checkout_type === 'device-upgrade' && event.data.object.metadata?.activation_code) {
       // Handle device upgrade payment (charge.succeeded for device upgrades)
       const charge = event.data.object;
       const activationCode = charge.metadata?.activation_code;
@@ -4161,7 +4177,7 @@ app.post(
         console.error('  Error:', err.message);
         console.error('  Stack:', err.stack);
       }
-    } else if (event.type === 'charge.succeeded' && event.data.object.metadata?.extend_unit) {
+    } else if (event.type === 'charge.succeeded' && event.data.object.metadata?.app === KEPTRA_STRIPE_APP && event.data.object.metadata?.checkout_type === 'license-extension' && event.data.object.metadata?.extend_unit) {
       // Handle license extension payment
       const charge = event.data.object;
       const activationCode = charge.metadata?.activation_code;
@@ -4340,6 +4356,8 @@ app.post('/api/v1/checkout/create', checkoutRateLimit, async (req, res) => {
       'customer_email': customerEmail,
       'success_url': successUrl,
       'cancel_url': cancelUrl,
+      'metadata[app]': KEPTRA_STRIPE_APP,
+      'metadata[checkout_type]': 'license-purchase',
       'metadata[plan]': plan,
       'metadata[max_devices]': String(selectedMaxDevices),
       'metadata[customer_name]': customerName,
@@ -4498,10 +4516,17 @@ app.post('/api/v1/upgrade-devices', checkoutRateLimit, async (req, res) => {
       'success_url': successUrl,
       'cancel_url': cancelUrl,
       'mode': 'payment',
+      'metadata[app]': KEPTRA_STRIPE_APP,
+      'metadata[checkout_type]': 'device-upgrade',
       'metadata[activation_code]': activationCode,
       'metadata[license_id]': String(license.id),
       'metadata[new_device_count]': String(count),
       'metadata[devices_to_add]': String(devicesToAdd),
+      'payment_intent_data[metadata][app]': KEPTRA_STRIPE_APP,
+      'payment_intent_data[metadata][checkout_type]': 'device-upgrade',
+      'payment_intent_data[metadata][activation_code]': activationCode,
+      'payment_intent_data[metadata][license_id]': String(license.id),
+      'payment_intent_data[metadata][new_device_count]': String(count),
       'line_items[0][price_data][currency]': currency,
       'line_items[0][price_data][unit_amount]': String(totalCents),
       'line_items[0][price_data][product_data][name]': `Keptra — ${devicesToAdd} additional device${devicesToAdd > 1 ? 's' : ''}`,
@@ -4930,10 +4955,18 @@ app.post('/api/v1/extend-license', apiCors, checkoutRateLimit, async (req, res) 
       'success_url': successUrl,
       'cancel_url': cancelUrl,
       'mode': 'payment',
+      'metadata[app]': KEPTRA_STRIPE_APP,
+      'metadata[checkout_type]': 'license-extension',
       'metadata[activation_code]': activationCode,
       'metadata[license_id]': String(license.id),
       'metadata[extend_amount]': String(amountValue),
       'metadata[extend_unit]': unit,
+      'payment_intent_data[metadata][app]': KEPTRA_STRIPE_APP,
+      'payment_intent_data[metadata][checkout_type]': 'license-extension',
+      'payment_intent_data[metadata][activation_code]': activationCode,
+      'payment_intent_data[metadata][license_id]': String(license.id),
+      'payment_intent_data[metadata][extend_amount]': String(amountValue),
+      'payment_intent_data[metadata][extend_unit]': unit,
       'line_items[0][price_data][currency]': currency,
       'line_items[0][price_data][unit_amount]': String(extendCents),
       'line_items[0][price_data][product_data][name]': `Keptra extension - +${amountValue} ${unit}`,
