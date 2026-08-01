@@ -8,6 +8,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { Pool } = require('pg');
 const { validateLicenseKey } = require('./lib/license');
+const { isKeptraLicenseCheckout } = require('./stripe-webhook-guard');
 
 const app = express();
 const port = Number(process.env.PORT || 5071);
@@ -3945,7 +3946,7 @@ app.post(
       const session = event.data.object;
       // Stripe sends every completed checkout from this account to this endpoint.
       // Never turn a booking or another product's payment into a Keptra license.
-      if (session.metadata?.checkout_source !== 'keptra-license') {
+      if (!isKeptraLicenseCheckout(session.metadata)) {
         console.warn(`[stripe] Ignoring non-Keptra checkout: ${session.id} (source: ${session.metadata?.checkout_source || 'unset'})`);
         return res.json({ received: true, ignored: true });
       }
@@ -4036,7 +4037,7 @@ app.post(
       let customerEmail = checkoutSession?.customer_details?.email || paymentIntent.receipt_email || '';
       let customerName = checkoutSession?.customer_details?.name || paymentIntent.metadata?.customer_name || 'Keptra Customer';
       const checkoutSource = checkoutSession?.metadata?.checkout_source || paymentIntent.metadata?.checkout_source;
-      if (checkoutSource !== 'keptra-license') {
+      if (!isKeptraLicenseCheckout({ checkout_source: checkoutSource })) {
         console.warn(`[stripe] Ignoring non-Keptra payment intent: ${sessionId} (source: ${checkoutSource || 'unset'})`);
         return res.json({ received: true, ignored: true });
       }
