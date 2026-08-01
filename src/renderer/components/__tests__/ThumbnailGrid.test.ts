@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { alignBestOfBatchOffset, getReviewStartTarget, getSelectedReviewStartTarget, isJpegFamilyPhoto, isRawFilterPhoto, shouldOpenBestOfSelectionPanel, shouldQueueVisibleImportablePaths, shouldRunOnnxForReview, sliceBestOfBatchPathPage, summarizeBestOfBatchPage, summarizeReviewFlowHealth, summarizeReviewFlowNextStep } from '../ThumbnailGrid';
+import { alignBestOfBatchOffset, getReviewStartTarget, getSelectedReviewStartTarget, isJpegFamilyPhoto, isRawFilterPhoto, shouldFinalizeFaceAnalysisFailure, shouldOpenBestOfSelectionPanel, shouldQueueVisibleImportablePaths, shouldRunOnnxForReview, sliceBestOfBatchPathPage, summarizeBestOfBatchPage, summarizeReviewFlowHealth, summarizeReviewFlowNextStep } from '../ThumbnailGrid';
 import type { MediaFile } from '../../../shared/types';
 
 describe('summarizeReviewFlowNextStep', () => {
@@ -285,5 +285,13 @@ describe('shouldRunOnnxForReview', () => {
       ...fullOptions,
       reviewFaceAnalysis: false,
     })).toBe(false);
+  });
+});
+
+describe('shouldFinalizeFaceAnalysisFailure', () => {
+  it('allows transient errors to retry but completes repeatedly unavailable files', () => {
+    expect(shouldFinalizeFaceAnalysisFailure(1)).toBe(false);
+    expect(shouldFinalizeFaceAnalysisFailure(2)).toBe(false);
+    expect(shouldFinalizeFaceAnalysisFailure(3)).toBe(true);
   });
 });

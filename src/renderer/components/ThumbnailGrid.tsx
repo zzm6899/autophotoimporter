@@ -412,6 +412,13 @@ function hasFaceMatchData(file: MediaFile): boolean {
   return !!file.faceEmbedding || (file.faceEmbeddings?.length ?? 0) > 0;
 }
 
+// A bad decode, missing model, or unavailable source must not keep a review
+// session running forever. Retain a few attempts for transient startup errors,
+// then record an empty terminal result so the rest of the review can complete.
+export function shouldFinalizeFaceAnalysisFailure(attempts: number): boolean {
+  return attempts >= 3;
+}
+
 export function shouldRunOnnxForReview(
   file: MediaFile,
   options: {
@@ -2076,6 +2083,7 @@ export function ThumbnailGrid() {
   const lastClickedPathRef = useRef<string | null>(null);
   const lastExposureTapRef = useRef(0);
   const sharpnessInFlightRef = useRef(false);
+  const faceAnalysisFailureCountRef = useRef<Map<string, number>>(new Map());
   const reviewBatchCounterRef = useRef(0);
   const reviewGenerationRef = useRef(0);
   const faceScanEtaRef = useRef<{ source: string | null; total: number; startedAt: number; startedScanned: number } | null>(null);
@@ -2714,6 +2722,7 @@ export function ThumbnailGrid() {
   useEffect(() => {
     reviewGenerationRef.current++;
     sharpnessInFlightRef.current = false;
+    faceAnalysisFailureCountRef.current.clear();
     setSelectedFaceGroupIds(new Set());
     setManualFaceGroups([]);
     setManualFaceSplitPaths(new Set());
@@ -2964,12 +2973,14 @@ export function ThumbnailGrid() {
           // ONNX is serialised in the main process via the semaphore — concurrent
           // IPC calls queue there and return one at a time, but we overlap the
           // renderer-side canvas work with whatever is ahead in the queue.
+          let onnxInvocationError: string | undefined;
           const [onnxArr, thumbnailSignals] = await Promise.all([
             !needsOnnx
               ? Promise.resolve([] as Awaited<ReturnType<typeof window.electronAPI.analyzeFaces>>)
-              : window.electronAPI.analyzeFaces(f.path).catch(
-                  () => [] as Awaited<ReturnType<typeof window.electronAPI.analyzeFaces>>,
-                ),
+              : window.electronAPI.analyzeFaces(f.path).catch((error: unknown) => {
+                  onnxInvocationError = error instanceof Error ? error.message : String(error);
+                  return [] as Awaited<ReturnType<typeof window.electronAPI.analyzeFaces>>;
+                }),
             (!needsSharpness && !needsVisualHash && !needsSubject)
               ? Promise.resolve({} as ThumbnailSignals)
               : withCanvasSlot(() => analyzeThumbnailSignals(thumbnail, {
@@ -3007,10 +3018,20 @@ export function ThumbnailGrid() {
           // treat them the same as "onnx didn't run this round" so the file
           // stays a retry candidate instead of being locked in as "confirmed:
           // no faces" forever.
-          if (onnx?.error) {
-            console.warn(`[review-loop] face analysis failed for ${f.path}: ${onnx.error}`);
+          const onnxError = onnxInvocationError ?? onnx?.error;
+          if (onnxError) {
+            console.warn(`[review-loop] face analysis failed for ${f.path}: ${onnxError}`);
           }
-          const onnxOk = !!onnx && !onnx.error;
+          const onnxOk = !!onnx && !onnxError;
+          const failureAttempts = onnxError
+            ? (faceAnalysisFailureCountRef.current.get(f.path) ?? 0) + 1
+            : 0;
+          if (onnxError) {
+            faceAnalysisFailureCountRef.current.set(f.path, failureAttempts);
+          } else if (needsOnnx) {
+            faceAnalysisFailureCountRef.current.delete(f.path);
+          }
+          const terminalOnnxFailure = !!onnxError && shouldFinalizeFaceAnalysisFailure(failureAttempts);
           const onnxFaceBoxes = normalizeFaceEngineBoxes(onnxOk ? onnx.boxes : undefined);
           const onnxEmbeddingBoxes = normalizeFaceEngineBoxes(onnxOk ? onnx.embeddingBoxes : undefined);
           const onnxPersonBoxes = normalizeFaceEngineBoxes(onnxOk ? onnx.personBoxes : undefined);
@@ -3039,6 +3060,17 @@ export function ThumbnailGrid() {
           } else if (subject.faceCount !== undefined) {
             patch.faceCount = subject.faceCount;
           }
+          if (terminalOnnxFailure) {
+            // The main process has retried this file enough times. Mark the
+            // unavailable ONNX stages complete without pretending it had a
+            // successful native detection; an explicit re-scan clears this.
+            patch.faceCount = resolvedFaceBoxes?.length ?? subject.faceCount ?? 0;
+            patch.faceBoxes = resolvedFaceBoxes ?? subject.faceBoxes ?? [];
+            if (reviewPersonDetectionRef.current) {
+              patch.personCount = f.personCount ?? 0;
+              patch.personBoxes = f.personBoxes ?? [];
+            }
+          }
           if (onnxFaceBoxes.length > 0) patch.faceDetection = 'native';
           else if (!onnxOk && subject.faceDetection !== undefined) patch.faceDetection = subject.faceDetection;
           if (onnxOk && onnx?.embeddings?.[0]) patch.faceEmbedding = onnx.embeddings[0];
@@ -3053,7 +3085,10 @@ export function ThumbnailGrid() {
           }
           if (onnxOk && onnx?.poses?.length) patch.poses = onnx.poses;
           else if (f.poses !== undefined) patch.poses = f.poses;
-          patch.subjectReasons = [...new Set(mergedReasons)];
+          patch.subjectReasons = [...new Set([
+            ...mergedReasons,
+            ...(terminalOnnxFailure ? ['face analysis unavailable'] : []),
+          ])];
           if (reviewGeneration === reviewGenerationRef.current) {
             dispatch({ type: 'SET_REVIEW_SCORES', scores: { [f.path]: patch } });
           }
@@ -3164,6 +3199,7 @@ export function ThumbnailGrid() {
   }, []);
 
   const rerunFaceScan = useCallback(() => {
+    faceAnalysisFailureCountRef.current.clear();
     dispatch({ type: 'CLEAR_FACE_DATA' });
     resumeAiReview();
   }, [dispatch, resumeAiReview]);

@@ -251,7 +251,11 @@ export function SingleView({ file, files, index, total, aiPaused = false }: Sing
   }, [file.path, file.thumbnail, rawPreview]);
 
   useEffect(() => {
-    if (zoom < 1.5) return;
+    // The quick preview gets pixels on screen promptly. Once it is visible,
+    // begin the 3840px detail pass in the background so opening an image does
+    // not require a zoom gesture before it becomes sharp. Zooming still
+    // starts the detail request immediately when the quick preview is absent.
+    if (!preview && zoom < 1.5) return;
     if (detailPreview) return;
     let cancelled = false;
     void getCachedPreview(file.path, 'detail', 'high').then(async (result) => {
@@ -266,7 +270,7 @@ export function SingleView({ file, files, index, total, aiPaused = false }: Sing
     return () => {
       cancelled = true;
     };
-  }, [detailPreview, file.path, zoom]);
+  }, [detailPreview, file.path, preview, zoom]);
 
   useEffect(() => {
     if (!file.thumbnail) return;
@@ -385,7 +389,7 @@ export function SingleView({ file, files, index, total, aiPaused = false }: Sing
     decoded. On slower laptops this makes detail navigation feel immediate,
     even when the platform preview converter takes a beat.
   */
-  const imageSrc = (zoom >= 1.5 ? detailPreview : undefined) || preview || file.thumbnail;
+  const imageSrc = detailPreview || preview || file.thumbnail;
   const showingThumbnailOnly = !!file.thumbnail && !preview && loading;
 
   const handleWheel = useCallback((e: WheelEvent) => {
