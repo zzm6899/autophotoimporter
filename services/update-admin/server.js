@@ -3943,6 +3943,12 @@ app.post(
 
     if (event.type === 'checkout.session.completed') {
       const session = event.data.object;
+      // Stripe sends every completed checkout from this account to this endpoint.
+      // Never turn a booking or another product's payment into a Keptra license.
+      if (session.metadata?.checkout_source !== 'keptra-license') {
+        console.warn(`[stripe] Ignoring non-Keptra checkout: ${session.id} (source: ${session.metadata?.checkout_source || 'unset'})`);
+        return res.json({ received: true, ignored: true });
+      }
       const sessionId = session.id;
       const customerEmail = session.customer_details?.email || session.customer_email || '';
       const customerName = session.customer_details?.name || 'Keptra Customer';
@@ -4029,6 +4035,11 @@ app.post(
 
       let customerEmail = checkoutSession?.customer_details?.email || paymentIntent.receipt_email || '';
       let customerName = checkoutSession?.customer_details?.name || paymentIntent.metadata?.customer_name || 'Keptra Customer';
+      const checkoutSource = checkoutSession?.metadata?.checkout_source || paymentIntent.metadata?.checkout_source;
+      if (checkoutSource !== 'keptra-license') {
+        console.warn(`[stripe] Ignoring non-Keptra payment intent: ${sessionId} (source: ${checkoutSource || 'unset'})`);
+        return res.json({ received: true, ignored: true });
+      }
       const plan = checkoutSession?.metadata?.plan || paymentIntent.metadata?.plan || 'lifetime';
       const maxDevices = safeParseMaxDevices(checkoutSession?.metadata?.max_devices || paymentIntent.metadata?.max_devices, defaultMaxDevices);
 
@@ -4340,6 +4351,7 @@ app.post('/api/v1/checkout/create', checkoutRateLimit, async (req, res) => {
       'customer_email': customerEmail,
       'success_url': successUrl,
       'cancel_url': cancelUrl,
+      'metadata[checkout_source]': 'keptra-license',
       'metadata[plan]': plan,
       'metadata[max_devices]': String(selectedMaxDevices),
       'metadata[customer_name]': customerName,
