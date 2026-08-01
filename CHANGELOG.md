@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.5.11 - 2026-08-01
+
+### Fixed
+- AI review now completes after repeated face-analysis failures instead of permanently re-queuing unreadable or unsupported files.
+- Individual image view upgrades from its quick preview to the detail preview automatically; zooming is no longer required to trigger the sharper render.
+- Slow RAW thumbnail generation retries once with a bounded extended deadline, preventing a small late RAW tail from being silently skipped during ingestion.
+
+### Verified
+- `npm run typecheck` - clean
+- Focused thumbnail-grid and file-scanner tests - clean
+
 ## 1.5.10 - 2026-07-19
 
 ### Fixed
