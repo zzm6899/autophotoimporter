@@ -1,7 +1,7 @@
 {
   "name": "keptra",
   "productName": "Keptra",
-  "version": "1.5.11",
+  "version": "1.5.12",
   "description": "AI-assisted photo culling, import, and keeper selection",
   "main": ".vite/build/main.js",
   "private": true,
@@ -26,6 +26,7 @@
     "visual:smoke": "node scripts/visual-smoke.mjs",
     "fixtures:smoke": "node scripts/generate-smoke-fixtures.mjs",
     "bench:smoke": "node scripts/bench-smoke.mjs",
+    "bench:ai": "node scripts/bench-ai-models.mjs",
     "release:manifest": "node scripts/release-manifest.mjs",
     "release:smoke": "node scripts/release-smoke.mjs",
     "test": "vitest run",
@@ -77,7 +78,7 @@
   },
   "overrides": {
     "onnxruntime-node": {
-      "tar": "7.5.19"
+      "tar": "7.5.22"
     }
   }
 }

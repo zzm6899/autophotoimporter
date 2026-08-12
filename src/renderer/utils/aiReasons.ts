@@ -17,8 +17,8 @@ export function buildAiReasons(file: MediaFile, limit = 6): string[] {
     if (confidence >= 78) reasons.add(`face confidence ${confidence}%`);
     else if (confidence > 0 && confidence < 55) reasons.add(`verify face boxes ${confidence}%`);
     if (file.faceEmbedding || (file.faceEmbeddings?.length ?? 0) > 0) reasons.add('face match ready');
-    if (bestEye >= 2) reasons.add('best eyes open');
-    else if (bestEye === 1) reasons.add('blink/side-face risk');
+    if (bestEye >= 2) reasons.add('strong eye detail');
+    else if (bestEye === 1) reasons.add('one eye region unclear');
     if (humanMomentQuality(file) >= 75) reasons.add('strong expression moment');
     if (faceQuality(file) < 45) reasons.add('weak face detail');
   }

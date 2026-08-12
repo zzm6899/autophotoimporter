@@ -1,5 +1,6 @@
 import { memo, useRef, useEffect, useState } from 'react';
 import type { MediaFile } from '../../shared/types';
+import { orientationTransform } from '../utils/orientation';
 import { formatFileSize, formatExposure } from '../utils/formatters';
 import { buildPreviewExposureFilter, buildPreviewWhiteBalanceFilter, clampStops } from '../../shared/exposure';
 
@@ -67,19 +68,6 @@ function RejectX() {
       </svg>
     </div>
   );
-}
-
-function orientationTransform(orientation?: number) {
-  switch (orientation) {
-    case 2: return 'scaleX(-1)';
-    case 3: return 'rotate(180deg)';
-    case 4: return 'scaleY(-1)';
-    case 5: return 'rotate(90deg) scaleX(-1)';
-    case 6: return 'rotate(90deg)';
-    case 7: return 'rotate(270deg) scaleX(-1)';
-    case 8: return 'rotate(270deg)';
-    default: return undefined;
-  }
 }
 
 function mediaFaceCount(file: MediaFile): number {

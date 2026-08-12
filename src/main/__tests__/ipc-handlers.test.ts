@@ -38,7 +38,14 @@ vi.mock('node:fs/promises', () => ({
   readFile: vi.fn().mockRejectedValue(new Error('ENOENT')),
   writeFile: vi.fn().mockResolvedValue(undefined),
   mkdir: vi.fn().mockResolvedValue(undefined),
+  open: vi.fn().mockResolvedValue({
+    writeFile: vi.fn().mockResolvedValue(undefined),
+    sync: vi.fn().mockResolvedValue(undefined),
+    close: vi.fn().mockResolvedValue(undefined),
+  }),
+  readdir: vi.fn().mockResolvedValue([]),
   rename: vi.fn().mockResolvedValue(undefined),
+  rm: vi.fn().mockResolvedValue(undefined),
   chmod: vi.fn().mockResolvedValue(undefined),
   stat: vi.fn().mockRejectedValue(new Error('ENOENT')),
   statfs: vi.fn(),
@@ -235,6 +242,7 @@ describe('IPC Handlers', () => {
         [],
         expect.any(Object),
         expect.any(Function),
+        expect.any(Function),
       );
     });
 
@@ -264,6 +272,7 @@ describe('IPC Handlers', () => {
       expect(mockImportFiles).toHaveBeenLastCalledWith(
         [files[0]],
         expect.any(Object),
+        expect.any(Function),
         expect.any(Function),
       );
     });
@@ -296,6 +305,7 @@ describe('IPC Handlers', () => {
         [files[0], files[2]],
         expect.any(Object),
         expect.any(Function),
+        expect.any(Function),
       );
     });
 
@@ -324,6 +334,7 @@ describe('IPC Handlers', () => {
       expect(mockImportFiles).toHaveBeenLastCalledWith(
         [],
         expect.any(Object),
+        expect.any(Function),
         expect.any(Function),
       );
     });
@@ -354,6 +365,7 @@ describe('IPC Handlers', () => {
       expect(mockImportFiles).toHaveBeenLastCalledWith(
         [expect.objectContaining({ path: '/src/keeper.jpg', duplicate: false })],
         expect.any(Object),
+        expect.any(Function),
         expect.any(Function),
       );
     });
@@ -478,6 +490,7 @@ describe('IPC Handlers', () => {
       expect(mockImportFiles).toHaveBeenLastCalledWith(
         [files[0], files[1]],
         expect.objectContaining({ selectedPaths: [files[0].path, files[1].path] }),
+        expect.any(Function),
         expect.any(Function),
       );
     });

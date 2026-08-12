@@ -70,6 +70,8 @@ export interface CommandItem {
   danger?: CommandDangerLevel;
   disabledReason?: string;
   confirmMessage?: string;
+  /** Opens an in-app ledger where every AI proposal is reviewed before apply. */
+  execution?: 'immediate' | 'preview';
   run?: () => void | Promise<void>;
 }
 
@@ -100,6 +102,7 @@ const reviewEvent = (id: string) => () => {
 };
 
 export function commandNeedsConfirmation(command: CommandItem): boolean {
+  if (command.execution === 'preview') return false;
   return !!command.confirmMessage || command.danger === 'bulk' || command.danger === 'destructive';
 }
 
@@ -412,7 +415,9 @@ export function buildCommandItems(
       id: 'queue.keepers',
       group: 'Queue',
       label: 'Queue Keepers',
+      description: 'Review every AI-ranked queue addition before applying it.',
       icon: ClipboardCheck,
+      execution: 'preview',
       disabledReason: busyReason || needsPhoto,
       run: handlers['queue.keepers'],
     },
@@ -491,20 +496,20 @@ export function buildCommandItems(
     {
       id: 'bulk.safe-cull',
       group: 'Bulk Actions',
-      label: 'Safe Cull Grouped Photos',
+      label: 'Preview Safe Cull',
       icon: ShieldCheck,
       danger: 'bulk',
-      confirmMessage: 'Auto-reject clearly worse grouped alternatives? Protected, starred, and picked files are preserved.',
+      execution: 'preview',
       disabledReason: needsPhoto,
       run: handlers['bulk.safe-cull'],
     },
     {
       id: 'bulk.pick-burst-best',
       group: 'Bulk Actions',
-      label: 'Pick Burst Best and Reject Alternates',
+      label: 'Preview Group Keepers',
       icon: ShieldCheck,
       danger: 'bulk',
-      confirmMessage: 'Pick the top shot in each burst/group and reject alternates?',
+      execution: 'preview',
       disabledReason: needsPhoto,
       run: handlers['bulk.pick-burst-best'],
     },
@@ -541,10 +546,10 @@ export function buildCommandItems(
     {
       id: 'bulk.reject-blur',
       group: 'Bulk Actions',
-      label: 'Reject High Blur-Risk Files',
+      label: 'Preview High Blur-Risk Rejects',
       icon: AlertTriangle,
       danger: 'bulk',
-      confirmMessage: 'Reject high blur-risk files that are not already picked?',
+      execution: 'preview',
       disabledReason: needsPhoto,
       run: handlers['bulk.reject-blur'],
     },

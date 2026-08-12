@@ -29,9 +29,9 @@ const tools = [
   ['Pause Review', 'Stops background smart scoring so culling and navigation stay responsive.'],
   ['Stop Loading', 'Stops background preview preloading and drops low-priority warmups. The current photo still loads normally.'],
   ['Reject Blur', 'Rejects high blur-risk files that are not already picked.'],
-  ['Safe Cull', 'Conservatively rejects only clearly worse burst/similar alternatives; protected, starred, and picked files are never rejected.'],
-  ['Pick Best', 'For each burst/similar group, picks the best-ranked image and rejects the rest.'],
-  ['Queue Keepers', 'Queues the top keeper from each burst/group plus strong standalone shots.'],
+  ['Cull Preview', 'Lists every proposed keeper and reject first; protected, starred, and picked files are preserved.'],
+  ['Pick Best', 'Previews the best-ranked frame and every proposed alternate reject before applying a group decision.'],
+  ['Queue Keepers', 'Previews each AI-ranked queue addition and preserves files you queued manually.'],
 ];
 
 const workflows = [

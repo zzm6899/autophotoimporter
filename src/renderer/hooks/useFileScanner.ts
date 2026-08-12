@@ -7,7 +7,7 @@ function createScanId(sourcePath: string): string {
 }
 
 export function useFileScanner() {
-  const { selectedSource, folderPreset, customPattern } = useAppState();
+  const { selectedSource, folderPreset, customPattern, activeScanId } = useAppState();
   const dispatch = useAppDispatch();
 
   const startScan = useCallback(async (sourcePath?: string) => {
@@ -31,7 +31,11 @@ export function useFileScanner() {
 
   const cancelScan = useCallback(async () => {
     await window.electronAPI.cancelScan();
-  }, []);
+    // SCAN_CANCEL invalidates the main-process generation, so no completion
+    // event is emitted for the cancelled scan. Complete it locally and keep
+    // any files already discovered available for review.
+    dispatch({ type: 'SCAN_COMPLETE', scanId: activeScanId ?? undefined });
+  }, [activeScanId, dispatch]);
 
   const pauseScan = useCallback(async () => {
     await window.electronAPI.pauseScan();

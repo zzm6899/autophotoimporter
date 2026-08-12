@@ -86,5 +86,8 @@ describe('CommandPalette command helpers', () => {
     expect(commandNeedsConfirmation(commands.find((command) => command.id === 'queue.visible')!)).toBe(true);
     expect(commandNeedsConfirmation(commands.find((command) => command.id === 'queue.clear')!)).toBe(true);
     expect(commandNeedsConfirmation(commands.find((command) => command.id === 'review.pick')!)).toBe(false);
+    expect(commandNeedsConfirmation(commands.find((command) => command.id === 'bulk.safe-cull')!)).toBe(false);
+    expect(commandNeedsConfirmation(commands.find((command) => command.id === 'bulk.pick-burst-best')!)).toBe(false);
+    expect(commandNeedsConfirmation(commands.find((command) => command.id === 'bulk.reject-blur')!)).toBe(false);
   });
 });

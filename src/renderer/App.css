@@ -25,12 +25,13 @@
   --color-surface-overlay: rgba(0, 0, 0, 0.5);
   --color-text: #171717;
   --color-text-secondary: #525252;
-  --color-text-muted: #a3a3a3;
-  --color-text-faint: #d4d4d4;
+  --color-text-muted: #6b7280;
+  --color-text-faint: #737373;
   --color-border: #e5e5e5;
   --color-border-subtle: #f0f0f0;
-  --color-accent: #171717;
-  --color-accent-hover: #404040;
+  --color-accent: #0f766e;
+  --color-accent-hover: #115e59;
+  --color-focus-ring: #2563eb;
 }
 
 /* Dark theme */
@@ -41,12 +42,31 @@
   --color-surface-overlay: rgba(0, 0, 0, 0.8);
   --color-text: #e5e5e5;
   --color-text-secondary: #a3a3a3;
-  --color-text-muted: #525252;
-  --color-text-faint: #404040;
+  --color-text-muted: #a3a3a3;
+  --color-text-faint: #8b8b8b;
   --color-border: #262626;
   --color-border-subtle: #1f1f1f;
-  --color-accent: #0a0a0a;
-  --color-accent-hover: #262626;
+  --color-accent: #0f766e;
+  --color-accent-hover: #0d9488;
+  --color-focus-ring: #5eead4;
+}
+
+/* Dense photo tooling still needs legible captions. These overrides lift the
+   smallest arbitrary Tailwind sizes without disturbing normal text scales. */
+.keptra-app-shell [class~="text-[9px]"],
+.keptra-app-shell [class~="text-[10px]"] {
+  font-size: 0.6875rem;
+  line-height: 0.9375rem;
+}
+
+.keptra-app-shell [class~="text-[11px]"] {
+  font-size: 0.75rem;
+  line-height: 1rem;
+}
+
+.keptra-app-shell :is(button, a, input, select, textarea, [role="button"]):focus-visible {
+  outline: 2px solid var(--color-focus-ring) !important;
+  outline-offset: 2px !important;
 }
 
 /* Scrollbar styling */

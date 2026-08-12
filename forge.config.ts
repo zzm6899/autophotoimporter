@@ -26,6 +26,99 @@ function copyDirSync(src: string, dst: string): void {
   }
 }
 
+const ortNativeArchitectures: Readonly<Record<string, readonly string[]>> = {
+  darwin: ['arm64', 'x64'],
+  linux: ['arm64', 'x64'],
+  win32: ['arm64', 'x64'],
+};
+
+function directorySizeSync(dir: string): number {
+  let bytes = 0;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const entryPath = path.join(dir, entry.name);
+    bytes += entry.isDirectory() ? directorySizeSync(entryPath) : fs.statSync(entryPath).size;
+  }
+  return bytes;
+}
+
+function retainedOrtArchitectures(platform: string, arch: string): readonly string[] {
+  const supported = ortNativeArchitectures[platform];
+  if (!supported) {
+    throw new Error(`onnxruntime-node does not ship a native binary for platform "${platform}".`);
+  }
+  if (platform === 'darwin' && arch === 'universal') return supported;
+  if (!supported.includes(arch)) {
+    throw new Error(
+      `onnxruntime-node does not ship a native binary for ${platform}-${arch}; ` +
+      `available architectures: ${supported.join(', ')}.`,
+    );
+  }
+  return [arch];
+}
+
+/**
+ * onnxruntime-node's npm package contains native binaries for every supported
+ * OS and architecture. Keep only the binaries this package can execute. The
+ * active target is validated before anything is removed so an unexpected
+ * Electron Forge target fails closed instead of producing a broken build.
+ */
+function pruneOrtNativeBinaries(ortRoot: string, platform: string, arch: string): void {
+  const nativeRoot = path.join(ortRoot, 'bin', 'napi-v3');
+  if (!fs.existsSync(nativeRoot)) {
+    throw new Error(`onnxruntime-node native binary directory is missing: ${nativeRoot}`);
+  }
+
+  const retainedArchitectures = retainedOrtArchitectures(platform, arch);
+  const targetPlatformDir = path.join(nativeRoot, platform);
+
+  // Verify every active target before deleting foreign binaries.
+  for (const retainedArch of retainedArchitectures) {
+    const targetDir = path.join(targetPlatformDir, retainedArch);
+    if (!fs.existsSync(targetDir)) {
+      throw new Error(`Required onnxruntime-node target directory is missing: ${targetDir}`);
+    }
+    const targetFiles = fs.readdirSync(targetDir);
+    if (!targetFiles.some((name) => name.endsWith('.node'))) {
+      throw new Error(`Required onnxruntime-node binding is missing from: ${targetDir}`);
+    }
+  }
+
+  const bytesBefore = directorySizeSync(nativeRoot);
+  for (const platformEntry of fs.readdirSync(nativeRoot, { withFileTypes: true })) {
+    if (!platformEntry.isDirectory()) continue;
+    const platformDir = path.join(nativeRoot, platformEntry.name);
+    if (platformEntry.name !== platform) {
+      fs.rmSync(platformDir, { recursive: true, force: true });
+      continue;
+    }
+    for (const archEntry of fs.readdirSync(platformDir, { withFileTypes: true })) {
+      if (archEntry.isDirectory() && !retainedArchitectures.includes(archEntry.name)) {
+        fs.rmSync(path.join(platformDir, archEntry.name), { recursive: true, force: true });
+      }
+    }
+  }
+
+  const remainingPlatforms = fs.readdirSync(nativeRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
+  const remainingArchitectures = fs.readdirSync(targetPlatformDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
+  if (remainingPlatforms.some((entry) => entry !== platform)) {
+    throw new Error(`Foreign onnxruntime-node platforms remain after pruning: ${remainingPlatforms.join(', ')}`);
+  }
+  if (remainingArchitectures.some((entry) => !retainedArchitectures.includes(entry))) {
+    throw new Error(`Foreign onnxruntime-node architectures remain after pruning: ${remainingArchitectures.join(', ')}`);
+  }
+
+  const bytesAfter = directorySizeSync(nativeRoot);
+  const savedMiB = (bytesBefore - bytesAfter) / (1024 * 1024);
+  console.info(
+    `[forge] onnxruntime-node ${platform}-${arch}: retained ${retainedArchitectures.join('+')}, ` +
+    `removed ${savedMiB.toFixed(1)} MiB of foreign native binaries.`,
+  );
+}
+
 const windowsIconPath = path.resolve(__dirname, 'assets/brand/icon.ico');
 const productName = 'Keptra';
 const macAppBundleId = process.env.MAC_APP_BUNDLE_ID || 'au.z2hs.keptra';
@@ -87,7 +180,8 @@ const config: ForgeConfig = {
     afterCopy: [
       (buildPath: string, _electronVersion: string, _platform: string, _arch: string, done: (error?: Error) => void) => {
         try {
-          const ortNodeModules = path.join(buildPath, '..', 'onnxruntime-node', 'node_modules');
+          const ortRoot = path.join(buildPath, '..', 'onnxruntime-node');
+          const ortNodeModules = path.join(ortRoot, 'node_modules');
           const projectNodeModules = path.resolve(__dirname, 'node_modules');
           for (const pkg of ['onnxruntime-common', 'global-agent', 'semver']) {
             const src = path.join(projectNodeModules, pkg);
@@ -99,6 +193,21 @@ const config: ForgeConfig = {
               copyDirSync(src, dst);
             }
           }
+          done();
+        } catch (e) {
+          done(e instanceof Error ? e : new Error(String(e)));
+        }
+      },
+    ],
+    // extraResource is copied after afterCopy/afterPrune/afterAsar. Prune only
+    // once Electron Packager confirms those resources are in their final tree.
+    afterCopyExtraResources: [
+      (stagingPath: string, _electronVersion: string, platform: string, arch: string, done: (error?: Error) => void) => {
+        try {
+          const resourcesDir = platform === 'darwin'
+            ? path.join(stagingPath, `${productName}.app`, 'Contents', 'Resources')
+            : path.join(stagingPath, 'resources');
+          pruneOrtNativeBinaries(path.join(resourcesDir, 'onnxruntime-node'), platform, arch);
           done();
         } catch (e) {
           done(e instanceof Error ? e : new Error(String(e)));

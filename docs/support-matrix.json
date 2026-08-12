@@ -1,23 +1,23 @@
 {
-  "generatedAt": "2026-04-30",
+  "generatedAt": "2026-08-13",
   "features": ["FTP source", "GPU provider", "Auto-updates"],
   "platforms": [
     {
       "os": "Windows 10/11",
       "ftpSource": "Supported",
-      "gpuProvider": "DirectML (all GPUs), CUDA (NVIDIA), CPU fallback",
+      "gpuProvider": "Benchmarked DirectML for face models; CPU person detector/fallback",
       "autoUpdates": "Supported (Squirrel + hosted feed)"
     },
     {
       "os": "macOS 13+ (Intel/Apple Silicon)",
       "ftpSource": "Supported",
-      "gpuProvider": "CoreML (Apple Silicon), CUDA (NVIDIA eGPU), CPU fallback",
+      "gpuProvider": "CPU",
       "autoUpdates": "Manual DMG download/install"
     },
     {
       "os": "Linux (dev/test)",
       "ftpSource": "Supported",
-      "gpuProvider": "CUDA (NVIDIA), CPU fallback",
+      "gpuProvider": "CPU",
       "autoUpdates": "Not packaged for end users"
     }
   ]

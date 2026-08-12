@@ -102,6 +102,7 @@ const requiredUiFiles = [
   path.join(root, 'src', 'renderer', 'components', 'SettingsPage.tsx'),
   path.join(root, 'src', 'renderer', 'components', 'CompareView.tsx'),
   path.join(root, 'src', 'renderer', 'components', 'ThumbnailGrid.tsx'),
+  path.join(root, 'src', 'renderer', 'components', 'BulkAiDecisionPreview.tsx'),
 ];
 
 const screens = [
@@ -139,6 +140,13 @@ const screens = [
     source: path.join(root, 'src', 'renderer', 'components', 'ThumbnailGrid.tsx'),
     sourceTokens: ['Focus Review', 'Queue Keepers', 'Best of Burst', 'Pause AI', 'reviewSprintMode'],
     bundleTokens: ['Focus Review', 'Queue Keepers', 'Best of Burst'],
+  },
+  {
+    id: 'bulk-ai-decision-preview',
+    label: 'Bulk AI decision preview',
+    source: path.join(root, 'src', 'renderer', 'components', 'BulkAiDecisionPreview.tsx'),
+    sourceTokens: ['every proposed change is available for review', 'Search proposed AI decisions', 'measurement confidence'],
+    bundleTokens: ['every proposed change is available for review', 'Search proposed AI decisions'],
   },
 ];
 

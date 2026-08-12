@@ -200,15 +200,44 @@ async function isFileProtected(filePath: string): Promise<boolean> {
   }
 }
 
-function normalizeExifOrientation(value: unknown): number | undefined {
+export function normalizeExifOrientation(value: unknown): number | undefined {
   if (typeof value === 'number' && value >= 1 && value <= 8) return value;
   if (typeof value !== 'string') return undefined;
   const text = value.toLowerCase();
-  if (/\b8\b/.test(text) || text.includes('270') || text.includes('ccw') || text.includes('left')) return 8;
-  if (/\b6\b/.test(text) || text.includes('90') || text.includes('cw') || text.includes('right')) return 6;
+  if (/\b[1-8]\b/.test(text)) {
+    const numeric = Number(text.match(/\b([1-8])\b/)?.[1]);
+    if (numeric >= 1 && numeric <= 8) return numeric;
+  }
+  if (text.includes('transpose')) return 5;
+  if (text.includes('transverse')) return 7;
+  const mirrored = text.includes('mirror') || text.includes('flip');
+  if (mirrored && (text.includes('270') || text.includes('ccw') || text.includes('left'))) return 5;
+  if (mirrored && (text.includes('90') || text.includes('cw') || text.includes('right'))) return 7;
+  if (mirrored && text.includes('vertical')) return 4;
+  if (mirrored && text.includes('horizontal')) return 2;
+  if (text.includes('270') || text.includes('ccw') || text.includes('left')) return 8;
+  if (text.includes('90') || text.includes('cw') || text.includes('right')) return 6;
   if (/\b3\b/.test(text) || text.includes('180')) return 3;
-  if (/\b1\b/.test(text) || text.includes('horizontal') || text.includes('normal')) return 1;
+  if (text.includes('horizontal') || text.includes('normal')) return 1;
   return undefined;
+}
+
+/**
+ * Read only the orientation tag needed by native AI preprocessing.
+ * Failure is deliberately represented as orientation 1: detection should still
+ * run when metadata is absent or malformed, while never turning a metadata
+ * problem into a false "zero faces" result.
+ */
+export async function readExifOrientation(filePath: string): Promise<number> {
+  try {
+    const metadata = await exifr.parse(filePath, {
+      pick: ['Orientation'],
+      reviveValues: true,
+    });
+    return normalizeExifOrientation(metadata?.Orientation) ?? 1;
+  } catch {
+    return 1;
+  }
 }
 
 function numberFromExif(value: unknown): number | undefined {

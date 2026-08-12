@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { reducer, type Action, type AppPhase } from '../ImportContext';
+import { invalidateSceneSubjectAnalysis, mergeReviewScorePatches, reducer, type Action, type AppPhase } from '../ImportContext';
 import type { MediaFile, ImportProgress, ImportResult, SaveFormat } from '../../../shared/types';
 import { DEFAULT_VIEW_OVERLAY_PREFERENCES, FOLDER_PRESETS } from '../../../shared/types';
 
@@ -721,6 +721,96 @@ describe('ImportContext reducer', () => {
       expect(typeof next.files[0].reviewScore).toBe('number');
     });
 
+    it('invalidates detector-dependent scene ROI evidence when face data is cleared', () => {
+      const state = makeState({
+        files: [makeFile({
+          faceCount: 1,
+          faceBoxes: [{ x: 0.2, y: 0.1, width: 0.3, height: 0.4, score: 0.95 }],
+          personCount: 1,
+          personBoxes: [{ x: 0.1, y: 0.05, width: 0.5, height: 0.85, score: 0.9 }],
+          subjectSharpnessScore: 15,
+          subjectReasons: ['face-area focus measured'],
+          sceneAnalysis: {
+            kind: 'people',
+            confidence: 1,
+            focusCoverage: 0.7,
+            subjectSharpnessScore: 15,
+            backgroundSharpnessScore: 600,
+            subjectFocusConfidence: 0.9,
+            subjectFocusCoverage: 0.5,
+            subjectArea: 0.2,
+            subjectCountAnalyzed: 2,
+            subjectReasons: ['face-area focus measured'],
+            reasons: ['broad frame focus', 'face-area focus measured'],
+          },
+        })],
+      });
+
+      const next = reducer(state, { type: 'CLEAR_FACE_DATA' });
+      const cleared = next.files[0];
+      expect(cleared.faceBoxes).toBeUndefined();
+      expect(cleared.personBoxes).toBeUndefined();
+      expect(cleared.subjectSharpnessScore).toBeUndefined();
+      expect(cleared.subjectReasons).toBeUndefined();
+      expect(cleared.sceneAnalysis).toEqual({
+        kind: 'people',
+        confidence: 1,
+        focusCoverage: 0.7,
+        reasons: ['broad frame focus'],
+      });
+    });
+
+    it('preserves ONNX embeddings when a later ROI-only overlay patch is merged', () => {
+      const embedding = embeddingHex([1, 0, 0, 0]);
+      const first = mergeReviewScorePatches(undefined, {
+        faceCount: 1,
+        faceBoxes: [{ x: 0.2, y: 0.1, width: 0.3, height: 0.4, score: 0.95 }],
+        faceDetection: 'native',
+        faceEmbedding: embedding,
+        faceEmbeddings: [embedding],
+        reviewScore: 88,
+        blurRisk: 'low',
+      });
+      const merged = mergeReviewScorePatches(first, {
+        subjectSharpnessScore: 42,
+        sceneAnalysis: {
+          kind: 'people',
+          confidence: 1,
+          subjectSharpnessScore: 42,
+          backgroundSharpnessScore: 300,
+          subjectFocusConfidence: 0.86,
+        },
+      });
+
+      expect(merged.faceEmbedding).toBe(embedding);
+      expect(merged.faceEmbeddings).toEqual([embedding]);
+      expect(merged.faceBoxes).toEqual(first.faceBoxes);
+      expect(merged.sceneAnalysis?.subjectFocusConfidence).toBe(0.86);
+      expect(merged.reviewScore).toBeUndefined();
+      expect(merged.blurRisk).toBeUndefined();
+    });
+
+    it('removes every subject ROI field without discarding scene metrics', () => {
+      expect(invalidateSceneSubjectAnalysis({
+        kind: 'interior',
+        confidence: 0.9,
+        lineStrength: 0.8,
+        subjectSharpnessScore: 20,
+        backgroundSharpnessScore: 500,
+        subjectFocusConfidence: 0.7,
+        subjectFocusCoverage: 0.5,
+        subjectArea: 0.25,
+        subjectCountAnalyzed: 3,
+        subjectReasons: ['mixed focus across subjects'],
+        reasons: ['strong architectural lines', 'mixed focus across subjects'],
+      })).toEqual({
+        kind: 'interior',
+        confidence: 0.9,
+        lineStrength: 0.8,
+        reasons: ['strong architectural lines'],
+      });
+    });
+
     it('resolves second-pass files with an approved pick decision', () => {
       const files = [makeFile({ path: '/keeper.jpg' }), makeFile({ path: '/later.jpg' })];
       const next = reducer(makeState({ files }), {
@@ -899,6 +989,27 @@ describe('ImportContext reducer', () => {
       const next = reducer(makeState({ files }), { type: 'AUTO_CULL_SAFE', files: mergedFiles });
       expect(next.files.find((f) => f.path === '/fresh-best.jpg')?.pick).toBe('selected');
       expect(next.files.find((f) => f.path === '/stale-best.jpg')?.pick).toBe('rejected');
+    });
+
+    it('applies a reviewed culling proposal as one undoable state change', () => {
+      const files = [
+        makeFile({ path: '/keeper.jpg' }),
+        makeFile({ path: '/clear-miss.jpg' }),
+        makeFile({ path: '/uncertain.jpg' }),
+      ];
+      const next = reducer(makeState({ files }), {
+        type: 'APPLY_AUTO_CULL_PROPOSAL',
+        keep: ['/keeper.jpg'],
+        reject: ['/clear-miss.jpg'],
+      });
+
+      expect(next.files.find((file) => file.path === '/keeper.jpg')?.pick).toBe('selected');
+      expect(next.files.find((file) => file.path === '/clear-miss.jpg')?.pick).toBe('rejected');
+      expect(next.files.find((file) => file.path === '/uncertain.jpg')?.pick).toBeUndefined();
+      expect(next.fileHistory).toHaveLength(1);
+
+      const undone = reducer(next, { type: 'UNDO_FILE_EDIT' });
+      expect(undone.files.every((file) => file.pick === undefined)).toBe(true);
     });
 
     it('queues focused keepable standalone photos', () => {

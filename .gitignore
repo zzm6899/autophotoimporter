@@ -97,7 +97,9 @@ web/assets/video/work-*/
 
 # Benchmark output and local large-shoot fixtures
 artifacts/benchmarks/*.jsonl
+artifacts/benchmarks/ai-models-*.json
 artifacts/release/*.json
+artifacts/ui/*.png
 fixtures/perf-local/*
 !fixtures/perf-local/.gitkeep
 

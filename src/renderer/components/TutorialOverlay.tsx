@@ -1,6 +1,11 @@
 import { useEffect, useState } from 'react';
-
-const STORAGE_KEY = 'photo-importer:tutorial-dismissed';
+import {
+  FIRST_RUN_WIZARD_FINISHED_EVENT,
+  FIRST_RUN_WIZARD_STARTED_EVENT,
+  isFirstRunWizardActive,
+  shouldAutoOpenTutorial,
+  TUTORIAL_STORAGE_KEY,
+} from './onboarding/onboardingFlow';
 
 type TutorialStep = {
   title: string;
@@ -49,21 +54,51 @@ const steps: TutorialStep[] = [
 ];
 
 export function TutorialOverlay() {
-  const [open, setOpen] = useState(() => localStorage.getItem(STORAGE_KEY) !== '1');
+  const [open, setOpen] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
   const step = steps[stepIndex];
 
   useEffect(() => {
-    const handler = () => {
+    let cancelled = false;
+    const openTutorial = () => {
+      if (isFirstRunWizardActive()) return;
       setStepIndex(0);
       setOpen(true);
     };
-    window.addEventListener('photo-importer:tutorial', handler);
-    return () => window.removeEventListener('photo-importer:tutorial', handler);
+    const closeForWizard = () => setOpen(false);
+
+    window.addEventListener('photo-importer:tutorial', openTutorial);
+    window.addEventListener(FIRST_RUN_WIZARD_STARTED_EVENT, closeForWizard);
+    window.addEventListener(FIRST_RUN_WIZARD_FINISHED_EVENT, closeForWizard);
+
+    void window.electronAPI.getSettings()
+      .then((settings) => {
+        if (cancelled) return;
+        let tutorialDismissed = false;
+        try {
+          tutorialDismissed = window.localStorage.getItem(TUTORIAL_STORAGE_KEY) === '1';
+        } catch {
+          // If renderer storage is unavailable, the wizard setting still keeps
+          // the two onboarding surfaces from opening together.
+        }
+        setOpen(shouldAutoOpenTutorial(Boolean(settings.firstRunWizardSeen), tutorialDismissed));
+      })
+      .catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener('photo-importer:tutorial', openTutorial);
+      window.removeEventListener(FIRST_RUN_WIZARD_STARTED_EVENT, closeForWizard);
+      window.removeEventListener(FIRST_RUN_WIZARD_FINISHED_EVENT, closeForWizard);
+    };
   }, []);
 
   const dismiss = () => {
-    localStorage.setItem(STORAGE_KEY, '1');
+    try {
+      window.localStorage.setItem(TUTORIAL_STORAGE_KEY, '1');
+    } catch {
+      // Closing the guide should still work if local storage is unavailable.
+    }
     setOpen(false);
   };
 

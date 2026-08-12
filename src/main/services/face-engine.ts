@@ -15,7 +15,7 @@
  * Usage:
  *   const result = await analyzeFaces('/path/to/photo.jpg');
  *   // result.boxes   — face bounding boxes normalised 0..1
- *   // result.embeddings — 128-d Float32Array per embedded face
+ *   // result.embeddings — 512-d Float32Array per embedded face
  *
  * Session management:
  *   Sessions are loaded lazily on first call and reused for the process
@@ -24,10 +24,16 @@
  */
 
 import path from 'node:path';
-import { existsSync } from 'node:fs';
+import { createReadStream, existsSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { app } from 'electron';
 import { log } from '../logger';
 import { estimatePoses, isPoseAnalysisEnabled } from './pose-engine';
+import {
+  FACE_MODEL_IDENTITIES,
+  FACE_PIPELINE_FINGERPRINT,
+  type FaceModelRole,
+} from './face-model-manifest';
 import type { PoseKeypoints } from '../../shared/types';
 
 // onnxruntime-node is a native addon — it must be outside the asar.
@@ -85,6 +91,10 @@ export interface FaceBox {
   height: number;
   /** Detection confidence score 0..1 */
   score: number;
+  /** Number of expected eye regions (0-2) with usable local detail. */
+  eyeScore?: number;
+  /** Normalized 0..1 sharpness/contrast signal across both eye regions. */
+  eyeSharpness?: number;
 }
 
 export interface FaceAnalysisResult {
@@ -108,6 +118,7 @@ export interface FaceAnalysisResult {
   features?: {
     faceMatching: boolean;
     personDetection: boolean;
+    poseAnalysis: boolean;
     embeddingLimit: number;
   };
 }
@@ -122,7 +133,7 @@ export interface FaceAnalysisResult {
  * In dev mode: looks in <projectRoot>/models/
  * In packaged app: looks in userData/models first, then bundled resources.
  */
-function modelPath(fileName: string): string {
+function modelCandidates(fileName: string): string[] {
   const candidates: string[] = [];
 
   if (app.isPackaged) {
@@ -135,13 +146,81 @@ function modelPath(fileName: string): string {
     candidates.push(path.join(process.cwd(), 'models', fileName));
   }
 
-  for (const p of candidates) {
-    if (existsSync(p)) return p;
-  }
+  return candidates;
+}
+
+function modelPath(fileName: string): string {
+  const candidates = modelCandidates(fileName);
+  for (const candidate of candidates) if (existsSync(candidate)) return candidate;
 
   throw new Error(
     `Face model "${fileName}" not found. Run "npm run models" to download it.\n` +
     `Searched:\n${candidates.map((p) => `  ${p}`).join('\n')}`,
+  );
+}
+
+type VerifiedModel = { size: number; mtimeMs: number; sha256: string };
+const verifiedModelFiles = new Map<string, VerifiedModel>();
+
+/** Stream a model digest without holding the full ONNX file in memory. */
+export async function verifyModelFileDigest(filePath: string, expectedSha256: string): Promise<boolean> {
+  let fileStat: ReturnType<typeof statSync>;
+  try {
+    fileStat = statSync(filePath);
+  } catch {
+    return false;
+  }
+  if (!fileStat.isFile() || fileStat.size <= 0) return false;
+
+  const cached = verifiedModelFiles.get(filePath);
+  if (
+    cached &&
+    cached.size === fileStat.size &&
+    cached.mtimeMs === fileStat.mtimeMs &&
+    cached.sha256 === expectedSha256
+  ) {
+    return true;
+  }
+
+  const actual = await new Promise<string>((resolve, reject) => {
+    const hash = createHash('sha256');
+    const stream = createReadStream(filePath);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('end', () => resolve(hash.digest('hex')));
+    stream.on('error', reject);
+  }).catch(() => '');
+  const valid = actual === expectedSha256;
+  if (valid) {
+    verifiedModelFiles.set(filePath, {
+      size: fileStat.size,
+      mtimeMs: fileStat.mtimeMs,
+      sha256: expectedSha256,
+    });
+  } else {
+    verifiedModelFiles.delete(filePath);
+  }
+  return valid;
+}
+
+async function resolveVerifiedModelPath(role: FaceModelRole): Promise<string> {
+  const identity = FACE_MODEL_IDENTITIES[role];
+  const candidates = modelCandidates(identity.fileName);
+  const invalid: string[] = [];
+  for (const candidate of candidates) {
+    if (!existsSync(candidate)) continue;
+    if (await verifyModelFileDigest(candidate, identity.sha256)) return candidate;
+    invalid.push(candidate);
+  }
+
+  if (invalid.length > 0) {
+    throw new Error(
+      `Face model integrity check failed for "${identity.fileName}". ` +
+      `Remove the invalid model and let Keptra download it again.`,
+    );
+  }
+  throw new Error(
+    `Face model "${identity.fileName}" not found. Run "npm run models" to download it.\n` +
+    `Searched:\n${candidates.map((candidate) => `  ${candidate}`).join('\n')}`,
   );
 }
 
@@ -185,7 +264,6 @@ let cpuOptimizationMode = false;        // Lighter models for older CPUs
 let faceMatchingEnabled = true;
 let personDetectionEnabled = true;
 let faceEmbeddingLimit = 8;
-let highThroughputFaceMode = false;
 let dmlDeviceId: number | undefined;
 
 export function configureGpuAcceleration(enabled: boolean): void {
@@ -218,17 +296,17 @@ export function configureFaceFeatureOptions(options: { faceMatching?: boolean; p
   if (changed && sessionLoadPromise) void disposeFaceEngine().catch(() => undefined);
 }
 
-export function getFaceFeatureOptions(): { faceMatching: boolean; personDetection: boolean; embeddingLimit: number } {
+export function getFaceFeatureOptions(): { faceMatching: boolean; personDetection: boolean; poseAnalysis: boolean; embeddingLimit: number } {
   return {
     faceMatching: faceMatchingEnabled,
     personDetection: personDetectionEnabled,
+    poseAnalysis: isPoseAnalysisEnabled(),
     embeddingLimit: faceEmbeddingLimit,
   };
 }
 
 export function configureFaceThroughput(concurrency: number): void {
   const slots = Math.max(1, Math.min(32, Math.round(concurrency)));
-  highThroughputFaceMode = slots >= 8;
   // Embedding every face in a crowded sports/event frame is the hidden cost:
   // crop+resize+GPU dispatch dominates far more than the warm 3 ms model time.
   // Keep all boxes for UI, but cap embeddings to the strongest faces for
@@ -238,9 +316,8 @@ export function configureFaceThroughput(concurrency: number): void {
 }
 
 /**
- * Determine optimal execution providers based on platform & GPU availability.
- * Tries GPU first (CUDA, TensorRT, CoreML, DirectML) then falls back to CPU.
- * Caches result so we don't repeatedly probe unavailable GPUs.
+ * Return execution providers shipped by this build. Windows may benchmark
+ * DirectML; other platforms currently use CPU-only onnxruntime-node.
  */
 function getExecutionProviders(): string[] {
   if (process.platform === 'win32' && gpuFaceAccelerationEnabled) return ['dml', 'cpu'];
@@ -410,11 +487,14 @@ async function loadSessions(): Promise<void> {
       const runtime = getOrt();
       const cpuCount = Math.max(2, require('os').cpus().length);
 
-      const [detPath, embPath, personPath] = [
-        modelPath('version-RFB-640.onnx'),
-        modelPath('w600k_mbf.onnx'),
-        modelPath('ssd_mobilenet_v1_12.onnx'),
-      ];
+      // Resolve by pinned digest rather than by filename alone. In packaged
+      // builds userData is searched before bundled resources; a corrupt stale
+      // userData file must not shadow a valid bundled model.
+      const [detPath, embPath, personPath] = await Promise.all([
+        resolveVerifiedModelPath('detector'),
+        faceMatchingEnabled ? resolveVerifiedModelPath('embedder') : Promise.resolve(null),
+        personDetectionEnabled ? resolveVerifiedModelPath('person') : Promise.resolve(null),
+      ]);
 
       log.info('[face-engine] Loading sessions (providers:', getExecutionProviders().join(','), 'threads:', Math.min(cpuCount, 6), ')');
       if (dmlDeviceId !== undefined && getExecutionProviders().includes('dml')) {
@@ -423,8 +503,8 @@ async function loadSessions(): Promise<void> {
 
       const [detector, embedder, person] = await Promise.all([
         createBenchmarkedSession(runtime, 'detector', detPath, cpuCount),
-        faceMatchingEnabled ? createBenchmarkedSession(runtime, 'embedder', embPath, cpuCount) : Promise.resolve(null),
-        personDetectionEnabled ? createBenchmarkedSession(runtime, 'person', personPath, cpuCount) : Promise.resolve(null),
+        faceMatchingEnabled && embPath ? createBenchmarkedSession(runtime, 'embedder', embPath, cpuCount) : Promise.resolve(null),
+        personDetectionEnabled && personPath ? createBenchmarkedSession(runtime, 'person', personPath, cpuCount) : Promise.resolve(null),
       ]);
 
       detectorSession = detector.session;
@@ -504,7 +584,7 @@ export function getFaceProviderDiagnostics(): FaceProviderDiagnostic[] {
 // nativeImage is only available in the main process.
 import { nativeImage } from 'electron';
 import exifr from 'exifr';
-import { extractLargestEmbeddedJpeg } from './exif-parser';
+import { extractLargestEmbeddedJpeg, readExifOrientation } from './exif-parser';
 
 /**
  * Load a nativeImage from a path, with RAW fallback via exifr.thumbnail().
@@ -546,13 +626,18 @@ async function loadNativeImage(imagePath: string): Promise<Electron.NativeImage>
   let img = nativeImage.createFromPath(imagePath);
   if (!img.isEmpty()) return img;
 
-  // RAW file — try exifr.thumbnail() first (fast IFD1 parse), then fall back
-  // to the full JPEG byte-scanner which finds the largest embedded preview.
-  // Some NEF/ARW files have no IFD1 thumbnail but always have a large preview.
+  // RAW file — retain the fast IFD1 thumbnail as a fallback, but do not return a
+  // tiny camera thumbnail before checking for the large embedded JPEG. Face and
+  // eye analysis on a 160×120 preview is fast but produces unreliable results.
   const thumbData = await exifr.thumbnail(imagePath).catch(() => null);
+  let thumbnailFallback: Electron.NativeImage | null = null;
   if (thumbData && thumbData.length > 0) {
     img = nativeImage.createFromBuffer(Buffer.from(thumbData));
-    if (!img.isEmpty()) return img;
+    if (!img.isEmpty()) {
+      const size = img.getSize();
+      if (Math.max(size.width, size.height) >= 640) return img;
+      thumbnailFallback = img;
+    }
   }
 
   // Deep fallback: scan first 8MB of the RAW file for the largest JPEG block
@@ -562,7 +647,134 @@ async function loadNativeImage(imagePath: string): Promise<Electron.NativeImage>
     if (!img.isEmpty()) return img;
   }
 
+  if (thumbnailFallback) return thumbnailFallback;
+
   throw new Error(`Cannot decode image for face analysis: ${imagePath}`);
+}
+
+export type ExifOrientation = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+
+function safeExifOrientation(value: number): ExifOrientation {
+  return Number.isInteger(value) && value >= 1 && value <= 8
+    ? value as ExifOrientation
+    : 1;
+}
+
+/**
+ * Transform stored-pixel bitmap data into the upright view described by EXIF.
+ * Pixel words are copied intact, so BGRA/RGBA platform ordering is preserved.
+ */
+export function orientBitmapForExif(
+  pixels: Uint8Array,
+  width: number,
+  height: number,
+  orientationValue: number,
+): { data: Buffer; width: number; height: number } {
+  const orientation = safeExifOrientation(orientationValue);
+  if (width <= 0 || height <= 0 || pixels.byteLength < width * height * 4) {
+    throw new Error('Invalid bitmap dimensions for EXIF orientation');
+  }
+  const swapsAxes = orientation >= 5;
+  const outputWidth = swapsAxes ? height : width;
+  const outputHeight = swapsAxes ? width : height;
+  const output = Buffer.allocUnsafe(outputWidth * outputHeight * 4);
+  const wordAligned = pixels.byteOffset % 4 === 0 && output.byteOffset % 4 === 0;
+  const inputWords = wordAligned
+    ? new Uint32Array(pixels.buffer, pixels.byteOffset, width * height)
+    : null;
+  const outputWords = wordAligned
+    ? new Uint32Array(output.buffer, output.byteOffset, outputWidth * outputHeight)
+    : null;
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let outputX = x;
+      let outputY = y;
+      switch (orientation) {
+        case 2: outputX = width - 1 - x; break;
+        case 3: outputX = width - 1 - x; outputY = height - 1 - y; break;
+        case 4: outputY = height - 1 - y; break;
+        case 5: outputX = y; outputY = x; break;
+        case 6: outputX = height - 1 - y; outputY = x; break;
+        case 7: outputX = height - 1 - y; outputY = width - 1 - x; break;
+        case 8: outputX = y; outputY = width - 1 - x; break;
+        default: break;
+      }
+      const sourceIndex = y * width + x;
+      const outputIndex = outputY * outputWidth + outputX;
+      if (inputWords && outputWords) {
+        outputWords[outputIndex] = inputWords[sourceIndex];
+      } else {
+        output.set(pixels.subarray(sourceIndex * 4, sourceIndex * 4 + 4), outputIndex * 4);
+      }
+    }
+  }
+  return { data: output, width: outputWidth, height: outputHeight };
+}
+
+async function orientImageForAnalysis(
+  storedImage: Electron.NativeImage,
+  orientationValue: number,
+): Promise<{ image: Electron.NativeImage; orientation: ExifOrientation }> {
+  const orientation = safeExifOrientation(orientationValue);
+  if (orientation === 1) return { image: storedImage, orientation };
+  const { width, height } = storedImage.getSize();
+  const bitmap = (storedImage.toBitmap?.() ?? storedImage.getBitmap()) as unknown as Buffer;
+  const transformed = orientBitmapForExif(bitmap, width, height, orientation);
+  const image = nativeImage.createFromBitmap(transformed.data, {
+    width: transformed.width,
+    height: transformed.height,
+    scaleFactor: 1,
+  });
+  if (image.isEmpty()) throw new Error('Failed to create orientation-normalized analysis image');
+  return { image, orientation };
+}
+
+function uprightPointToStored(
+  x: number,
+  y: number,
+  orientationValue: number,
+): { x: number; y: number } {
+  const orientation = safeExifOrientation(orientationValue);
+  switch (orientation) {
+    case 2: return { x: 1 - x, y };
+    case 3: return { x: 1 - x, y: 1 - y };
+    case 4: return { x, y: 1 - y };
+    case 5: return { x: y, y: x };
+    case 6: return { x: y, y: 1 - x };
+    case 7: return { x: 1 - y, y: 1 - x };
+    case 8: return { x: 1 - y, y: x };
+    default: return { x, y };
+  }
+}
+
+/** Map an upright inference box back to stored-pixel coordinates for IPC/UI. */
+export function mapBoxToStoredOrientation(box: FaceBox, orientationValue: number): FaceBox {
+  const orientation = safeExifOrientation(orientationValue);
+  if (orientation === 1) return box;
+  const corners = [
+    uprightPointToStored(box.x, box.y, orientation),
+    uprightPointToStored(box.x + box.width, box.y, orientation),
+    uprightPointToStored(box.x, box.y + box.height, orientation),
+    uprightPointToStored(box.x + box.width, box.y + box.height, orientation),
+  ];
+  const x1 = clamp01(Math.min(...corners.map((point) => point.x)));
+  const y1 = clamp01(Math.min(...corners.map((point) => point.y)));
+  const x2 = clamp01(Math.max(...corners.map((point) => point.x)));
+  const y2 = clamp01(Math.max(...corners.map((point) => point.y)));
+  return { ...box, x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
+}
+
+function mapPoseToStoredOrientation(pose: PoseKeypoints, orientationValue: number): PoseKeypoints {
+  const orientation = safeExifOrientation(orientationValue);
+  if (orientation === 1) return pose;
+  return {
+    ...pose,
+    keypoints: pose.keypoints.map((keypoint) => ({
+      ...keypoint,
+      ...uprightPointToStored(keypoint.x, keypoint.y, orientation),
+    })),
+  };
 }
 
 /**
@@ -653,6 +865,7 @@ const DET_STD  = [128 / 255, 128 / 255, 128 / 255];
 const CONF_THRESHOLD = 0.7;
 const IOU_THRESHOLD  = 0.3;
 const PERSON_THRESHOLD = 0.45;
+const PERSON_EVIDENCE_THRESHOLD = 0.18;
 const PERSON_CLASS_ID = 1;
 // Electron nativeImage.toBitmap() returns BGRA on Windows/macOS, RGBA elsewhere
 const IS_BGRA_PLATFORM = process.platform === 'win32' || process.platform === 'darwin';
@@ -724,6 +937,123 @@ function isReliableFaceForEmbedding(box: FaceBox): boolean {
   return area >= 0.0009 && box.score >= 0.86;
 }
 
+export interface EyeDetailResult {
+  /** Number of expected eye regions with enough texture to judge (0-2). */
+  eyeScore: number;
+  /** Aggregate 0..1 eye-region detail signal. */
+  eyeSharpness: number;
+}
+
+type PixelRegion = { left: number; top: number; right: number; bottom: number };
+
+function pixelRegionDetail(
+  pixels: Uint8Array,
+  width: number,
+  height: number,
+  region: PixelRegion,
+  bgra: boolean,
+): number {
+  const left = Math.max(1, Math.min(width - 2, Math.floor(region.left)));
+  const top = Math.max(1, Math.min(height - 2, Math.floor(region.top)));
+  const right = Math.max(left + 1, Math.min(width - 1, Math.ceil(region.right)));
+  const bottom = Math.max(top + 1, Math.min(height - 1, Math.ceil(region.bottom)));
+  const rOff = bgra ? 2 : 0;
+  const bOff = bgra ? 0 : 2;
+  const luma = (x: number, y: number) => {
+    const i = (y * width + x) * 4;
+    return pixels[i + rOff] * 0.299 + pixels[i + 1] * 0.587 + pixels[i + bOff] * 0.114;
+  };
+
+  let sum = 0;
+  let sumSq = 0;
+  let gradient = 0;
+  let count = 0;
+  for (let y = top; y < bottom; y++) {
+    for (let x = left; x < right; x++) {
+      const value = luma(x, y);
+      sum += value;
+      sumSq += value * value;
+      gradient += Math.abs(luma(x + 1, y) - luma(x - 1, y));
+      gradient += Math.abs(luma(x, y + 1) - luma(x, y - 1));
+      count++;
+    }
+  }
+  if (count === 0) return 0;
+  const mean = sum / count;
+  const deviation = Math.sqrt(Math.max(0, sumSq / count - mean * mean));
+  const averageGradient = gradient / (count * 2);
+  // Eye detail is a combination of local contrast and edges. The deliberately
+  // conservative knees keep smooth skin, JPEG blocks, and heavily blurred eye
+  // bands below the usable threshold while avoiding any claim about blinking.
+  return clamp01(
+    clamp01((averageGradient - 2.5) / 16) * 0.68 +
+    clamp01((deviation - 6) / 30) * 0.32,
+  );
+}
+
+/**
+ * Estimate whether the two expected eye regions contain usable detail.
+ * This is a focus/review signal, not a definitive open-vs-closed classifier.
+ * Kept pure and exported so its thresholds can be regression-tested.
+ */
+export function estimateEyeDetailFromPixels(
+  pixels: Uint8Array,
+  width: number,
+  height: number,
+  bgra = IS_BGRA_PLATFORM,
+): EyeDetailResult {
+  if (width < 24 || height < 24 || pixels.length < width * height * 4) {
+    return { eyeScore: 0, eyeSharpness: 0 };
+  }
+  const y1 = height * 0.24;
+  const y2 = height * 0.52;
+  const leftSignal = pixelRegionDetail(pixels, width, height, {
+    left: width * 0.1, top: y1, right: width * 0.48, bottom: y2,
+  }, bgra);
+  const rightSignal = pixelRegionDetail(pixels, width, height, {
+    left: width * 0.52, top: y1, right: width * 0.9, bottom: y2,
+  }, bgra);
+  const usableThreshold = 0.34;
+  return {
+    eyeScore: Number(leftSignal >= usableThreshold) + Number(rightSignal >= usableThreshold),
+    eyeSharpness: Math.round(((leftSignal + rightSignal) / 2) * 1000) / 1000,
+  };
+}
+
+async function annotateEyeDetail(img: Electron.NativeImage, boxes: FaceBox[]): Promise<FaceBox[]> {
+  if (boxes.length === 0) return boxes;
+  const { width: imgW, height: imgH } = img.getSize();
+  if (imgW <= 0 || imgH <= 0) return boxes;
+
+  // Eye-region sampling is inexpensive but still requires a crop/resize. Limit
+  // it to the strongest review faces; all detector boxes remain visible.
+  const candidates = new Set(rankFacesForEmbedding(boxes).slice(0, 12));
+  const annotated: FaceBox[] = [];
+  for (let index = 0; index < boxes.length; index++) {
+    const box = boxes[index];
+    const faceW = box.width * imgW;
+    const faceH = box.height * imgH;
+    if (!candidates.has(box) || faceW < 28 || faceH < 28 || box.score < 0.68) {
+      annotated.push(box);
+      continue;
+    }
+    try {
+      const cropX = Math.max(0, Math.floor(box.x * imgW));
+      const cropY = Math.max(0, Math.floor(box.y * imgH));
+      const cropW = Math.min(imgW - cropX, Math.max(2, Math.ceil(box.width * imgW)));
+      const cropH = Math.min(imgH - cropY, Math.max(2, Math.ceil(box.height * imgH)));
+      const crop = img.crop({ x: cropX, y: cropY, width: cropW, height: cropH }).resize({ width: 96, height: 96 });
+      const bitmap = (crop.toBitmap?.() ?? crop.getBitmap()) as unknown as Buffer;
+      const detail = estimateEyeDetailFromPixels(bitmap, 96, 96);
+      annotated.push({ ...box, ...detail });
+    } catch {
+      annotated.push(box);
+    }
+    if (index % 4 === 3) await yieldToEventLoop();
+  }
+  return annotated;
+}
+
 async function detectFaces(imagePath: string, cachedImg?: Electron.NativeImage): Promise<FaceBox[]> {
   if (!detectorSession) throw new Error('Face engine not loaded');
 
@@ -769,13 +1099,69 @@ async function detectFaces(imagePath: string, cachedImg?: Electron.NativeImage):
   }));
 }
 
-async function detectPersons(imagePath: string, cachedImg?: Electron.NativeImage): Promise<FaceBox[]> {
+interface PersonDetectionPass {
+  boxes: FaceBox[];
+  /** Plausible person outputs below/above the display threshold. */
+  candidateCount: number;
+}
+
+export function shouldRefinePersonDetection(input: {
+  width: number;
+  height: number;
+  faceBoxes: FaceBox[];
+  fastBoxes: FaceBox[];
+  candidateCount: number;
+  sportsMode: boolean;
+}): boolean {
+  const { width, height, faceBoxes, fastBoxes, candidateCount, sportsMode } = input;
+  const shortSide = Math.max(1, Math.min(width, height));
+  const longSide = Math.max(width, height);
+  const aspect = longSide / shortSide;
+  const hasEvidence = faceBoxes.length > 0 || fastBoxes.length > 0 || candidateCount > 0;
+  if (!hasEvidence) return false;
+
+  const missedBodies = faceBoxes.length >= 2 && fastBoxes.length < faceBoxes.length;
+  const weakCandidate = candidateCount > fastBoxes.length;
+  const smallBody = fastBoxes.some((box) => box.width * box.height < 0.032);
+  const groupEvidence = faceBoxes.length >= 2 || fastBoxes.length >= 3 || candidateCount >= 3;
+  const wideFrame = aspect >= 1.75;
+
+  // Pose-enabled review is the existing main-process signal for sports mode.
+  // Still require subject evidence so empty/scenery frames remain one-pass.
+  if (sportsMode) return missedBodies || weakCandidate || smallBody || wideFrame;
+  return missedBodies ||
+    (groupEvidence && (weakCandidate || smallBody || aspect >= 1.35)) ||
+    (wideFrame && (faceBoxes.length > 0 || fastBoxes.length >= 2));
+}
+
+function mergePersonBoxes(...groups: FaceBox[][]): FaceBox[] {
+  const raw = groups.flat().map((box) => ({
+    x1: box.x,
+    y1: box.y,
+    x2: box.x + box.width,
+    y2: box.y + box.height,
+    score: box.score,
+  }));
+  return nms(raw).map((box) => ({
+    x: box.x1,
+    y: box.y1,
+    width: box.x2 - box.x1,
+    height: box.y2 - box.y1,
+    score: box.score,
+  }));
+}
+
+async function detectPersons(
+  imagePath: string,
+  cachedImg?: Electron.NativeImage,
+  maxDimension = 320,
+): Promise<PersonDetectionPass> {
   if (!personSession) throw new Error('Person detector not loaded');
 
   let img = cachedImg ?? await loadNativeImage(imagePath);
 
   const original = img.getSize();
-  const scale = Math.min(1, 320 / Math.max(original.width, original.height)); // 320 sufficient for body detection, faster than 640
+  const scale = Math.min(1, maxDimension / Math.max(original.width, original.height));
   const targetW = Math.max(32, Math.round(original.width * scale));
   const targetH = Math.max(32, Math.round(original.height * scale));
   img = img.resize({ width: targetW, height: targetH });
@@ -802,25 +1188,31 @@ async function detectPersons(imagePath: string, cachedImg?: Electron.NativeImage
   );
 
   const raw: RawBox[] = [];
+  let candidateCount = 0;
   for (let i = 0; i < detectionCount; i++) {
     const klass = Math.round(classes[i]);
     const score = scores[i];
-    if (klass !== PERSON_CLASS_ID || score < PERSON_THRESHOLD) continue;
+    if (klass !== PERSON_CLASS_ID || score < PERSON_EVIDENCE_THRESHOLD) continue;
     const top = boxes[i * 4];
     const left = boxes[i * 4 + 1];
     const bottom = boxes[i * 4 + 2];
     const right = boxes[i * 4 + 3];
     const normalized = normalizeRawBox({ x1: left, y1: top, x2: right, y2: bottom, score }, 0.006);
-    if (normalized) raw.push(normalized);
+    if (!normalized) continue;
+    candidateCount++;
+    if (score >= PERSON_THRESHOLD) raw.push(normalized);
   }
 
-  return nms(raw).map((b) => ({
-    x: b.x1,
-    y: b.y1,
-    width: b.x2 - b.x1,
-    height: b.y2 - b.y1,
-    score: b.score,
-  }));
+  return {
+    boxes: nms(raw).map((b) => ({
+      x: b.x1,
+      y: b.y1,
+      width: b.x2 - b.x1,
+      height: b.y2 - b.y1,
+      score: b.score,
+    })),
+    candidateCount,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -893,18 +1285,29 @@ let _analyzeTotalMs = 0;
 let _decodeTotalMs = 0;
 let _detectTotalMs = 0;
 let _embedTotalMs = 0;
+let _personRefinementCount = 0;
 
-// Per-image inference timeout — if ONNX hangs (corrupt model, driver issue),
-// we reject after 30s so the semaphore slot is released and the loop recovers.
+// Per-image inference timeout. Promise.race cannot cancel native ONNX work, so
+// a timed-out operation opens a circuit until that underlying work settles.
+// This prevents released IPC semaphore slots from stacking more calls onto a
+// potentially hung execution provider.
 const ANALYZE_TIMEOUT_MS = 30_000;
 
 function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  label: string,
+  onTimeout?: () => void,
+): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`face-engine timeout: ${label}`)), ms);
+    const timer = setTimeout(() => {
+      onTimeout?.();
+      reject(new Error(`face-engine timeout: ${label}`));
+    }, ms);
     promise.then(
       (v) => { clearTimeout(timer); resolve(v); },
       (e) => { clearTimeout(timer); reject(e); },
@@ -912,48 +1315,80 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   });
 }
 
+const analysisInFlight = new Map<string, Promise<FaceAnalysisResult>>();
+let timedOutNativeOperation: { operation: Promise<FaceAnalysisResult>; label: string } | null = null;
+
+function analysisSingleflightKey(imagePath: string): string {
+  return JSON.stringify([
+    imagePath,
+    FACE_PIPELINE_FINGERPRINT,
+    faceMatchingEnabled ? 'match' : 'no-match',
+    personDetectionEnabled ? 'person' : 'no-person',
+    isPoseAnalysisEnabled() ? 'pose' : 'no-pose',
+    `embed:${faceEmbeddingLimit}`,
+  ]);
+}
+
 export function analyzeFaces(imagePath: string): Promise<FaceAnalysisResult> {
-  return withTimeout(_analyzeFacesInner(imagePath), ANALYZE_TIMEOUT_MS, imagePath);
+  if (timedOutNativeOperation) {
+    return Promise.reject(new Error(
+      `face-engine temporarily unavailable: timed-out analysis is still running (${timedOutNativeOperation.label})`,
+    ));
+  }
+  const key = analysisSingleflightKey(imagePath);
+  let operation = analysisInFlight.get(key);
+  if (!operation) {
+    operation = _analyzeFacesInner(imagePath);
+    analysisInFlight.set(key, operation);
+    const cleanup = () => {
+      if (analysisInFlight.get(key) === operation) analysisInFlight.delete(key);
+    };
+    // Clean up only when the native operation settles. A caller timeout must
+    // not permit another inference for the same file to stack behind a hung
+    // ONNX call.
+    void operation.then(cleanup, cleanup);
+  }
+  return withTimeout(operation, ANALYZE_TIMEOUT_MS, imagePath, () => {
+    if (timedOutNativeOperation) return;
+    timedOutNativeOperation = { operation: operation!, label: imagePath };
+    const closeCircuit = () => {
+      if (timedOutNativeOperation?.operation === operation) timedOutNativeOperation = null;
+    };
+    void operation!.then(closeCircuit, closeCircuit);
+  });
+}
+
+async function runRequiredStage<T>(stage: string, work: () => Promise<T>): Promise<T> {
+  try {
+    return await work();
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`face-engine ${stage} failed: ${detail}`);
+  }
+}
+
+function resultInStoredOrientation(
+  result: FaceAnalysisResult,
+  orientation: ExifOrientation,
+): FaceAnalysisResult {
+  if (orientation === 1) return result;
+  return {
+    ...result,
+    boxes: result.boxes.map((box) => mapBoxToStoredOrientation(box, orientation)),
+    personBoxes: result.personBoxes.map((box) => mapBoxToStoredOrientation(box, orientation)),
+    embeddingBoxes: result.embeddingBoxes?.map((box) => mapBoxToStoredOrientation(box, orientation)),
+    poses: result.poses?.map((pose) => mapPoseToStoredOrientation(pose, orientation)),
+  };
 }
 
 async function _analyzeFacesInner(imagePath: string): Promise<FaceAnalysisResult> {
   await loadSessions();
   const t0 = Date.now();
+  let decodeMs = 0;
+  let detectMs = 0;
+  let embedMs = 0;
 
-  // Decode the image once — for RAW files this extracts the embedded JPEG preview.
-  // We reuse the same nativeImage for detection, person detection, and embedding
-  // so we don't re-read (and re-decode) the file multiple times.
-  const decodeStart = Date.now();
-  const img = await loadNativeImageCached(imagePath);
-  const decodeMs = Date.now() - decodeStart;
-  await yieldToEventLoop();
-
-  let boxes: FaceBox[] = [];
-  let personBoxes: FaceBox[] = [];
-  const detectStart = Date.now();
-  boxes = await detectFaces(imagePath, img).catch(() => [] as FaceBox[]);
-  await yieldToEventLoop();
-  const shouldRunPerson = personDetectionEnabled && (
-    !highThroughputFaceMode ||
-    boxes.length === 0 ||
-    boxes.length >= 2 ||
-    boxes.length === 1 && (boxes[0].width * boxes[0].height) < 0.012
-  );
-  personBoxes = shouldRunPerson
-    ? await detectPersons(imagePath, img).catch(() => [] as FaceBox[])
-    : [];
-  await yieldToEventLoop();
-  const detectMs = Date.now() - detectStart;
-
-  // Optional pose estimation (sports modes). Gated: zero cost unless the user
-  // enabled it AND the MoveNet model is installed. Runs once per athlete box.
-  const poses: PoseKeypoints[] = (isPoseAnalysisEnabled() && personBoxes.length > 0)
-    ? await estimatePoses(img, personBoxes).catch(() => [] as PoseKeypoints[])
-    : [];
-  if (poses.length > 0) await yieldToEventLoop();
-
-  const finishStats = (embedMs: number) => {
-    imageDecodeCache.delete(imagePath);
+  const finishStats = () => {
     _analyzeCallCount++;
     _decodeTotalMs += decodeMs;
     _detectTotalMs += detectMs;
@@ -964,72 +1399,146 @@ async function _analyzeFacesInner(imagePath: string): Promise<FaceAnalysisResult
       const decodeAvg = (_decodeTotalMs / _analyzeCallCount).toFixed(0);
       const detectAvg = (_detectTotalMs / _analyzeCallCount).toFixed(0);
       const embedAvg = (_embedTotalMs / _analyzeCallCount).toFixed(0);
-      log.info(`[face-engine] EP:${actualExecutionProvider ?? '?'} avg=${avg}ms/img decode=${decodeAvg}ms detect=${detectAvg}ms embed=${embedAvg}ms over ${_analyzeCallCount} images`);
+      log.info(`[face-engine] EP:${actualExecutionProvider ?? '?'} avg=${avg}ms/img decode=${decodeAvg}ms detect=${detectAvg}ms embed=${embedAvg}ms refined=${_personRefinementCount} over ${_analyzeCallCount} images`);
     }
   };
 
-  if (boxes.length === 0) {
-    finishStats(0);
-    return {
-      boxes,
-      personBoxes,
-      embeddings: [],
-      embeddingBoxes: [],
-      poses,
-      features: { faceMatching: faceMatchingEnabled, personDetection: shouldRunPerson, embeddingLimit: faceEmbeddingLimit },
-    };
-  }
-
-  if (!faceMatchingEnabled) {
-    finishStats(0);
-    return {
-      boxes,
-      personBoxes,
-      embeddings: [],
-      embeddingBoxes: [],
-      poses,
-      features: { faceMatching: false, personDetection: shouldRunPerson, embeddingLimit: 0 },
-    };
-  }
-
-  // Embed detected faces with a cap that scales up on fast GPU/concurrency
-  // settings. All detected boxes are still returned for UI overlays.
-  const rankedFaces = rankFacesForEmbedding(boxes);
-  const reliableFaces = rankedFaces.filter(isReliableFaceForEmbedding);
-  // Crowd guard: embedding cost scales with faces-per-frame, and in a packed
-  // sports/stadium shot the marginal faces are tiny background spectators with
-  // little identity value. Embed only the strongest few when a frame is crowded
-  // so a 25k-image event with full stands stays fast — the dominant cost at
-  // "10k+ people" is crop+resize+inference per embedded face, not the model.
-  const crowdAdaptiveLimit = boxes.length >= 12 ? 4
-    : boxes.length >= 8 ? 6
-    : faceEmbeddingLimit;
-  const effectiveEmbeddingLimit = Math.min(faceEmbeddingLimit, crowdAdaptiveLimit);
-  const facesToEmbed = (reliableFaces.length > 0 ? reliableFaces : rankedFaces.slice(0, 1))
-    .slice(0, effectiveEmbeddingLimit);
-  const embedStart = Date.now();
-  const embeddedFaces: Array<{ box: FaceBox; embedding: Float32Array }> = [];
-  for (const box of facesToEmbed) {
-    const embedding = await embedFace(imagePath, box, img).catch(() => null);
-    if (embedding) embeddedFaces.push({ box, embedding });
+  try {
+    // Decode and EXIF parsing overlap. All model stages see an upright bitmap;
+    // results are mapped back before IPC so existing renderers remain compatible.
+    const decodeStart = Date.now();
+    const [storedImage, orientationValue] = await runRequiredStage('decode', () => Promise.all([
+      loadNativeImageCached(imagePath),
+      readExifOrientation(imagePath),
+    ]));
+    const oriented = await runRequiredStage('orientation', () =>
+      orientImageForAnalysis(storedImage, orientationValue));
+    const img = oriented.image;
+    const orientation = oriented.orientation;
+    decodeMs = Date.now() - decodeStart;
     await yieldToEventLoop();
+
+    let boxes: FaceBox[] = [];
+    let fastPersons: PersonDetectionPass = { boxes: [], candidateCount: 0 };
+    const detectStart = Date.now();
+    const shouldRunPerson = personDetectionEnabled;
+    const poseRequested = isPoseAnalysisEnabled();
+    const canOverlapDetectors = shouldRunPerson &&
+      providerDiagnostics.detector.provider === 'dml' &&
+      providerDiagnostics.person.provider === 'cpu';
+    if (canOverlapDetectors) {
+      [boxes, fastPersons] = await runRequiredStage('detection', () => Promise.all([
+        detectFaces(imagePath, img),
+        detectPersons(imagePath, img, 320),
+      ]));
+    } else {
+      boxes = await runRequiredStage('face detection', () => detectFaces(imagePath, img));
+      if (shouldRunPerson) {
+        fastPersons = await runRequiredStage('person detection', () => detectPersons(imagePath, img, 320));
+      }
+    }
+
+    let personBoxes = fastPersons.boxes;
+    const imageSize = img.getSize();
+    if (shouldRunPerson && shouldRefinePersonDetection({
+      width: imageSize.width,
+      height: imageSize.height,
+      faceBoxes: boxes,
+      fastBoxes: fastPersons.boxes,
+      candidateCount: fastPersons.candidateCount,
+      sportsMode: poseRequested,
+    })) {
+      try {
+        const refined = await detectPersons(imagePath, img, 640);
+        personBoxes = mergePersonBoxes(fastPersons.boxes, refined.boxes);
+        _personRefinementCount++;
+      } catch (error) {
+        // The verified 320 pass is still a valid completed person stage. A
+        // failed optional refinement must not erase those detections.
+        log.warn('[face-engine] adaptive person refinement failed:',
+          error instanceof Error ? error.message : String(error));
+      }
+    }
+    boxes = await annotateEyeDetail(img, boxes);
+    await yieldToEventLoop();
+    detectMs = Date.now() - detectStart;
+
+    let poses: PoseKeypoints[] = [];
+    let poseAnalysisComplete = !poseRequested || personBoxes.length === 0;
+    if (poseRequested && personBoxes.length > 0) {
+      const estimated = await estimatePoses(img, personBoxes).catch((error) => {
+        log.warn('[face-engine] optional pose stage failed:',
+          error instanceof Error ? error.message : String(error));
+        return [] as PoseKeypoints[];
+      });
+      // estimatePoses can omit a failed middle crop; returning that shorter
+      // array would shift athlete-to-pose alignment. Discard partial output and
+      // mark the stage incomplete so the cache will not claim success.
+      poseAnalysisComplete = estimated.length === personBoxes.length;
+      poses = poseAnalysisComplete ? estimated : [];
+      if (poses.length > 0) await yieldToEventLoop();
+    }
+
+    let embeddings: Float32Array[] = [];
+    let embeddingBoxes: FaceBox[] = [];
+    let faceMatchingComplete = faceMatchingEnabled && boxes.length === 0;
+    let completedEmbeddingLimit = faceMatchingEnabled ? faceEmbeddingLimit : 0;
+
+    if (faceMatchingEnabled && boxes.length > 0) {
+      // Embed only the strongest useful faces in crowds. This cap limits crop
+      // and dispatch cost without changing face/person detections.
+      const rankedFaces = rankFacesForEmbedding(boxes);
+      const reliableFaces = rankedFaces.filter(isReliableFaceForEmbedding);
+      const crowdAdaptiveLimit = boxes.length >= 12 ? 4
+        : boxes.length >= 8 ? 6
+        : faceEmbeddingLimit;
+      const effectiveEmbeddingLimit = Math.min(faceEmbeddingLimit, crowdAdaptiveLimit);
+      const facesToEmbed = (reliableFaces.length > 0 ? reliableFaces : rankedFaces.slice(0, 1))
+        .slice(0, effectiveEmbeddingLimit);
+      const embedStart = Date.now();
+      const embedConcurrency = providerDiagnostics.embedder.provider === 'dml'
+        ? Math.min(4, Math.max(1, facesToEmbed.length))
+        : 1;
+      const embeddedByIndex = new Array<{ box: FaceBox; embedding: Float32Array } | null>(facesToEmbed.length).fill(null);
+      let nextFaceIndex = 0;
+      await Promise.all(Array.from({ length: embedConcurrency }, async () => {
+        while (nextFaceIndex < facesToEmbed.length) {
+          const index = nextFaceIndex++;
+          const box = facesToEmbed[index];
+          const embedding = await embedFace(imagePath, box, img).catch(() => null);
+          if (embedding) embeddedByIndex[index] = { box, embedding };
+          await yieldToEventLoop();
+        }
+      }));
+      const embeddedFaces = embeddedByIndex.filter(
+        (entry): entry is { box: FaceBox; embedding: Float32Array } => entry !== null,
+      );
+      embeddings = embeddedFaces.map((entry) => entry.embedding);
+      embeddingBoxes = embeddedFaces.map((entry) => entry.box);
+      faceMatchingComplete = embeddedFaces.length === facesToEmbed.length;
+      completedEmbeddingLimit = faceMatchingComplete ? faceEmbeddingLimit : embeddedFaces.length;
+      embedMs = Date.now() - embedStart;
+    }
+
+    const result = resultInStoredOrientation({
+      boxes,
+      personBoxes,
+      embeddings,
+      embeddingBoxes,
+      poses,
+      features: {
+        faceMatching: faceMatchingComplete,
+        personDetection: shouldRunPerson,
+        poseAnalysis: poseAnalysisComplete,
+        embeddingLimit: completedEmbeddingLimit,
+      },
+    }, orientation);
+    finishStats();
+    return result;
+  } finally {
+    // Always release decoded image memory, including required-stage failures.
+    imageDecodeCache.delete(imagePath);
   }
-  const embeddings = embeddedFaces.map((entry) => entry.embedding);
-  const embeddingBoxes = embeddedFaces.map((entry) => entry.box);
-  const embedMs = Date.now() - embedStart;
-
-  finishStats(embedMs);
-
-  // Return ALL detected boxes so every face is visible in the UI. Embeddings
-  // may be shorter when the per-image cap is hit.
-  return {
-    boxes,
-    personBoxes,
-    embeddings,
-    embeddingBoxes,
-    poses,
-    features: { faceMatching: true, personDetection: shouldRunPerson, embeddingLimit: faceEmbeddingLimit },
-  };
 }
 
 /**
@@ -1175,9 +1684,9 @@ export function deserializeEmbedding(hex: string): Float32Array {
  */
 export function faceModelsAvailable(): boolean {
   try {
-    modelPath('version-RFB-640.onnx');
-    modelPath('w600k_mbf.onnx');
-    modelPath('ssd_mobilenet_v1_12.onnx');
+    modelPath(FACE_MODEL_IDENTITIES.detector.fileName);
+    modelPath(FACE_MODEL_IDENTITIES.embedder.fileName);
+    modelPath(FACE_MODEL_IDENTITIES.person.fileName);
     return true;
   } catch {
     return false;

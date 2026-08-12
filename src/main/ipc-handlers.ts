@@ -10,6 +10,7 @@ import { listVolumes, startWatching, stopWatching } from './services/volume-watc
 import { scanFiles, cancelScan, pauseScan, resumeScan, type FileScanDiagnostics } from './services/file-scanner';
 import { importFiles, cancelImport, planImportFiles } from './services/import-engine';
 import { writeLightroomHandoff } from './services/lightroom-handoff';
+import { ImportLedgerWriter, readLatestImportLedger as readLatestImportLedgerFile } from './services/import-ledger';
 import { isDuplicate } from './services/duplicate-detector';
 import { generatePreview, generatePreviewPayload, getThumbnailPayload, peekPreviewFile, getPreviewCacheDirectory, getRawPreviewQualitySetting, isSharpAvailable } from './services/exif-parser';
 import { checkForUpdate, fetchUpdateHistory, readLastKnownGoodUpdateMetadata } from './services/update-checker';
@@ -446,10 +447,6 @@ function getLedgersDir(): string {
   return path.join(app.getPath('userData'), 'import-ledgers');
 }
 
-function getLatestLedgerPath(): string {
-  return path.join(getLedgersDir(), 'latest.json');
-}
-
 function getSessionsDir(): string {
   return path.join(app.getPath('userData'), 'sessions');
 }
@@ -681,52 +678,16 @@ async function getModelResourceStatus(): Promise<MacFirstRunDoctor['resources']>
   };
 }
 
-function makeLedgerId(): string {
-  return new Date().toISOString().replace(/[:.]/g, '-');
-}
-
-async function persistImportLedger(config: ImportConfig, result: ImportResult): Promise<ImportLedger> {
-  const items = result.ledgerItems ?? [];
-  const failed = items.filter((item) => item.status === 'failed').length;
-  const pending = items.filter((item) => item.status === 'pending').length;
-  const id = result.ledgerId || makeLedgerId();
-  const ledger: ImportLedger = {
-    id,
-    createdAt: new Date().toISOString(),
-    sourcePath: config.sourcePath,
-    destRoot: config.destRoot,
-    saveFormat: config.saveFormat,
-    totalFiles: items.length,
-    imported: result.imported,
-    skipped: result.skipped,
-    failed,
-    pending,
-    verified: result.verified,
-    checksumVerified: result.checksumVerified,
-    totalBytes: result.totalBytes,
-    durationMs: result.durationMs,
-    eventMode: config.eventMode,
-    importLogCsvPath: result.importLogCsvPath,
-    scheduleCsvPath: config.scheduleCsvPath,
-    scheduleSheetUrl: config.scheduleSheetUrl,
-    items,
-  };
-  const dir = getLedgersDir();
-  await mkdir(dir, { recursive: true });
-  const content = JSON.stringify(ledger, null, 2);
-  await writeFile(path.join(dir, `${id}.json`), content, { encoding: 'utf8', mode: 0o600 });
-  await writeFile(getLatestLedgerPath(), content, { encoding: 'utf8', mode: 0o600 });
-  result.ledgerId = id;
-  result.recoveryCount = items.filter((item) => item.status === 'failed' || item.status === 'pending').length;
-  return ledger;
+async function persistImportLedger(
+  config: ImportConfig,
+  result: ImportResult,
+  writer = new ImportLedgerWriter(getLedgersDir(), config),
+): Promise<ImportLedger> {
+  return writer.finalize(result);
 }
 
 async function readLatestImportLedger(): Promise<ImportLedger | null> {
-  try {
-    return JSON.parse(await readFile(getLatestLedgerPath(), 'utf8')) as ImportLedger;
-  } catch {
-    return null;
-  }
+  return readLatestImportLedgerFile(getLedgersDir());
 }
 
 async function writePostImportLightroomHandoff(config: ImportConfig, ledger: ImportLedger): Promise<ImportResult['lightroomHandoff'] | undefined> {
@@ -1628,6 +1589,7 @@ async function runAutomatedFtpSync(trigger: 'manual' | 'launch' | 'interval'): P
       });
     }
 
+    const ledgerWriter = new ImportLedgerWriter(getLedgersDir(), importConfig);
     const result = await importFiles(filesToImport, importConfig, (progress) => {
       publish({
         state: 'running',
@@ -1639,7 +1601,9 @@ async function runAutomatedFtpSync(trigger: 'manual' | 'launch' | 'interval'): P
         skipped: progress.skipped,
         errors: progress.errors,
       });
-    });
+    }, (checkpoint) => ledgerWriter.checkpoint(checkpoint).then(() => undefined));
+    await persistImportLedger(importConfig, result, ledgerWriter);
+    await recordCatalogImport(importConfig, result).catch((error) => log.warn('[catalog] FTP import record failed', error));
 
     return publish({
       state: result.errors.length > 0 ? 'error' : 'success',
@@ -2542,10 +2506,11 @@ export function registerIpcHandlers(): void {
         } satisfies ImportResult;
       }
       const filesToImport = filterFilesForImport(scannedFiles, config);
+      const ledgerWriter = new ImportLedgerWriter(getLedgersDir(), config);
       const result = await importFiles(filesToImport, config, (progress) => {
         sendToRenderer(IPC.IMPORT_PROGRESS, progress);
-      });
-      const ledger = await persistImportLedger(config, result);
+      }, (checkpoint) => ledgerWriter.checkpoint(checkpoint).then(() => undefined));
+      const ledger = await persistImportLedger(config, result, ledgerWriter);
       result.importLogCsvPath = ledger.importLogCsvPath ?? result.importLogCsvPath;
       result.lightroomHandoff = await writePostImportLightroomHandoff(config, ledger)
         .catch((error) => {
@@ -2633,10 +2598,11 @@ export function registerIpcHandlers(): void {
         recoveryCount: retryPaths.length,
       } satisfies ImportResult;
     }
+    const ledgerWriter = new ImportLedgerWriter(getLedgersDir(), retryConfig);
     const result = await importFiles(filesToImport, retryConfig, (progress) => {
       sendToRenderer(IPC.IMPORT_PROGRESS, progress);
-    });
-    const ledger = await persistImportLedger(retryConfig, result);
+    }, (checkpoint) => ledgerWriter.checkpoint(checkpoint).then(() => undefined));
+    const ledger = await persistImportLedger(retryConfig, result, ledgerWriter);
     result.recoveryCount = retryPaths.length;
     result.importLogCsvPath = ledger.importLogCsvPath ?? result.importLogCsvPath;
     result.lightroomHandoff = await writePostImportLightroomHandoff(retryConfig, ledger)
@@ -3290,7 +3256,7 @@ export function registerIpcHandlers(): void {
         try {
           const { boxes, personBoxes, embeddings, embeddingBoxes, poses, features } = await analyzeFaces(filePath);
           if (capturedGen !== faceQueueGeneration) {
-            return { path: filePath, boxes: [], personBoxes: [], embeddings: [], embeddingBoxes: [], poses: [], faceCount: 0, personCount: 0 };
+            return { path: filePath, boxes: [], personBoxes: [], embeddings: [], embeddingBoxes: [], poses: [], faceCount: 0, personCount: 0, error: STALE_FACE_JOB };
           }
           const hexEmbeddings = embeddings.map(serializeEmbedding);
           await setCachedFaceResult(filePath, { boxes, personBoxes, embeddings, embeddingBoxes, poses, features }, hexEmbeddings).catch(() => undefined);
@@ -3548,10 +3514,11 @@ async function runAutoImport(volume: Volume, options: Omit<QueuedAutoImport, 'vo
       skipped: 0,
       errors: 0,
     });
+    const ledgerWriter = new ImportLedgerWriter(getLedgersDir(), importConfig);
     const result = await importFiles(filesToImport, importConfig, (progress) => {
       sendToRenderer(IPC.IMPORT_PROGRESS, progress);
-    });
-    const ledger = await persistImportLedger(importConfig, result);
+    }, (checkpoint) => ledgerWriter.checkpoint(checkpoint).then(() => undefined));
+    const ledger = await persistImportLedger(importConfig, result, ledgerWriter);
     result.importLogCsvPath = ledger.importLogCsvPath ?? result.importLogCsvPath;
     result.lightroomHandoff = await writePostImportLightroomHandoff(importConfig, ledger)
       .catch((error) => {

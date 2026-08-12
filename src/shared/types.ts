@@ -29,6 +29,64 @@ export interface PoseKeypoints {
   score?: number;
 }
 
+/** Broad photographic genre inferred from preview geometry or selected by the operator. */
+export type CullingGenre =
+  | 'auto'
+  | 'portrait'
+  | 'group'
+  | 'sports'
+  | 'landscape'
+  | 'architecture'
+  | 'interior'
+  | 'detail'
+  | 'general';
+
+export type SceneAnalysisKind =
+  | 'people'
+  | 'landscape'
+  | 'architecture'
+  | 'interior'
+  | 'detail'
+  | 'general';
+
+/**
+ * Lightweight, local preview analysis used by genre-aware culling. Normalized
+ * values are 0..1. Sharpness values retain the preview Laplacian-variance
+ * scale, and tilt values are degrees. Every field is optional so old sessions
+ * and partially analysed RAW files remain valid and are treated as uncertain,
+ * never as known-bad photographs.
+ */
+export interface SceneAnalysis {
+  kind: SceneAnalysisKind;
+  confidence: number;
+  focusCoverage?: number;
+  focusUniformity?: number;
+  edgeSharpness?: number;
+  centerSharpness?: number;
+  cornerSharpness?: number;
+  highlightClipping?: number;
+  shadowClipping?: number;
+  dynamicRange?: number;
+  horizonTiltDeg?: number;
+  verticalTiltDeg?: number;
+  compositionBalance?: number;
+  lineStrength?: number;
+  /** Area-weighted sharpness measured inside detected face/person regions. */
+  subjectSharpnessScore?: number;
+  /** Sharpness outside the detected subject footprint. */
+  backgroundSharpnessScore?: number;
+  /** Reliability of the subject-region focus measurement (0..1). */
+  subjectFocusConfidence?: number;
+  /** Fraction of usable subject regions carrying useful detail (0..1). */
+  subjectFocusCoverage?: number;
+  /** Approximate detected subject area as a fraction of the stored frame. */
+  subjectArea?: number;
+  /** Number of reliable face/person regions included in the measurement. */
+  subjectCountAnalyzed?: number;
+  subjectReasons?: string[];
+  reasons?: string[];
+}
+
 /** COCO keypoint indices, named for readable geometry code. */
 export const COCO_KP = {
   nose: 0, leftEye: 1, rightEye: 2, leftEar: 3, rightEar: 4,
@@ -115,11 +173,16 @@ export interface MediaFile {
   sharpnessScore?: number;
   /** Face/subject-aware focus metric. Higher = sharper subject area. */
   subjectSharpnessScore?: number;
-  /** Number of faces found by local browser face detection, when available. */
+  /** Number of faces found by the local ONNX review pipeline, when available. */
   faceCount?: number;
-  /** Normalized face boxes from local browser face detection. eyeScore=2 means both eyes detected (open). */
-  faceBoxes?: Array<{ x: number; y: number; width: number; height: number; eyeScore?: number; smileScore?: number; expressionScore?: number; score?: number }>;
-  /** Whether faces came from Chromium's detector or the conservative thumbnail fallback. */
+  /**
+   * Normalized face boxes from local analysis. `eyeScore` is the number of
+   * expected eye regions (0-2) with enough local detail to judge focus; it is
+   * deliberately not presented as a definitive blink/open-eye classifier.
+   * `eyeSharpness` is a normalized 0..1 eye-detail signal.
+   */
+  faceBoxes?: Array<{ x: number; y: number; width: number; height: number; eyeScore?: number; eyeSharpness?: number; smileScore?: number; expressionScore?: number; score?: number }>;
+  /** Whether faces came from the native ONNX detector or a conservative fallback. */
   faceDetection?: 'native' | 'estimated';
   /** Number of person/body detections from the ONNX review pipeline. */
   personCount?: number;
@@ -143,7 +206,7 @@ export interface MediaFile {
   /** All usable face embeddings found in the photo, ordered by matching quality. */
   faceEmbeddings?: string[];
   /** Face boxes that correspond to faceEmbeddings, when returned by the native face engine. */
-  faceEmbeddingBoxes?: Array<{ x: number; y: number; width: number; height: number; score?: number }>;
+  faceEmbeddingBoxes?: Array<{ x: number; y: number; width: number; height: number; score?: number; eyeScore?: number; eyeSharpness?: number }>;
   /** Local cluster id for similar detected faces. This is not biometric identity; it is a culling aid. */
   faceGroupId?: string;
   faceGroupSize?: number;
@@ -159,6 +222,8 @@ export interface MediaFile {
   /** 0-100 local smart-review score. Higher = stronger keeper candidate. */
   reviewScore?: number;
   reviewReasons?: string[];
+  /** Optional local scene/geometry metrics for genre-aware keeper proposals. */
+  sceneAnalysis?: SceneAnalysis;
   /** True after the operator has explicitly approved this file in second-pass review. */
   reviewApproved?: boolean;
 }
@@ -205,6 +270,9 @@ export type CullConfidence = 'conservative' | 'balanced' | 'aggressive';
 export type KeeperQuota = 'best-1' | 'top-2' | 'all-rated' | 'smile-and-sharp';
 export type EventMode =
   | 'general'
+  | 'landscape'
+  | 'architecture'
+  | 'interior'
   | 'stage'
   | 'candids'
   | 'cosplay'
@@ -219,9 +287,9 @@ export type EventMode =
 /**
  * Event modes that retune culling toward peak sports action: frozen motion,
  * athlete-to-athlete contact, emotion at the moment of impact, and group/team
- * focus. These read athlete person-boxes + face expression rather than pose
- * keypoints (no pose model shipped yet), so "contact" and "action" are strong
- * proxies, not measured limb angles.
+ * focus. Optional pose keypoints provide measured geometry when available;
+ * person boxes, subject focus and face expression provide a conservative
+ * fallback when pose analysis was skipped or unavailable.
  */
 export const SPORTS_EVENT_MODES: ReadonlySet<EventMode> = new Set<EventMode>(['taekwondo', 'sports-combat']);
 
@@ -242,6 +310,24 @@ export const EVENT_MODE_PRESETS: Record<EventMode, EventModePreset> = {
     description: 'Balanced event ingest with broad selects and clean metadata.',
     keywords: ['event', 'selects'],
     help: 'Use this when the shoot mixes people, details, and general coverage.',
+  },
+  landscape: {
+    label: 'Landscape / outdoors',
+    description: 'Wide scenes with even detail, controlled clipping, level horizons, and viewpoint variety.',
+    keywords: ['landscape', 'outdoors', 'scenery', 'wide view', 'environment'],
+    help: 'Prefers edge-to-edge focus, usable dynamic range, level horizons, and distinct compositions while keeping uncertain alternatives for review.',
+  },
+  architecture: {
+    label: 'Architecture / property',
+    description: 'Exterior structures, strong lines, balanced framing, and controlled verticals.',
+    keywords: ['architecture', 'exterior', 'property', 'structure', 'lines'],
+    help: 'Prefers crisp edges, strong structural lines, controlled clipping, and straighter verticals without hiding uncertain frames.',
+  },
+  interior: {
+    label: 'Interior / rooms',
+    description: 'Rooms and interior details with broad focus, balanced exposure, and clean geometry.',
+    keywords: ['interior', 'room', 'property', 'design', 'space'],
+    help: 'Balances corner-to-corner detail, window/highlight clipping, shadow detail, composition, and vertical alignment.',
   },
   stage: {
     label: 'Stage / performance',

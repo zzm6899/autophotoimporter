@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useAppState } from '../context/ImportContext';
 import { useImport } from '../hooks/useImport';
 import { formatSize, formatSpeed, formatEta } from '../utils/formatters';
@@ -22,6 +22,16 @@ export function ImportProgress() {
   const { cancelImport } = useImport();
   const [collapsed, setCollapsed] = useState(true);
 
+  const requestCancelImport = useCallback(() => {
+    const completed = importProgress?.currentIndex ?? 0;
+    const total = importProgress?.totalFiles ?? importQueuedCount;
+    const progressSummary = total > 0 ? ` (${completed} of ${total} processed)` : '';
+    const confirmed = window.confirm(
+      `Stop this import${progressSummary}?\n\nFiles already completed will remain at the destination. Keptra will save recovery details for unfinished or failed files.`,
+    );
+    if (confirmed) void cancelImport();
+  }, [cancelImport, importProgress, importQueuedCount]);
+
   useEffect(() => {
     if (importRunning) setCollapsed(true);
   }, [importRunning]);
@@ -37,11 +47,15 @@ export function ImportProgress() {
         target instanceof HTMLSelectElement ||
         (target instanceof HTMLElement && (target.isContentEditable || target.closest('[role="dialog"], [contenteditable="true"]')))
       ) return;
-      cancelImport();
+      // Capture Escape before grid shortcuts can clear selection or change the
+      // active review while an import decision is awaiting confirmation.
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      requestCancelImport();
     };
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  }, [importRunning, importProgress, cancelImport]);
+    window.addEventListener('keydown', handleKey, { capture: true });
+    return () => window.removeEventListener('keydown', handleKey, { capture: true });
+  }, [importRunning, importProgress, requestCancelImport]);
 
   if (!importRunning) return null;
 
@@ -111,9 +125,9 @@ export function ImportProgress() {
           </svg>
         </button>
         <button
-          onClick={cancelImport}
+          onClick={requestCancelImport}
           className="shrink-0 p-0.5 rounded text-text-muted hover:text-red-400 transition-colors"
-          title="Cancel import (Esc)"
+          title="Stop import (confirmation required)"
         >
           <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
             <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
@@ -232,10 +246,10 @@ export function ImportProgress() {
             Minimize
           </button>
           <button
-            onClick={cancelImport}
+            onClick={requestCancelImport}
             className="flex-1 py-2 rounded text-sm bg-surface-raised hover:bg-red-500/10 text-red-400 transition-colors"
           >
-            Cancel
+            Stop Import
           </button>
         </div>
       </div>

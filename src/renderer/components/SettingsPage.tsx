@@ -2663,7 +2663,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                 <span className="text-xs text-text">Group photo: everyone good</span>
               </label>
               <p className="text-[10px] text-text-muted mb-2 ml-5">
-                Prefers frames with the most usable faces/people and treats blink or missing-face risk as a stronger reject reason.
+                Prefers frames with the most usable faces/people and treats unclear eye detail or missing-face risk as a stronger review reason.
               </p>
 
               <div>
