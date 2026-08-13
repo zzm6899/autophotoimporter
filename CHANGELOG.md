@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.5.13 - 2026-08-13
+
 ### Performance
 - Added default Super Speed AI routing: cheap focus/hash/scene evidence runs on every frame, while detector, subject/person, and full face/pose stages run only for meaningful comparisons, people-heavy genres, priority photos, and uncertainty.
 - Reused scanner thumbnails for detector-only analysis, batched renderer-to-main analysis calls, separated the CPU person inference gate, and capped whole-photo concurrency to avoid CPU oversubscription.
