@@ -8,6 +8,7 @@ import type { MediaFile, SceneAnalysis } from './types';
 const LOCAL_SUBJECT_DATA_KEYS = [
   'faceCount',
   'faceBoxes',
+  'faceLandmarks',
   'faceDetection',
   'personCount',
   'personBoxes',
@@ -76,6 +77,7 @@ export function stripLocalFaceAndSubjectData(file: MediaFile): MediaFile {
   const {
     faceCount: _faceCount,
     faceBoxes: _faceBoxes,
+    faceLandmarks: _faceLandmarks,
     faceDetection: _faceDetection,
     personCount: _personCount,
     personBoxes: _personBoxes,

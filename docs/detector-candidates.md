@@ -1,10 +1,9 @@
-# Detector candidate evaluation
+# Fast detector cascade and evaluation
 
-Keptra's current UltraFace, SFace, and SSD MobileNet pipeline remains the
-production default. YuNet, NanoDet, and YOLOX-S are pinned as evaluation-only
-candidates: startup does not download them, packaging rejects them unless an
-explicit experimental build flag is present, and the face engine never selects
-them automatically.
+Keptra now uses digest-verified YuNet and NanoDet as its production fast face
+and person pass. UltraFace and SSD MobileNet remain selective safety fallbacks
+for empty, weak, edge, and disagreement cases. YOLOX-S remains evaluation-only:
+it is not downloaded, bundled, or selected by a normal production build.
 
 ## RTX 4070 measurements
 
@@ -46,56 +45,65 @@ OpenCV sample images measured:
 | YuNet 640 | 634.65 photos/s | 54.01 photos/s | 5.14 hours |
 | NanoDet 416 | 298.16 photos/s | 54.00 photos/s | 5.14 hours |
 
-This confirms that each candidate can meet the 35 photos/s lower bound in
+This confirms that each fast detector can meet the 35 photos/s lower bound in
 isolation on preview-sized inputs. It does **not** prove that running both on
 every image, processing full-resolution originals, cold-reading storage, or
-updating the UI will meet that rate. The production cascade should share the
-decoded preview, run YuNet for comparison/subject frames, and add person
-detection only where body evidence is needed. Unrelated standalone frames stay
-manual and need only the cheap scene/hash/focus pass because they cannot replace
-another image.
+updating the UI will meet that rate. The production cascade shares the decoded
+preview, runs only the evidence required by the review route, and invokes the
+legacy detector selectively. Unrelated standalone frames stay manual and need
+only the cheap scene/hash/focus pass because they cannot replace another image.
+
+The HYROX Sydney promotion audit used 245 unique real photos: a deterministic
+192-photo sample plus 53 legacy face-positive/body-zero problem frames. NanoDet
+and SSD each found a person in 244/245; NanoDet returned 1,196 person proposals
+versus SSD's 771. The models were complementary: 584 boxes matched at IoU 0.5,
+187 were SSD-only, and 612 were NanoDet-only. This is strong event-specific
+evidence for a selective cascade, not a fully labelled precision/recall SLA.
 
 The FP32 graphs are the viable DirectML candidates. The tested INT8 NanoDet
 graph was more than ten times slower than FP32 on DirectML, and block-quantized
 variants either failed ONNX Runtime 1.21 CPU execution or model shape
 validation. Do not select a quantized graph solely because its file is smaller.
 
-## Recommended cascade
+## Production cascade
 
-1. Run YuNet on comparison/subject frames, then NanoDet where body evidence is
-   needed. YuNet's eye landmarks should replace estimated eye positions for
-   crops and SFace alignment.
-2. Run YOLOX-S only for uncertainty: crowded frames, face/person count
-   disagreement, low NanoDet confidence, tiny subjects, or final burst
-   candidates.
+1. Run YuNet and NanoDet on routed comparison/subject frames using one decoded
+   surface. YuNet's landmarks align eye crops and opt-in SFace embeddings.
+2. Use UltraFace and SSD MobileNet selectively for empty, weak, edge, or
+   disagreement cases. Candidate-only evidence is held for manual review until
+   corroborated; it cannot independently authorize an automatic rejection.
 3. Run face embeddings and pose only for shortlisted faces/people, not every
    detected region in every frame.
 4. Preserve every proposed bulk decision in the review preview; low-confidence
    results must be marked for review rather than rejected automatically.
+
+YOLOX-S remains available only in the explicit evaluation workflow as a future
+uncertainty/crowd candidate.
 
 At the measured kernel rates, the fast face/person pass consumes well under one
 hour per million photos. A 4–8 hour target therefore depends primarily on a
 single shared decode, embedded RAW previews, stage-specific queues, batched
 cache writes, and database-paged UI—not on a larger YOLO model.
 
-## Evaluation workflow
+## Experimental evaluation workflow
 
-Download the pinned candidates only when preparing a labelled evaluation:
+Normal `npm run models` installs the six production models, including YuNet and
+NanoDet. To additionally download the unbundled YOLOX-S candidate:
 
 ```text
 npm run models -- --experimental-detectors
 ```
 
-Weights are isolated under `models/experimental/`, ignored by git, and checked
-against exact byte sizes and SHA-256 digests. A packaged build containing them
+YOLOX-S is isolated under `models/experimental/`, ignored by git, and checked
+against its exact byte size and SHA-256 digest. A packaged build containing it
 requires `KEPTRA_PACKAGE_EXPERIMENTAL_DETECTORS=1`; otherwise package smoke
-fails. Runtime code may explicitly request one candidate through
-`ensureExperimentalDetectorDownloaded`, but no production path calls it.
+fails. The production YuNet and NanoDet weights are stored in `models/` and
+their hashes are verified at download, load, and package-smoke boundaries.
 
-## Promotion gate
+## Ongoing quality gate
 
-Do not add a user-visible model selector or replace the current detector until
-the candidate decoders pass a labelled, versioned corpus containing at least:
+Before broadening the fast-only route or removing either legacy fallback, run a
+labelled, versioned corpus containing at least:
 
 - portraits, weddings, crowded groups, sports, children, occlusion, side
   profiles, masks, glasses, dark skin and varied lighting;
@@ -113,8 +121,8 @@ fingerprint so cached analyses cannot cross model versions.
 
 The evaluator accepts an optional schema-versioned label file and reports
 confidence-ordered IoU 0.5 precision, recall, and F1. Until that report exists
-for the full segmented corpus, both candidates remain blocked from production
-promotion even though the throughput smoke target passes.
+for the full segmented corpus, the conservative fallback and manual-hold rules
+must remain enabled even though the throughput smoke target passes.
 
 ## Decoder verification
 
@@ -142,6 +150,7 @@ edge differences are expected from Sharp Lanczos versus OpenCV resize kernels.
 - [OpenCV YOLOX-S](https://github.com/opencv/opencv_zoo/tree/0b263e423d012606b83d1f81238d11c177da2b9c/models/object_detection_yolox) — Apache-2.0.
 
 The manifest pins immutable upstream revisions, weight hashes, input contracts,
-decoder identifiers, licenses, and redistribution policy. Provenance permits
-evaluation and potential redistribution; it does not substitute for an accuracy
-or product-safety review.
+decoder identifiers, licenses, and redistribution policy. Model-code licenses
+do not by themselves settle every training-dataset term; the bundled notices
+record the known WIDER FACE, COCO, and SFace lineage limitations. Similar-face
+matching remains explicit opt-in, local-only, and positive-only for culling.

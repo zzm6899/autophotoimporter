@@ -20,6 +20,7 @@ import { probeFtp, mirrorFtp } from './services/ftp-source';
 import { activateLicenseInput, checkHostedLicenseStatus, validateLicenseKey } from './services/license';
 import { analyzeFaces, cancelActiveFacePreprocessing, disposeFaceEngine, faceModelsAvailable, serializeEmbedding, isGpuAvailable, getActualExecutionProvider, getFaceFeatureOptions, getFaceProviderDiagnostics, configureGpuAcceleration, configureGpuDevice, configureCpuOptimization, configureFaceFeatureOptions, configureFaceThroughput, clearImageDecodeCache, diagnoseFaceEngine, runFaceGpuStressTest, isNanoDetSportsFallbackActive } from './services/face-engine';
 import type { ExifOrientation, FaceAnalysisProfile } from './services/face-engine';
+import { PRODUCTION_FAST_DETECTOR_FINGERPRINT } from './services/detector-model-manifest';
 import { getBestCachedFaceResult, getCachedFaceResult, setCachedFaceResult, clearFaceCache, closeFaceCache } from './services/face-cache';
 import type { FaceCacheIdentityHint } from './services/face-cache';
 import { FaceJobScheduler } from './services/face-job-scheduler';
@@ -210,6 +211,7 @@ function isFaceAnalysisOptions(value: unknown): value is {
   identity?: FaceCacheIdentityHint;
   identities?: FaceCacheIdentityHint[];
   sportsMode?: boolean;
+  embeddingLimit?: number;
 } {
   return value == null || (isRecord(value)
     && (value.profile == null || isFaceAnalysisProfile(value.profile))
@@ -219,7 +221,10 @@ function isFaceAnalysisOptions(value: unknown): value is {
     && (value.identity == null || isFaceCacheIdentityHint(value.identity))
     && (value.identities == null || (Array.isArray(value.identities)
       && value.identities.every(isFaceCacheIdentityHint)))
-    && (value.sportsMode == null || isBoolean(value.sportsMode)));
+    && (value.sportsMode == null || isBoolean(value.sportsMode))
+    && (value.embeddingLimit == null || (
+      Number.isInteger(value.embeddingLimit) && Number(value.embeddingLimit) >= 1 && Number(value.embeddingLimit) <= 16
+    )));
 }
 
 function isOptionalBoundedNumber(value: unknown, min: number, max: number): boolean {
@@ -235,6 +240,8 @@ function isSettingsPatch(value: unknown): value is Partial<AppSettings> {
   if (value.experienceMode != null && !['simple', 'pro'].includes(String(value.experienceMode))) return false;
   if (value.firstRunWizardSeen != null && typeof value.firstRunWizardSeen !== 'boolean') return false;
   if (value.aiReviewEnabled != null && typeof value.aiReviewEnabled !== 'boolean') return false;
+  if (value.faceMatchingConsentVersion != null &&
+      !['', 'local-similarity-v1'].includes(String(value.faceMatchingConsentVersion))) return false;
   if (value.superSpeedMode != null && typeof value.superSpeedMode !== 'boolean') return false;
   if (value.sourceProfile != null && !['auto', 'ssd', 'usb', 'nas'].includes(String(value.sourceProfile))) return false;
   if (value.defaultConflictPolicy != null && !['skip', 'rename', 'overwrite', 'conflicts-folder'].includes(String(value.defaultConflictPolicy))) return false;
@@ -1382,7 +1389,11 @@ const DEFAULT_SETTINGS: AppSettings = {
   cpuOptimization: false,       // Disabled by default (only enable for older CPUs)
   rawPreviewQuality: 70,        // 70% JPEG quality for RAW previews
   reviewFaceAnalysis: true,
-  reviewFaceMatching: true,
+  // Similar-face embeddings remain opt-in: they are local and purgeable, but
+  // the exact SFace weight does not publish sufficiently precise training-set
+  // lineage to justify silently enabling biometric grouping for new users.
+  reviewFaceMatching: false,
+  faceMatchingConsentVersion: '',
   reviewPersonDetection: true,
   reviewVisualDuplicates: true,
   jobPresets: [],
@@ -1504,7 +1515,8 @@ function applyRuntimeSettings(settings: AppSettings): void {
   configureGpuDevice(undefined);
   configureCpuOptimization(settings.cpuOptimization ?? false);
   configureFaceFeatureOptions({
-    faceMatching: settings.reviewFaceMatching ?? true,
+    faceMatching: settings.reviewFaceMatching === true &&
+      settings.faceMatchingConsentVersion === 'local-similarity-v1',
     personDetection: settings.reviewPersonDetection ?? true,
   });
   setRawPreviewQuality(clampRawPreviewQuality(settings.rawPreviewQuality));
@@ -1701,6 +1713,10 @@ async function loadSettings(): Promise<AppSettings> {
 
     const resolvedSettings = {
       ...merged,
+      // Older releases enabled similarity embeddings by default. Require a
+      // positive consent marker before carrying that historic setting forward.
+      reviewFaceMatching: parsed.reviewFaceMatching === true &&
+        parsed.faceMatchingConsentVersion === 'local-similarity-v1',
       // Migrate legacy WMI display indices to DirectML Auto. WMI index N does
       // not identify DirectML adapter N and could silently bind an iGPU.
       gpuDeviceId: safeGpuDeviceId(),
@@ -1776,6 +1792,11 @@ async function saveSettings(settings: Partial<AppSettings>): Promise<void> {
       };
   const normalized: AppSettings = {
     ...merged,
+    // This is an enforcement boundary, not merely a renderer preference.
+    // Presets or a compromised renderer cannot enable persistent local face
+    // vectors unless the explicit consent marker accompanies the setting.
+    reviewFaceMatching: merged.reviewFaceMatching === true &&
+      merged.faceMatchingConsentVersion === 'local-similarity-v1',
     gpuDeviceId: safeGpuDeviceId(),
     cpuOptimization: tierPerformanceDefaults.cpuOptimization,
     rawPreviewQuality: tierPerformanceDefaults.rawPreviewQuality,
@@ -3899,6 +3920,7 @@ export function registerIpcHandlers(): void {
       identity?: FaceCacheIdentityHint;
       identities?: FaceCacheIdentityHint[];
       sportsMode?: boolean;
+      embeddingLimit?: number;
     },
   ) => {
     // Validation (including main-owned path registration) runs before this
@@ -3924,9 +3946,8 @@ export function registerIpcHandlers(): void {
     const task = async (): Promise<object[]> => {
       // ── Phase 1: parallel cache lookup (no semaphore — pure disk reads) ──
       const faceOptions = getFaceFeatureOptions(profile);
-      const sportsFallbackActive = options?.sportsMode === true && faceOptions.personDetection
-        ? await isNanoDetSportsFallbackActive()
-        : false;
+      const fastDetectorPairActive = await isNanoDetSportsFallbackActive();
+      const sportsFallbackActive = options?.sportsMode === true && faceOptions.personDetection && fastDetectorPairActive;
       const cacheResults = await Promise.all(paths.map(async (filePath) => {
         const registeredFile = scannedFilesByPath.get(filePath);
         if (!registeredFile) return { filePath, cached: null, identity: undefined };
@@ -3948,6 +3969,14 @@ export function registerIpcHandlers(): void {
           ...faceOptions,
           eyeDetail: profile !== 'detect',
           sportsSafeguards: options?.sportsMode === true && faceOptions.personDetection,
+          fastFaceDetection: fastDetectorPairActive,
+          fastPersonDetection: fastDetectorPairActive && profile !== 'detect' && faceOptions.personDetection,
+          detectorPipelineFingerprint: fastDetectorPairActive
+            ? PRODUCTION_FAST_DETECTOR_FINGERPRINT
+            : undefined,
+          embeddingLimit: profile === 'full' && faceOptions.faceMatching
+            ? Math.min(faceOptions.embeddingLimit, options?.embeddingLimit ?? faceOptions.embeddingLimit)
+            : faceOptions.embeddingLimit,
           analysisDepth: profile,
           identity,
         }).catch(() => null);
@@ -3979,6 +4008,7 @@ export function registerIpcHandlers(): void {
             personBoxes,
             embeddings,
             embeddingBoxes,
+            faceLandmarks: cached.result.faceLandmarks,
             poses: profile === 'full' && faceOptions.poseAnalysis ? cached.result.poses ?? [] : [],
             faceCount: cached.result.boxes.length,
             personCount: personBoxes.length,
@@ -3989,8 +4019,16 @@ export function registerIpcHandlers(): void {
               poseAnalysis: cached.result.features?.poseAnalysis ?? false,
               poseAnalysisAvailable: poseModelAvailable(),
               personFallback: cached.result.features?.personFallback ?? false,
+              personFallbackExecuted: cached.result.features?.personFallbackExecuted ?? false,
+              personFallbackCorroborated: cached.result.features?.personFallbackCorroborated ?? false,
               eyeDetail: cached.result.features?.eyeDetail ?? false,
               sportsSafeguards: cached.result.features?.sportsSafeguards ?? false,
+              fastFaceDetection: cached.result.features?.fastFaceDetection ?? false,
+              fastPersonDetection: cached.result.features?.fastPersonDetection ?? false,
+              faceLandmarks: cached.result.features?.faceLandmarks ?? false,
+              faceDetectorId: cached.result.features?.faceDetectorId,
+              personDetectorId: cached.result.features?.personDetectorId,
+              detectorPipelineFingerprint: cached.result.features?.detectorPipelineFingerprint,
             },
           });
         } else {
@@ -4038,14 +4076,25 @@ export function registerIpcHandlers(): void {
           // analysis”. Seed enrichment from the best shallower record so a
           // subjects→full transition does not decode and detect everything a
           // second time.
-          const seed = profile === 'detect'
+          const cachedSeed = profile === 'detect'
             ? undefined
             : (await getBestCachedFaceResult(filePath, verifiedIdentitiesByPath.get(filePath)).catch(() => null))?.result;
-          const { boxes, personBoxes, embeddings, embeddingBoxes, poses, features } = await analyzeFaces(filePath, {
+          // A legacy result is useful only while the promoted pair is absent.
+          // Once the verified fast route is active, seeding from legacy boxes
+          // would tell the resume planner that detection was already complete
+          // and permanently prevent the YuNet/NanoDet upgrade.
+          const seed = fastDetectorPairActive && cachedSeed && !(
+            cachedSeed.features?.fastFaceDetection === true &&
+            cachedSeed.features?.detectorPipelineFingerprint === PRODUCTION_FAST_DETECTOR_FINGERPRINT &&
+            (profile === 'detect' || !faceOptions.personDetection ||
+              cachedSeed.features?.fastPersonDetection === true)
+          ) ? undefined : cachedSeed;
+          const { boxes, personBoxes, embeddings, embeddingBoxes, faceLandmarks, poses, features } = await analyzeFaces(filePath, {
             profile,
             orientation,
             seed,
             sportsMode: options?.sportsMode === true,
+            embeddingLimit: options?.embeddingLimit,
           });
           if (capturedGen !== faceQueueGeneration) {
             return { path: filePath, boxes: [], personBoxes: [], embeddings: [], embeddingBoxes: [], poses: [], faceCount: 0, personCount: 0, error: STALE_FACE_JOB };
@@ -4079,7 +4128,7 @@ export function registerIpcHandlers(): void {
           const hexEmbeddings = embeddings.map(serializeEmbedding);
           await setCachedFaceResult(
             filePath,
-            { boxes, personBoxes, embeddings, embeddingBoxes, poses, features },
+            { boxes, personBoxes, embeddings, embeddingBoxes, faceLandmarks, poses, features },
             hexEmbeddings,
             profile,
             expectedIdentity,
@@ -4091,6 +4140,7 @@ export function registerIpcHandlers(): void {
             personBoxes,
             embeddings: hexEmbeddings,
             embeddingBoxes: embeddingBoxes ?? [],
+            faceLandmarks,
             poses: poses ?? [],
             faceCount: boxes.length,
             personCount: personBoxes.length,
@@ -4101,8 +4151,16 @@ export function registerIpcHandlers(): void {
               poseAnalysis: features?.poseAnalysis ?? false,
               poseAnalysisAvailable: poseModelAvailable(),
               personFallback: features?.personFallback ?? false,
+              personFallbackExecuted: features?.personFallbackExecuted ?? false,
+              personFallbackCorroborated: features?.personFallbackCorroborated ?? false,
               eyeDetail: features?.eyeDetail ?? false,
               sportsSafeguards: features?.sportsSafeguards ?? false,
+              fastFaceDetection: features?.fastFaceDetection ?? false,
+              fastPersonDetection: features?.fastPersonDetection ?? false,
+              faceLandmarks: features?.faceLandmarks ?? false,
+              faceDetectorId: features?.faceDetectorId,
+              personDetectorId: features?.personDetectorId,
+              detectorPipelineFingerprint: features?.detectorPipelineFingerprint,
             },
           };
         } catch (err: unknown) {

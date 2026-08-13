@@ -521,7 +521,9 @@ const initialState: State = {
   cpuOptimization: true,
   rawPreviewQuality: 70,
   reviewFaceAnalysis: true,
-  reviewFaceMatching: true,
+  // Local similar-face grouping is an explicit user choice. Face/body/eye
+  // quality culling remains available without storing identity embeddings.
+  reviewFaceMatching: false,
   reviewPersonDetection: true,
   reviewVisualDuplicates: true,
   autoSpeedMode: false,
@@ -576,7 +578,7 @@ function sameWhiteBalanceAdjustment(
   return a?.temperature === b?.temperature && a?.tint === b?.tint;
 }
 
-function collectReviewGroups(files: MediaFile[], includeFace = true): Map<string, MediaFile[]> {
+function collectReviewGroups(files: MediaFile[]): Map<string, MediaFile[]> {
   const groups = new Map<string, MediaFile[]>();
   const addToGroup = (id: string, file: MediaFile) => {
     const group = groups.get(id);
@@ -590,9 +592,6 @@ function collectReviewGroups(files: MediaFile[], includeFace = true): Map<string
     }
     if (f.visualGroupId && f.visualGroupSize && f.visualGroupSize > 1) {
       addToGroup(`visual:${f.visualGroupId}`, f);
-    }
-    if (includeFace && f.faceGroupId && f.faceGroupSize && f.faceGroupSize > 1) {
-      addToGroup(`face:${f.faceGroupId}`, f);
     }
   }
   return groups;
@@ -620,7 +619,7 @@ export function queueBestPaths(
   const automaticEligible = (file: MediaFile) =>
     file.pick === 'selected' || file.isProtected || (file.rating ?? 0) > 0 ||
     (isAutoCullBulkDecisionEligible(file, eventMode) && isUsablyFocused(file));
-  const groups = collectReviewGroups(eligible, false);
+  const groups = collectReviewGroups(eligible);
   const groupedPaths = new Set<string>();
   const queued = new Set<string>();
 
@@ -1216,7 +1215,10 @@ export function reducer(state: State, action: Action): State {
       // frame per burst/visual/face group first (variety), always retains
       // protected/rated/picked files, and rejects the rest. Photos only —
       // videos are left untouched.
-      const photos = state.files.filter((f) => f.type === 'photo');
+      const photos = state.files.filter((f) =>
+        f.type === 'photo' &&
+        (isAutoCullBulkDecisionEligible(f, state.eventMode) ||
+          f.isProtected || (f.rating ?? 0) > 0 || f.pick === 'selected'));
       if (photos.length === 0) return state;
       const { keep } = selectKeepersToTarget(photos, {
         target: action.target,
@@ -1224,8 +1226,9 @@ export function reducer(state: State, action: Action): State {
         eventMode: state.eventMode,
       });
       const keepSet = new Set(keep);
+      const decisionPaths = new Set(photos.map((file) => file.path));
       return withFileHistory(state, state.files.map((f) =>
-        f.type === 'photo'
+        f.type === 'photo' && decisionPaths.has(f.path)
           ? { ...f, pick: keepSet.has(f.path) ? 'selected' : 'rejected' }
           : f,
       ));
@@ -1331,7 +1334,7 @@ export function reducer(state: State, action: Action): State {
       return { ...state, files: assignSceneBuckets(state.files, state.eventMode) };
     case 'PICK_BEST_IN_GROUPS': {
       const groupFiles = action.files ?? state.files;
-      const groups = collectReviewGroups(groupFiles, true);
+      const groups = collectReviewGroups(groupFiles);
       const keepers = new Set<string>();
       for (const group of groups.values()) {
         const best = bestInGroup(group);
@@ -1340,8 +1343,7 @@ export function reducer(state: State, action: Action): State {
       return withFileHistory(state, state.files.map((f) => {
         const inGroup =
           (f.visualGroupId && groups.has(`visual:${f.visualGroupId}`)) ||
-          (f.burstId && groups.has(`burst:${f.burstId}`)) ||
-          (f.faceGroupId && groups.has(`face:${f.faceGroupId}`));
+          (f.burstId && groups.has(`burst:${f.burstId}`));
         return inGroup ? { ...f, pick: keepers.has(f.path) ? 'selected' : 'rejected' } : f;
       }));
     }
@@ -1357,7 +1359,7 @@ export function reducer(state: State, action: Action): State {
     }
     case 'AUTO_CULL_SAFE': {
       const groupFiles = action.files ?? state.files;
-      const groups = collectReviewGroups(groupFiles, true);
+      const groups = collectReviewGroups(groupFiles);
       const reject = new Set<string>();
       const keep = new Set<string>();
       for (const group of groups.values()) {
@@ -1365,9 +1367,17 @@ export function reducer(state: State, action: Action): State {
           confidence: state.cullConfidence,
           groupPhotoEveryoneGood: state.groupPhotoEveryoneGood,
           keeperQuota: state.keeperQuota,
+          eventMode: state.eventMode,
         });
-        for (const p of decision.keep) keep.add(p);
-        for (const p of decision.reject) reject.add(p);
+        for (const p of decision.keep) {
+          const file = group.find((item) => item.path === p);
+          if (file && (isAutoCullBulkDecisionEligible(file, state.eventMode) ||
+            file.isProtected || (file.rating ?? 0) > 0 || file.pick === 'selected')) keep.add(p);
+        }
+        for (const p of decision.reject) {
+          const file = group.find((item) => item.path === p);
+          if (file && isAutoCullBulkDecisionEligible(file, state.eventMode)) reject.add(p);
+        }
       }
 
       return withFileHistory(state, state.files.map((f) => {
@@ -1541,7 +1551,7 @@ export function reducer(state: State, action: Action): State {
           faceConcurrency: Math.max(2, state.faceConcurrency),
           rawPreviewQuality: Math.max(65, Math.min(state.rawPreviewQuality, 75)),
           reviewFaceAnalysis: true,
-          reviewFaceMatching: true,
+          reviewFaceMatching: state.reviewFaceMatching,
           reviewPersonDetection: true,
           reviewVisualDuplicates: true,
         };
@@ -1555,7 +1565,7 @@ export function reducer(state: State, action: Action): State {
           faceConcurrency: Math.max(4, state.faceConcurrency),
           rawPreviewQuality: Math.max(state.rawPreviewQuality, 82),
           reviewFaceAnalysis: true,
-          reviewFaceMatching: true,
+          reviewFaceMatching: state.reviewFaceMatching,
           reviewPersonDetection: true,
           reviewVisualDuplicates: true,
         };

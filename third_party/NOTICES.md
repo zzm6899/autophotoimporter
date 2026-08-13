@@ -67,31 +67,51 @@ exact digest before loading and during package smoke.
 
 The OpenCV Zoo documentation credits Yaoyao Zhong for SFace and Chengrui Wang
 for the ONNX conversion. Keptra redistributes the upstream ONNX file unchanged.
+The exact training dataset for this pinned `2021dec` weight is not stated in
+the model directory. Similar-face matching is therefore local-only, explicitly
+opt-in, produces no names or identity claims, and is never negative evidence
+for an automatic rejection. The SFace paper discusses CASIA-WebFace,
+VGGFace2, and MS-Celeb-1M experiments; that paper-level lineage does not prove
+which dataset produced this exact weight.
 
-## Evaluation-only detector candidates
+## Production fast detector cascade
 
-The following models are pinned in Keptra's detector candidate manifest but are
-not bundled or selected by default. They may be downloaded only through the
-explicit experimental evaluation workflow. Promotion requires a labelled
-golden-corpus accuracy review.
+The following digest-pinned detectors are bundled as Keptra's fast first pass.
+UltraFace and SSD MobileNet remain selective fallbacks for weak, empty, edge,
+or disagreement cases. Automatic bulk decisions continue to require completed
+subject-safety evidence and are previewed before application.
 
 ### OpenCV YuNet
 
-- File: `experimental/face_detection_yunet_2023mar.onnx`
-- Purpose: candidate face boxes and five facial landmarks
+- File: `face_detection_yunet_2023mar.onnx`
+- Purpose: fast face boxes and five facial landmarks
 - Pinned revision: `f12e12798e8314f7c074a6656816c048dcc95b7a`
 - SHA-256: `8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4`
 - License: MIT; see `YuNet-MIT.txt`
 - Project: https://github.com/opencv/opencv_zoo/tree/f12e12798e8314f7c074a6656816c048dcc95b7a/models/face_detection_yunet
 
+The upstream model card states that YuNet was trained on WIDER FACE. WIDER FACE
+dataset terms remain separate from the MIT model-directory license. Keptra uses
+the landmarks to improve eye crops and SFace alignment, not to infer a person's
+name or sensitive traits.
+
 ### OpenCV NanoDet Plus
 
-- File: `experimental/object_detection_nanodet_2022nov.onnx`
-- Purpose: candidate COCO/person object detection
+- File: `object_detection_nanodet_2022nov.onnx`
+- Purpose: fast COCO person/body detection
 - Pinned revision: `510899a2a0adb8c25957915fd030d66dbd553919`
 - SHA-256: `4b82da9944b88577175ee23a459dce2e26e6e4be573def65b1055dc2d9720186`
 - License: Apache License 2.0; the full Apache text is included in `SFace-Apache-2.0.txt`
 - Project: https://github.com/opencv/opencv_zoo/tree/510899a2a0adb8c25957915fd030d66dbd553919/models/object_detection_nanodet
+
+The upstream NanoDet model is trained/evaluated on COCO. COCO image and dataset
+terms remain separate from the Apache-2.0 model-directory license. Keptra uses
+only the person class in the production culling cascade.
+
+## Evaluation-only detector candidate
+
+YOLOX-S remains unbundled and cannot enter the production detector cascade. It
+may be downloaded only by the explicit experimental evaluation command.
 
 ### OpenCV YOLOX-S
 

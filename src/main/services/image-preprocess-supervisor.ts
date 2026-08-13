@@ -29,6 +29,7 @@ export interface ImagePreprocessRequest {
   includeAnalysisSurface: boolean;
   includePersonTensors: boolean;
   includeNanoDetTensor?: boolean;
+  includeYuNetTensor?: boolean;
   analysisMaxDimension?: number;
   /** Test-only protocol command understood by worker fixtures. */
   testMode?: 'hang' | 'echo';
@@ -54,6 +55,17 @@ export interface PreparedImagePayload {
     sourceHeight: number;
     targetWidth: 416;
     targetHeight: 416;
+    resizedWidth: number;
+    resizedHeight: number;
+    padLeft: number;
+    padTop: number;
+  };
+  yuNet?: {
+    data: Float32Array;
+    sourceWidth: number;
+    sourceHeight: number;
+    targetWidth: 640;
+    targetHeight: 640;
     resizedWidth: number;
     resizedHeight: number;
     padLeft: number;
@@ -654,6 +666,36 @@ function normalizePreparedPayload(
     throw new Error('worker omitted the requested NanoDet tensor');
   }
 
+  let yuNet: PreparedImagePayload['yuNet'];
+  if (payload.yuNet) {
+    const raw = payload.yuNet.data;
+    const data = raw instanceof Float32Array
+      ? raw
+      : new Float32Array(
+        (raw as unknown as Uint8Array).buffer,
+        (raw as unknown as Uint8Array).byteOffset,
+        (raw as unknown as Uint8Array).byteLength / Float32Array.BYTES_PER_ELEMENT,
+      );
+    if (data.length !== 3 * 640 * 640) throw new Error('YuNet tensor has invalid length');
+    const yuSourceWidth = dimension(payload.yuNet.sourceWidth, 'yuNet.sourceWidth');
+    const yuSourceHeight = dimension(payload.yuNet.sourceHeight, 'yuNet.sourceHeight');
+    const resizedWidth = dimension(payload.yuNet.resizedWidth, 'yuNet.resizedWidth', 640);
+    const resizedHeight = dimension(payload.yuNet.resizedHeight, 'yuNet.resizedHeight', 640);
+    if (payload.yuNet.targetWidth !== 640 || payload.yuNet.targetHeight !== 640 ||
+      !Number.isSafeInteger(payload.yuNet.padLeft) || !Number.isSafeInteger(payload.yuNet.padTop) ||
+      payload.yuNet.padLeft < 0 || payload.yuNet.padTop < 0 ||
+      payload.yuNet.padLeft + resizedWidth > 640 || payload.yuNet.padTop + resizedHeight > 640) {
+      throw new Error('YuNet transform is invalid');
+    }
+    yuNet = {
+      ...payload.yuNet, data, sourceWidth: yuSourceWidth, sourceHeight: yuSourceHeight,
+      resizedWidth, resizedHeight,
+    };
+  }
+  if (request.includeYuNetTensor && !yuNet) {
+    throw new Error('worker omitted the requested YuNet tensor');
+  }
+
   return {
     ...payload,
     sourceWidth,
@@ -667,6 +709,7 @@ function normalizePreparedPayload(
     fastPerson,
     refinedPerson,
     nanoDet,
+    yuNet,
   };
 }
 

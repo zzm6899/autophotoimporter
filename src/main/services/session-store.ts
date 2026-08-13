@@ -451,7 +451,7 @@ class JsonSessionStore implements SessionStoreBackend {
       }
       const session = readJsonSession(raw);
       if (!session) {
-        if (/"(?:faceCount|faceBoxes|faceDetection|personCount|personBoxes|poses|faceSignature|faceEmbedding|faceEmbeddings|faceEmbeddingBoxes|faceGroupId|faceGroupSize|subjectSharpnessScore|subjectReasons|blurRisk|enduranceSportsAnalysis|reviewScore|reviewReasons|reviewAnalysisStage|reviewAnalysisFeatures|reviewAnalysisUnavailable|reviewAnalysisUnavailableFeatures)"\s*:/.test(raw)) {
+        if (/"(?:faceCount|faceBoxes|faceLandmarks|faceDetection|personCount|personBoxes|poses|faceSignature|faceEmbedding|faceEmbeddings|faceEmbeddingBoxes|faceGroupId|faceGroupSize|subjectSharpnessScore|subjectReasons|blurRisk|enduranceSportsAnalysis|reviewScore|reviewReasons|reviewAnalysisStage|reviewAnalysisFeatures|reviewAnalysisUnavailable|reviewAnalysisUnavailableFeatures)"\s*:/.test(raw)) {
           throw new Error(`Cannot safely purge unreadable session data: ${name}`);
         }
         continue;

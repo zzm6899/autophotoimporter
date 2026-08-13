@@ -6,7 +6,7 @@ import { queueBestPaths, useAppState, useAppDispatch, useMergedFiles, useReviewS
 import type { FilterMode } from '../context/ImportContext';
 import { useFileScanner } from '../hooks/useFileScanner';
 import { useImport } from '../hooks/useImport';
-import { isSportsEventMode, type CatalogFaceSearchResult, type EventMode, type MediaFile, type SceneAnalysisKind, type WhiteBalanceAdjustment } from '../../shared/types';
+import { isPeopleFirstEventMode, isSportsEventMode, type CatalogFaceSearchResult, type EventMode, type MediaFile, type SceneAnalysisKind, type WhiteBalanceAdjustment } from '../../shared/types';
 import { ThumbnailCard } from './ThumbnailCard';
 import { SingleView } from './SingleView';
 import { CompareView } from './CompareView';
@@ -3099,7 +3099,8 @@ export function ThumbnailGrid() {
         reviewFaceMatching: currentReviewFaceMatching,
         reviewPersonDetection: reviewPersonDetectionRef.current,
         reviewPoseAnalysis: isSportsEventMode(eventModeRef.current),
-        reviewSportsSafeguards: isSportsEventMode(eventModeRef.current) &&
+        reviewSportsSafeguards: (isSportsEventMode(eventModeRef.current) ||
+          isPeopleFirstEventMode(eventModeRef.current)) &&
           reviewPersonDetectionRef.current,
       }) ? 'full' : null;
     };
@@ -3205,7 +3206,13 @@ export function ThumbnailGrid() {
           const request: Promise<NativeAnalysisBatch> = window.electronAPI
             .analyzeFaces(chunk, {
               profile,
-              sportsMode: isSportsEventMode(eventModeRef.current),
+              sportsMode: isSportsEventMode(eventModeRef.current) || isPeopleFirstEventMode(eventModeRef.current),
+              ...(profile === 'full' && currentReviewFaceMatching ? {
+                embeddingLimit: chunk.some((filePath) => {
+                  const file = candidateByPath.get(filePath);
+                  return Math.max(file?.faceCount ?? 0, file?.faceBoxes?.length ?? 0) >= 3;
+                }) ? 6 : 2,
+              } : {}),
               ...(hasCompleteOrientations
                 ? { orientations: orientations as Array<1 | 2 | 3 | 4 | 5 | 6 | 7 | 8> }
                 : {}),
@@ -3260,7 +3267,10 @@ export function ThumbnailGrid() {
               ? Promise.resolve([] as Awaited<ReturnType<typeof window.electronAPI.analyzeFaces>>)
               : (nativeAnalysisByPath.get(f.path) ?? window.electronAPI.analyzeFaces(f.path, {
                 profile: requestedProfile ?? 'full',
-                  sportsMode: isSportsEventMode(eventModeRef.current),
+                  sportsMode: isSportsEventMode(eventModeRef.current) || isPeopleFirstEventMode(eventModeRef.current),
+                  ...(requestedProfile === 'full' && currentReviewFaceMatching
+                    ? { embeddingLimit: Math.max(f.faceCount ?? 0, f.faceBoxes?.length ?? 0) >= 3 ? 6 : 2 }
+                    : {}),
                   ...(Number.isInteger(f.orientation) && Number(f.orientation) >= 1 && Number(f.orientation) <= 8
                     ? { orientation: f.orientation as 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 }
                     : {}),
@@ -3372,16 +3382,28 @@ export function ThumbnailGrid() {
               : requestedProfile === 'subjects'
                 ? 'subjects'
                 : 'full';
+            // Main returns a seed-enriched, canonical result. Trust its feature
+            // vector atomically with the boxes/landmarks from that same route;
+            // independently OR-ing old fast flags could claim NanoDet/YuNet
+            // provenance for boxes that a later legacy rerun replaced.
             patch.reviewAnalysisFeatures = {
-              faceDetection: f.reviewAnalysisFeatures?.faceDetection || (onnx.features?.faceDetection ?? true),
-              personDetection: f.reviewAnalysisFeatures?.personDetection || (onnx.features?.personDetection ?? false),
-              faceMatching: f.reviewAnalysisFeatures?.faceMatching || (onnx.features?.faceMatching ?? false),
-              poseAnalysis: f.reviewAnalysisFeatures?.poseAnalysis || (onnx.features?.poseAnalysis ?? false),
-              eyeDetail: f.reviewAnalysisFeatures?.eyeDetail || (onnx.features?.eyeDetail ?? false),
-              personFallback: f.reviewAnalysisFeatures?.personFallback || (onnx.features?.personFallback ?? false),
-              sportsSafeguards: f.reviewAnalysisFeatures?.sportsSafeguards ||
-                (onnx.features?.sportsSafeguards ?? false),
+              faceDetection: onnx.features?.faceDetection ?? true,
+              personDetection: onnx.features?.personDetection ?? false,
+              faceMatching: onnx.features?.faceMatching ?? false,
+              poseAnalysis: onnx.features?.poseAnalysis ?? false,
+              eyeDetail: onnx.features?.eyeDetail ?? false,
+              personFallback: onnx.features?.personFallback ?? false,
+              personFallbackExecuted: onnx.features?.personFallbackExecuted ?? false,
+              personFallbackCorroborated: onnx.features?.personFallbackCorroborated ?? false,
+              sportsSafeguards: onnx.features?.sportsSafeguards ?? false,
+              fastFaceDetection: onnx.features?.fastFaceDetection ?? false,
+              fastPersonDetection: onnx.features?.fastPersonDetection ?? false,
+              faceLandmarks: onnx.features?.faceLandmarks ?? false,
+              faceDetectorId: onnx.features?.faceDetectorId,
+              personDetectorId: onnx.features?.personDetectorId,
+              detectorPipelineFingerprint: onnx.features?.detectorPipelineFingerprint,
             };
+            patch.faceLandmarks = onnx.faceLandmarks ?? [];
 
             const previousOptionalFailures = optionalFeatureFailureCountRef.current.get(f.path) ?? {
               faceMatching: 0,
@@ -3394,7 +3416,8 @@ export function ThumbnailGrid() {
               isSportsEventMode(eventModeRef.current) && onnxPersonBoxes.length > 0;
             const eyeDetailRequested = requestedProfile !== 'detect' && onnxFaceBoxes.length > 0;
             const sportsSafeguardsRequested = requestedProfile !== 'detect' &&
-              isSportsEventMode(eventModeRef.current) && reviewPersonDetectionRef.current;
+              (isSportsEventMode(eventModeRef.current) || isPeopleFirstEventMode(eventModeRef.current)) &&
+              reviewPersonDetectionRef.current;
             const matchingIncomplete = matchingRequested && !(onnx.features?.faceMatching ?? false);
             const poseIncomplete = poseRequested && !(onnx.features?.poseAnalysis ?? false);
             const eyeDetailIncomplete = eyeDetailRequested && !(onnx.features?.eyeDetail ?? false);
@@ -3946,7 +3969,6 @@ export function ThumbnailGrid() {
     for (const file of files) {
       if (file.burstId && (file.burstSize ?? 0) > 1) add(`burst:${file.burstId}`, file);
       if (file.visualGroupId && (file.visualGroupSize ?? 0) > 1) add(`visual:${file.visualGroupId}`, file);
-      if (file.faceGroupId && (file.faceGroupSize ?? 0) > 1) add(`face:${file.faceGroupId}`, file);
     }
     const groupedPaths = new Set<string>();
     const keep = new Set<string>();
@@ -3977,7 +3999,7 @@ export function ThumbnailGrid() {
     openDecisionPreview({
       id: `group-best:${Date.now()}`,
       title: 'Preview group keeper decisions',
-      summary: `Review the proposed best frames across ${groups.size} burst, similar-photo and face groups. Pending or low-confidence subject analysis stays unchanged.`,
+      summary: `Review the proposed best frames across ${groups.size} burst and similar-photo groups. Similar-face matches can add keeper coverage elsewhere, but never create reject groups. Pending or low-confidence subject analysis stays unchanged.`,
       items: affected.map((file): BulkAiDecisionItem => ({
         path: file.path,
         outcome: keep.has(file.path) ? 'keep' : 'reject',

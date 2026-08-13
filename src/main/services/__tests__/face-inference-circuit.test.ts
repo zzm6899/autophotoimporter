@@ -18,6 +18,28 @@ import {
 } from '../face-engine';
 
 describe('FaceInferenceCircuit', () => {
+  it.each(['detector', 'embedder', 'person'] as const)(
+    'serializes high-concurrency %s work to one native Run per session',
+    async (stage) => {
+      const circuit = new FaceInferenceCircuit(stage);
+      let active = 0;
+      let maxActive = 0;
+      const runs = Array.from({ length: 24 }, (_, index) => circuit.run(async () => {
+        active++;
+        maxActive = Math.max(maxActive, active);
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        active--;
+        return index;
+      }, 2_000));
+
+      await expect(Promise.all(runs)).resolves.toEqual(Array.from({ length: 24 }, (_, index) => index));
+      expect(maxActive).toBe(1);
+      expect(circuit.diagnostics()).toMatchObject({
+        state: 'closed', active: 0, queued: 0, maxConcurrent: 1,
+      });
+    },
+  );
+
   it('times out a hung native owner, rejects queued waiters, and fails later calls fast', async () => {
     vi.useFakeTimers();
     try {

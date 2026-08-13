@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   DETECTOR_CANDIDATE_MANIFEST,
   DETECTOR_CANDIDATE_MODELS,
+  PRODUCTION_FAST_DETECTOR_MODELS,
+  PRODUCTION_FAST_DETECTOR_FINGERPRINT,
   getDetectorCandidate,
   verifyDetectorCandidateFile,
   type DetectorCandidateModel,
@@ -18,16 +20,18 @@ afterEach(async () => {
 });
 
 describe('detector candidate manifest', () => {
-  it('keeps every alternative evaluation-only and revision-pinned', () => {
-    expect(DETECTOR_CANDIDATE_MANIFEST.status).toBe('evaluation-only');
-    expect(DETECTOR_CANDIDATE_MANIFEST.goldenCorpusRequired).toBe(true);
+  it('pins the promoted pair while keeping other alternatives unbundled', () => {
+    expect(DETECTOR_CANDIDATE_MANIFEST.status).toBe('mixed');
+    expect(DETECTOR_CANDIDATE_MANIFEST.legacyFallbackRemovalRequiresGoldenCorpus).toBe(true);
     expect(Object.isFrozen(DETECTOR_CANDIDATE_MANIFEST)).toBe(true);
 
     const ids = new Set<string>();
     const files = new Set<string>();
     for (const candidate of DETECTOR_CANDIDATE_MODELS) {
-      expect(candidate.bundledByDefault).toBe(false);
-      expect(candidate.redistribution).toBe('candidate-approved');
+      const promoted = candidate.id === PRODUCTION_FAST_DETECTOR_MODELS.face.id ||
+        candidate.id === PRODUCTION_FAST_DETECTOR_MODELS.person.id;
+      expect(candidate.bundledByDefault).toBe(promoted);
+      expect(candidate.redistribution).toBe('artifact-license-recorded');
       expect(candidate.sourceUrl).toContain(candidate.sourceRevision);
       expect(candidate.sourceUrl).toMatch(/^https:\/\//);
       expect(candidate.licenseUrl).toMatch(/^https:\/\//);
@@ -38,6 +42,14 @@ describe('detector candidate manifest', () => {
       ids.add(candidate.id);
       files.add(candidate.fileName);
     }
+    expect(PRODUCTION_FAST_DETECTOR_MODELS.face.decoder).toBe('yunet-v1');
+    expect(PRODUCTION_FAST_DETECTOR_MODELS.person.decoder).toBe('nanodet-plus-gfl-v1');
+    expect(PRODUCTION_FAST_DETECTOR_FINGERPRINT).toContain(
+      PRODUCTION_FAST_DETECTOR_MODELS.face.sha256,
+    );
+    expect(PRODUCTION_FAST_DETECTOR_FINGERPRINT).toContain(
+      PRODUCTION_FAST_DETECTOR_MODELS.person.sha256,
+    );
   });
 
   it('resolves only a known typed candidate', () => {

@@ -17,7 +17,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { app } from 'electron';
 import type { PoseKeypoints } from '../../shared/types';
-import type { FaceAnalysisProfile, FaceAnalysisResult, FaceBox } from './face-engine';
+import type { FaceAnalysisProfile, FaceAnalysisResult, FaceBox, FaceLandmarks } from './face-engine';
 import { FACE_PIPELINE_FINGERPRINT } from './face-model-manifest';
 
 // v4 records exact model/preprocessing provenance and orientation-normalized
@@ -55,6 +55,8 @@ interface CachedEntry {
   /** Monotonic inference depth; absent legacy entries are conservatively full. */
   analysisDepth?: FaceAnalysisProfile;
   boxes: FaceBox[];
+  /** Five-point YuNet geometry aligned 1:1 with boxes. */
+  faceLandmarks?: Array<FaceLandmarks | null>;
   personBoxes: FaceBox[];
   embeddings: string[];
   embeddingBoxes?: FaceBox[];
@@ -67,8 +69,18 @@ interface CachedEntry {
     eyeDetail?: boolean;
     /** Selective alternate person detector was available and evaluated. */
     personFallback?: boolean;
+    /** Selective SSD fallback ran, even when it returned zero people. */
+    personFallbackExecuted?: boolean;
+    /** Selective SSD fallback independently returned a person. */
+    personFallbackCorroborated?: boolean;
     /** Sports-specific zero-evidence/disagreement safeguards completed. */
     sportsSafeguards?: boolean;
+    fastFaceDetection?: boolean;
+    fastPersonDetection?: boolean;
+    faceLandmarks?: boolean;
+    faceDetectorId?: string;
+    personDetectorId?: string;
+    detectorPipelineFingerprint?: string;
   };
 }
 
@@ -91,6 +103,11 @@ type RequiredFeatures = {
   eyeDetail?: boolean;
   /** Require sports zero-evidence/disagreement safeguards. */
   sportsSafeguards?: boolean;
+  /** Require the promoted YuNet pass to have completed. */
+  fastFaceDetection?: boolean;
+  /** Require the promoted NanoDet pass to have completed. */
+  fastPersonDetection?: boolean;
+  detectorPipelineFingerprint?: string;
   embeddingLimit?: number;
   /** Required cascade depth. A shallower result must never satisfy this read. */
   analysisDepth?: FaceAnalysisProfile;
@@ -284,6 +301,17 @@ function isFaceBox(value: unknown): value is FaceBox {
     && isFiniteNumber(box.score);
 }
 
+function isFaceLandmarks(value: unknown): value is FaceLandmarks {
+  return Array.isArray(value) && value.length === 5 && value.every((point) =>
+    !!point && typeof point === 'object' &&
+    isFiniteNumber((point as Record<string, unknown>).x) &&
+    isFiniteNumber((point as Record<string, unknown>).y) &&
+    Number((point as Record<string, unknown>).x) >= 0 &&
+    Number((point as Record<string, unknown>).x) <= 1 &&
+    Number((point as Record<string, unknown>).y) >= 0 &&
+    Number((point as Record<string, unknown>).y) <= 1);
+}
+
 function isHexEmbedding(value: unknown): value is string {
   return typeof value === 'string'
     && value.length > 0
@@ -384,6 +412,30 @@ function mergeFaceBoxEvidence(existing: FaceBox[], incoming: FaceBox[]): FaceBox
   });
 }
 
+function mergeFaceLandmarkEvidence(
+  canonicalBoxes: FaceBox[],
+  canonical: CachedEntry,
+  previous: CachedEntry,
+): Array<FaceLandmarks | null> | undefined {
+  if (!canonical.faceLandmarks && !previous.faceLandmarks) return undefined;
+  return canonicalBoxes.map((box, index) => {
+    const direct = canonical.faceLandmarks?.[index];
+    if (direct) return direct;
+    let best: FaceLandmarks | null = null;
+    let bestIou = 0.45;
+    for (let previousIndex = 0; previousIndex < previous.boxes.length; previousIndex++) {
+      const landmarks = previous.faceLandmarks?.[previousIndex];
+      if (!landmarks) continue;
+      const iou = boxIntersectionOverUnion(box, previous.boxes[previousIndex]);
+      if (iou > bestIou) {
+        bestIou = iou;
+        best = landmarks;
+      }
+    }
+    return best;
+  });
+}
+
 function mergePersonAndPoseEvidence(
   existing: CachedEntry,
   incoming: CachedEntry,
@@ -391,7 +443,11 @@ function mergePersonAndPoseEvidence(
   // A detector-only shallower write has no authority over the person stage.
   // Once a fresh person pass completes, its canonical boxes replace the old
   // pass and usable pose evidence is transferred only to IoU-matched athletes.
-  const canonical = incoming.features.personDetection ? incoming : existing;
+  const canonical = incoming.features.fastPersonDetection && !existing.features.fastPersonDetection
+    ? incoming
+    : existing.features.fastPersonDetection && !incoming.features.fastPersonDetection
+      ? existing
+      : incoming.features.personDetection ? incoming : existing;
   const previous = canonical === incoming ? existing : incoming;
   const boxes = canonical.personBoxes.map((box) => ({ ...box }));
   const poses: Array<PoseKeypoints | undefined> = [];
@@ -434,17 +490,33 @@ function preferCachedEntry(existing: CachedEntry | undefined, incoming: CachedEn
   const existingDepth = analysisDepthRank(existing.analysisDepth ?? 'full');
   const incomingDepth = analysisDepthRank(incoming.analysisDepth ?? 'full');
   const deeper = incomingDepth >= existingDepth ? incoming : existing;
-  const otherFaceEvidence = deeper === incoming ? existing : incoming;
+  // Detector provenance and its canonical boxes move together. A later
+  // feature-only legacy write must not replace a verified fast result while
+  // leaving fast flags/landmarks behind (or vice versa).
+  const canonicalFaceEvidence = incoming.features.fastFaceDetection && !existing.features.fastFaceDetection
+    ? incoming
+    : existing.features.fastFaceDetection && !incoming.features.fastFaceDetection
+      ? existing
+      : deeper;
+  const otherFaceEvidence = canonicalFaceEvidence === incoming ? existing : incoming;
   const embeddingSource = incoming.embeddings.length >= existing.embeddings.length ? incoming : existing;
   const personEvidence = mergePersonAndPoseEvidence(existing, incoming);
   const poseWasCompleted = existing.features.poseAnalysis || incoming.features.poseAnalysis;
+  const canonicalBoxes = mergeFaceBoxEvidence(otherFaceEvidence.boxes, canonicalFaceEvidence.boxes);
+  const canonicalPersonEvidence = incoming.features.fastPersonDetection && !existing.features.fastPersonDetection
+    ? incoming
+    : existing.features.fastPersonDetection && !incoming.features.fastPersonDetection
+      ? existing
+      : incoming.features.personDetection ? incoming : existing;
+  const mergedLandmarks = mergeFaceLandmarkEvidence(canonicalBoxes, canonicalFaceEvidence, otherFaceEvidence);
   return {
     ...deeper,
     cachedAt: Math.max(existing.cachedAt, incoming.cachedAt),
     analysisDepth: incomingDepth >= existingDepth
       ? incoming.analysisDepth ?? 'full'
       : existing.analysisDepth ?? 'full',
-    boxes: mergeFaceBoxEvidence(otherFaceEvidence.boxes, deeper.boxes),
+    boxes: canonicalBoxes,
+    faceLandmarks: mergedLandmarks,
     personBoxes: personEvidence.personBoxes,
     poses: personEvidence.poses,
     embeddings: embeddingSource.embeddings,
@@ -460,7 +532,16 @@ function preferCachedEntry(existing: CachedEntry | undefined, incoming: CachedEn
       embeddingLimit: Math.max(existing.features.embeddingLimit, incoming.features.embeddingLimit),
       eyeDetail: existing.features.eyeDetail === true || incoming.features.eyeDetail === true,
       personFallback: existing.features.personFallback === true || incoming.features.personFallback === true,
+      personFallbackExecuted: canonicalPersonEvidence.features.personFallbackExecuted === true,
+      personFallbackCorroborated: canonicalPersonEvidence.features.personFallbackCorroborated === true,
       sportsSafeguards: existing.features.sportsSafeguards === true || incoming.features.sportsSafeguards === true,
+      fastFaceDetection: canonicalFaceEvidence.features.fastFaceDetection === true,
+      fastPersonDetection: canonicalPersonEvidence.features.fastPersonDetection === true,
+      faceLandmarks: mergedLandmarks?.some((landmarks) => landmarks !== null) === true,
+      faceDetectorId: canonicalFaceEvidence.features.faceDetectorId,
+      personDetectorId: canonicalPersonEvidence.features.personDetectorId,
+      detectorPipelineFingerprint: canonicalFaceEvidence.features.detectorPipelineFingerprint ??
+        canonicalPersonEvidence.features.detectorPipelineFingerprint,
     },
   };
 }
@@ -479,6 +560,11 @@ function isValidEntry(value: unknown, expectedKey: string): value is CachedEntry
     && (entry.analysisDepth === undefined || isAnalysisDepth(entry.analysisDepth))
     && Array.isArray(entry.boxes)
     && entry.boxes.every(isFaceBox)
+    && (entry.faceLandmarks === undefined || (
+      Array.isArray(entry.faceLandmarks) &&
+      entry.faceLandmarks.length === entry.boxes.length &&
+      entry.faceLandmarks.every((landmarks) => landmarks === null || isFaceLandmarks(landmarks))
+    ))
     && Array.isArray(entry.personBoxes)
     && entry.personBoxes.every(isFaceBox)
     && (entry.poses === undefined || (
@@ -496,7 +582,15 @@ function isValidEntry(value: unknown, expectedKey: string): value is CachedEntry
     && typeof features.poseAnalysis === 'boolean'
     && (features.eyeDetail === undefined || typeof features.eyeDetail === 'boolean')
     && (features.personFallback === undefined || typeof features.personFallback === 'boolean')
+    && (features.personFallbackExecuted === undefined || typeof features.personFallbackExecuted === 'boolean')
+    && (features.personFallbackCorroborated === undefined || typeof features.personFallbackCorroborated === 'boolean')
     && (features.sportsSafeguards === undefined || typeof features.sportsSafeguards === 'boolean')
+    && (features.fastFaceDetection === undefined || typeof features.fastFaceDetection === 'boolean')
+    && (features.fastPersonDetection === undefined || typeof features.fastPersonDetection === 'boolean')
+    && (features.faceLandmarks === undefined || typeof features.faceLandmarks === 'boolean')
+    && (features.faceDetectorId === undefined || typeof features.faceDetectorId === 'string')
+    && (features.personDetectorId === undefined || typeof features.personDetectorId === 'string')
+    && (features.detectorPipelineFingerprint === undefined || typeof features.detectorPipelineFingerprint === 'string')
     && Number.isInteger(features.embeddingLimit)
     && features.embeddingLimit >= 0;
 }
@@ -877,6 +971,10 @@ function cacheEntryHasRequiredFeatures(
   if (requiredFeatures?.personFallback && !entry.features.personFallback) return false;
   if (requiredFeatures?.eyeDetail && !entry.features.eyeDetail) return false;
   if (requiredFeatures?.sportsSafeguards && !entry.features.sportsSafeguards) return false;
+  if (requiredFeatures?.fastFaceDetection && !entry.features.fastFaceDetection) return false;
+  if (requiredFeatures?.fastPersonDetection && !entry.features.fastPersonDetection) return false;
+  if (requiredFeatures?.detectorPipelineFingerprint &&
+      entry.features.detectorPipelineFingerprint !== requiredFeatures.detectorPipelineFingerprint) return false;
   if (
     requiredFeatures?.faceMatching
     && requiredFeatures.embeddingLimit
@@ -896,6 +994,7 @@ function rehydrate(entry: CachedEntry): { result: FaceAnalysisResult; hexEmbeddi
   return {
     result: {
       boxes: entry.boxes,
+      faceLandmarks: entry.faceLandmarks,
       personBoxes: entry.personBoxes,
       embeddings,
       embeddingBoxes: entry.embeddingBoxes ?? [],
@@ -1112,6 +1211,7 @@ export async function setCachedFaceResult(
     cachedAt: Date.now(),
     analysisDepth,
     boxes: result.boxes,
+    faceLandmarks: result.faceLandmarks,
     personBoxes: result.personBoxes,
     embeddings: hexEmbeddings,
     embeddingBoxes: result.embeddingBoxes,

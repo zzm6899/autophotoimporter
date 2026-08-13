@@ -99,14 +99,16 @@ The generated-corpus rows above are controlled engineering smokes, not a
 full-app SLA: they exclude a real RAW/JPEG camera mix, renderer scene scoring,
 grouping, user interaction, and the deeper fraction selected by the cascade.
 
-## Faster detector candidates
+## Fast detector cascade
 
-YuNet, NanoDet, and YOLOX-S are pinned, verified evaluation candidates; they are
-not production defaults. On the RTX 4070, YuNet measured 1.12 ms, NanoDet 1.55
-ms, and YOLOX-S 4.40 ms p50 on DirectML. The proposed route is YuNet + NanoDet
-for the fast pass and YOLOX-S only for uncertainty/crowds. See
-[`detector-candidates.md`](detector-candidates.md) for hashes, licenses, accuracy
-references, and the mandatory labelled-corpus promotion gate.
+YuNet and NanoDet are digest-verified production fast passes; UltraFace and SSD
+MobileNet remain selective safety fallbacks. On the RTX 4070, YuNet measured
+1.12 ms and NanoDet 1.55 ms p50 at the model kernel. YOLOX-S (4.40 ms) remains
+evaluation-only. Similar-face grouping uses opt-in local SFace embeddings only
+as positive keeper evidence inside real burst/visual groups; it never names a
+person or independently rejects a photo. See
+[`detector-candidates.md`](detector-candidates.md) for hashes, licenses, HYROX
+evidence, safety gates, and benchmark limitations.
 
 On first launch and after each app update, Keptra shows a small **Check performance settings** prompt. Use **Open optimizer** to jump straight to Settings -> Workflow -> Performance. Dismissing the prompt hides it for the current app version, and it will appear again after the next update.
 

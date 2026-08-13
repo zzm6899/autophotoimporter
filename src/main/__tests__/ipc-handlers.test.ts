@@ -788,6 +788,35 @@ describe('IPC Handlers', () => {
       expect(written.previewConcurrency).toBe(12);
     });
 
+    it('refuses to enable similar-face matching without the explicit local consent marker', async () => {
+      mockReadFile.mockResolvedValue(JSON.stringify({
+        reviewFaceMatching: false,
+        faceMatchingConsentVersion: '',
+      }) as any);
+
+      await getHandler('settings:set')({}, { reviewFaceMatching: true });
+      const written = JSON.parse(String(mockWriteFile.mock.calls[0][1]));
+
+      expect(written.reviewFaceMatching).toBe(false);
+      expect(written.faceMatchingConsentVersion).toBe('');
+    });
+
+    it('enables similar-face matching only with its versioned consent marker', async () => {
+      mockReadFile.mockResolvedValue(JSON.stringify({
+        reviewFaceMatching: false,
+        faceMatchingConsentVersion: '',
+      }) as any);
+
+      await getHandler('settings:set')({}, {
+        reviewFaceMatching: true,
+        faceMatchingConsentVersion: 'local-similarity-v1',
+      });
+      const written = JSON.parse(String(mockWriteFile.mock.calls[0][1]));
+
+      expect(written.reviewFaceMatching).toBe(true);
+      expect(written.faceMatchingConsentVersion).toBe('local-similarity-v1');
+    });
+
     it('never persists a WMI display index as a DirectML device id', async () => {
       mockReadFile.mockResolvedValue(JSON.stringify({ gpuDeviceId: -1 }) as any);
 

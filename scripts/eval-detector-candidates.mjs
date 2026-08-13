@@ -230,8 +230,8 @@ async function evaluate(candidate, modelPath, provider, images, options, labels)
 async function main() {
   const options = parseArguments(process.argv.slice(2));
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-  if (manifest.schemaVersion !== 1 || manifest.status !== 'evaluation-only') {
-    throw new Error('Detector candidate manifest is not evaluation-only schema v1');
+  if (manifest.schemaVersion !== 2 || manifest.status !== 'mixed' || !manifest.productionFastPass) {
+    throw new Error('Detector manifest is not mixed schema v2');
   }
   const runnable = manifest.models.filter((candidate) =>
     candidate.decoder === 'yunet-v1' || candidate.decoder === 'nanodet-plus-gfl-v1');
@@ -254,7 +254,7 @@ async function main() {
     schemaVersion: 1,
     suite: 'keptra-detector-candidate-e2e',
     generatedAt: new Date().toISOString(),
-    safetyStatus: 'evaluation-only',
+    safetyStatus: 'mixed-production-fast-pass-and-evaluation',
     throughputTarget: {
       millionPhotosHours: [4, 8],
       requiredPhotosPerSecond: [round(1_000_000 / (8 * 3_600)), round(1_000_000 / (4 * 3_600))],
@@ -279,7 +279,12 @@ async function main() {
   };
 
   for (const candidate of candidates) {
-    const modelPath = path.join(root, 'models', 'experimental', candidate.fileName);
+    const modelPath = path.join(
+      root,
+      'models',
+      ...(candidate.bundledByDefault ? [] : ['experimental']),
+      candidate.fileName,
+    );
     console.error(`[eval] ${candidate.displayName} (${provider}) on ${images.length} real image(s)`);
     const result = await evaluate(candidate, modelPath, provider, images, { ...options, iterations }, labels);
     const { predictions, ...summary } = result;
@@ -299,6 +304,6 @@ async function main() {
 
 main().catch((error) => {
   console.error(`[eval] ${error instanceof Error ? error.message : String(error)}`);
-  console.error('Download verified weights with: npm run models -- --experimental-detectors');
+  console.error('Download production weights with `npm run models`; add --experimental-detectors for YOLOX.');
   process.exitCode = 1;
 });

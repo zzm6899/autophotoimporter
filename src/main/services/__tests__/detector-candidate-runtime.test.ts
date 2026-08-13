@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { DetectorCandidateModel } from '../detector-model-manifest';
 import {
   DetectorCandidateRuntime,
+  candidateSessionOptions,
   decodeNanoDetPersons,
   decodeYuNet,
   prepareCandidateInput,
@@ -64,6 +65,17 @@ function nanodetOutputs(size = 32): Record<string, { data: Float32Array; dims: n
 }
 
 describe('candidate detector preprocessing', () => {
+  it('uses the same explicit DirectML adapter selected by the face engine', () => {
+    expect(candidateSessionOptions('dml', 16, { dmlDeviceId: 2 })).toMatchObject({
+      executionProviders: [{ name: 'dml', deviceId: 2 }],
+      executionMode: 'sequential',
+      intraOpNumThreads: 1,
+    });
+    expect(candidateSessionOptions('dml', 16)).toMatchObject({
+      executionProviders: [{ name: 'dml' }],
+    });
+  });
+
   it('auto-orients, centre-letterboxes, and writes YuNet BGR planes from real pixels', async () => {
     const pixels = Buffer.from([
       10, 20, 30, 40, 50, 60,

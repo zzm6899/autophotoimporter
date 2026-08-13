@@ -6,7 +6,7 @@
  * Run once before building or developing:
  *
  *   npm run models
- *   npm run models -- --experimental-detectors  # evaluation only
+ *   npm run models -- --experimental-detectors  # also fetch YOLOX evaluation weight
  *
  * Models are cached in ./models/ and skipped if already present.
  * They are listed in .gitignore (large binary files, not source).
@@ -16,7 +16,9 @@
  * license and obtain any required permission before publishing a build.
  *  - version-RFB-640.onnx     ~1.6 MB  - stronger face detection (UltraFace RFB)
  *  - face_recognition_sface_2021dec.onnx ~37 MB - face embeddings (OpenCV SFace, Apache-2.0)
- *  - ssd_mobilenet_v1_12.onnx ~28 MB   - person/body detection for culling
+ *  - face_detection_yunet_2023mar.onnx ~0.2 MB - fast face/landmark pass
+ *  - object_detection_nanodet_2022nov.onnx ~3.8 MB - fast person pass
+ *  - ssd_mobilenet_v1_12.onnx ~28 MB   - selective person/body fallback
  */
 
 import { createReadStream, createWriteStream, existsSync, readFileSync } from 'node:fs';
@@ -76,29 +78,39 @@ const MODELS = [
   },
 ];
 
-function loadExperimentalDetectorModels() {
-  if (!includeExperimentalDetectors) return [];
+function loadDetectorModels() {
   const manifest = JSON.parse(readFileSync(detectorManifestPath, 'utf8'));
-  if (manifest.schemaVersion !== 1 || manifest.status !== 'evaluation-only' ||
-      manifest.goldenCorpusRequired !== true || !Array.isArray(manifest.models)) {
-    throw new Error('Invalid detector candidate manifest');
+  if (manifest.schemaVersion !== 2 || manifest.status !== 'mixed' ||
+      manifest.legacyFallbackRemovalRequiresGoldenCorpus !== true || !manifest.productionFastPass ||
+      !Array.isArray(manifest.models)) {
+    throw new Error('Invalid detector manifest');
   }
-  return manifest.models.map((model) => {
-    if (model.bundledByDefault !== false || model.redistribution !== 'candidate-approved' ||
+  const productionIds = new Set([
+    manifest.productionFastPass.faceCandidateId,
+    manifest.productionFastPass.personCandidateId,
+  ]);
+  return manifest.models.flatMap((model) => {
+    if (model.redistribution !== 'artifact-license-recorded' ||
         !/^[a-f0-9]{64}$/.test(model.sha256) || !model.sourceUrl.includes(model.sourceRevision)) {
-      throw new Error(`Detector candidate failed release-policy validation: ${model.id}`);
+      throw new Error(`Detector model failed release-policy validation: ${model.id}`);
     }
-    return {
+    const isProduction = productionIds.has(model.id);
+    if (model.bundledByDefault !== isProduction) {
+      throw new Error(`Detector model bundle policy disagrees with production policy: ${model.id}`);
+    }
+    if (!isProduction && !includeExperimentalDetectors) return [];
+    return [{
       name: model.fileName,
       url: model.sourceUrl,
       sha256: model.sha256,
-      destinationDir: EXPERIMENTAL_MODELS_DIR,
-      experimentalId: model.id,
-    };
+      destinationDir: isProduction ? MODELS_DIR : EXPERIMENTAL_MODELS_DIR,
+      detectorId: model.id,
+      production: isProduction,
+    }];
   });
 }
 
-const SELECTED_MODELS = [...MODELS, ...loadExperimentalDetectorModels()];
+const SELECTED_MODELS = [...MODELS, ...loadDetectorModels()];
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -184,7 +196,10 @@ for (const model of SELECTED_MODELS) {
     }
   }
 
-  console.log(`[dl]   ${model.name}${model.experimentalId ? ` (evaluation-only: ${model.experimentalId})` : ''}`);
+  const detectorLabel = model.detectorId
+    ? model.production ? ` (production fast pass: ${model.detectorId})` : ` (evaluation-only: ${model.detectorId})`
+    : '';
+  console.log(`[dl]   ${model.name}${detectorLabel}`);
   console.log(`       ${model.url}`);
   try {
     await download(model.url, dest);
@@ -217,5 +232,5 @@ if (!allOk) {
 }
 
 console.log(includeExperimentalDetectors
-  ? '\nAll selected models ready; detector candidates are isolated under ./models/experimental/.'
-  : '\nAll models ready in ./models/.');
+  ? '\nProduction models are ready; optional YOLOX remains isolated under ./models/experimental/.'
+  : '\nAll production models ready in ./models/.');

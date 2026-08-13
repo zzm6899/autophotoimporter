@@ -25,6 +25,7 @@ interface WorkerRequest {
   includeAnalysisSurface: boolean;
   includePersonTensors: boolean;
   includeNanoDetTensor?: boolean;
+  includeYuNetTensor?: boolean;
   analysisMaxDimension?: number;
   bitmapOrder: 'bgra' | 'rgba';
 }
@@ -216,6 +217,45 @@ async function nanoDetTensor(
   };
 }
 
+async function yuNetTensor(
+  root: ReturnType<typeof sharp>,
+  sourceWidth: number,
+  sourceHeight: number,
+) {
+  const targetWidth = 640 as const;
+  const targetHeight = 640 as const;
+  const scale = Math.min(targetWidth / sourceWidth, targetHeight / sourceHeight);
+  const resizedWidth = Math.max(1, Math.min(targetWidth, Math.round(sourceWidth * scale)));
+  const resizedHeight = Math.max(1, Math.min(targetHeight, Math.round(sourceHeight * scale)));
+  const padLeft = Math.floor((targetWidth - resizedWidth) / 2);
+  const padTop = Math.floor((targetHeight - resizedHeight) / 2);
+  const rgb = await root.clone()
+    .resize(resizedWidth, resizedHeight, { fit: 'fill', kernel: 'lanczos3' })
+    .removeAlpha()
+    .toColourspace('srgb')
+    .extend({
+      top: padTop,
+      bottom: targetHeight - resizedHeight - padTop,
+      left: padLeft,
+      right: targetWidth - resizedWidth - padLeft,
+      background: { r: 0, g: 0, b: 0 },
+    })
+    .raw()
+    .toBuffer();
+  const plane = targetWidth * targetHeight;
+  const chw = new Float32Array(plane * 3);
+  // OpenCV FaceDetectorYN consumes BGR float pixels at their 0..255 scale.
+  for (let pixel = 0; pixel < plane; pixel++) {
+    chw[pixel] = rgb[pixel * 3 + 2];
+    chw[plane + pixel] = rgb[pixel * 3 + 1];
+    chw[plane * 2 + pixel] = rgb[pixel * 3];
+  }
+  return {
+    data: chw, sourceWidth, sourceHeight, targetWidth, targetHeight,
+    resizedWidth, resizedHeight, padLeft, padTop,
+  };
+}
+
 async function prepare(request: WorkerRequest): Promise<void> {
   let currentStage = 'open';
   try {
@@ -276,8 +316,11 @@ async function prepare(request: WorkerRequest): Promise<void> {
     const nanoDetPromise = plan.nanoDet
       ? nanoDetTensor(root, sourceWidth, sourceHeight)
       : Promise.resolve(undefined);
-    const [detectorRgb, surface, fastPerson, nanoDet] = await Promise.all([
-      detectorPromise, surfacePromise, fastPersonPromise, nanoDetPromise,
+    const yuNetPromise = plan.yuNet
+      ? yuNetTensor(root, sourceWidth, sourceHeight)
+      : Promise.resolve(undefined);
+    const [detectorRgb, surface, fastPerson, nanoDet, yuNet] = await Promise.all([
+      detectorPromise, surfacePromise, fastPersonPromise, nanoDetPromise, yuNetPromise,
     ]);
 
     currentStage = 'tensor-pack';
@@ -294,6 +337,7 @@ async function prepare(request: WorkerRequest): Promise<void> {
       } : {}),
       ...(fastPerson ? { fastPerson } : {}),
       ...(nanoDet ? { nanoDet } : {}),
+      ...(yuNet ? { yuNet } : {}),
     };
     currentStage = 'complete';
     stage(request, currentStage);

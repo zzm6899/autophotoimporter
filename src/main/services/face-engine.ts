@@ -25,6 +25,7 @@
 
 import path from 'node:path';
 import { createReadStream, existsSync, statSync } from 'node:fs';
+import { stat as statFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { app } from 'electron';
 import { log } from '../logger';
@@ -44,9 +45,17 @@ import {
   type FaceModelRole,
 } from './face-model-manifest';
 import type { PoseKeypoints } from '../../shared/types';
-import { DetectorCandidateRuntime, type PreparedDetectorInput } from './detector-candidate-runtime';
-import { getDetectorCandidate } from './detector-model-manifest';
-import { getExperimentalDetectorModelStatuses } from './model-downloader';
+import {
+  DetectorCandidateRuntime,
+  type CandidateDetection,
+  type NanoDetDecodeOptions,
+  type PreparedDetectorInput,
+} from './detector-candidate-runtime';
+import {
+  PRODUCTION_FAST_DETECTOR_FINGERPRINT,
+  getProductionFastDetector,
+  type ProductionFastDetectorRole,
+} from './detector-model-manifest';
 
 // onnxruntime-node is a native addon — it must be outside the asar.
 // The forge config sets unpackDir for it. Require at runtime to avoid
@@ -109,6 +118,19 @@ export interface FaceBox {
   eyeSharpness?: number;
 }
 
+export interface FaceLandmarkPoint {
+  x: number;
+  y: number;
+}
+
+export type FaceLandmarks = readonly [
+  FaceLandmarkPoint,
+  FaceLandmarkPoint,
+  FaceLandmarkPoint,
+  FaceLandmarkPoint,
+  FaceLandmarkPoint,
+];
+
 export interface FaceAnalysisResult {
   /** Detected face bounding boxes (may be empty if no faces found) */
   boxes: FaceBox[];
@@ -121,6 +143,8 @@ export interface FaceAnalysisResult {
   embeddings: Float32Array[];
   /** Face boxes corresponding 1:1 with embeddings. */
   embeddingBoxes?: FaceBox[];
+  /** One entry per face box; null marks a legacy-detector or merged fallback box. */
+  faceLandmarks?: Array<FaceLandmarks | null>;
   /**
    * Optional per-athlete pose keypoints (MoveNet) — present only when pose
    * analysis is enabled and the model is installed. Aligned to personBoxes.
@@ -138,6 +162,21 @@ export interface FaceAnalysisResult {
     personFallback?: boolean;
     /** Sports zero-evidence/disagreement safeguards were actually evaluated. */
     sportsSafeguards?: boolean;
+    /** True only when the alternate SSD pass itself returned person evidence. */
+    personFallbackCorroborated?: boolean;
+    /** True when SSD was executed, including a valid zero-detection result. */
+    personFallbackExecuted?: boolean;
+    /** True only when the paired, digest-verified YuNet fast pass produced the face stage. */
+    fastFaceDetection?: boolean;
+    /** True only when the paired, digest-verified NanoDet fast pass produced the person stage. */
+    fastPersonDetection?: boolean;
+    /** True when at least one retained face has a complete YuNet five-point set. */
+    faceLandmarks?: boolean;
+    /** Exact detector ids used to produce the returned boxes. */
+    faceDetectorId?: string;
+    personDetectorId?: string;
+    /** Policy + model-digest identity for cache/provenance decisions. */
+    detectorPipelineFingerprint?: string;
   };
 }
 
@@ -161,6 +200,12 @@ export interface FaceAnalysisOptions {
   seed?: FaceAnalysisResult;
   /** Enables sports disagreement safeguards in the subjects pass. */
   sportsMode?: boolean;
+  /**
+   * Optional SFace shortlist. Use 1-2 for routine athlete/cosplay comparisons
+   * and 6-8 for an explicit group-completeness pass. The legacy configured
+   * limit remains the default when omitted.
+   */
+  embeddingLimit?: number;
 }
 
 export interface FaceAnalysisResumePlan {
@@ -171,12 +216,22 @@ export interface FaceAnalysisResumePlan {
   poseAnalysis: boolean;
 }
 
+function effectiveEmbeddingLimit(profile: FaceAnalysisProfile, requested?: number): number {
+  const configured = getFaceFeatureOptions(profile).embeddingLimit;
+  if (profile !== 'full' || configured <= 0 || requested === undefined) return configured;
+  return Math.max(1, Math.min(configured, Math.min(16, Math.round(requested))));
+}
+
 /** Pure resume planner used by the pipeline and regression tests. */
 export function getFaceAnalysisResumePlan(
   profile: FaceAnalysisProfile,
   seed?: FaceAnalysisResult,
+  embeddingLimit?: number,
 ): FaceAnalysisResumePlan {
-  const requested = getFaceFeatureOptions(profile);
+  const requested = {
+    ...getFaceFeatureOptions(profile),
+    embeddingLimit: effectiveEmbeddingLimit(profile, embeddingLimit),
+  };
   return {
     faceDetection: !seed,
     personDetection: requested.personDetection && seed?.features?.personDetection !== true,
@@ -231,6 +286,34 @@ function modelCandidates(fileName: string): string[] {
   }
 
   return candidates;
+}
+
+function productionFastModelCandidates(fileName: string): string[] {
+  const candidates: string[] = [];
+  if (app.isPackaged) {
+    candidates.push(path.join(app.getPath('userData'), 'models', fileName));
+    candidates.push(path.join(process.resourcesPath, 'models', fileName));
+    // Compatibility with installs made while these weights were evaluation-only.
+    candidates.push(path.join(app.getPath('userData'), 'models', 'experimental', fileName));
+    candidates.push(path.join(process.resourcesPath, 'models', 'experimental', fileName));
+  } else {
+    candidates.push(path.join(__dirname, '..', '..', '..', 'models', fileName));
+    candidates.push(path.join(process.cwd(), 'models', fileName));
+    candidates.push(path.join(__dirname, '..', '..', '..', 'models', 'experimental', fileName));
+    candidates.push(path.join(process.cwd(), 'models', 'experimental', fileName));
+  }
+  return [...new Set(candidates)];
+}
+
+async function resolveVerifiedProductionFastModelPath(
+  role: ProductionFastDetectorRole,
+): Promise<string | null> {
+  const identity = getProductionFastDetector(role);
+  for (const candidate of productionFastModelCandidates(identity.fileName)) {
+    if (!existsSync(candidate)) continue;
+    if (await verifyModelFileDigest(candidate, identity.sha256)) return candidate;
+  }
+  return null;
 }
 
 function modelPath(fileName: string): string {
@@ -323,6 +406,250 @@ let sessionLoadGeneration = 0;
 let gpuAvailable: boolean | null = null;
 let actualExecutionProvider: string | null = null; // legacy summary: mixed, dml, or cpu
 
+export type ProductionFastDetectorState = 'unchecked' | 'active' | 'legacy-fallback';
+export interface ProductionFastFailurePlan {
+  state: 'legacy-fallback';
+  failure: string;
+  retryAt: number;
+  prepareFastTensors: false;
+}
+
+/** Deterministic fail-closed route used after a promoted native circuit opens. */
+export function productionFastFailurePlan(reason: string): ProductionFastFailurePlan {
+  return {
+    state: 'legacy-fallback',
+    failure: reason,
+    retryAt: Number.POSITIVE_INFINITY,
+    prepareFastTensors: false,
+  };
+}
+
+export function shouldAttemptProductionFastRoute(
+  state: ProductionFastDetectorState,
+  retryAt: number,
+  now = Date.now(),
+): boolean {
+  return state !== 'legacy-fallback' || now >= retryAt;
+}
+
+export function canProductionFastBundleMutateRoute(
+  bundleGeneration: number,
+  currentGeneration: number,
+): boolean {
+  return bundleGeneration === currentGeneration;
+}
+
+export function productionPersonDetectorId(
+  fastCompleted: boolean,
+  fallbackCorroborated: boolean,
+): string {
+  if (!fastCompleted) return FACE_MODEL_IDENTITIES.person.fileName;
+  return `${getProductionFastDetector('person').id}${fallbackCorroborated ? '+ssd-fallback' : ''}`;
+}
+
+interface ProductionFastDetectorBundle {
+  face: DetectorCandidateRuntime;
+  person: DetectorCandidateRuntime;
+  generation: number;
+}
+let productionFastDetectorGeneration = 0;
+let productionFastDetectorPromise: Promise<ProductionFastDetectorBundle | null> | null = null;
+let productionFastDetectorState: ProductionFastDetectorState = 'unchecked';
+let productionFastDetectorFailure: string | undefined;
+let productionFastDetectorRetryAt = 0;
+let fastFaceRuns = 0;
+let fastPersonRuns = 0;
+let fastCascadeLegacyFaceFallbacks = 0;
+let fastCascadeLegacyPersonFallbacks = 0;
+let activeProductionFastInferences = 0;
+const retiredProductionFastBundles = new Set<ProductionFastDetectorBundle>();
+let retiredProductionFastRelease: Promise<void> = Promise.resolve();
+
+function releaseRetiredProductionFastBundles(): void {
+  if (activeProductionFastInferences !== 0 || retiredProductionFastBundles.size === 0) return;
+  const bundles = [...retiredProductionFastBundles];
+  retiredProductionFastBundles.clear();
+  retiredProductionFastRelease = retiredProductionFastRelease.then(async () => {
+    await Promise.all(bundles.flatMap((bundle) => [
+      bestEffortBoundedRelease('retired YuNet fast runtime', () => bundle.face.close()),
+      bestEffortBoundedRelease('retired NanoDet fast runtime', () => bundle.person.close()),
+    ]));
+  });
+}
+
+function retireProductionFastBundle(
+  bundle: ProductionFastDetectorBundle,
+  reason: string,
+): void {
+  if (retiredProductionFastBundles.has(bundle)) return;
+  retiredProductionFastBundles.add(bundle);
+  // A native promise from a disposed generation can settle after replacement
+  // sessions are already active. It may release its own bundle, but must never
+  // poison or clear the current generation's route.
+  if (!canProductionFastBundleMutateRoute(
+    bundle.generation, productionFastDetectorGeneration,
+  )) {
+    log.info('[face-engine] retired stale production fast detector generation:',
+      bundle.generation, reason);
+    releaseRetiredProductionFastBundles();
+    return;
+  }
+  const plan = productionFastFailurePlan(reason);
+  productionFastDetectorState = plan.state;
+  productionFastDetectorFailure = plan.failure;
+  productionFastDetectorRetryAt = plan.retryAt;
+  productionFastDetectorPromise = null;
+  log.warn('[face-engine] retiring production fast detector pair; later photos use UltraFace/SSD:', reason);
+  releaseRetiredProductionFastBundles();
+}
+
+async function trackProductionFastInference<T>(
+  bundle: ProductionFastDetectorBundle,
+  work: () => Promise<T>,
+): Promise<T> {
+  activeProductionFastInferences++;
+  try {
+    return await work();
+  } catch (error) {
+    retireProductionFastBundle(
+      bundle,
+      error instanceof Error ? error.message : String(error),
+    );
+    throw error;
+  } finally {
+    activeProductionFastInferences = Math.max(0, activeProductionFastInferences - 1);
+    releaseRetiredProductionFastBundles();
+  }
+}
+
+async function createProductionFastBundle(
+  provider: 'cpu' | 'dml',
+  facePath: string,
+  personPath: string,
+  generation: number,
+): Promise<ProductionFastDetectorBundle> {
+  const settled = await Promise.allSettled([
+    DetectorCandidateRuntime.create(
+      getProductionFastDetector('face'), facePath, provider, { dmlDeviceId },
+    ),
+    DetectorCandidateRuntime.create(
+      getProductionFastDetector('person'), personPath, provider, { dmlDeviceId },
+    ),
+  ]);
+  const failed = settled.find((entry): entry is PromiseRejectedResult => entry.status === 'rejected');
+  if (failed) {
+    await Promise.all(settled.map((entry, index) => entry.status === 'fulfilled'
+      ? bestEffortBoundedRelease(
+        `${index === 0 ? 'YuNet' : 'NanoDet'} partial ${provider} runtime`,
+        () => entry.value.close(),
+      )
+      : Promise.resolve()));
+    throw failed.reason;
+  }
+  const face = settled[0];
+  const person = settled[1];
+  if (face.status !== 'fulfilled' || person.status !== 'fulfilled') {
+    throw new Error('Production fast detector pair did not settle completely');
+  }
+  return { face: face.value, person: person.value, generation };
+}
+
+/**
+ * Load the promoted pair atomically. A single absent, corrupt, or unloadable
+ * weight closes the fast path for this session; YuNet and NanoDet are never
+ * silently mixed with an unverified file or partially promoted.
+ */
+async function getProductionFastDetectorBundle(): Promise<ProductionFastDetectorBundle | null> {
+  if (productionFastDetectorState === 'legacy-fallback') {
+    if (!shouldAttemptProductionFastRoute(
+      productionFastDetectorState, productionFastDetectorRetryAt,
+    )) return null;
+    productionFastDetectorState = 'unchecked';
+    productionFastDetectorPromise = null;
+  }
+  if (!productionFastDetectorPromise) {
+    const loadGeneration = productionFastDetectorGeneration;
+    const loading = (async () => {
+      let face: DetectorCandidateRuntime | null = null;
+      let person: DetectorCandidateRuntime | null = null;
+      try {
+        const [facePath, personPath] = await Promise.all([
+          resolveVerifiedProductionFastModelPath('face'),
+          resolveVerifiedProductionFastModelPath('person'),
+        ]);
+        if (!facePath || !personPath) {
+          productionFastDetectorState = 'legacy-fallback';
+          productionFastDetectorFailure = !facePath && !personPath
+            ? 'verified YuNet and NanoDet weights are unavailable'
+            : `verified ${!facePath ? 'YuNet' : 'NanoDet'} weight is unavailable`;
+          // Startup model download can finish after the first analysis. Retry
+          // availability at a bounded cadence without digesting on every photo.
+          productionFastDetectorRetryAt = Date.now() + 10_000;
+          return null;
+        }
+        const providers: Array<'cpu' | 'dml'> =
+          process.platform === 'win32' && gpuFaceAccelerationEnabled ? ['dml', 'cpu'] : ['cpu'];
+        let bundle: ProductionFastDetectorBundle | null = null;
+        let providerError: unknown;
+        let selectedProvider: 'cpu' | 'dml' = providers[0];
+        for (const provider of providers) {
+          try {
+            bundle = await createProductionFastBundle(
+              provider, facePath, personPath, loadGeneration,
+            );
+            selectedProvider = provider;
+            break;
+          } catch (error) {
+            providerError = error;
+            log.warn(`[face-engine] production fast ${provider} pair failed:`,
+              error instanceof Error ? error.message : String(error));
+          }
+        }
+        if (!bundle) throw providerError ?? new Error('No fast detector provider loaded');
+        if (loadGeneration !== productionFastDetectorGeneration) {
+          retiredProductionFastBundles.add(bundle);
+          releaseRetiredProductionFastBundles();
+          return null;
+        }
+        const loadedFace = bundle.face;
+        const loadedPerson = bundle.person;
+        face = loadedFace;
+        person = loadedPerson;
+        productionFastDetectorState = 'active';
+        productionFastDetectorFailure = undefined;
+        productionFastDetectorRetryAt = Number.POSITIVE_INFINITY;
+        log.info('[face-engine] verified production fast detector pair active:',
+          getProductionFastDetector('face').id, '+', getProductionFastDetector('person').id,
+          `(${selectedProvider})`);
+        return bundle;
+      } catch (error) {
+        if (loadGeneration !== productionFastDetectorGeneration) return null;
+        productionFastDetectorState = 'legacy-fallback';
+        productionFastDetectorFailure = error instanceof Error ? error.message : String(error);
+        // A verified weight that cannot create a runtime should remain closed
+        // until explicit engine reconfiguration/disposal, not thrash each job.
+        productionFastDetectorRetryAt = Number.POSITIVE_INFINITY;
+        const partialFace = face;
+        const partialPerson = person;
+        await Promise.all([
+          bestEffortBoundedRelease('partial YuNet fast runtime', partialFace ? () => partialFace.close() : undefined),
+          bestEffortBoundedRelease('partial NanoDet fast runtime', partialPerson ? () => partialPerson.close() : undefined),
+        ]);
+        log.warn('[face-engine] production fast detector pair unavailable; using verified legacy models:',
+          productionFastDetectorFailure);
+        return null;
+      }
+    })();
+    productionFastDetectorPromise = loading;
+    void loading.then((bundle) => {
+      if (!bundle && productionFastDetectorPromise === loading) {
+        productionFastDetectorPromise = null;
+      }
+    }, () => undefined);
+  }
+  return productionFastDetectorPromise;
+}
+
 export type FaceInferenceStage = 'detector' | 'embedder' | 'person';
 export type FaceInferenceErrorCode =
   | 'FACE_INFERENCE_TIMEOUT'
@@ -372,7 +699,10 @@ export class FaceInferenceCircuit {
 
   constructor(
     readonly stage: FaceInferenceStage,
-    private readonly maxConcurrent = Number.POSITIVE_INFINITY,
+    // One native Run per session is the safe default. DirectML explicitly
+    // forbids overlapping Run calls on the same session, and callers must opt
+    // into a real session pool (not just a larger number) to raise this.
+    private readonly maxConcurrent = 1,
   ) {}
 
   run<T>(work: () => Promise<T>, timeoutMs: number): Promise<T> {
@@ -408,6 +738,7 @@ export class FaceInferenceCircuit {
       state: this.failure ? 'open' as const : 'closed' as const,
       active: this.active,
       queued: this.queue.length,
+      maxConcurrent: this.maxConcurrent,
       failureCode: this.failure?.code,
       failure: this.failure?.detail,
     };
@@ -492,9 +823,13 @@ export class FaceInferenceCircuit {
   }
 }
 
-const detectorInferenceCircuit = new FaceInferenceCircuit('detector');
-const embedderInferenceCircuit = new FaceInferenceCircuit('embedder');
+const detectorInferenceCircuit = new FaceInferenceCircuit('detector', 1);
+// DirectML sessions reject concurrent Run calls. CPU also uses internal ORT
+// threads, so one JS call per session avoids oversubscription on either route.
+const embedderInferenceCircuit = new FaceInferenceCircuit('embedder', 1);
 const personInferenceCircuit = new FaceInferenceCircuit('person', 1);
+const fastFaceInferenceCircuit = new FaceInferenceCircuit('detector', 1);
+const fastPersonInferenceCircuit = new FaceInferenceCircuit('person', 1);
 const DETECTOR_INFERENCE_TIMEOUT_MS = 12_000;
 const PERSON_INFERENCE_TIMEOUT_MS = 12_000;
 const EMBEDDER_INFERENCE_TIMEOUT_MS = 8_000;
@@ -504,6 +839,8 @@ function resetFaceInferenceCircuits(detail: string): void {
   detectorInferenceCircuit.reset(detail);
   embedderInferenceCircuit.reset(detail);
   personInferenceCircuit.reset(detail);
+  fastFaceInferenceCircuit.reset(detail);
+  fastPersonInferenceCircuit.reset(detail);
 }
 
 async function bestEffortBoundedRelease(
@@ -892,7 +1229,9 @@ export async function disposeFaceEngine(): Promise<void> {
   sessionLoadGeneration++;
   disposeImagePreprocessSupervisor();
   const [d, e, p] = [detectorSession, embedderSession, personSession];
-  const nanoPromise = nanoDetFallbackPromise;
+  const fastPromise = productionFastDetectorPromise;
+  productionFastDetectorGeneration++;
+  const pendingRetiredFastRelease = retiredProductionFastRelease;
   // Capture and clear the current pose session before any bounded await. A
   // reconfigured analysis is allowed to start a new generation immediately;
   // delayed cleanup of the old generation must never dispose that new session.
@@ -906,25 +1245,33 @@ export async function disposeFaceEngine(): Promise<void> {
   sessionLoadPromise = null;
   gpuAvailable = null;
   actualExecutionProvider = null;
-  nanoDetFallbackPromise = null;
-  nanoDetFallbackAvailable = null;
+  productionFastDetectorPromise = null;
+  productionFastDetectorState = 'unchecked';
+  productionFastDetectorFailure = undefined;
+  productionFastDetectorRetryAt = 0;
   // Reject active/queued native callers before awaiting session.release(); a
   // release can itself wait on a stuck native invocation.
   resetFaceInferenceCircuits('face engine disposed or reconfigured');
-  // Attach cleanup to the captured candidate promise even if the bounded
-  // shutdown wait below expires. A late model load must not leak its runtime.
-  const nanoCleanupPromise = nanoPromise
-    ?.then((runtime) => bestEffortBoundedRelease(
-      'NanoDet runtime', runtime?.close ? () => runtime.close() : undefined,
-    ))
+  // Retire the captured pair instead of releasing it directly. Native ORT work
+  // cannot be cancelled after a circuit timeout/reset; the active-native count
+  // closes the pair only after the actual Run promise settles.
+  const fastCleanupPromise = fastPromise
+    ?.then((bundle) => {
+      if (bundle) {
+        retiredProductionFastBundles.add(bundle);
+        releaseRetiredProductionFastBundles();
+      }
+    })
     .catch(() => undefined) ?? Promise.resolve();
+  // A previously retired bundle may already be queued for release.
+  releaseRetiredProductionFastBundles();
   await Promise.all([
     bestEffortBoundedRelease('detector session', d?.release ? () => d.release() : undefined),
     bestEffortBoundedRelease('embedder session', e?.release ? () => e.release() : undefined),
     bestEffortBoundedRelease('person session', p?.release ? () => p.release() : undefined),
     bestEffortBoundedRelease('pose engine', () => poseDisposePromise),
     Promise.race([
-      nanoCleanupPromise,
+      Promise.all([fastCleanupPromise, pendingRetiredFastRelease]),
       new Promise<void>((resolve) => setTimeout(resolve, INFERENCE_RELEASE_TIMEOUT_MS)),
     ]),
   ]);
@@ -943,7 +1290,12 @@ export function isGpuAvailable(): boolean | null {
  * Call this at app startup so the first real analyzeFaces() call is fast.
  */
 export async function prewarmFaceEngine(): Promise<void> {
-  await loadSessions();
+  await Promise.all([loadSessions(), getProductionFastDetectorBundle()]);
+}
+
+/** Backwards-compatible capability probe used by diagnostics/IPC. */
+export async function isNanoDetSportsFallbackActive(): Promise<boolean> {
+  return (await getProductionFastDetectorBundle()) !== null;
 }
 
 /**
@@ -1149,6 +1501,31 @@ async function loadNativeImage(
 
 export type ExifOrientation = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 
+/**
+ * Bind a decoded analysis surface to the exact source file generation. Path
+ * alone is unsafe because cameras/tethering tools routinely overwrite a file
+ * in place while a review session remains open.
+ */
+export async function analysisSurfaceCacheKey(
+  imagePath: string,
+  orientation: ExifOrientation,
+): Promise<string | null> {
+  try {
+    const identity = await statFile(imagePath, { bigint: true });
+    return [
+      orientation,
+      imagePath,
+      identity.size,
+      identity.mtimeNs,
+      identity.ctimeNs,
+      identity.ino,
+    ].join(':');
+  } catch {
+    // Without a trusted identity, decode normally and deliberately skip reuse.
+    return null;
+  }
+}
+
 function safeExifOrientation(value: number): ExifOrientation {
   return Number.isInteger(value) && value >= 1 && value <= 8
     ? value as ExifOrientation
@@ -1289,6 +1666,15 @@ function mapPoseToUprightOrientation(pose: PoseKeypoints, orientationValue: numb
   };
 }
 
+function mapLandmarksToUprightOrientation(
+  landmarks: FaceLandmarks | null,
+  orientationValue: number,
+): FaceLandmarks | null {
+  if (!landmarks) return null;
+  const orientation = safeExifOrientation(orientationValue);
+  return landmarks.map((point) => storedPointToUpright(point.x, point.y, orientation)) as unknown as FaceLandmarks;
+}
+
 function resultInUprightOrientation(
   result: FaceAnalysisResult,
   orientation: ExifOrientation,
@@ -1299,8 +1685,17 @@ function resultInUprightOrientation(
     boxes: result.boxes.map((box) => mapBoxToUprightOrientation(box, orientation)),
     personBoxes: result.personBoxes.map((box) => mapBoxToUprightOrientation(box, orientation)),
     embeddingBoxes: result.embeddingBoxes?.map((box) => mapBoxToUprightOrientation(box, orientation)),
+    faceLandmarks: result.faceLandmarks?.map((points) =>
+      mapLandmarksToUprightOrientation(points, orientation)),
     poses: result.poses?.map((pose) => mapPoseToUprightOrientation(pose, orientation)),
   };
+}
+
+export function mapLandmarksToStoredForExif(
+  landmarks: FaceLandmarks,
+  orientationValue: number,
+): FaceLandmarks {
+  return mapLandmarksToStoredOrientation(landmarks, orientationValue) ?? landmarks;
 }
 
 /** Map an upright inference box back to stored-pixel coordinates for IPC/UI. */
@@ -1330,6 +1725,15 @@ function mapPoseToStoredOrientation(pose: PoseKeypoints, orientationValue: numbe
       ...uprightPointToStored(keypoint.x, keypoint.y, orientation),
     })),
   };
+}
+
+function mapLandmarksToStoredOrientation(
+  landmarks: FaceLandmarks | null,
+  orientationValue: number,
+): FaceLandmarks | null {
+  if (!landmarks) return null;
+  const orientation = safeExifOrientation(orientationValue);
+  return landmarks.map((point) => uprightPointToStored(point.x, point.y, orientation)) as unknown as FaceLandmarks;
 }
 
 /**
@@ -1481,6 +1885,21 @@ const IOU_THRESHOLD  = 0.3;
 const PERSON_THRESHOLD = 0.45;
 const PERSON_EVIDENCE_THRESHOLD = 0.18;
 const PERSON_CLASS_ID = 1;
+/**
+ * Production NanoDet decode budget. Top-K is applied independently to each of
+ * the 8/16/32 stride heads before DFL decoding/NMS, bounding the worst-case
+ * postprocess cost while retaining far more proposals than a usable photo can
+ * surface in the UI. The 0.40-0.45 band is disagreement evidence only.
+ */
+export const PRODUCTION_NANODET_DECODE_PROFILE: Readonly<Required<NanoDetDecodeOptions>> = Object.freeze({
+  scoreThreshold: 0.40,
+  nmsThreshold: 0.60,
+  preNmsTopK: 512,
+  maxDetections: 256,
+  requireTopClass: true,
+});
+const FAST_FACE_RELIABILITY_FLOOR = 0.76;
+const LEGACY_FACE_REPLACEMENT_MARGIN = 0.08;
 // Electron nativeImage.toBitmap() returns BGRA on Windows/macOS, RGBA elsewhere
 const IS_BGRA_PLATFORM = process.platform === 'win32' || process.platform === 'darwin';
 
@@ -1877,6 +2296,20 @@ export async function resolvePreprocessSource(
   };
 }
 
+export function canReuseAnalysisSurfaceForRequest(input: {
+  includeAnalysisSurface: boolean;
+  includeDetectorTensor: boolean;
+  includePersonTensors: boolean;
+  includeYuNetTensor: boolean;
+}): boolean {
+  return input.includeAnalysisSurface &&
+    !input.includeDetectorTensor &&
+    !input.includePersonTensors &&
+    // YuNet preprocessing is intentionally owned by the supervised Sharp
+    // worker; the cached nativeImage is not a substitute for its BGR tensor.
+    !input.includeYuNetTensor;
+}
+
 async function prepareImageOffMain(
   imagePath: string,
   orientation: ExifOrientation,
@@ -1884,12 +2317,20 @@ async function prepareImageOffMain(
   includeDetectorTensor: boolean,
   includePersonTensors: boolean,
   includeNanoDetTensor = false,
+  includeYuNetTensor = false,
 ): Promise<{ prepared: PreparedImagePayload; image?: Electron.NativeImage }> {
-  const surfaceKey = `${orientation}:${imagePath}`;
-  const cachedSurface = includeAnalysisSurface && !includePersonTensors && !includeDetectorTensor
+  const surfaceKey = includeAnalysisSurface
+    ? await analysisSurfaceCacheKey(imagePath, orientation)
+    : null;
+  const cachedSurface = surfaceKey && canReuseAnalysisSurfaceForRequest({
+    includeAnalysisSurface,
+    includeDetectorTensor,
+    includePersonTensors,
+    includeYuNetTensor,
+  })
     ? analysisSurfaceCache.get(surfaceKey)
     : undefined;
-  if (cachedSurface) {
+  if (cachedSurface && surfaceKey) {
     // Refresh insertion order. This is the common subjects -> seeded full path:
     // enrichment reuses the exact decoded frame and performs no second decode.
     analysisSurfaceCache.delete(surfaceKey);
@@ -1927,6 +2368,7 @@ async function prepareImageOffMain(
       includeAnalysisSurface,
       includePersonTensors,
       includeNanoDetTensor,
+      includeYuNetTensor,
       analysisMaxDimension: 1024,
     });
   } catch (error) {
@@ -1954,14 +2396,14 @@ async function prepareImageOffMain(
     );
   }
   const surfaceBytes = prepared.surfaceWidth! * prepared.surfaceHeight! * 4;
-  removeAnalysisSurface(surfaceKey);
+  if (surfaceKey) removeAnalysisSurface(surfaceKey);
   while (analysisSurfaceCache.size >= MAX_ANALYSIS_SURFACES ||
     analysisSurfaceCacheBytes + surfaceBytes > MAX_ANALYSIS_SURFACE_BYTES) {
     const oldest = analysisSurfaceCache.keys().next().value;
     if (!oldest) break;
     removeAnalysisSurface(oldest);
   }
-  if (surfaceBytes <= MAX_ANALYSIS_SURFACE_BYTES) {
+  if (surfaceKey && surfaceBytes <= MAX_ANALYSIS_SURFACE_BYTES) {
     analysisSurfaceCache.set(surfaceKey, { image, bytes: surfaceBytes });
     analysisSurfaceCacheBytes += surfaceBytes;
   }
@@ -1974,6 +2416,20 @@ interface PersonDetectionPass {
   candidateCount: number;
 }
 
+export function productionNanoDetPersonPass(
+  detections: readonly CandidateDetection[],
+): PersonDetectionPass {
+  return {
+    boxes: detections
+      .filter((detection) => detection.score >= 0.45)
+      .map((detection) => ({
+        x: detection.x, y: detection.y, width: detection.width,
+        height: detection.height, score: detection.score,
+      })),
+    candidateCount: detections.length,
+  };
+}
+
 function hasMeaningfulPersonCandidateGap(candidateCount: number, fastBoxCount: number): boolean {
   if (candidateCount <= fastBoxCount) return false;
   // With no accepted body, even one sub-threshold proposal is useful evidence
@@ -1983,6 +2439,21 @@ function hasMeaningfulPersonCandidateGap(candidateCount: number, fastBoxCount: n
   // two additional proposals; face/body disagreement and tiny-body safeguards
   // below still independently trigger refinement.
   return fastBoxCount === 0 || candidateCount >= fastBoxCount + 2;
+}
+
+/** Deterministic selective-fallback gate shared by YuNet and NanoDet. */
+export function shouldUseLegacyDetectorFallback(
+  boxes: readonly FaceBox[],
+  confidenceFloor: number,
+): boolean {
+  if (boxes.length === 0) return true;
+  if (!boxes.some((box) => box.score >= confidenceFloor)) return true;
+  // A cropped edge subject is a useful disagreement only in a sparse frame.
+  // In crowds/conventions, one tiny background edge box is routine and must
+  // not force a legacy pass (or discard landmarks) for every good face/body.
+  return boxes.length <= 2 && boxes.some((box) =>
+    box.x < 0.01 || box.y < 0.01 ||
+    box.x + box.width > 0.99 || box.y + box.height > 0.99);
 }
 
 export function shouldRefinePersonDetection(input: {
@@ -2036,64 +2507,8 @@ function personRefinementReason(input: {
   return 'group-or-aspect-evidence';
 }
 
-let nanoDetFallbackPromise: Promise<DetectorCandidateRuntime | null> | null = null;
-let nanoDetFallbackAvailable: boolean | null = null;
-
-async function getNanoDetFallback(): Promise<DetectorCandidateRuntime | null> {
-  if (!nanoDetFallbackPromise) {
-    nanoDetFallbackPromise = (async () => {
-      if (process.env.KEPTRA_ENABLE_EXPERIMENTAL_NANODET_FALLBACK !== '1') {
-        nanoDetFallbackAvailable = false;
-        return null;
-      }
-      const status = (await getExperimentalDetectorModelStatuses())
-        .find((entry) => entry.id === 'nanodet-2022nov-fp32');
-      if (status?.state !== 'verified' || !status.modelPath) {
-        nanoDetFallbackAvailable = false;
-        return null;
-      }
-      try {
-        const runtime = await DetectorCandidateRuntime.create(
-          getDetectorCandidate('nanodet-2022nov-fp32'),
-          status.modelPath,
-          process.platform === 'win32' ? 'dml' : 'cpu',
-        );
-        nanoDetFallbackAvailable = true;
-        return runtime;
-      } catch (error) {
-        nanoDetFallbackAvailable = false;
-        log.warn('[face-engine] optional NanoDet sports fallback unavailable:',
-          error instanceof Error ? error.message : String(error));
-        return null;
-      }
-    })();
-  }
-  return nanoDetFallbackPromise;
-}
-
-async function isNanoDetFallbackInstalled(): Promise<boolean> {
-  if (process.env.KEPTRA_ENABLE_EXPERIMENTAL_NANODET_FALLBACK !== '1') {
-    nanoDetFallbackAvailable = false;
-    return false;
-  }
-  if (nanoDetFallbackAvailable !== null) return nanoDetFallbackAvailable;
-  const status = (await getExperimentalDetectorModelStatuses())
-    .find((entry) => entry.id === 'nanodet-2022nov-fp32');
-  nanoDetFallbackAvailable = status?.state === 'verified' && !!status.modelPath;
-  return nanoDetFallbackAvailable;
-}
-
-/** True only for an explicit evaluation opt-in backed by a verified weight. */
-export async function isNanoDetSportsFallbackActive(): Promise<boolean> {
-  return isNanoDetFallbackInstalled();
-}
-
-async function runNanoDetSportsFallback(prepared?: PreparedImagePayload['nanoDet']): Promise<FaceBox[]> {
-  if (!prepared) throw new Error('preprocess worker omitted requested NanoDet tensor');
-  const runtime = await getNanoDetFallback();
-  if (!runtime) throw new Error('verified NanoDet fallback runtime did not load');
-  nanoDetFallbackRuns++;
-  const input: PreparedDetectorInput = {
+function candidateInput(prepared: NonNullable<PreparedImagePayload['nanoDet']>): PreparedDetectorInput {
+  return {
     data: prepared.data,
     dimensions: [1, 3, 416, 416],
     transform: {
@@ -2107,13 +2522,119 @@ async function runNanoDetSportsFallback(prepared?: PreparedImagePayload['nanoDet
       padTop: prepared.padTop,
     },
   };
-  const result = await runtime.runPrepared(input);
-  const boxes = result.detections.map((detection) => ({
-    x: detection.x, y: detection.y, width: detection.width,
-    height: detection.height, score: detection.score,
-  }));
-  if (boxes.length > 0) nanoDetFallbackHits++;
-  return boxes;
+}
+
+async function runNanoDetFastPass(
+  bundle: ProductionFastDetectorBundle,
+  prepared?: PreparedImagePayload['nanoDet'],
+): Promise<PersonDetectionPass> {
+  if (!prepared) throw new Error('preprocess worker omitted requested NanoDet tensor');
+  fastPersonRuns++;
+  const result = await fastPersonInferenceCircuit.run(
+    () => trackProductionFastInference(
+      bundle,
+      // Retain the narrow 0.40-0.45 band only as disagreement evidence. Lower
+      // anchors were extremely noisy in crowds (and forced SSD on most frames);
+      // evidence detections never enter returned personBoxes directly.
+      () => bundle.person.runPrepared(candidateInput(prepared), {
+        nanoDet: PRODUCTION_NANODET_DECODE_PROFILE,
+      }),
+    ),
+    PERSON_INFERENCE_TIMEOUT_MS,
+  ).catch((error) => {
+    retireProductionFastBundle(bundle, error instanceof Error ? error.message : String(error));
+    throw error;
+  });
+  return productionNanoDetPersonPass(result.detections);
+}
+
+export interface FastFacePass {
+  boxes: FaceBox[];
+  landmarks: Array<FaceLandmarks | null>;
+}
+
+export function mergeFastFacesWithLegacy(
+  fast: FastFacePass,
+  legacy: readonly FaceBox[],
+): FastFacePass {
+  const boxes = [...fast.boxes];
+  const landmarks = [...fast.landmarks];
+  for (const candidate of legacy) {
+    const rawCandidate: RawBox = {
+      x1: candidate.x, y1: candidate.y,
+      x2: candidate.x + candidate.width, y2: candidate.y + candidate.height,
+      score: candidate.score,
+    };
+    let overlappingIndex = -1;
+    let strongestOverlap = IOU_THRESHOLD;
+    for (let index = 0; index < boxes.length; index++) {
+      const box = boxes[index];
+      const overlap = iou(rawCandidate, {
+        x1: box.x, y1: box.y,
+        x2: box.x + box.width, y2: box.y + box.height,
+        score: box.score,
+      });
+      if (overlap > strongestOverlap) {
+        strongestOverlap = overlap;
+        overlappingIndex = index;
+      }
+    }
+    if (overlappingIndex < 0) {
+      boxes.push(candidate);
+      landmarks.push(null);
+      continue;
+    }
+
+    const fastBox = boxes[overlappingIndex];
+    // YuNet landmarks are valuable for SFace, so a small confidence difference
+    // is not enough to throw them away. But a weak YuNet proposal must not win
+    // merely by arriving first when UltraFace independently reports the same
+    // face with materially stronger evidence.
+    if (fastBox.score < FAST_FACE_RELIABILITY_FLOOR &&
+      candidate.score >= fastBox.score + LEGACY_FACE_REPLACEMENT_MARGIN) {
+      boxes[overlappingIndex] = candidate;
+      landmarks[overlappingIndex] = null;
+    }
+  }
+  return { boxes, landmarks };
+}
+
+async function runYuNetFastPass(
+  bundle: ProductionFastDetectorBundle,
+  prepared?: PreparedImagePayload['yuNet'],
+): Promise<FastFacePass> {
+  if (!prepared) throw new Error('preprocess worker omitted requested YuNet tensor');
+  fastFaceRuns++;
+  const result = await fastFaceInferenceCircuit.run(
+    () => trackProductionFastInference(bundle, () => bundle.face.runPrepared({
+      data: prepared.data,
+      dimensions: [1, 3, 640, 640],
+      transform: {
+        sourceWidth: prepared.sourceWidth,
+        sourceHeight: prepared.sourceHeight,
+        targetWidth: prepared.targetWidth,
+        targetHeight: prepared.targetHeight,
+        resizedWidth: prepared.resizedWidth,
+        resizedHeight: prepared.resizedHeight,
+        padLeft: prepared.padLeft,
+        padTop: prepared.padTop,
+      },
+    })), DETECTOR_INFERENCE_TIMEOUT_MS,
+  ).catch((error) => {
+    retireProductionFastBundle(bundle, error instanceof Error ? error.message : String(error));
+    throw error;
+  });
+  const withLandmarks = result.detections.filter(
+    (detection): detection is CandidateDetection & { landmarks: FaceLandmarks } =>
+      Array.isArray(detection.landmarks) && detection.landmarks.length === 5,
+  );
+  return {
+    boxes: withLandmarks.map((detection) => ({
+      x: detection.x, y: detection.y, width: detection.width,
+      height: detection.height, score: detection.score,
+    })),
+    landmarks: withLandmarks.map((detection) => detection.landmarks),
+  };
 }
 
 function mergePersonBoxes(...groups: FaceBox[][]): FaceBox[] {
@@ -2286,7 +2807,100 @@ export function pixelsToSFaceCHW(
   return pixelsToCHW(pixels, width, height, SFACE_MEAN, SFACE_STD);
 }
 
-async function embedFace(imagePath: string, box: FaceBox, cachedImg?: Electron.NativeImage): Promise<Float32Array> {
+const SFACE_REFERENCE_LANDMARKS: FaceLandmarks = [
+  { x: 38.2946 / EMBED_W, y: 51.6963 / EMBED_H },
+  { x: 73.5318 / EMBED_W, y: 51.5014 / EMBED_H },
+  { x: 56.0252 / EMBED_W, y: 71.7366 / EMBED_H },
+  { x: 41.5493 / EMBED_W, y: 92.3655 / EMBED_H },
+  { x: 70.7299 / EMBED_W, y: 92.2041 / EMBED_H },
+];
+
+/**
+ * Warp an upright source bitmap to OpenCV SFace's canonical five-point crop.
+ * The closed-form least-squares similarity transform avoids a native resize
+ * round-trip and preserves the platform's existing RGBA/BGRA channel order.
+ */
+export function alignFaceBitmapForSFace(
+  source: Uint8Array,
+  sourceWidth: number,
+  sourceHeight: number,
+  landmarks: FaceLandmarks,
+): Buffer {
+  if (sourceWidth < 2 || sourceHeight < 2 || source.length < sourceWidth * sourceHeight * 4) {
+    throw new Error('Invalid source bitmap for SFace alignment');
+  }
+  const reference = SFACE_REFERENCE_LANDMARKS.map((point) => ({
+    x: point.x * EMBED_W,
+    y: point.y * EMBED_H,
+  }));
+  const measured = landmarks.map((point) => ({
+    x: point.x * sourceWidth,
+    y: point.y * sourceHeight,
+  }));
+  const referenceCenter = reference.reduce(
+    (sum, point) => ({ x: sum.x + point.x / 5, y: sum.y + point.y / 5 }),
+    { x: 0, y: 0 },
+  );
+  const measuredCenter = measured.reduce(
+    (sum, point) => ({ x: sum.x + point.x / 5, y: sum.y + point.y / 5 }),
+    { x: 0, y: 0 },
+  );
+  let denominator = 0;
+  let real = 0;
+  let imaginary = 0;
+  for (let index = 0; index < 5; index++) {
+    const dx = reference[index].x - referenceCenter.x;
+    const dy = reference[index].y - referenceCenter.y;
+    const sx = measured[index].x - measuredCenter.x;
+    const sy = measured[index].y - measuredCenter.y;
+    denominator += dx * dx + dy * dy;
+    real += dx * sx + dy * sy;
+    imaginary += dx * sy - dy * sx;
+  }
+  if (!Number.isFinite(denominator) || denominator < 1e-6) {
+    throw new Error('Degenerate SFace reference landmarks');
+  }
+  real /= denominator;
+  imaginary /= denominator;
+  if (!Number.isFinite(real) || !Number.isFinite(imaginary) ||
+      Math.hypot(real, imaginary) < 0.05) {
+    throw new Error('Degenerate YuNet landmarks for SFace alignment');
+  }
+
+  const output = Buffer.allocUnsafe(EMBED_W * EMBED_H * 4);
+  for (let y = 0; y < EMBED_H; y++) {
+    for (let x = 0; x < EMBED_W; x++) {
+      const dx = x - referenceCenter.x;
+      const dy = y - referenceCenter.y;
+      const sourceX = measuredCenter.x + real * dx - imaginary * dy;
+      const sourceY = measuredCenter.y + imaginary * dx + real * dy;
+      const left = Math.max(0, Math.min(sourceWidth - 1, Math.floor(sourceX)));
+      const top = Math.max(0, Math.min(sourceHeight - 1, Math.floor(sourceY)));
+      const right = Math.min(sourceWidth - 1, left + 1);
+      const bottom = Math.min(sourceHeight - 1, top + 1);
+      const fx = clamp01(sourceX - left);
+      const fy = clamp01(sourceY - top);
+      const target = (y * EMBED_W + x) * 4;
+      for (let channel = 0; channel < 4; channel++) {
+        const topValue = source[(top * sourceWidth + left) * 4 + channel] * (1 - fx) +
+          source[(top * sourceWidth + right) * 4 + channel] * fx;
+        const bottomValue = source[(bottom * sourceWidth + left) * 4 + channel] * (1 - fx) +
+          source[(bottom * sourceWidth + right) * 4 + channel] * fx;
+        output[target + channel] = Math.max(0, Math.min(255, Math.round(
+          topValue * (1 - fy) + bottomValue * fy,
+        )));
+      }
+    }
+  }
+  return output;
+}
+
+async function embedFace(
+  imagePath: string,
+  box: FaceBox,
+  cachedImg?: Electron.NativeImage,
+  landmarks?: FaceLandmarks | null,
+): Promise<Float32Array> {
   const session = embedderSession;
   if (!session) throw new Error('Face engine not loaded');
 
@@ -2294,23 +2908,27 @@ async function embedFace(imagePath: string, box: FaceBox, cachedImg?: Electron.N
   let img = cachedImg ?? await loadNativeImage(imagePath);
   const { width: imgW, height: imgH } = img.getSize();
 
-  // Convert normalised box → pixel coords (clamped)
-  const padX = box.width * 0.12;
-  const padY = box.height * 0.16;
-  const left = clamp01(box.x - padX);
-  const top = clamp01(box.y - padY);
-  const right = clamp01(box.x + box.width + padX);
-  const bottom = clamp01(box.y + box.height + padY);
-  const cropX = Math.max(0, Math.round(left * imgW));
-  const cropY = Math.max(0, Math.round(top * imgH));
-  const cropW = Math.min(imgW - cropX, Math.max(1, Math.round((right - left) * imgW)));
-  const cropH = Math.min(imgH - cropY, Math.max(1, Math.round((bottom - top) * imgH)));
-  if (cropW < 2 || cropH < 2) throw new Error('Invalid face crop');
-
-  img = img.crop({ x: cropX, y: cropY, width: cropW, height: cropH });
-  img = img.resize({ width: EMBED_W, height: EMBED_H });
-
-  const bitmap = (img.toBitmap?.() ?? img.getBitmap()) as unknown as Buffer;
+  let bitmap: Buffer;
+  if (landmarks) {
+    const sourceBitmap = (img.toBitmap?.() ?? img.getBitmap()) as unknown as Buffer;
+    bitmap = alignFaceBitmapForSFace(sourceBitmap, imgW, imgH, landmarks);
+  } else {
+    // Verified legacy fallback: preserve the established padded box crop.
+    const padX = box.width * 0.12;
+    const padY = box.height * 0.16;
+    const left = clamp01(box.x - padX);
+    const top = clamp01(box.y - padY);
+    const right = clamp01(box.x + box.width + padX);
+    const bottom = clamp01(box.y + box.height + padY);
+    const cropX = Math.max(0, Math.round(left * imgW));
+    const cropY = Math.max(0, Math.round(top * imgH));
+    const cropW = Math.min(imgW - cropX, Math.max(1, Math.round((right - left) * imgW)));
+    const cropH = Math.min(imgH - cropY, Math.max(1, Math.round((bottom - top) * imgH)));
+    if (cropW < 2 || cropH < 2) throw new Error('Invalid face crop');
+    img = img.crop({ x: cropX, y: cropY, width: cropW, height: cropH });
+    img = img.resize({ width: EMBED_W, height: EMBED_H });
+    bitmap = (img.toBitmap?.() ?? img.getBitmap()) as unknown as Buffer;
+  }
   const floats = pixelsToSFaceCHW(bitmap, EMBED_W, EMBED_H);
   const tensor = new (getOrt().Tensor)('float32', floats, [1, 3, EMBED_H, EMBED_W]);
 
@@ -2352,8 +2970,6 @@ let _detectTotalMs = 0;
 let _embedTotalMs = 0;
 let _personRefinementCount = 0;
 const personRefinementReasons = new Map<string, number>();
-let nanoDetFallbackRuns = 0;
-let nanoDetFallbackHits = 0;
 
 // Per-image inference timeout. Preprocessing itself has a stronger hard limit:
 // its native worker process is destroyed and replaced. This outer deadline is
@@ -2400,8 +3016,39 @@ function analysisSingleflightKey(
   orientation?: ExifOrientation,
   seed?: FaceAnalysisResult,
   sportsMode = false,
+  embeddingLimit?: number,
 ): string {
-  const features = getFaceFeatureOptions(profile);
+  const features = {
+    ...getFaceFeatureOptions(profile),
+    embeddingLimit: effectiveEmbeddingLimit(profile, embeddingLimit),
+  };
+  const seedFeatures = seed?.features;
+  const seedFingerprint = seed ? JSON.stringify({
+    boxes: seed.boxes.length,
+    persons: seed.personBoxes.length,
+    embeddings: seed.embeddings.length,
+    embeddingBoxes: seed.embeddingBoxes?.length ?? 0,
+    poses: seed.poses?.length ?? 0,
+    landmarks: seed.faceLandmarks?.length ?? 0,
+    landmarkSets: seed.faceLandmarks?.filter(Boolean).length ?? 0,
+    features: seedFeatures ? {
+      faceMatching: seedFeatures.faceMatching,
+      personDetection: seedFeatures.personDetection,
+      poseAnalysis: seedFeatures.poseAnalysis,
+      embeddingLimit: seedFeatures.embeddingLimit,
+      eyeDetail: seedFeatures.eyeDetail,
+      personFallback: seedFeatures.personFallback,
+      personFallbackExecuted: seedFeatures.personFallbackExecuted,
+      personFallbackCorroborated: seedFeatures.personFallbackCorroborated,
+      sportsSafeguards: seedFeatures.sportsSafeguards,
+      fastFaceDetection: seedFeatures.fastFaceDetection,
+      fastPersonDetection: seedFeatures.fastPersonDetection,
+      faceLandmarks: seedFeatures.faceLandmarks,
+      faceDetectorId: seedFeatures.faceDetectorId,
+      personDetectorId: seedFeatures.personDetectorId,
+      detectorPipelineFingerprint: seedFeatures.detectorPipelineFingerprint,
+    } : null,
+  }) : 'no-seed';
   return JSON.stringify([
     imagePath,
     FACE_PIPELINE_FINGERPRINT,
@@ -2411,7 +3058,7 @@ function analysisSingleflightKey(
     features.personDetection ? 'person' : 'no-person',
     features.poseAnalysis ? 'pose' : 'no-pose',
     `embed:${features.embeddingLimit}`,
-    seed ? `seed:${seed.boxes.length}:${seed.personBoxes.length}:${seed.features?.embeddingLimit ?? 0}` : 'no-seed',
+    seedFingerprint,
     sportsMode ? 'sports' : 'general',
   ]);
 }
@@ -2424,10 +3071,14 @@ export function analyzeFaces(
   if (quarantined) return Promise.reject(quarantined);
   const profile = options.profile ?? 'full';
   const orientation = options.orientation;
-  const key = analysisSingleflightKey(imagePath, profile, orientation, options.seed, options.sportsMode);
+  const key = analysisSingleflightKey(
+    imagePath, profile, orientation, options.seed, options.sportsMode, options.embeddingLimit,
+  );
   let operation = analysisInFlight.get(key);
   if (!operation) {
-    operation = _analyzeFacesInner(imagePath, profile, orientation, options.seed, options.sportsMode);
+    operation = _analyzeFacesInner(
+      imagePath, profile, orientation, options.seed, options.sportsMode, options.embeddingLimit,
+    );
     analysisInFlight.set(key, operation);
     const cleanup = () => {
       if (analysisInFlight.get(key) === operation) analysisInFlight.delete(key);
@@ -2464,6 +3115,8 @@ function resultInStoredOrientation(
     boxes: result.boxes.map((box) => mapBoxToStoredOrientation(box, orientation)),
     personBoxes: result.personBoxes.map((box) => mapBoxToStoredOrientation(box, orientation)),
     embeddingBoxes: result.embeddingBoxes?.map((box) => mapBoxToStoredOrientation(box, orientation)),
+    faceLandmarks: result.faceLandmarks?.map((points) =>
+      mapLandmarksToStoredOrientation(points, orientation)),
     poses: result.poses?.map((pose) => mapPoseToStoredOrientation(pose, orientation)),
   };
 }
@@ -2476,20 +3129,23 @@ export function getFaceEngineRuntimeDiagnostics() {
       detector: detectorInferenceCircuit.diagnostics(),
       embedder: embedderInferenceCircuit.diagnostics(),
       person: personInferenceCircuit.diagnostics(),
+      fastFace: fastFaceInferenceCircuit.diagnostics(),
+      fastPerson: fastPersonInferenceCircuit.diagnostics(),
     },
     personRefinements: {
       total: _personRefinementCount,
       reasons: Object.fromEntries(personRefinementReasons),
     },
-    nanoDetSportsFallback: {
-      explicitOptIn: process.env.KEPTRA_ENABLE_EXPERIMENTAL_NANODET_FALLBACK === '1',
-      installedAndLoaded: nanoDetFallbackAvailable === true,
-      checked: nanoDetFallbackAvailable !== null,
-      runs: nanoDetFallbackRuns,
-      hits: nanoDetFallbackHits,
-      cacheNote: nanoDetFallbackAvailable === true
-        ? 'Evaluation-only detections are telemetry and never merged into production person boxes.'
-        : undefined,
+    productionFastDetectors: {
+      state: productionFastDetectorState,
+      fingerprint: PRODUCTION_FAST_DETECTOR_FINGERPRINT,
+      faceModel: getProductionFastDetector('face').id,
+      personModel: getProductionFastDetector('person').id,
+      faceRuns: fastFaceRuns,
+      personRuns: fastPersonRuns,
+      legacyFaceFallbacks: fastCascadeLegacyFaceFallbacks,
+      legacyPersonFallbacks: fastCascadeLegacyPersonFallbacks,
+      failure: productionFastDetectorFailure,
     },
   };
 }
@@ -2500,6 +3156,7 @@ async function _analyzeFacesInner(
   orientationHint?: ExifOrientation,
   seed?: FaceAnalysisResult,
   sportsMode = false,
+  embeddingLimit?: number,
 ): Promise<FaceAnalysisResult> {
   await loadSessions();
   const t0 = Date.now();
@@ -2523,8 +3180,11 @@ async function _analyzeFacesInner(
   };
 
   try {
-    const requestedFeatures = getFaceFeatureOptions(profile);
-    const resumePlan = getFaceAnalysisResumePlan(profile, seed);
+    const requestedFeatures = {
+      ...getFaceFeatureOptions(profile),
+      embeddingLimit: effectiveEmbeddingLimit(profile, embeddingLimit),
+    };
+    const resumePlan = getFaceAnalysisResumePlan(profile, seed, embeddingLimit);
     // Resolve the tiny EXIF tag first, then send every native pixel operation
     // to a supervised utility process. The returned 1024px bitmap is a single
     // shared surface for eyes, identity crops, person boxes and pose.
@@ -2533,12 +3193,28 @@ async function _analyzeFacesInner(
       orientationHint !== undefined ? Promise.resolve(orientationHint) : readExifOrientation(imagePath));
     const orientation = safeExifOrientation(orientationValue);
     const seedUpright = seed ? resultInUprightOrientation(seed, orientation) : undefined;
+    const fastDetectorBundle = await getProductionFastDetectorBundle();
+    const fastRouteActive = fastDetectorBundle !== null;
+    const seedFastRouteMatches = !seedUpright || (
+      seedUpright.features?.fastFaceDetection === fastRouteActive &&
+      (!fastRouteActive ||
+        seedUpright.features?.detectorPipelineFingerprint === PRODUCTION_FAST_DETECTOR_FINGERPRINT)
+    );
+    const seedFastPersonRouteMatches = !seedUpright || !requestedFeatures.personDetection || (
+      seedUpright.features?.fastPersonDetection === fastRouteActive &&
+      (!fastRouteActive ||
+        seedUpright.features?.detectorPipelineFingerprint === PRODUCTION_FAST_DETECTOR_FINGERPRINT)
+    );
     const seedHasPersonStage = seedUpright?.features?.personDetection === true;
-    const shouldRunPerson = resumePlan.personDetection;
-    const shouldRunFaceDetector = resumePlan.faceDetection;
+    // Defend against a stale seed even if an upstream cache caller forgets to
+    // require route provenance. Installing/removing the promoted pair must
+    // actively upgrade/downgrade boxes instead of silently reusing the other
+    // detector route.
+    const shouldRunPerson = resumePlan.personDetection || !seedFastPersonRouteMatches;
+    const shouldRunFaceDetector = resumePlan.faceDetection || !seedFastRouteMatches;
     const needsAnalysisSurface = profile !== 'detect';
     const sportsSafeguards = sportsMode || requestedFeatures.poseAnalysis;
-    const nanoDetActive = sportsSafeguards && await isNanoDetFallbackInstalled();
+    const nanoDetActive = fastDetectorBundle !== null;
     const fallbackResumeNeeded = shouldResumePersonFallback(
       seedUpright, sportsSafeguards, nanoDetActive,
     );
@@ -2552,42 +3228,131 @@ async function _analyzeFacesInner(
         imagePath,
         orientation,
         needsAnalysisSurface,
-        shouldRunFaceDetector,
-        shouldRunPerson,
+        shouldRunFaceDetector && fastDetectorBundle === null,
+        shouldRunPerson && fastDetectorBundle === null,
         includeNanoDetTensor,
+        fastDetectorBundle !== null && shouldRunFaceDetector,
       ));
     decodeMs = Date.now() - decodeStart;
     await yieldToEventLoop();
 
     let boxes: FaceBox[] = seedUpright?.boxes ? [...seedUpright.boxes] : [];
+    let faceLandmarks: Array<FaceLandmarks | null> = seedUpright?.faceLandmarks
+      ? [...seedUpright.faceLandmarks]
+      : boxes.map(() => null);
+    let fastFaceCompleted = !shouldRunFaceDetector &&
+      seedUpright?.features?.fastFaceDetection === true;
+    let fastPersonCompleted = !shouldRunPerson &&
+      seedUpright?.features?.fastPersonDetection === true;
+    let legacyFaceUsed = false;
+    let legacyPersonUsed = false;
+    let legacyPersonCorroborated = !shouldRunPerson &&
+      seedUpright?.features?.personFallbackCorroborated === true;
     let fastPersons: PersonDetectionPass = seedHasPersonStage
       ? { boxes: [...(seedUpright?.personBoxes ?? [])], candidateCount: seedUpright?.personBoxes.length ?? 0 }
       : { boxes: [], candidateCount: 0 };
     const detectStart = Date.now();
     const poseRequested = requestedFeatures.poseAnalysis;
-    const canOverlapDetectors = shouldRunPerson &&
-      providerDiagnostics.detector.provider === 'dml' &&
-      providerDiagnostics.person.provider === 'cpu';
+    let deferredLegacyFaceTensor: Promise<Float32Array> | null = null;
+    const legacyFaceTensor = (): Promise<Float32Array> => {
+      if (prepared.detectorCHW.length > 0) return Promise.resolve(prepared.detectorCHW);
+      if (img) {
+        const pixels = resizeToPixels(img, DETECTOR_W, DETECTOR_H);
+        return Promise.resolve(pixelsToCHW(pixels.data, pixels.width, pixels.height, DET_MEAN, DET_STD));
+      }
+      if (!deferredLegacyFaceTensor) {
+        // Detector-only previews omit the 1024px surface. A selective fallback
+        // pays for one supervised legacy tensor rather than packing it for
+        // every successful YuNet frame.
+        deferredLegacyFaceTensor = prepareImageOffMain(
+          imagePath, orientation, false, true, false, false, false,
+        ).then((fallback) => fallback.prepared.detectorCHW);
+      }
+      return deferredLegacyFaceTensor;
+    };
+    const runLegacyFace = async (): Promise<FaceBox[]> => {
+      legacyFaceUsed = true;
+      fastCascadeLegacyFaceFallbacks++;
+      return runFaceDetectorTensor(await legacyFaceTensor());
+    };
+    const runLegacyPerson = async (): Promise<PersonDetectionPass> => {
+      legacyPersonUsed = true;
+      fastCascadeLegacyPersonFallbacks++;
+      const tensor = prepared.fastPerson ?? (img ? personTensorFromSurface(img, 320) : undefined);
+      if (!tensor) throw new Error('person fallback has no decoded analysis surface');
+      const result = await detectPersonsFromPrepared(tensor);
+      legacyPersonCorroborated ||= result.boxes.length > 0;
+      return result;
+    };
+    const runFastFace = async (): Promise<FastFacePass> => {
+      if (!fastDetectorBundle) {
+        const legacy = await runLegacyFace();
+        return { boxes: legacy, landmarks: legacy.map(() => null) };
+      }
+      try {
+        const fast = await runYuNetFastPass(fastDetectorBundle, prepared.yuNet);
+        // A zero/weak/cropped-edge result is not final culling evidence. Pay for
+        // the verified UltraFace pass and merge it; keep landmarks only when
+        // the box list remains the direct YuNet result so alignment is exact.
+        const needsFallback = shouldUseLegacyDetectorFallback(
+          fast.boxes, FAST_FACE_RELIABILITY_FLOOR,
+        );
+        if (needsFallback) {
+          fastFaceCompleted = true;
+          return mergeFastFacesWithLegacy(fast, await runLegacyFace());
+        }
+        fastFaceCompleted = true;
+        return fast;
+      } catch (error) {
+        if (error instanceof FaceInferenceCircuitError) {
+          log.warn('[face-engine] YuNet fast pass failed; using UltraFace:', error.message);
+        }
+        const legacy = await runLegacyFace();
+        return { boxes: legacy, landmarks: legacy.map(() => null) };
+      }
+    };
+    const runFastPerson = async (): Promise<PersonDetectionPass> => {
+      if (!fastDetectorBundle) return runLegacyPerson();
+      try {
+        const fast = await runNanoDetFastPass(fastDetectorBundle, prepared.nanoDet);
+        const needsFallback = shouldUseLegacyDetectorFallback(fast.boxes, 0.48);
+        if (needsFallback) {
+          fastPersonCompleted = true;
+          const legacy = await runLegacyPerson();
+          return {
+            boxes: mergePersonBoxes(fast.boxes, legacy.boxes),
+            candidateCount: Math.max(fast.candidateCount, legacy.candidateCount),
+          };
+        }
+        fastPersonCompleted = true;
+        return fast;
+      } catch (error) {
+        log.warn('[face-engine] NanoDet fast pass failed; using SSD:',
+          error instanceof Error ? error.message : String(error));
+        return runLegacyPerson();
+      }
+    };
     if (!shouldRunFaceDetector && !shouldRunPerson) {
       // A subjects/full seed makes detection a zero-cost feature enrichment.
     } else if (profile === 'detect') {
-      boxes = await runRequiredStage('face detection', () =>
-        runFaceDetectorTensor(prepared.detectorCHW));
-    } else if (canOverlapDetectors) {
-      [boxes, fastPersons] = await runRequiredStage('detection', () => Promise.all([
-        shouldRunFaceDetector ? runFaceDetectorTensor(prepared.detectorCHW) : Promise.resolve(boxes),
-        prepared.fastPerson
-          ? detectPersonsFromPrepared(prepared.fastPerson)
-          : Promise.reject(new Error('worker omitted fast person tensor')),
+      const face = await runRequiredStage('face detection', runFastFace);
+      boxes = face.boxes;
+      faceLandmarks = face.landmarks;
+    } else if (shouldRunFaceDetector && shouldRunPerson) {
+      const [face, person] = await runRequiredStage('detection', () => Promise.all([
+        runFastFace(), runFastPerson(),
       ]));
+      boxes = face.boxes;
+      faceLandmarks = face.landmarks;
+      fastPersons = person;
     } else {
       if (shouldRunFaceDetector) {
-        boxes = await runRequiredStage('face detection', () => runFaceDetectorTensor(prepared.detectorCHW));
+        const face = await runRequiredStage('face detection', runFastFace);
+        boxes = face.boxes;
+        faceLandmarks = face.landmarks;
       }
       if (shouldRunPerson) {
-        fastPersons = await runRequiredStage('person detection', () => prepared.fastPerson
-          ? detectPersonsFromPrepared(prepared.fastPerson)
-          : Promise.reject(new Error('worker omitted fast person tensor')));
+        fastPersons = await runRequiredStage('person detection', runFastPerson);
       }
     }
 
@@ -2615,7 +3380,10 @@ async function _analyzeFacesInner(
         // Only the evidence-triggered minority pays for the 640 tensor. It is
         // derived from the retained 1024 surface, never another file decode.
         const refined = await detectPersonsFromPrepared(personTensorFromSurface(img!, 640));
+        legacyPersonCorroborated ||= refined.boxes.length > 0;
         personBoxes = mergePersonBoxes(fastPersons.boxes, refined.boxes);
+        // The persisted set is now a NanoDet + SSD union, not a pure fast pass.
+        legacyPersonUsed = true;
         _personRefinementCount++;
         personRefinementReasons.set(reason, (personRefinementReasons.get(reason) ?? 0) + 1);
         if (_personRefinementCount % 25 === 0) {
@@ -2641,23 +3409,11 @@ async function _analyzeFacesInner(
       // so a persisted general cache cannot hide the failure forever.
       sportsSafeguardsEvaluated = !sportsSafeguardsFailed;
     }
-    if (sportsSafeguards && nanoDetActive && personBoxes.length === 0 &&
-      (shouldRunPerson || fallbackResumeNeeded || sportsSafeguardsResumeNeeded)) {
-      try {
-        const fallbackBoxes = await runNanoDetSportsFallback(prepared.nanoDet);
-        personFallbackEvaluated = nanoDetFallbackAvailable === true;
-        // NanoDet remains an evaluation-only candidate until a labelled
-        // sports corpus approves its recall and false-positive rate. Record
-        // disagreement telemetry, but never let an opt-in experimental model
-        // alter persisted production boxes or automatic culling decisions.
-        if (fallbackBoxes.length > 0) {
-          log.info(`[face-engine] evaluation NanoDet found ${fallbackBoxes.length} person candidate(s) missed by SSD`);
-        }
-      } catch (error) {
-        sportsSafeguardsEvaluated = false;
-        log.warn('[face-engine] optional NanoDet sports disagreement fallback failed:',
-          error instanceof Error ? error.message : String(error));
-      }
+    if (sportsSafeguards && nanoDetActive && (shouldRunPerson || fallbackResumeNeeded)) {
+      // The promoted NanoDet pass is the primary result. This marker means the
+      // verified alternate detector route was evaluated; any evidence-driven
+      // SSD merge above is provenance-preserving selective fallback.
+      personFallbackEvaluated = true;
     }
     const seedHasEyeDetail = seedUpright?.features?.eyeDetail === true;
     let eyeDetailComplete = seedHasEyeDetail || boxes.length === 0;
@@ -2717,7 +3473,9 @@ async function _analyzeFacesInner(
         while (nextFaceIndex < facesToEmbed.length) {
           const index = nextFaceIndex++;
           const box = facesToEmbed[index];
-          const embedding = await embedFace(imagePath, box, img!).catch((error) => {
+          const boxIndex = boxes.indexOf(box);
+          const landmarks = boxIndex >= 0 ? faceLandmarks[boxIndex] : null;
+          const embedding = await embedFace(imagePath, box, img!, landmarks).catch((error) => {
             if (error instanceof FaceInferenceCircuitError) throw error;
             return null;
           });
@@ -2746,6 +3504,7 @@ async function _analyzeFacesInner(
       personBoxes,
       embeddings,
       embeddingBoxes,
+      faceLandmarks,
       poses,
       features: {
         faceMatching: seedUpright?.features?.faceMatching === true || faceMatchingComplete,
@@ -2757,7 +3516,23 @@ async function _analyzeFacesInner(
         embeddingLimit: completedEmbeddingLimit,
         eyeDetail: seedHasEyeDetail || (profile !== 'detect' && eyeDetailComplete),
         personFallback: seedUpright?.features?.personFallback === true || personFallbackEvaluated,
+        personFallbackExecuted: !shouldRunPerson
+          ? seedUpright?.features?.personFallbackExecuted === true
+          : legacyPersonUsed,
+        personFallbackCorroborated: legacyPersonCorroborated,
         sportsSafeguards: seedUpright?.features?.sportsSafeguards === true || sportsSafeguardsEvaluated,
+        fastFaceDetection: fastFaceCompleted,
+        fastPersonDetection: fastPersonCompleted,
+        faceLandmarks: faceLandmarks.some((landmarks) => landmarks !== null),
+        faceDetectorId: shouldRunFaceDetector
+          ? fastFaceCompleted
+            ? `${getProductionFastDetector('face').id}${legacyFaceUsed ? '+ultraface-fallback' : ''}`
+            : FACE_MODEL_IDENTITIES.detector.fileName
+          : seedUpright?.features?.faceDetectorId ?? FACE_MODEL_IDENTITIES.detector.fileName,
+        personDetectorId: shouldRunPerson
+          ? productionPersonDetectorId(fastPersonCompleted, legacyPersonCorroborated)
+          : seedUpright?.features?.personDetectorId ?? FACE_MODEL_IDENTITIES.person.fileName,
+        detectorPipelineFingerprint: PRODUCTION_FAST_DETECTOR_FINGERPRINT,
       },
     }, orientation);
     finishStats();
@@ -2768,9 +3543,55 @@ async function _analyzeFacesInner(
   }
 }
 
+export interface ProductionFastDetectorDiagnostic {
+  active: boolean;
+  fingerprint: string;
+  faceModel: string;
+  personModel: string;
+  faceProvider?: string;
+  personProvider?: string;
+  faceDeviceId?: number;
+  personDeviceId?: number;
+  faceInferenceMs?: number;
+  personInferenceMs?: number;
+  failure?: string;
+}
+
+async function diagnoseProductionFastDetectors(
+  bundle: ProductionFastDetectorBundle,
+): Promise<ProductionFastDetectorDiagnostic> {
+  const [face, person] = await Promise.all([
+    fastFaceInferenceCircuit.run(
+      () => trackProductionFastInference(bundle, () => bundle.face.runDiagnostic()),
+      DETECTOR_INFERENCE_TIMEOUT_MS,
+    ),
+    fastPersonInferenceCircuit.run(
+      () => trackProductionFastInference(bundle, () => bundle.person.runDiagnostic({
+        nanoDet: PRODUCTION_NANODET_DECODE_PROFILE,
+      })),
+      PERSON_INFERENCE_TIMEOUT_MS,
+    ),
+  ]).catch((error) => {
+    retireProductionFastBundle(bundle, error instanceof Error ? error.message : String(error));
+    throw error;
+  });
+  return {
+    active: true,
+    fingerprint: PRODUCTION_FAST_DETECTOR_FINGERPRINT,
+    faceModel: bundle.face.candidate.id,
+    personModel: bundle.person.candidate.id,
+    faceProvider: bundle.face.provider,
+    personProvider: bundle.person.provider,
+    faceDeviceId: bundle.face.deviceId,
+    personDeviceId: bundle.person.deviceId,
+    faceInferenceMs: face.timings.inferenceMs,
+    personInferenceMs: person.timings.inferenceMs,
+  };
+}
+
 /**
- * Run a quick DML diagnostic — creates a session with DML, runs 5 dummy inferences,
- * and reports timing + actual EP. Call from ipc-handlers for a /diagnose endpoint.
+ * Run a quick native diagnostic: real zero-tensor inference through all legacy
+ * sessions plus YuNet/NanoDet when their verified production pair is present.
  */
 export async function diagnoseFaceEngine(): Promise<{
   ep: string | null;
@@ -2780,6 +3601,7 @@ export async function diagnoseFaceEngine(): Promise<{
   platform: string;
   providers: string[];
   models: FaceProviderDiagnostic[];
+  productionFastDetectors: ProductionFastDetectorDiagnostic;
 }> {
   const t0 = Date.now();
   await loadSessions();
@@ -2803,6 +3625,24 @@ export async function diagnoseFaceEngine(): Promise<{
   }
   const avgInferenceMs = times.reduce((a, b) => a + b, 0) / times.length;
 
+  // Session construction is not sufficient proof for a packaged native
+  // runtime. Execute and decode one correctly shaped tensor through each
+  // verified promoted graph. Any native error retires the pair so subsequent
+  // photos immediately re-plan to the established UltraFace/SSD route.
+  const fastBundle = await getProductionFastDetectorBundle();
+  let productionFastDetectors: ProductionFastDetectorDiagnostic;
+  if (fastBundle) {
+    productionFastDetectors = await diagnoseProductionFastDetectors(fastBundle);
+  } else {
+    productionFastDetectors = {
+      active: false,
+      fingerprint: PRODUCTION_FAST_DETECTOR_FINGERPRINT,
+      faceModel: getProductionFastDetector('face').id,
+      personModel: getProductionFastDetector('person').id,
+      failure: productionFastDetectorFailure ?? 'verified production fast detector pair unavailable',
+    };
+  }
+
   log.info('[face-engine] DIAG: EP=%s sessionLoad=%dms avgInference=%dms times=%s',
     actualExecutionProvider, sessionLoadMs, avgInferenceMs.toFixed(1), JSON.stringify(times));
 
@@ -2814,6 +3654,7 @@ export async function diagnoseFaceEngine(): Promise<{
     platform: process.platform,
     providers,
     models: getFaceProviderDiagnostics(),
+    productionFastDetectors,
   };
 }
 

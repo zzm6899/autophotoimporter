@@ -146,10 +146,19 @@ for (const retainedArch of retainedArchitectures) {
 }
 
 const modelDir = path.join(resourcesDir, 'models');
-const models = ['version-RFB-640.onnx', 'face_recognition_sface_2021dec.onnx', 'ssd_mobilenet_v1_12.onnx', 'movenet_thunder.onnx'];
+const models = [
+  'version-RFB-640.onnx',
+  'face_recognition_sface_2021dec.onnx',
+  'face_detection_yunet_2023mar.onnx',
+  'object_detection_nanodet_2022nov.onnx',
+  'ssd_mobilenet_v1_12.onnx',
+  'movenet_thunder.onnx',
+];
 const expectedModelDigests = {
   'version-RFB-640.onnx': '8f4c659275977e7a3bfbfa339a9c769ad793df50f9c0baa8c14b11baa1646430',
   'face_recognition_sface_2021dec.onnx': '0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79',
+  'face_detection_yunet_2023mar.onnx': '8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4',
+  'object_detection_nanodet_2022nov.onnx': '4b82da9944b88577175ee23a459dce2e26e6e4be573def65b1055dc2d9720186',
   'ssd_mobilenet_v1_12.onnx': 'b8fba5e404077d4048d27fcd1667e85e27e192eb9bf51e696c46a3acd7d21058',
   'movenet_thunder.onnx': '3dca9f6e5f8a64dc9935a5be06fd8bf81bf01e696c9c05c6f2a650e0a401b763',
 };
@@ -175,14 +184,42 @@ for (const entry of readdirSync(modelDir, { withFileTypes: true })) {
 const detectorManifestPath = path.join(root, 'src', 'main', 'services', 'detector-model-manifest.json');
 if (!existsSync(detectorManifestPath)) fail('Missing detector candidate manifest.');
 const detectorManifest = JSON.parse(readFileSync(detectorManifestPath, 'utf8'));
-if (detectorManifest.schemaVersion !== 1 || detectorManifest.status !== 'evaluation-only' ||
-    detectorManifest.goldenCorpusRequired !== true || !Array.isArray(detectorManifest.models)) {
-  fail('Invalid detector candidate manifest.');
+if (detectorManifest.schemaVersion !== 2 || detectorManifest.status !== 'mixed' ||
+    detectorManifest.legacyFallbackRemovalRequiresGoldenCorpus !== true || !detectorManifest.productionFastPass ||
+    !Array.isArray(detectorManifest.models)) {
+  fail('Invalid detector manifest.');
+}
+const productionDetectorIds = new Set([
+  detectorManifest.productionFastPass.faceCandidateId,
+  detectorManifest.productionFastPass.personCandidateId,
+]);
+for (const candidate of detectorManifest.models) {
+  const isProduction = productionDetectorIds.has(candidate.id);
+  if (candidate.redistribution !== 'artifact-license-recorded' ||
+      !/^[a-f0-9]{64}$/.test(candidate.sha256) ||
+      !candidate.sourceUrl?.includes(candidate.sourceRevision)) {
+    fail(`Detector model failed provenance validation: ${candidate.id}`);
+  }
+  if (candidate.bundledByDefault !== isProduction) {
+    fail(`Detector bundle policy disagrees with production policy: ${candidate.id}`);
+  }
+  const rootPath = path.join(modelDir, candidate.fileName);
+  if (isProduction) {
+    if (!existsSync(rootPath)) fail(`Missing production fast detector: ${candidate.fileName}`);
+    const digest = createHash('sha256').update(readFileSync(rootPath)).digest('hex');
+    if (statSync(rootPath).size !== candidate.bytes || digest !== candidate.sha256) {
+      fail(`Production fast detector failed manifest verification: ${candidate.fileName}`);
+    }
+  } else if (existsSync(rootPath)) {
+    fail(`Evaluation-only detector escaped into the production model root: ${candidate.fileName}`);
+  }
 }
 const experimentalModelDir = path.join(modelDir, 'experimental');
 const packagedExperimentalDetectors = [];
 if (existsSync(experimentalModelDir)) {
-  const knownFiles = new Set(detectorManifest.models.map((candidate) => candidate.fileName));
+  const knownFiles = new Set(detectorManifest.models
+    .filter((candidate) => !candidate.bundledByDefault)
+    .map((candidate) => candidate.fileName));
   for (const entry of readdirSync(experimentalModelDir, { withFileTypes: true })) {
     if (!entry.isFile() || !entry.name.endsWith('.onnx')) continue;
     if (!knownFiles.has(entry.name)) fail(`Unknown experimental detector was packaged: ${entry.name}`);
@@ -210,6 +247,11 @@ for (const requiredNoticeToken of [
   '91849267da7c576503f0f87a941b3139b64b7781',
   '38296077a99667cdad67af5096ce7eeb9b327453',
   '3364a833d9b3b5ff16af08beb04b1832cb012033',
+  'f12e12798e8314f7c074a6656816c048dcc95b7a',
+  '510899a2a0adb8c25957915fd030d66dbd553919',
+  'WIDER FACE',
+  'COCO',
+  'opt-in',
   'ONNX-Model-Zoo-MIT.txt',
   'UltraFace-MIT.txt',
 ]) {
@@ -222,6 +264,7 @@ for (const licenseCheck of [
   ['ONNX-Model-Zoo-MIT.txt', 'Copyright (c) ONNX Project Contributors'],
   ['UltraFace-MIT.txt', 'Copyright (c) 2019 linzai'],
   ['SFace-Apache-2.0.txt', 'Apache License'],
+  ['YuNet-MIT.txt', 'Permission is hereby granted'],
 ]) {
   const licenseText = readFileSync(path.join(thirdPartyDir, licenseCheck[0]), 'utf8');
   if (!licenseText.includes(licenseCheck[1])) fail(`Third-party license text is incomplete: ${licenseCheck[0]}`);

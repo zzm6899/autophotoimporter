@@ -1,9 +1,10 @@
 /**
- * Pinned, opt-in detector candidates that are safe to evaluate separately
- * from the production face/person pipeline.
+ * Pinned alternative detectors, including the explicitly promoted fast pass.
  *
- * A manifest entry is not an accuracy approval. New detectors must pass the
- * labelled golden corpus before `face-engine.ts` may select one by default.
+ * A catalogue entry is not an accuracy approval. Only ids named by the
+ * productionFastPass policy may enter automatic culling, and then only after
+ * the exact byte size and digest below have been verified. Every other entry
+ * remains evaluation-only.
  */
 import { createHash } from 'node:crypto';
 import { createReadStream, existsSync, statSync } from 'node:fs';
@@ -41,14 +42,27 @@ export interface DetectorCandidateModel {
   readonly projectUrl: string;
   readonly license: 'MIT' | 'Apache-2.0';
   readonly licenseUrl: string;
-  readonly redistribution: 'candidate-approved';
-  readonly bundledByDefault: false;
+  /** Describes recorded artifact licensing, not training-data legal approval. */
+  readonly redistribution: 'artifact-license-recorded';
+  readonly bundledByDefault: boolean;
 }
 
 export interface DetectorCandidateManifest {
-  readonly schemaVersion: 1;
-  readonly status: 'evaluation-only';
-  readonly goldenCorpusRequired: true;
+  readonly schemaVersion: 2;
+  readonly status: 'mixed';
+  /** Fast detectors may run inside the conservative cascade, but legacy
+   * fallbacks and candidate-only manual holds cannot be removed without a
+   * versioned labelled-corpus report. */
+  readonly legacyFallbackRemovalRequiresGoldenCorpus: true;
+  readonly productionFastPass: {
+    readonly policyVersion: 1;
+    readonly activation: 'verified-weight-or-legacy-fallback';
+    readonly faceCandidateId: DetectorCandidateId;
+    readonly personCandidateId: DetectorCandidateId;
+    readonly faceFallback: 'version-RFB-640.onnx';
+    readonly personFallback: 'ssd_mobilenet_v1_12.onnx';
+    readonly selectionPolicy: 'selective-fallback-v1';
+  };
   readonly models: readonly DetectorCandidateModel[];
 }
 
@@ -62,8 +76,9 @@ function deepFreeze<T>(value: T): T {
 
 function assertManifest(value: unknown): asserts value is DetectorCandidateManifest {
   const manifest = value as Partial<DetectorCandidateManifest> | null;
-  if (!manifest || manifest.schemaVersion !== 1 || manifest.status !== 'evaluation-only' ||
-      manifest.goldenCorpusRequired !== true || !Array.isArray(manifest.models)) {
+  if (!manifest || manifest.schemaVersion !== 2 || manifest.status !== 'mixed' ||
+      manifest.legacyFallbackRemovalRequiresGoldenCorpus !== true || !manifest.productionFastPass ||
+      !Array.isArray(manifest.models)) {
     throw new Error('Invalid detector candidate manifest header');
   }
   const ids = new Set<string>();
@@ -83,12 +98,30 @@ function assertManifest(value: unknown): asserts value is DetectorCandidateManif
     if (!candidate.sourceUrl.startsWith('https://') || !candidate.licenseUrl.startsWith('https://')) {
       throw new Error(`Detector candidate provenance must use HTTPS: ${candidate.id}`);
     }
-    if (candidate.bytes <= 0 || candidate.bundledByDefault !== false ||
-        candidate.redistribution !== 'candidate-approved') {
+    if (candidate.bytes <= 0 || typeof candidate.bundledByDefault !== 'boolean' ||
+        candidate.redistribution !== 'artifact-license-recorded') {
       throw new Error(`Invalid detector candidate release policy: ${candidate.id}`);
     }
     ids.add(candidate.id);
     files.add(candidate.fileName);
+  }
+  const production = manifest.productionFastPass;
+  const face = (manifest.models as DetectorCandidateModel[])
+    .find((candidate) => candidate.id === production.faceCandidateId);
+  const person = (manifest.models as DetectorCandidateModel[])
+    .find((candidate) => candidate.id === production.personCandidateId);
+  if (production.policyVersion !== 1 ||
+      production.activation !== 'verified-weight-or-legacy-fallback' ||
+      production.selectionPolicy !== 'selective-fallback-v1' ||
+      production.faceFallback !== 'version-RFB-640.onnx' ||
+      production.personFallback !== 'ssd_mobilenet_v1_12.onnx' ||
+      face?.role !== 'face' || face.decoder !== 'yunet-v1' ||
+      face.bundledByDefault !== true ||
+      !face.capabilities.includes('face-landmarks-5') ||
+      person?.role !== 'object' || person.decoder !== 'nanodet-plus-gfl-v1' ||
+      person.bundledByDefault !== true ||
+      !person.capabilities.includes('person-boxes')) {
+    throw new Error('Invalid production fast detector policy');
   }
 }
 
@@ -96,10 +129,42 @@ assertManifest(manifestJson);
 export const DETECTOR_CANDIDATE_MANIFEST: DetectorCandidateManifest = deepFreeze(manifestJson);
 export const DETECTOR_CANDIDATE_MODELS = DETECTOR_CANDIDATE_MANIFEST.models;
 
-export function getDetectorCandidate(id: DetectorCandidateId): DetectorCandidateModel {
+export type ProductionFastDetectorRole = 'face' | 'person';
+
+/** The only two alternative weights approved for the production cascade. */
+export const PRODUCTION_FAST_DETECTOR_MODELS: Readonly<Record<
+  ProductionFastDetectorRole,
+  DetectorCandidateModel
+>> = deepFreeze({
+  face: getDetectorCandidateFromManifest(
+    DETECTOR_CANDIDATE_MANIFEST.productionFastPass.faceCandidateId,
+  ),
+  person: getDetectorCandidateFromManifest(
+    DETECTOR_CANDIDATE_MANIFEST.productionFastPass.personCandidateId,
+  ),
+});
+
+export const PRODUCTION_FAST_DETECTOR_FINGERPRINT = [
+  `fast-detectors-v${DETECTOR_CANDIDATE_MANIFEST.productionFastPass.policyVersion}`,
+  DETECTOR_CANDIDATE_MANIFEST.productionFastPass.selectionPolicy,
+  ...(['face', 'person'] as const).map((role) => {
+    const model = PRODUCTION_FAST_DETECTOR_MODELS[role];
+    return `${role}:${model.id}:${model.sha256}`;
+  }),
+].join('|');
+
+function getDetectorCandidateFromManifest(id: DetectorCandidateId): DetectorCandidateModel {
   const candidate = DETECTOR_CANDIDATE_MODELS.find((entry) => entry.id === id);
   if (!candidate) throw new Error(`Unknown detector candidate: ${id}`);
   return candidate;
+}
+
+export function getDetectorCandidate(id: DetectorCandidateId): DetectorCandidateModel {
+  return getDetectorCandidateFromManifest(id);
+}
+
+export function getProductionFastDetector(role: ProductionFastDetectorRole): DetectorCandidateModel {
+  return PRODUCTION_FAST_DETECTOR_MODELS[role];
 }
 
 export async function sha256File(filePath: string): Promise<string> {

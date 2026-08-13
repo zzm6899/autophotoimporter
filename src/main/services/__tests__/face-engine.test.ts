@@ -44,6 +44,10 @@ vi.mock('exifr', () => ({
 
 import {
   annotateEyeDetail,
+  analysisSurfaceCacheKey,
+  alignFaceBitmapForSFace,
+  canReuseAnalysisSurfaceForRequest,
+  canProductionFastBundleMutateRoute,
   choosePreferredProvider,
   estimateEyeDetailFromPixels,
   getFaceFeatureOptions,
@@ -52,11 +56,19 @@ import {
   resolvePreprocessSource,
   isUsableDetectionPreviewSize,
   mapBoxToStoredOrientation,
+  mapLandmarksToStoredForExif,
+  mergeFastFacesWithLegacy,
   orientBitmapForExif,
   pixelsToSFaceCHW,
+  PRODUCTION_NANODET_DECODE_PROFILE,
+  productionFastFailurePlan,
+  productionPersonDetectorId,
+  productionNanoDetPersonPass,
   shouldRefinePersonDetection,
+  shouldUseLegacyDetectorFallback,
   shouldResumePersonFallback,
   shouldResumeSportsSafeguards,
+  shouldAttemptProductionFastRoute,
   verifyModelFileDigest,
 } from '../face-engine';
 
@@ -383,6 +395,36 @@ describe('face-engine EXIF orientation', () => {
   });
 });
 
+describe('analysis-surface reuse safety', () => {
+  it('forces supervised YuNet preprocessing during a legacy-to-fast route upgrade', () => {
+    expect(canReuseAnalysisSurfaceForRequest({
+      includeAnalysisSurface: true,
+      includeDetectorTensor: false,
+      includePersonTensors: false,
+      includeYuNetTensor: false,
+    })).toBe(true);
+    expect(canReuseAnalysisSurfaceForRequest({
+      includeAnalysisSurface: true,
+      includeDetectorTensor: false,
+      includePersonTensors: false,
+      includeYuNetTensor: true,
+    })).toBe(false);
+  });
+
+  it('changes identity when a source is overwritten at the same path', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'keptra-surface-'));
+    tempDirs.push(dir);
+    const file = path.join(dir, 'tethered.jpg');
+    await writeFile(file, Buffer.from('generation-a'));
+    const first = await analysisSurfaceCacheKey(file, 1);
+    await writeFile(file, Buffer.from('generation-b-with-a-different-size'));
+    const second = await analysisSurfaceCacheKey(file, 1);
+
+    expect(first).not.toBeNull();
+    expect(second).not.toBe(first);
+  });
+});
+
 describe('face-engine adaptive person pass', () => {
   const box = { x: 0.2, y: 0.1, width: 0.3, height: 0.8, score: 0.9 };
 
@@ -475,6 +517,97 @@ describe('face-engine adaptive person pass', () => {
   });
 });
 
+describe('production fast-detector fallback policy', () => {
+  const strong = { x: 0.2, y: 0.1, width: 0.3, height: 0.7, score: 0.92 };
+
+  it('keeps a strong interior detection on the promoted fast path', () => {
+    expect(shouldUseLegacyDetectorFallback([strong], 0.48)).toBe(false);
+  });
+
+  it('replans later photos to legacy tensors after a fast native circuit failure', () => {
+    const plan = productionFastFailurePlan('DML device removed');
+    expect(plan).toEqual({
+      state: 'legacy-fallback',
+      failure: 'DML device removed',
+      retryAt: Number.POSITIVE_INFINITY,
+      prepareFastTensors: false,
+    });
+    expect(shouldAttemptProductionFastRoute(plan.state, plan.retryAt, Date.now())).toBe(false);
+    expect(canProductionFastBundleMutateRoute(7, 8)).toBe(false);
+    expect(canProductionFastBundleMutateRoute(8, 8)).toBe(true);
+  });
+
+  it('does not claim SSD fallback corroboration when SSD returned zero boxes', () => {
+    expect(productionPersonDetectorId(true, false)).toBe('nanodet-2022nov-fp32');
+    expect(productionPersonDetectorId(true, true)).toBe(
+      'nanodet-2022nov-fp32+ssd-fallback',
+    );
+  });
+
+  it('never treats zero, low-confidence, or cropped-edge output as final', () => {
+    expect(shouldUseLegacyDetectorFallback([], 0.48)).toBe(true);
+    expect(shouldUseLegacyDetectorFallback([{ ...strong, score: 0.46 }], 0.48)).toBe(true);
+    expect(shouldUseLegacyDetectorFallback([{ ...strong, x: 0.005 }], 0.48)).toBe(true);
+    expect(shouldUseLegacyDetectorFallback([{ ...strong, y: 0.4, height: 0.6 }], 0.48)).toBe(true);
+  });
+
+  it('does not penalise a crowd for one weak edge detection', () => {
+    expect(shouldUseLegacyDetectorFallback([
+      strong,
+      { ...strong, x: 0.55, width: 0.2, score: 0.86 },
+      { ...strong, x: 0.92, width: 0.08, score: 0.3 },
+    ], 0.48)).toBe(false);
+  });
+
+  it('preserves YuNet landmarks while appending unique UltraFace fallback boxes', () => {
+    const points = [
+      { x: 0.25, y: 0.2 }, { x: 0.35, y: 0.2 }, { x: 0.3, y: 0.3 },
+      { x: 0.26, y: 0.4 }, { x: 0.34, y: 0.4 },
+    ] as const;
+    const merged = mergeFastFacesWithLegacy({ boxes: [strong], landmarks: [points] }, [
+      { ...strong, x: 0.205, score: 0.96 },
+      { ...strong, x: 0.65, width: 0.2, score: 0.84 },
+    ]);
+    expect(merged.boxes).toHaveLength(2);
+    expect(merged.landmarks).toEqual([points, null]);
+  });
+
+  it('replaces an overlapping weak YuNet proposal with materially stronger UltraFace evidence', () => {
+    const points = [
+      { x: 0.25, y: 0.2 }, { x: 0.35, y: 0.2 }, { x: 0.3, y: 0.3 },
+      { x: 0.26, y: 0.4 }, { x: 0.34, y: 0.4 },
+    ] as const;
+    const weakYuNet = { ...strong, score: 0.7 };
+    const strongUltraFace = { ...strong, x: 0.205, score: 0.91 };
+    const merged = mergeFastFacesWithLegacy(
+      { boxes: [weakYuNet], landmarks: [points] },
+      [strongUltraFace],
+    );
+
+    expect(merged.boxes).toEqual([strongUltraFace]);
+    expect(merged.landmarks).toEqual([null]);
+  });
+
+  it('pins a bounded NanoDet production decode profile', () => {
+    expect(PRODUCTION_NANODET_DECODE_PROFILE).toEqual({
+      scoreThreshold: 0.4,
+      nmsThreshold: 0.6,
+      preNmsTopK: 512,
+      maxDetections: 256,
+      requireTopClass: true,
+    });
+  });
+
+  it('keeps weak NanoDet proposals as disagreement evidence, not body boxes', () => {
+    const pass = productionNanoDetPersonPass([
+      { ...strong, score: 0.3, classId: 0 },
+      { ...strong, x: 0.55, score: 0.67, classId: 0 },
+    ]);
+    expect(pass.candidateCount).toBe(2);
+    expect(pass.boxes).toEqual([{ ...strong, x: 0.55, score: 0.67 }]);
+  });
+});
+
 describe('face-engine model integrity', () => {
   it('matches OpenCV SFace raw RGB input preprocessing', () => {
     // Electron returns BGRA on Windows/macOS and RGBA on Linux.
@@ -484,6 +617,36 @@ describe('face-engine model integrity', () => {
     expect(Array.from(chw)).toEqual(bgra
       ? [30, 60, 20, 50, 10, 40]
       : [10, 40, 20, 50, 30, 60]);
+  });
+
+  it('keeps an identity five-point SFace alignment pixel exact', () => {
+    const width = 112;
+    const height = 112;
+    const pixels = Buffer.alloc(width * height * 4);
+    for (let index = 0; index < width * height; index++) {
+      pixels[index * 4] = index % 251;
+      pixels[index * 4 + 1] = (index * 3) % 253;
+      pixels[index * 4 + 2] = (index * 7) % 255;
+      pixels[index * 4 + 3] = 255;
+    }
+    const landmarks = [
+      { x: 38.2946 / width, y: 51.6963 / height },
+      { x: 73.5318 / width, y: 51.5014 / height },
+      { x: 56.0252 / width, y: 71.7366 / height },
+      { x: 41.5493 / width, y: 92.3655 / height },
+      { x: 70.7299 / width, y: 92.2041 / height },
+    ] as const;
+    expect(alignFaceBitmapForSFace(pixels, width, height, landmarks)).toEqual(pixels);
+  });
+
+  it('maps all five YuNet landmarks back through EXIF orientation', () => {
+    const landmarks = [
+      { x: 0.2, y: 0.3 }, { x: 0.4, y: 0.3 }, { x: 0.3, y: 0.4 },
+      { x: 0.22, y: 0.5 }, { x: 0.38, y: 0.5 },
+    ] as const;
+    const mapped = mapLandmarksToStoredForExif(landmarks, 6);
+    expect(mapped[0]).toEqual({ x: 0.3, y: 0.8 });
+    expect(mapped).toHaveLength(5);
   });
 
   it('accepts the pinned digest and rejects a different digest', async () => {

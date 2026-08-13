@@ -1,4 +1,4 @@
-import { isSportsEventMode, type EventMode, type MediaFile } from '../../shared/types';
+import { isPeopleFirstEventMode, isSportsEventMode, type EventMode, type MediaFile } from '../../shared/types';
 
 export type ReviewAnalysisProfile = 'detect' | 'subjects' | 'full';
 
@@ -22,6 +22,7 @@ const SUBJECT_CRITICAL_MODES: ReadonlySet<EventMode> = new Set([
   'stage',
   'candids',
   'cosplay',
+  'vendor-booth',
   'crowd',
   'panels',
   'meetups',
@@ -126,7 +127,7 @@ export function selectSuperSpeedProfile(
   const sportsSafeguardsUnavailable = file.reviewAnalysisUnavailableFeatures?.sportsSafeguards === true;
   const comparisonCandidate = isComparisonCandidate(file);
   const subjectCritical = SUBJECT_CRITICAL_MODES.has(options.eventMode);
-  const needsSportsSafeguards = isSportsEventMode(options.eventMode) &&
+  const needsSportsSafeguards = (isSportsEventMode(options.eventMode) || isPeopleFirstEventMode(options.eventMode)) &&
     options.personDetection &&
     file.reviewAnalysisFeatures?.sportsSafeguards !== true &&
     !sportsSafeguardsUnavailable;

@@ -38,6 +38,8 @@ function analysisResult(options: {
   personDetection?: boolean;
   poseAnalysis?: boolean;
   personFallback?: boolean;
+  personFallbackExecuted?: boolean;
+  personFallbackCorroborated?: boolean;
   eyeDetail?: boolean;
   sportsSafeguards?: boolean;
 } = {}): { result: FaceAnalysisResult; hexEmbeddings: string[] } {
@@ -55,6 +57,8 @@ function analysisResult(options: {
         poseAnalysis: options.poseAnalysis ?? false,
         embeddingLimit: faceMatching ? 1 : 0,
         personFallback: options.personFallback ?? false,
+        personFallbackExecuted: options.personFallbackExecuted ?? false,
+        personFallbackCorroborated: options.personFallbackCorroborated ?? false,
         eyeDetail: options.eyeDetail ?? false,
         sportsSafeguards: options.sportsSafeguards ?? false,
       },
@@ -123,6 +127,25 @@ afterAll(async () => {
 });
 
 describe('face-cache SQLite storage', () => {
+  it('persists fallback execution separately from positive SSD corroboration', async () => {
+    const { result, hexEmbeddings } = analysisResult({
+      personFallback: true,
+      personFallbackExecuted: true,
+      personFallbackCorroborated: false,
+    });
+    await setCachedFaceResult(imagePath, result, hexEmbeddings, 'subjects');
+    await closeFaceCache();
+
+    const cached = await getCachedFaceResult(imagePath, {
+      analysisDepth: 'subjects', personDetection: true, personFallback: true,
+    });
+    expect(cached?.result.features).toMatchObject({
+      personFallback: true,
+      personFallbackExecuted: true,
+      personFallbackCorroborated: false,
+    });
+  });
+
   it('accepts scanner-captured identity without changing the cache key', async () => {
     const source = await stat(imagePath);
     const hint = { size: source.size, mtimeMs: source.mtimeMs };

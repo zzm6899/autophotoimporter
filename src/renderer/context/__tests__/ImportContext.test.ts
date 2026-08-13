@@ -391,7 +391,9 @@ describe('ImportContext reducer', () => {
       expect(next.faceConcurrency).toBeGreaterThanOrEqual(4);
       expect(next.rawPreviewQuality).toBeGreaterThanOrEqual(82);
       expect(next.reviewFaceAnalysis).toBe(true);
-      expect(next.reviewFaceMatching).toBe(true);
+      // Performance tiers preserve explicit similar-face consent; they do not
+      // create biometric-style vectors on the user's behalf.
+      expect(next.reviewFaceMatching).toBe(false);
       expect(next.reviewPersonDetection).toBe(true);
       expect(next.reviewVisualDuplicates).toBe(true);
     });
@@ -999,6 +1001,19 @@ describe('ImportContext reducer', () => {
       const next = reducer(makeState({ files }), { type: 'PICK_BEST_IN_GROUPS', files: mergedFiles });
       expect(next.files.find((f) => f.path === '/fresh-best.jpg')?.pick).toBe('selected');
       expect(next.files.find((f) => f.path === '/stale-best.jpg')?.pick).toBe('rejected');
+    });
+
+    it('never treats a similar-face identity as a reject group', () => {
+      const files = [
+        makeFile({ path: '/hyrox-run.jpg', faceGroupId: 'same-person', faceGroupSize: 2, reviewScore: 92, sharpnessScore: 180 }),
+        makeFile({ path: '/hyrox-sled.jpg', faceGroupId: 'same-person', faceGroupSize: 2, reviewScore: 55, sharpnessScore: 95 }),
+      ];
+
+      const picked = reducer(makeState({ files }), { type: 'PICK_BEST_IN_GROUPS' });
+      const culled = reducer(makeState({ files }), { type: 'AUTO_CULL_SAFE' });
+
+      expect(picked.files.map((item) => item.pick)).toEqual([undefined, undefined]);
+      expect(culled.files.map((item) => item.pick)).toEqual([undefined, undefined]);
     });
 
     it('auto-culls groups from supplied merged review files', () => {

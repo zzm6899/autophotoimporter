@@ -1,11 +1,10 @@
 /**
- * End-to-end runtime used to evaluate pinned detector candidates.
+ * Verified runtime shared by the promoted fast pass and offline evaluation.
  *
- * This module is deliberately isolated from face-engine.ts. A fast kernel is
- * not enough to promote a model into the culling path: preprocessing, output
- * decoding, NMS, coordinate mapping, and labelled-corpus accuracy all need to
- * be measured first. The CLI harness in scripts/eval-detector-candidates.mjs
- * exercises this exact implementation with real image pixels.
+ * It never selects or downloads a model: callers supply a manifest entry and
+ * path, and session creation refuses anything whose exact size/digest differs.
+ * The CLI harness in scripts/eval-detector-candidates.mjs exercises this exact
+ * implementation with real image pixels.
  */
 import { createHash } from 'node:crypto';
 import { createReadStream, existsSync, statSync } from 'node:fs';
@@ -51,6 +50,31 @@ const requireFromHere = createRequire(
 );
 
 export type CandidateDetectorProvider = 'cpu' | 'dml';
+
+export interface CandidateRuntimeOptions {
+  /** Resolved DirectML adapter; undefined delegates to ORT's default adapter. */
+  readonly dmlDeviceId?: number;
+}
+
+export function candidateSessionOptions(
+  provider: CandidateDetectorProvider,
+  cpuCount: number,
+  options: CandidateRuntimeOptions = {},
+): Record<string, unknown> {
+  return {
+    executionProviders: provider === 'dml'
+      ? [{ name: 'dml', ...(options.dmlDeviceId !== undefined
+        ? { deviceId: options.dmlDeviceId }
+        : {}) }]
+      : ['cpu'],
+    executionMode: 'sequential',
+    enableMemPattern: provider !== 'dml',
+    graphOptimizationLevel: 'all',
+    intraOpNumThreads: provider === 'cpu' ? Math.min(6, Math.max(1, cpuCount)) : 1,
+    interOpNumThreads: 1,
+    logSeverityLevel: 3,
+  };
+}
 
 export interface DetectorPoint {
   /** Normalised coordinate relative to the upright source image. */
@@ -108,6 +132,11 @@ export interface CandidateRunResult {
     readonly postprocessMs: number;
     readonly totalMs: number;
   };
+}
+
+export interface CandidateRunOptions {
+  readonly yuNet?: YuNetDecodeOptions;
+  readonly nanoDet?: NanoDetDecodeOptions;
 }
 
 export interface YuNetDecodeOptions {
@@ -604,17 +633,20 @@ function asFloatOutputs(outputs: Record<string, OrtTensor>): CandidateOutputs {
 export class DetectorCandidateRuntime {
   readonly candidate: DetectorCandidateModel;
   readonly provider: CandidateDetectorProvider;
+  readonly deviceId?: number;
   private readonly session: OrtSession;
   private readonly inputName: string;
 
   private constructor(
     candidate: DetectorCandidateModel,
     provider: CandidateDetectorProvider,
+    deviceId: number | undefined,
     session: OrtSession,
     inputName: string,
   ) {
     this.candidate = candidate;
     this.provider = provider;
+    this.deviceId = deviceId;
     this.session = session;
     this.inputName = inputName;
   }
@@ -623,6 +655,7 @@ export class DetectorCandidateRuntime {
     candidate: DetectorCandidateModel,
     modelPath: string,
     provider: CandidateDetectorProvider,
+    options: CandidateRuntimeOptions = {},
   ): Promise<DetectorCandidateRuntime> {
     if (candidate.decoder !== 'yunet-v1' && candidate.decoder !== 'nanodet-plus-gfl-v1') {
       const detail = candidate.decoder === 'yolox-v1' ? 'YOLOX-S' : candidate.decoder;
@@ -633,21 +666,20 @@ export class DetectorCandidateRuntime {
     }
     await assertVerifiedModelFile(candidate, modelPath);
     const runtime = getOrt();
-    const session = await runtime.InferenceSession.create(modelPath, {
-      executionProviders: provider === 'dml' ? [{ name: 'dml' }] : ['cpu'],
-      executionMode: 'sequential',
-      enableMemPattern: provider !== 'dml',
-      graphOptimizationLevel: 'all',
-      intraOpNumThreads: provider === 'cpu' ? Math.min(6, Math.max(1, requireFromHere('node:os').cpus().length)) : 1,
-      interOpNumThreads: 1,
-      logSeverityLevel: 3,
-    });
+    const session = await runtime.InferenceSession.create(modelPath, candidateSessionOptions(
+      provider,
+      requireFromHere('node:os').cpus().length,
+      options,
+    ));
     const inputName = session.inputNames?.[0];
     if (!inputName) {
       await session.release?.();
       throw new Error(`${candidate.id} session did not expose an input name`);
     }
-    return new DetectorCandidateRuntime(candidate, provider, session, inputName);
+    return new DetectorCandidateRuntime(
+      candidate, provider, provider === 'dml' ? options.dmlDeviceId : undefined,
+      session, inputName,
+    );
   }
 
   async run(image: ImageInput): Promise<CandidateRunResult> {
@@ -668,10 +700,38 @@ export class DetectorCandidateRuntime {
   }
 
   /**
+   * Execute the exact verified graph and decoder on a correctly shaped dummy
+   * tensor. Package diagnostics use this to prove that both promoted models
+   * can do native inference, rather than treating session creation as success.
+   */
+  async runDiagnostic(options: CandidateRunOptions = {}): Promise<CandidateRunResult> {
+    const dimensions = this.candidate.input.dimensions;
+    const height = dimensions[2];
+    const width = dimensions[3];
+    return this.runPrepared({
+      data: new Float32Array(dimensions.reduce((product, value) => product * value, 1)),
+      dimensions,
+      transform: {
+        sourceWidth: width,
+        sourceHeight: height,
+        targetWidth: width,
+        targetHeight: height,
+        resizedWidth: width,
+        resizedHeight: height,
+        padLeft: 0,
+        padTop: 0,
+      },
+    }, options);
+  }
+
+  /**
    * Run a real, already-preprocessed image tensor. This separates the model
    * ceiling from decode/resize cost without using misleading all-zero input.
    */
-  async runPrepared(prepared: PreparedDetectorInput): Promise<CandidateRunResult> {
+  async runPrepared(
+    prepared: PreparedDetectorInput,
+    options: CandidateRunOptions = {},
+  ): Promise<CandidateRunResult> {
     const expectedDimensions = this.candidate.input.dimensions;
     if (prepared.dimensions.some((dimension, index) => dimension !== expectedDimensions[index])) {
       throw new Error(`${this.candidate.id} prepared tensor dimensions do not match its manifest`);
@@ -687,8 +747,8 @@ export class DetectorCandidateRuntime {
     const inferredAt = now();
     const outputs = asFloatOutputs(raw);
     const detections = this.candidate.decoder === 'yunet-v1'
-      ? decodeYuNet(outputs, prepared.transform)
-      : decodeNanoDetPersons(outputs, prepared.transform);
+      ? decodeYuNet(outputs, prepared.transform, options.yuNet)
+      : decodeNanoDetPersons(outputs, prepared.transform, options.nanoDet);
     const completedAt = now();
     return {
       detections,

@@ -340,6 +340,8 @@ const api = {
       identities?: Array<{ size: number; mtimeMs: number }>;
       /** Enables sports-specific body-disagreement safeguards for this pass. */
       sportsMode?: boolean;
+      /** Shortlist the strongest faces for local SFace similarity vectors. */
+      embeddingLimit?: number;
     },
   ): Promise<Array<{
     path: string;
@@ -347,6 +349,7 @@ const api = {
     personBoxes: FaceBox[];
     embeddings: string[];
     embeddingBoxes: FaceBox[];
+    faceLandmarks?: Array<ReadonlyArray<{ x: number; y: number }> | null>;
     poses?: PoseKeypoints[];
     faceCount: number;
     personCount: number;
@@ -359,10 +362,18 @@ const api = {
       poseAnalysisAvailable?: boolean;
       /** True when the opt-in alternate body detector was evaluated. */
       personFallback?: boolean;
+      personFallbackExecuted?: boolean;
+      personFallbackCorroborated?: boolean;
       /** True when per-face eye-detail measurement completed. */
       eyeDetail?: boolean;
       /** True when sports zero-evidence/disagreement safeguards completed. */
       sportsSafeguards?: boolean;
+      fastFaceDetection?: boolean;
+      fastPersonDetection?: boolean;
+      faceLandmarks?: boolean;
+      faceDetectorId?: string;
+      personDetectorId?: string;
+      detectorPipelineFingerprint?: string;
     };
     error?: string;
     /** Stable native-stage error code for retry policy (for example PREVIEW_PENDING). */

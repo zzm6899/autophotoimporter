@@ -42,7 +42,9 @@ const RELEASE_BODY =
   'Stable, digest-pinned ONNX review-model assets for Keptra. Full provenance and license texts ship in `third_party/NOTICES.md`.\n\n' +
   '- `version-RFB-640.onnx` - UltraFace RFB face detector (MIT upstream)\n' +
   '- `face_recognition_sface_2021dec.onnx` - OpenCV SFace embeddings (Apache-2.0)\n' +
-  '- `ssd_mobilenet_v1_12.onnx` - SSD MobileNet person detector (MIT ONNX artifact; Apache-2.0 TensorFlow lineage)\n\n' +
+  '- `face_detection_yunet_2023mar.onnx` - YuNet fast face/landmark detector (MIT)\n' +
+  '- `object_detection_nanodet_2022nov.onnx` - NanoDet fast person detector (Apache-2.0)\n' +
+  '- `ssd_mobilenet_v1_12.onnx` - selective SSD MobileNet fallback (MIT ONNX artifact; Apache-2.0 TensorFlow lineage)\n\n' +
   'The deprecated InsightFace/WebFace600K embedding model is intentionally excluded.\n\n' +
   'Do not delete this release - the app downloads models from here on first launch.';
 
@@ -64,6 +66,18 @@ const MODELS = [
     url: 'https://huggingface.co/onnxmodelzoo/ssd_mobilenet_v1_12/resolve/019281f3fcb151a90e491f3b2f0273f9f31bd6be/ssd_mobilenet_v1_12.onnx?download=true',
     approxBytes: 29_000_000,
     sha256: 'b8fba5e404077d4048d27fcd1667e85e27e192eb9bf51e696c46a3acd7d21058',
+  },
+  {
+    name: 'face_detection_yunet_2023mar.onnx',
+    url: 'https://media.githubusercontent.com/media/opencv/opencv_zoo/f12e12798e8314f7c074a6656816c048dcc95b7a/models/face_detection_yunet/face_detection_yunet_2023mar.onnx',
+    approxBytes: 232_589,
+    sha256: '8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4',
+  },
+  {
+    name: 'object_detection_nanodet_2022nov.onnx',
+    url: 'https://media.githubusercontent.com/media/opencv/opencv_zoo/510899a2a0adb8c25957915fd030d66dbd553919/models/object_detection_nanodet/object_detection_nanodet_2022nov.onnx',
+    approxBytes: 3_800_954,
+    sha256: '4b82da9944b88577175ee23a459dce2e26e6e4be573def65b1055dc2d9720186',
   },
 ];
 

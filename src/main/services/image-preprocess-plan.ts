@@ -4,6 +4,7 @@ export interface ImagePreprocessPlanInput {
   includeAnalysisSurface: boolean;
   includePersonTensors: boolean;
   includeNanoDetTensor?: boolean;
+  includeYuNetTensor?: boolean;
 }
 
 export function imagePreprocessPlan(input: ImagePreprocessPlanInput) {
@@ -12,6 +13,7 @@ export function imagePreprocessPlan(input: ImagePreprocessPlanInput) {
     surface: input.includeAnalysisSurface,
     fastPerson: input.includePersonTensors,
     nanoDet: input.includeNanoDetTensor === true,
+    yuNet: input.includeYuNetTensor === true,
   };
 }
 

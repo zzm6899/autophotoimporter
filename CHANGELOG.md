@@ -8,8 +8,10 @@
 - Replaced the 50,000-file JSON cache with a batched SQLite WAL cache sized for million-photo libraries, compact binary embeddings, monotonic analysis-depth validation, corruption recovery, and graceful shutdown.
 - Forced DirectML adapter selection to Auto until a stable DXGI/DML identity mapping is available; WMI display indices can no longer select the wrong adapter.
 
-### AI evaluation
-- Added hash-pinned, opt-in YuNet, NanoDet, and YOLOX-S evaluation manifests, provenance notices, verified downloads, and package guards. Production promotion remains blocked on a labelled photography accuracy corpus.
+### AI review
+- Promoted digest-verified YuNet and NanoDet to a shared-decode fast face/body cascade, retaining UltraFace and SSD MobileNet as selective safety fallbacks for weak, empty, edge, and disagreement cases; YOLOX-S remains evaluation-only.
+- Added YuNet landmark-aligned eye and opt-in SFace similarity analysis. Similar faces can add keeper coverage only inside burst/visual comparisons and never become a rejection reason or a real-world identity claim.
+- Added HYROX endurance and Anime convention/cosplay review profiles, including Animaga and SMASH folder cues, subject-aware ranking, and manual holds for uncorroborated detector evidence.
 
 ### Safety
 - Incomplete detector-only comparisons remain unanalysed instead of becoming automatic rejects, and completed review evidence is committed to durable session state without expanding undo history.

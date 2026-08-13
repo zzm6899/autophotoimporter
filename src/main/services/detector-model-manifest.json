@@ -1,7 +1,16 @@
 {
-  "schemaVersion": 1,
-  "status": "evaluation-only",
-  "goldenCorpusRequired": true,
+  "schemaVersion": 2,
+  "status": "mixed",
+  "legacyFallbackRemovalRequiresGoldenCorpus": true,
+  "productionFastPass": {
+    "policyVersion": 1,
+    "activation": "verified-weight-or-legacy-fallback",
+    "faceCandidateId": "yunet-2023mar-fp32",
+    "personCandidateId": "nanodet-2022nov-fp32",
+    "faceFallback": "version-RFB-640.onnx",
+    "personFallback": "ssd_mobilenet_v1_12.onnx",
+    "selectionPolicy": "selective-fallback-v1"
+  },
   "models": [
     {
       "id": "yunet-2023mar-fp32",
@@ -26,8 +35,8 @@
       "projectUrl": "https://github.com/opencv/opencv_zoo/tree/f12e12798e8314f7c074a6656816c048dcc95b7a/models/face_detection_yunet",
       "license": "MIT",
       "licenseUrl": "https://raw.githubusercontent.com/opencv/opencv_zoo/f12e12798e8314f7c074a6656816c048dcc95b7a/models/face_detection_yunet/LICENSE",
-      "redistribution": "candidate-approved",
-      "bundledByDefault": false
+      "redistribution": "artifact-license-recorded",
+      "bundledByDefault": true
     },
     {
       "id": "nanodet-2022nov-fp32",
@@ -53,8 +62,8 @@
       "projectUrl": "https://github.com/opencv/opencv_zoo/tree/510899a2a0adb8c25957915fd030d66dbd553919/models/object_detection_nanodet",
       "license": "Apache-2.0",
       "licenseUrl": "https://raw.githubusercontent.com/opencv/opencv_zoo/510899a2a0adb8c25957915fd030d66dbd553919/models/object_detection_nanodet/LICENSE",
-      "redistribution": "candidate-approved",
-      "bundledByDefault": false
+      "redistribution": "artifact-license-recorded",
+      "bundledByDefault": true
     },
     {
       "id": "yolox-s-2022nov-fp32",
@@ -80,7 +89,7 @@
       "projectUrl": "https://github.com/opencv/opencv_zoo/tree/0b263e423d012606b83d1f81238d11c177da2b9c/models/object_detection_yolox",
       "license": "Apache-2.0",
       "licenseUrl": "https://raw.githubusercontent.com/opencv/opencv_zoo/0b263e423d012606b83d1f81238d11c177da2b9c/models/object_detection_yolox/LICENSE",
-      "redistribution": "candidate-approved",
+      "redistribution": "artifact-license-recorded",
       "bundledByDefault": false
     }
   ]

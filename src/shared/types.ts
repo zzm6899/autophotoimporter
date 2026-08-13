@@ -217,6 +217,8 @@ export interface MediaFile {
    * `eyeSharpness` is a normalized 0..1 eye-detail signal.
    */
   faceBoxes?: Array<{ x: number; y: number; width: number; height: number; eyeScore?: number; eyeSharpness?: number; smileScore?: number; expressionScore?: number; score?: number }>;
+  /** Five YuNet points (eyes, nose, mouth corners), aligned 1:1 with faceBoxes. */
+  faceLandmarks?: Array<ReadonlyArray<{ x: number; y: number }> | null>;
   /** Whether faces came from the native ONNX detector or a conservative fallback. */
   faceDetection?: 'native' | 'estimated';
   /** Number of person/body detections from the ONNX review pipeline. */
@@ -274,8 +276,21 @@ export interface MediaFile {
     eyeDetail?: boolean;
     /** Optional alternate body detector was evaluated. */
     personFallback?: boolean;
+    /** Selective SSD fallback was executed, including a valid zero result. */
+    personFallbackExecuted?: boolean;
+    /** SSD independently returned at least one person proposal. */
+    personFallbackCorroborated?: boolean;
     /** Sports-specific disagreement/zero-evidence detector pass completed. */
     sportsSafeguards?: boolean;
+    /** Digest-verified YuNet fast face pass completed for this source revision. */
+    fastFaceDetection?: boolean;
+    /** Digest-verified NanoDet fast person pass completed for this source revision. */
+    fastPersonDetection?: boolean;
+    /** At least one retained face has five-point YuNet geometry. */
+    faceLandmarks?: boolean;
+    faceDetectorId?: string;
+    personDetectorId?: string;
+    detectorPipelineFingerprint?: string;
   };
   /** Native analysis exhausted bounded retries. The frame stays manual/uncertain. */
   reviewAnalysisUnavailable?: boolean;
@@ -362,12 +377,38 @@ export const SPORTS_EVENT_MODES: ReadonlySet<EventMode> = new Set<EventMode>([
   'hyrox-endurance',
 ]);
 
+/** People-first convention modes where a detector miss must stay manual. */
+export const CONVENTION_EVENT_MODES: ReadonlySet<EventMode> = new Set<EventMode>([
+  'cosplay',
+]);
+
+/** People-first modes where a detector miss or an uncorroborated fast proposal
+ * must stay manual. This is deliberately broader than convention scoring: a
+ * generic stage or candid shoot should not inherit cosplay-specific ranking. */
+export const PEOPLE_FIRST_EVENT_MODES: ReadonlySet<EventMode> = new Set<EventMode>([
+  'stage',
+  'candids',
+  'cosplay',
+  'vendor-booth',
+  'crowd',
+  'panels',
+  'meetups',
+]);
+
 export function isSportsEventMode(mode: EventMode | undefined): boolean {
   return mode !== undefined && SPORTS_EVENT_MODES.has(mode);
 }
 
 export function isEnduranceSportsMode(mode: EventMode | undefined): boolean {
   return mode === 'hyrox-endurance';
+}
+
+export function isConventionEventMode(mode: EventMode | undefined): boolean {
+  return mode !== undefined && CONVENTION_EVENT_MODES.has(mode);
+}
+
+export function isPeopleFirstEventMode(mode: EventMode | undefined): boolean {
+  return mode !== undefined && PEOPLE_FIRST_EVENT_MODES.has(mode);
 }
 
 export interface EventModePreset {
@@ -415,10 +456,10 @@ export const EVENT_MODE_PRESETS: Record<EventMode, EventModePreset> = {
     help: 'Best for roaming event coverage where expressions and interactions matter more than posed perfection.',
   },
   cosplay: {
-    label: 'Cosplay / costumes',
-    description: 'Full costume, props, makeup, character details, and group cosplay.',
-    keywords: ['cosplay', 'costume', 'full costume', 'prop', 'makeup', 'character', 'detail'],
-    help: 'Use for convention shoots; full-body/person boxes and detail shots stay meaningful even when faces are small.',
+    label: 'Anime convention / cosplay',
+    description: 'Animaga, SMASH and cosplay coverage with clear faces, complete costumes, expressive poses, groups, props, and details.',
+    keywords: ['anime convention', 'cosplay', 'costume', 'full costume', 'prop', 'makeup', 'character', 'group cosplay', 'costume detail'],
+    help: 'Tuned for Animaga, SMASH and similar conventions. It prioritises the primary cosplayer, face and eye detail, complete sharp costumes, expressive poses, clean groups, and low occlusion without treating a missed detection as a reject.',
   },
   'cars-itasha': {
     label: 'Cars / itasha',
@@ -483,12 +524,12 @@ export interface EventModeSuggestion {
 
 /**
  * Suggest (but never silently apply) a review profile from folder/job/event
- * text. Distinctive HYROX wording wins immediately; otherwise two station cues
- * are required so a generic word such as "running" cannot retune a shoot.
+ * text. Distinctive event names win immediately; weaker sport or convention
+ * terms require enough context that a generic word cannot retune a shoot.
  */
 export function suggestEventModeFromCues(cues: string | string[]): EventModeSuggestion | null {
-  const source = (Array.isArray(cues) ? cues : [cues])
-    .join(' ')
+  const rawSource = (Array.isArray(cues) ? cues : [cues]).join(' ');
+  const source = rawSource
     .toLocaleLowerCase()
     .replace(/[_\\/.-]+/g, ' ')
     .replace(/\s+/g, ' ')
@@ -516,6 +557,30 @@ export function suggestEventModeFromCues(cues: string | string[]): EventModeSugg
   }
   if (distinctive.length > 0 || (matchedStations.length >= 1 && enduranceContext.length >= 1)) {
     return { mode: 'hyrox-endurance', genre: 'sports', confidence: 'medium', matchedCues };
+  }
+
+  const conventionNames = ['animaga', 'sydney manga and anime show'].filter(containsPhrase);
+  // SMASH is the event's public name but is also an ordinary word. Use its
+  // official uppercase spelling, or require event context for lowercase text,
+  // so a folder such as "smash burger" does not change review behaviour.
+  const smashEvent = /\bSMASH\b/.test(rawSource) ||
+    (containsPhrase('smash') && /\b(anime|cosplay|manga|sydney|20\d{2})\b/i.test(source));
+  if (smashEvent) conventionNames.push('smash');
+  const conventionContext = [
+    'anime convention', 'cosplay convention', 'comic convention',
+    'cosplay event', 'cosplay shoot', 'group cosplay',
+  ].filter(containsPhrase);
+  const conventionCues = [...new Set([...conventionNames, ...conventionContext])];
+  if (conventionNames.length > 0) {
+    return { mode: 'cosplay', genre: 'portrait', confidence: 'high', matchedCues: conventionCues };
+  }
+  if (conventionContext.length > 0 || containsPhrase('cosplay')) {
+    return {
+      mode: 'cosplay',
+      genre: 'portrait',
+      confidence: 'medium',
+      matchedCues: conventionCues.length > 0 ? conventionCues : ['cosplay'],
+    };
   }
   return null;
 }
@@ -1425,6 +1490,8 @@ export interface AppSettings {
   reviewFaceAnalysis?: boolean;
   /** Generate face embeddings for similar-face grouping/gallery. Expensive on crowded images. */
   reviewFaceMatching?: boolean;
+  /** Explicit local-similarity consent marker; absence keeps embeddings off. */
+  faceMatchingConsentVersion?: 'local-similarity-v1' | '';
   /** Run person/body detection in the face engine. Useful for event culling, but CPU/GPU heavy. */
   reviewPersonDetection?: boolean;
   /** Generate visual hashes and near-duplicate stacks during review. */

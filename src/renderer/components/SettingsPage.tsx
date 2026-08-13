@@ -529,8 +529,17 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     key: 'reviewFaceAnalysis' | 'reviewFaceMatching' | 'reviewPersonDetection' | 'reviewVisualDuplicates',
     value: boolean,
   ) => {
+    if (key === 'reviewFaceMatching' && value && !window.confirm(
+      'Enable local similar-face matching?\n\n' +
+      'Keptra will create biometric-style similarity vectors for selected faces and store them only on this device. ' +
+      'They are used to group recurring people for culling, never to identify a real-world name. ' +
+      'You can remove them with Clear local face data in Settings.',
+    )) return;
     dispatch({ type: 'SET_REVIEW_PERFORMANCE_OPTION', key, value });
     const patch: Partial<AppSettings> = { [key]: value };
+    if (key === 'reviewFaceMatching') {
+      patch.faceMatchingConsentVersion = value ? 'local-similarity-v1' : '';
+    }
     if (key === 'reviewFaceAnalysis' && !value) {
       patch.reviewFaceMatching = false;
       patch.reviewPersonDetection = false;
@@ -567,7 +576,10 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
           tier === 'high' ? Math.max(rawPreviewQuality, 82) :
             rawPreviewQuality;
     const nextReviewFaceAnalysis = tier === 'auto' ? reviewFaceAnalysis : tier !== 'low';
-    const nextReviewFaceMatching = tier === 'auto' ? reviewFaceMatching : tier !== 'low';
+    // Performance presets must never create local biometric-style vectors by
+    // implication. Similar-face matching changes only through its consented
+    // toggle and is otherwise preserved exactly.
+    const nextReviewFaceMatching = reviewFaceMatching;
     const nextReviewPersonDetection = tier === 'auto' ? reviewPersonDetection : tier !== 'low';
     const nextReviewVisualDuplicates = tier === 'auto' ? reviewVisualDuplicates : tier !== 'low';
     dispatch({ type: 'SET_PERF_TIER', tier });
@@ -737,7 +749,9 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
       const cpuOptimizationTarget = !dmlActive && profile.cpuOptimization;
       const fastKeeperTarget = profile.tier === 'low' && !dmlActive;
       const reviewFaceAnalysisTarget = !fastKeeperTarget;
-      const reviewFaceMatchingTarget = !fastKeeperTarget;
+      // The optimiser may preserve an explicit identity-matching choice, but
+      // must never switch biometric-style similarity vectors on implicitly.
+      const reviewFaceMatchingTarget = !fastKeeperTarget && reviewFaceMatching;
       const reviewPersonDetectionTarget = !fastKeeperTarget;
       const reviewVisualDuplicatesTarget = !fastKeeperTarget;
       const spec = `${profile.cpuCores} CPU threads, ${profile.totalMemGB}GB RAM, ${dmlActive ? `DirectML ${avgDmlMs !== undefined ? `${avgDmlMs.toFixed(1)}ms avg` : `(${dmlModels.map((m) => m.model).join('/')})`}` : 'CPU face analysis'}`;
@@ -2787,9 +2801,9 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                   disabled={!reviewFaceAnalysis}
                   onChange={(e) => handleReviewPerformanceOption('reviewFaceMatching', e.target.checked)}
                 />
-                <span className="text-xs text-text">Similar-face matching and gallery</span>
+                <span className="text-xs text-text">Local similar-face matching and gallery (optional)</span>
               </label>
-              <p className="mb-2 ml-5 text-[10px] text-text-muted">Generates face embeddings for Face groups and Face gallery. Turn off for the biggest speed gain on crowded event photos.</p>
+              <p className="mb-2 ml-5 text-[10px] text-text-muted">Creates biometric-style similarity vectors for selected faces, stored only on this device. It groups recurring people without assigning names. Leave off for maximum speed; Clear local face data removes saved vectors.</p>
 
               <label className={`mb-1 flex items-center gap-2 ${reviewFaceAnalysis ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
                 <input

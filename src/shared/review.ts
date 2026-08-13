@@ -1,5 +1,5 @@
 import type { CullingGenre, CullConfidence, EventMode, KeeperQuota, MediaFile, PoseKeypoint, PoseKeypoints } from './types';
-import { COCO_KP, isEnduranceSportsMode, isSportsEventMode } from './types';
+import { COCO_KP, isConventionEventMode, isEnduranceSportsMode, isPeopleFirstEventMode, isSportsEventMode } from './types';
 
 // ---------------------------------------------------------------------------
 // Active review profile
@@ -37,6 +37,14 @@ function sportsModeActive(): boolean {
 
 function enduranceModeActive(): boolean {
   return isEnduranceSportsMode(activeEventMode);
+}
+
+function conventionModeActive(): boolean {
+  return isConventionEventMode(activeEventMode);
+}
+
+function subjectCriticalModeActive(): boolean {
+  return sportsModeActive() || isPeopleFirstEventMode(activeEventMode);
 }
 
 function activeGenre(): CullingGenre {
@@ -125,20 +133,40 @@ export interface SubjectPresenceEvidence {
  * marked inferred and weak/tiny evidence stays uncertain.
  */
 export function assessSubjectPresence(
-  file: Partial<Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'faceDetection' | 'personCount' | 'personBoxes'>>,
+  file: Partial<Pick<MediaFile,
+    'faceCount' | 'faceBoxes' | 'faceDetection' | 'personCount' | 'personBoxes' |
+    'poses' | 'reviewAnalysisFeatures'>>,
 ): SubjectPresenceEvidence {
   const faces = file.faceBoxes ?? [];
   const persons = file.personBoxes ?? [];
   const faceCount = Math.max(file.faceCount ?? 0, faces.length);
   const personCount = Math.max(file.personCount ?? 0, persons.length);
   if (personCount > 0) {
+    const fallbackCorroborated = file.reviewAnalysisFeatures?.personFallbackCorroborated === true ||
+      (file.reviewAnalysisFeatures?.personFallbackCorroborated === undefined &&
+        file.reviewAnalysisFeatures?.personDetectorId?.includes('+ssd-fallback') === true);
+    const fastPersonOnly = file.reviewAnalysisFeatures?.fastPersonDetection === true &&
+      !fallbackCorroborated;
+    const faceAssociated = faces.some((face) => persons.some((person) => {
+      const centerX = face.x + face.width / 2;
+      const centerY = face.y + face.height / 2;
+      return centerX >= person.x - person.width * 0.08 &&
+        centerX <= person.x + person.width * 1.08 &&
+        centerY >= person.y - person.height * 0.08 &&
+        centerY <= person.y + person.height * 0.72;
+    }));
+    const corroborated = !fastPersonOnly ||
+      file.reviewAnalysisFeatures?.personFallbackCorroborated === true ||
+      faceAssociated || (file.poses ?? []).some(isUsablePose);
     return {
       hasPeople: true,
       faceCount,
       personCount,
-      confidence: 'confirmed',
+      confidence: corroborated ? 'confirmed' : 'probable',
       bodySource: 'detected',
-      reasons: ['person/body detected'],
+      reasons: [corroborated
+        ? 'person/body detected'
+        : 'fast person proposal; confirmation remains review-only'],
     };
   }
   if (faceCount <= 0) {
@@ -183,6 +211,17 @@ export function assessSubjectPresence(
 function subjectFocusConfidence(file: SubjectSharpnessInput): number | undefined {
   const confidence = file.sceneAnalysis?.subjectFocusConfidence;
   return typeof confidence === 'number' && Number.isFinite(confidence) ? confidence : undefined;
+}
+
+/** Conservative evidence gate for destructive convention comparisons. Counts
+ * without usable boxes and tiny/weak body proposals may be a prop, poster or
+ * background attendee, so they stay visible for manual review. */
+function hasReliableConventionSubjectEvidence(file: MediaFile): boolean {
+  const reliableFace = (file.faceBoxes ?? []).some((box) =>
+    faceBoxEvidence(box, file.faceDetection) >= 0.46);
+  const reliablePerson = (file.personBoxes ?? []).some((box) =>
+    box.width > 0 && box.height > 0 && boxArea(box) >= 0.006 && clamp01(box.score, 0.72) >= 0.48);
+  return reliableFace || reliablePerson || (file.poses ?? []).some(isUsablePose);
 }
 
 function resolvedSubjectSharpness(file: SubjectSharpnessInput): number | undefined {
@@ -708,6 +747,138 @@ export function enduranceActionQuality(file: MediaFile): number {
   return enduranceActionBreakdown(file).score;
 }
 
+export interface ConventionQualityBreakdown {
+  score: number;
+  confidence: number;
+  primarySubject: number;
+  faceAndEyes: number;
+  costumeSharpness: number;
+  expressionAndPose: number;
+  groupCompleteness: number;
+  isolation: number;
+  occlusion: number;
+  reasons: string[];
+  cautions: string[];
+}
+
+/**
+ * Anime-convention/cosplay quality over existing measured evidence. It favours
+ * a readable primary cosplayer, face/eye and costume sharpness, expression,
+ * pose, complete groups and clean isolation. Absent optional evidence stays at
+ * a neutral midpoint and never becomes a negative detector conclusion.
+ */
+export function conventionQualityBreakdown(file: MediaFile): ConventionQualityBreakdown {
+  const presence = assessSubjectPresence(file);
+  const persons = file.personBoxes ?? [];
+  const faces = file.faceBoxes ?? [];
+  const primaryIndex = primaryPersonIndex(file);
+  const primary = primaryIndex >= 0 ? persons[primaryIndex] : undefined;
+  const primaryPose = primaryIndex >= 0 ? file.poses?.[primaryIndex] : file.poses?.[0];
+  const associatedFaces = primary ? faces.filter((face) => faceAssociatedWithPerson(face, primary)) : faces;
+  const strongestFace = associatedFaces.slice().sort((a, b) =>
+    faceBoxEvidence(b, file.faceDetection) - faceBoxEvidence(a, file.faceDetection),
+  )[0];
+  const overlap = primary
+    ? persons.reduce((highest, other, index) => index === primaryIndex
+      ? highest
+      : Math.max(highest, boxIntersectionFraction(primary, other)), 0)
+    : 0;
+  const crowdPenalty = clamp01(Math.max(0, persons.length - 4) / 8);
+  const isolation = primary
+    ? clamp01(1 - overlap * 0.72 - crowdPenalty * 0.48)
+    : presence.confidence === 'probable' ? 0.45 : 0.5;
+  const occlusion = primary
+    ? clamp01(overlap * 0.72 + (1 - boxFrameVisibility(primary)) * 0.5 + crowdPenalty * 0.2)
+    : 0.5;
+  const primarySubject = primary
+    ? clamp01(clamp01(primary.score, 0.72) * 0.31 + clamp01(boxArea(primary) / 0.28) * 0.23 +
+      boxCenterScore(primary) * 0.2 + boxFrameVisibility(primary) * 0.16 + isolation * 0.1)
+    : presence.confidence === 'probable' ? 0.45 : presence.confidence === 'uncertain' ? 0.5 : 0;
+
+  // Tiny/distant faces cannot support a negative eye conclusion. A detected
+  // but unassessable face and entirely absent optional face evidence are both
+  // neutral; a clear native crop can positively separate a burst winner.
+  const faceAndEyes = strongestFace && faceBoxCanJudgeEyes(strongestFace, file.faceDetection)
+    ? clamp01(faceBoxEvidence(strongestFace, file.faceDetection) * 0.4 + eyeDetailSignal(strongestFace) * 0.6)
+    : 0.5;
+  const subjectSharpness = resolvedSubjectSharpness(file);
+  const costumeSharpness = typeof subjectSharpness === 'number'
+    ? normalizedSharpness(subjectSharpness)
+    : 0.5;
+  const expression = strongestFace && faceBoxCanJudgeEyes(strongestFace, file.faceDetection)
+    ? expressionSignal(strongestFace)
+    : 0.5;
+  const pose = isUsablePose(primaryPose)
+    ? clamp01((primaryPose.score ?? primaryPose.keypoints.reduce((sum, point) => sum + point.score, 0) /
+      primaryPose.keypoints.length) * 0.58 + poseStationAction(primaryPose) * 0.42)
+    : 0.5;
+  const expressionAndPose = expression * 0.52 + pose * 0.48;
+  const groupCompleteness = Math.max(faces.length, persons.length) >= 2
+    ? clamp01(groupCoverageQuality(file) / 34)
+    : 0.5;
+  const confidence = clamp01(
+    (presence.confidence === 'confirmed' ? 0.34 : presence.confidence === 'probable' ? 0.2 : presence.confidence === 'uncertain' ? 0.08 : 0) +
+    (typeof subjectSharpness === 'number' ? 0.24 : 0) +
+    (strongestFace && faceBoxCanJudgeEyes(strongestFace, file.faceDetection) ? 0.2 : 0) +
+    (isUsablePose(primaryPose) ? 0.12 : 0) +
+    (file.reviewAnalysisStage === 'subjects' || file.reviewAnalysisStage === 'full' ? 0.1 : 0),
+  );
+  const reasons: string[] = [];
+  const cautions: string[] = [];
+  if (primarySubject >= 0.68) reasons.push('clear primary cosplayer');
+  if (faceAndEyes >= 0.68) reasons.push('clear face and eye detail');
+  if (costumeSharpness >= 0.68) reasons.push('sharp costume and prop detail');
+  if (expressionAndPose >= 0.65) reasons.push('strong expression and pose');
+  if (groupCompleteness >= 0.68) reasons.push('complete readable cosplay group');
+  if (isolation >= 0.68 && occlusion <= 0.35) reasons.push('clean subject isolation');
+  if (occlusion >= 0.58) cautions.push('primary cosplayer is occluded');
+  if (crowdPenalty >= 0.45) cautions.push('crowd competes with primary cosplayer');
+  if (confidence < 0.5) cautions.push('limited convention subject evidence');
+
+  if (!presence.hasPeople) {
+    return {
+      // Neutral midpoint, not an empty-scene penalty: detector zero is unknown
+      // in a crowded convention and the bulk gate below keeps it manual.
+      score: 97 + (isDetailStoryKeeper(file) ? 8 : 0) -
+        (file.blurRisk === 'high' ? 92 : file.blurRisk === 'medium' ? 30 : 0),
+      confidence: Math.min(confidence, 0.25),
+      primarySubject: 0.5,
+      faceAndEyes: 0.5,
+      costumeSharpness: 0.5,
+      expressionAndPose: 0.5,
+      groupCompleteness: 0.5,
+      isolation: 0.5,
+      occlusion: 0.5,
+      reasons: isDetailStoryKeeper(file) ? ['sharp costume or event detail'] : [],
+      cautions: ['no reliable cosplayer evidence — manual review'],
+    };
+  }
+
+  let score =
+    primarySubject * 38 +
+    faceAndEyes * 48 +
+    costumeSharpness * 64 +
+    expressionAndPose * 28 +
+    groupCompleteness * 30 +
+    isolation * 28 -
+    occlusion * 42;
+  if (file.blurRisk === 'high') score -= 92;
+  else if (file.blurRisk === 'medium') score -= 30;
+  if (presence.bodySource === 'face-inferred') {
+    score -= presence.confidence === 'uncertain' ? 14 : 6;
+    cautions.push('body detector miss — costume coverage requires review');
+  }
+  return {
+    score: Math.round(score), confidence, primarySubject, faceAndEyes,
+    costumeSharpness, expressionAndPose, groupCompleteness, isolation,
+    occlusion, reasons: reasons.slice(0, 5), cautions: cautions.slice(0, 3),
+  };
+}
+
+export function conventionQuality(file: MediaFile): number {
+  return conventionQualityBreakdown(file).score;
+}
+
 /**
  * Composite sports-action bonus added to bestShotScore/keeperScore when a sports
  * EventMode is active. Tuned so peak-contact, frozen, emotive, well-focused
@@ -1165,6 +1336,7 @@ export function keeperScore(file: MediaFile): number {
     Math.min(55, file.reviewScore ?? 0) -
     (file.blurRisk === 'high' ? 90 : file.blurRisk === 'medium' ? 30 : 0) +
     (sportsModeActive() ? sportsActionQuality(file) : 0) +
+    (conventionModeActive() ? conventionQuality(file) : 0) +
     genreScoreBonus(file)
   );
 }
@@ -1205,6 +1377,7 @@ export function bestShotScore(file: MediaFile): number {
   if (hasFaces && subjectSharp > 0 && subjectSharp < 38) score -= 55;
   if (!hasFaces && subjectSharp > 0 && subjectSharp < 28) score -= 25;
   if (sportsModeActive()) score += sportsActionQuality(file);
+  if (conventionModeActive()) score += conventionQuality(file);
   score += genreScoreBonus(file);
   return Math.round(score);
 }
@@ -1273,6 +1446,7 @@ export function inferSceneBucket(file: MediaFile, eventMode: EventMode = 'genera
     if (eventMode === 'interior') return 'Interior / rooms';
   }
   if ((file.faceCount ?? file.faceBoxes?.length ?? 0) >= 3 || (file.personCount ?? file.personBoxes?.length ?? 0) >= 3) {
+    if (eventMode === 'cosplay') return 'Cosplay groups';
     return 'Groups';
   }
   if ((file.faceCount ?? file.faceBoxes?.length ?? 0) > 0) {
@@ -1628,6 +1802,9 @@ function genreComparisonReasons(best: MediaFile, candidate: MediaFile): string[]
   if (bestGenre.genre === 'group' && groupCoverageQuality(best) - groupCoverageQuality(candidate) >= 10) {
     reasons.push('weaker group coverage');
   }
+  if (conventionModeActive() && conventionQuality(best) - conventionQuality(candidate) >= 42) {
+    reasons.push('weaker cosplay face, costume, pose, or isolation');
+  }
 
   const bestScene = best.sceneAnalysis;
   const candidateScene = candidate.sceneAnalysis;
@@ -1689,9 +1866,84 @@ function addQuotaKeepers(ranked: MediaFile[], keep: Set<string>, options: AutoCu
   }
 }
 
-function autoCullGroupWithActiveProfile(files: MediaFile[], options: AutoCullOptions): AutoCullDecision {
+function matchedFaceEmbeddingCount(file: Pick<MediaFile, 'faceEmbedding' | 'faceEmbeddings'>): number {
+  if (file.faceEmbeddings !== undefined) return file.faceEmbeddings.filter(Boolean).length;
+  return file.faceEmbedding ? 1 : 0;
+}
+
+/** Positive-only completeness signal from completed local face matching.
+ * Zero means unknown, never poor quality, so missing/disabled embeddings do
+ * not lower a frame or become rejection evidence. */
+export function faceMatchingCoverageQuality(
+  file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'faceEmbedding' | 'faceEmbeddings' | 'faceGroupId' | 'faceGroupSize'>,
+): number {
+  const matched = matchedFaceEmbeddingCount(file);
+  if (matched <= 0) return 0;
+  const detected = Math.max(file.faceCount ?? 0, file.faceBoxes?.length ?? 0, matched);
+  const completion = detected > 0 ? clamp01(matched / detected) : 0;
+  const recurringPrimary = file.faceGroupId && (file.faceGroupSize ?? 0) > 1 ? 12 : 0;
+  return Math.round(Math.min(100, matched * 18 + completion * 28 + recurringPrimary));
+}
+
+function addFaceIdentityCoverageKeepers(
+  ranked: MediaFile[],
+  keep: Set<string>,
+  reasons: Record<string, string[]>,
+): void {
+  const identityMembers = new Map<string, MediaFile[]>();
+  for (const file of ranked) {
+    if (!file.faceGroupId || matchedFaceEmbeddingCount(file) <= 0) continue;
+    const members = identityMembers.get(file.faceGroupId);
+    if (members) members.push(file);
+    else identityMembers.set(file.faceGroupId, [file]);
+  }
+
+  // One quality-qualified representative per recurring primary identity. A
+  // group ID seen only once locally still counts when its session-wide size
+  // proves the person recurs elsewhere in the shoot.
+  for (const members of identityMembers.values()) {
+    const recurring = members.length > 1 || members.some((file) => (file.faceGroupSize ?? 0) > 1);
+    if (!recurring) continue;
+    const representative = members.find(isAutoBestCandidate);
+    if (!representative) continue;
+    keep.add(representative.path);
+    const values = reasons[representative.path] ?? [];
+    pushUnique(values, 'best frame for recurring face group');
+    reasons[representative.path] = values;
+  }
+
+  // Preserve the strongest completed multi-face match as positive evidence of
+  // group completeness. This never penalises a frame with unknown identities.
+  const rankOrder = new Map(ranked.map((file, index) => [file.path, index]));
+  const groupCoverageRepresentative = ranked
+    .filter((file) => {
+      const matched = matchedFaceEmbeddingCount(file);
+      const detected = Math.max(file.faceCount ?? 0, file.faceBoxes?.length ?? 0, matched);
+      return matched >= 2 && matched / detected >= 0.6 && isAutoBestCandidate(file);
+    })
+    .sort((a, b) =>
+      faceMatchingCoverageQuality(b) - faceMatchingCoverageQuality(a) ||
+      (rankOrder.get(a.path) ?? Number.MAX_SAFE_INTEGER) -
+      (rankOrder.get(b.path) ?? Number.MAX_SAFE_INTEGER),
+    )[0];
+  if (groupCoverageRepresentative) {
+    keep.add(groupCoverageRepresentative.path);
+    const values = reasons[groupCoverageRepresentative.path] ?? [];
+    pushUnique(values, 'matched-face group coverage');
+    reasons[groupCoverageRepresentative.path] = values;
+  }
+}
+
+function autoCullGroupWithActiveProfile(
+  files: MediaFile[],
+  options: AutoCullOptions,
+  useFaceIdentityCoverage = false,
+): AutoCullDecision {
   const ranked = rankBestShots(files);
-  const best = ranked.find(isAutoBestCandidate) ?? null;
+  const activeMode = getReviewProfile();
+  const best = ranked.find((file) =>
+    isAutoBestCandidate(file) &&
+    (!subjectCriticalModeActive() || isAutoCullProposalEligible(file, activeMode))) ?? null;
   const keep = new Set<string>();
   const reject = new Set<string>();
   const reasons: Record<string, string[]> = {};
@@ -1700,6 +1952,7 @@ function autoCullGroupWithActiveProfile(files: MediaFile[], options: AutoCullOpt
   keep.add(best.path);
   addQuotaKeepers(ranked, keep, options);
   for (const path of keep) reasons[path] = path === best.path ? ['best shot'] : ['quota keeper'];
+  if (useFaceIdentityCoverage) addFaceIdentityCoverageKeepers(ranked, keep, reasons);
   const bestScore = bestShotScore(best);
   const second = ranked.find((file) => file.path !== best.path && isAutoBestCandidate(file));
   // When there is no eligible runner-up the gap is meaningless — treat as 0
@@ -1727,13 +1980,15 @@ function autoCullGroupWithActiveProfile(files: MediaFile[], options: AutoCullOpt
       reasons[file.path] = ['manual keeper'];
       continue;
     }
-    if (sportsModeActive() &&
-      (file.reviewAnalysisStage === 'subjects' || file.reviewAnalysisStage === 'full') &&
-      !hasDetectedSubject(file) && !(file.poses ?? []).some(isUsablePose)) {
-      // A complete detector-zero sports frame remains a manual comparison;
-      // the athlete may be distant, occluded or facing away. Only an explicit
-      // user reject above can classify it as rejected.
-      reasons[file.path] = ['sports subject detection inconclusive'];
+    const subjectEvidenceInconclusive = subjectCriticalModeActive() &&
+      !isAutoCullProposalEligible(file, activeMode);
+    if (subjectCriticalModeActive() && subjectEvidenceInconclusive) {
+      // A complete detector-zero subject-critical frame remains a manual
+      // comparison; an athlete or cosplayer may be distant, occluded or
+      // back-facing. Only an explicit user reject can classify it as rejected.
+      reasons[file.path] = [sportsModeActive()
+        ? 'sports subject detection inconclusive'
+        : 'cosplay subject detection inconclusive'];
       continue;
     }
     if (confidence !== 'aggressive' && isDetailStoryKeeper(file)) {
@@ -1797,7 +2052,13 @@ export function autoCullGroup(files: MediaFile[], options: AutoCullOptions = {})
   if (options.eventMode) configureReviewProfile(options.eventMode);
   if (options.genre) configureCullingGenre(options.genre);
   try {
-    return autoCullGroupWithActiveProfile(files, options);
+    const burstId = files[0]?.burstId;
+    const visualGroupId = files[0]?.visualGroupId;
+    const isDeclaredComparison = files.length > 1 && (
+      (!!burstId && files.every((file) => file.burstId === burstId)) ||
+      (!!visualGroupId && files.every((file) => file.visualGroupId === visualGroupId))
+    );
+    return autoCullGroupWithActiveProfile(files, options, isDeclaredComparison);
   } finally {
     configureReviewProfile(previousMode);
     configureCullingGenre(previousGenre);
@@ -2506,7 +2767,6 @@ export interface KeeperTargetResult {
 function diversityKey(file: MediaFile): string {
   return file.burstId
     ?? file.visualGroupId
-    ?? file.faceGroupId
     ?? `solo:${file.path}`;
 }
 
@@ -2714,13 +2974,25 @@ export function hasCullingAnalysis(file: MediaFile): boolean {
 }
 
 /**
- * Shared gate for any AI bulk proposal. Subject-critical sports frames with a
+ * Shared gate for any AI bulk proposal. Subject-critical sports/convention frames with a
  * completed detector pass but no face, body or usable pose stay manual: a
  * detector miss is not evidence that the photograph is empty or inferior.
  */
 export function isAutoCullProposalEligible(file: MediaFile, eventMode: EventMode): boolean {
   if (file.reviewAnalysisUnavailable) return false;
-  if (isSportsEventMode(eventMode) &&
+  const subjectPresence = assessSubjectPresence(file);
+  if ((isSportsEventMode(eventMode) || isPeopleFirstEventMode(eventMode)) &&
+      subjectPresence.confidence === 'probable') {
+    // NanoDet-only proposals are useful positive hints for ROI/focus, but a
+    // prop, poster, costume stand or equipment stack can look person-shaped.
+    // Require a face, pose or selective SSD corroboration before this evidence
+    // is allowed to drive an automatic keeper/reject decision.
+    return false;
+  }
+  if (isConventionEventMode(eventMode) && !hasReliableConventionSubjectEvidence(file)) {
+    return false;
+  }
+  if ((isSportsEventMode(eventMode) || isPeopleFirstEventMode(eventMode)) &&
     !hasDetectedSubject(file) &&
     !(file.poses ?? []).some(isUsablePose)) {
     // A bounded sports safeguard pass can still miss a distant, occluded or
@@ -2813,15 +3085,19 @@ export function buildAutoCullProposal(
     const proposalGroups: AutoCullProposalGroup[] = [];
 
     for (const group of groups) {
-      const analysedByPath = new Map(group.files.map((file) => [
+      const analysisReadyByPath = new Map(group.files.map((file) => [
+        file.path,
+        hasCullingAnalysis(file),
+      ]));
+      const decisionReadyByPath = new Map(group.files.map((file) => [
         file.path,
         isAutoCullProposalEligible(file, eventMode),
       ]));
       const groupAnalysisComplete = group.files.length === 1 ||
-        group.files.every((file) => analysedByPath.get(file.path));
+        group.files.every((file) => decisionReadyByPath.get(file.path));
       const ranked = rankBestShots(group.files);
       const decision = group.files.length > 1
-        ? autoCullGroup(group.files, options)
+        ? autoCullGroupWithActiveProfile(group.files, options, group.kind === 'burst' || group.kind === 'visual')
         : null;
       const best = decision?.best ?? ranked.find(isAutoBestCandidate) ?? null;
       // Include a soft/blurred runner-up in confidence measurement: it may be
@@ -2836,6 +3112,7 @@ export function buildAutoCullProposal(
 
       for (const file of ranked) {
         const analysis = scoreGenre(file, genre);
+        const subjectPresence = assessSubjectPresence(file);
         let disposition: AutoCullProposalDisposition;
         const itemReasons: string[] = [];
 
@@ -2845,18 +3122,36 @@ export function buildAutoCullProposal(
         } else if (isMandatoryKeeper(file)) {
           disposition = 'keep';
           itemReasons.push('manual/protected keeper');
-        } else if (!analysedByPath.get(file.path)) {
+        } else if (!analysisReadyByPath.get(file.path)) {
           disposition = 'unanalysed';
           itemReasons.push('quality analysis not available');
+        } else if (!decisionReadyByPath.get(file.path) &&
+          (isSportsEventMode(eventMode) || isPeopleFirstEventMode(eventMode))) {
+          // The analysis completed, but its subject evidence is intentionally
+          // insufficient for an automatic decision. Report that distinction
+          // instead of misleading the photographer that analysis never ran.
+          disposition = 'uncertain';
+          if (subjectPresence.confidence === 'uncertain' &&
+              subjectPresence.faceCount > 0 && subjectPresence.personCount === 0) {
+            itemReasons.push('weak/tiny face evidence cannot support an automatic decision');
+          } else if (subjectPresence.confidence === 'probable') {
+            itemReasons.push('uncorroborated subject evidence cannot support an automatic decision');
+          } else {
+            itemReasons.push('subject detection inconclusive — manual review required');
+          }
         } else if (!groupAnalysisComplete) {
           // Never reject a completed frame against an incompletely analysed
           // neighbour. The missing evidence could still change which member is
           // best, so completed members remain visible but unchanged.
           disposition = 'uncertain';
           itemReasons.push('comparison group is still being analysed');
-        } else if (assessSubjectPresence(file).confidence === 'uncertain') {
+        } else if (['uncertain', 'probable'].includes(subjectPresence.confidence) &&
+          (isSportsEventMode(eventMode) || isPeopleFirstEventMode(eventMode))) {
           disposition = 'uncertain';
-          itemReasons.push('weak/tiny face evidence cannot support an automatic decision');
+          itemReasons.push(subjectPresence.confidence === 'uncertain' &&
+            subjectPresence.faceCount > 0 && subjectPresence.personCount === 0
+            ? 'weak/tiny face evidence cannot support an automatic decision'
+            : 'uncorroborated subject evidence cannot support an automatic decision');
         } else if (hasDetectedSubject(file) && (subjectFocusConfidence(file) ?? 0) < 0.2) {
           disposition = 'uncertain';
           itemReasons.push('subject focus confidence too low for an automatic decision');
@@ -2878,6 +3173,7 @@ export function buildAutoCullProposal(
           itemReasons.push(...analysis.cautions);
         } else if (decisionKeeps.has(file.path) || file.path === best?.path) {
           disposition = 'keep';
+          itemReasons.push(...(decision?.reasons[file.path] ?? []));
           itemReasons.push(...(analysis.reasons.length > 0 ? analysis.reasons : ['best available representative']));
         } else {
           disposition = 'uncertain';

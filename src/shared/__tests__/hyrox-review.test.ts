@@ -336,7 +336,7 @@ describe('face/body detector disagreement safety', () => {
       confidence: 'aggressive',
     });
     expect(proposal.reject).not.toContain(completeMiss.path);
-    expect(proposal.unanalysed).toContain(completeMiss.path);
+    expect(proposal.uncertain).toContain(completeMiss.path);
     expect(proposal.uncertain).toContain(detected.path);
     expect(proposal.reasons[detected.path]).toContain('comparison group is still being analysed');
 

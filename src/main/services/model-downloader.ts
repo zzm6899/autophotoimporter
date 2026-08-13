@@ -22,6 +22,7 @@ import type { BrowserWindow } from 'electron';
 import { IPC } from '../../shared/types';
 import {
   DETECTOR_CANDIDATE_MODELS,
+  PRODUCTION_FAST_DETECTOR_MODELS,
   getDetectorCandidate,
   verifyDetectorCandidateFile,
   type DetectorCandidateId,
@@ -75,6 +76,12 @@ const MODELS: ModelSpec[] = [
     approxBytes: 25_067_197,
     sha256: '3dca9f6e5f8a64dc9935a5be06fd8bf81bf01e696c9c05c6f2a650e0a401b763',
   },
+  ...Object.values(PRODUCTION_FAST_DETECTOR_MODELS).map((model) => ({
+    name: model.fileName,
+    url: model.sourceUrl,
+    approxBytes: model.bytes,
+    sha256: model.sha256,
+  })),
 ];
 
 // ---------------------------------------------------------------------------
@@ -273,20 +280,22 @@ export interface ExperimentalDetectorModelStatus {
  * is explicitly invalid rather than silently trusted.
  */
 export async function getExperimentalDetectorModelStatuses(): Promise<ExperimentalDetectorModelStatus[]> {
-  return Promise.all(DETECTOR_CANDIDATE_MODELS.map(async (candidate) => {
-    const verified = await findVerifiedExperimentalDetector(candidate);
-    if (verified) {
-      return { id: candidate.id, fileName: candidate.fileName, state: 'verified', modelPath: verified };
-    }
-    const installed = experimentalDetectorSearchDirs()
-      .map((dir) => path.join(dir, candidate.fileName))
-      .some((filePath) => existsSync(filePath));
-    return {
-      id: candidate.id,
-      fileName: candidate.fileName,
-      state: installed ? 'invalid' : 'not-installed',
-    };
-  }));
+  return Promise.all(DETECTOR_CANDIDATE_MODELS
+    .filter((candidate) => !candidate.bundledByDefault)
+    .map(async (candidate) => {
+      const verified = await findVerifiedExperimentalDetector(candidate);
+      if (verified) {
+        return { id: candidate.id, fileName: candidate.fileName, state: 'verified', modelPath: verified };
+      }
+      const installed = experimentalDetectorSearchDirs()
+        .map((dir) => path.join(dir, candidate.fileName))
+        .some((filePath) => existsSync(filePath));
+      return {
+        id: candidate.id,
+        fileName: candidate.fileName,
+        state: installed ? 'invalid' : 'not-installed',
+      };
+    }));
 }
 
 /**
@@ -303,6 +312,9 @@ export function ensureExperimentalDetectorDownloaded(
 
   const task = (async () => {
     const candidate = getDetectorCandidate(id);
+    if (candidate.bundledByDefault) {
+      throw new Error(`${candidate.displayName} is a production model managed by the standard downloader.`);
+    }
     const existing = await findVerifiedExperimentalDetector(candidate);
     if (existing) return existing;
 

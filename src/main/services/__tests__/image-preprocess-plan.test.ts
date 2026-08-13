@@ -13,7 +13,17 @@ describe('image preprocess work plan', () => {
       includeAnalysisSurface: true,
       includePersonTensors: true,
       includeNanoDetTensor: false,
-    })).toEqual({ detector: false, surface: true, fastPerson: true, nanoDet: false });
+    })).toEqual({ detector: false, surface: true, fastPerson: true, nanoDet: false, yuNet: false });
+  });
+
+  it('adds both production fast-pass tensors explicitly', () => {
+    expect(imagePreprocessPlan({
+      includeDetectorTensor: true,
+      includeAnalysisSurface: true,
+      includePersonTensors: true,
+      includeNanoDetTensor: true,
+      includeYuNetTensor: true,
+    })).toMatchObject({ nanoDet: true, yuNet: true });
   });
 
   it('adds NanoDet only for an explicitly installed sports fallback', () => {

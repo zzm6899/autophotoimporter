@@ -67,6 +67,8 @@ function modelSmokeStatus() {
   const models = [
     'version-RFB-640.onnx',
     'face_recognition_sface_2021dec.onnx',
+    'face_detection_yunet_2023mar.onnx',
+    'object_detection_nanodet_2022nov.onnx',
     'ssd_mobilenet_v1_12.onnx',
     'movenet_thunder.onnx',
   ];
@@ -531,6 +533,7 @@ const createWindow = () => {
         // the installed package prove native runtime/model compatibility, not
         // merely file presence.
         const faceModels = await diagnoseFaceEngine();
+        const productionFastDetectors = faceModels.productionFastDetectors;
         const poseModel = await runPoseModelSmoke();
         const requiredPreload = ['getSettings', 'startImport', 'preflightImport', 'retryFailedImport', 'exportDiagnostics', 'checkForUpdates', 'downloadUpdate', 'installUpdate'];
         const preloadFunctions = Array.isArray(preload?.preloadFunctions) ? preload.preloadFunctions : [];
@@ -566,6 +569,9 @@ const createWindow = () => {
               preprocessWorker.ok &&
               Number.isFinite(faceModels.avgInferenceMs) &&
               faceModels.models.length === 3 &&
+              productionFastDetectors.active &&
+              Number.isFinite(productionFastDetectors.faceInferenceMs) &&
+              Number.isFinite(productionFastDetectors.personInferenceMs) &&
               poseModel.ok &&
               missingModels.length === 0,
             {
@@ -579,6 +585,7 @@ const createWindow = () => {
               resources,
               preprocessWorker,
               faceModels,
+              productionFastDetectors,
               poseModel,
               missingModels,
               updateMode: process.platform === 'darwin' ? 'manual-dmg' : 'installer-or-native',
