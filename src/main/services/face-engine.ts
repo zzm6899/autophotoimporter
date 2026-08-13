@@ -25,7 +25,7 @@
 
 import path from 'node:path';
 import { createReadStream, existsSync, statSync } from 'node:fs';
-import { stat as statFile } from 'node:fs/promises';
+import { readFile, stat as statFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { app } from 'electron';
 import { log } from '../logger';
@@ -452,8 +452,26 @@ interface ProductionFastDetectorBundle {
   person: DetectorCandidateRuntime;
   generation: number;
 }
+
+export interface ProductionFastDetectorRuntimeStatus {
+  state: ProductionFastDetectorState;
+  active: boolean;
+  faceModel: string;
+  personModel: string;
+  faceProvider?: 'cpu' | 'dml';
+  personProvider?: 'cpu' | 'dml';
+  faceRuns: number;
+  personRuns: number;
+  ssdFallbacks: number;
+  ssdFallbackRate: number | null;
+  legacyFaceFallbacks: number;
+  legacyPersonFallbacks: number;
+  failure?: string;
+}
+
 let productionFastDetectorGeneration = 0;
 let productionFastDetectorPromise: Promise<ProductionFastDetectorBundle | null> | null = null;
+let activeProductionFastBundle: ProductionFastDetectorBundle | null = null;
 let productionFastDetectorState: ProductionFastDetectorState = 'unchecked';
 let productionFastDetectorFailure: string | undefined;
 let productionFastDetectorRetryAt = 0;
@@ -461,6 +479,9 @@ let fastFaceRuns = 0;
 let fastPersonRuns = 0;
 let fastCascadeLegacyFaceFallbacks = 0;
 let fastCascadeLegacyPersonFallbacks = 0;
+// Counts photos that actually attempted NanoDet and then routed through SSD.
+// Unlike legacyPersonFallbacks, legacy-only photos are deliberately excluded.
+let fastPersonSsdFallbacks = 0;
 let activeProductionFastInferences = 0;
 const retiredProductionFastBundles = new Set<ProductionFastDetectorBundle>();
 let retiredProductionFastRelease: Promise<void> = Promise.resolve();
@@ -495,6 +516,7 @@ function retireProductionFastBundle(
     return;
   }
   const plan = productionFastFailurePlan(reason);
+  if (activeProductionFastBundle === bundle) activeProductionFastBundle = null;
   productionFastDetectorState = plan.state;
   productionFastDetectorFailure = plan.failure;
   productionFastDetectorRetryAt = plan.retryAt;
@@ -566,6 +588,7 @@ async function getProductionFastDetectorBundle(): Promise<ProductionFastDetector
     )) return null;
     productionFastDetectorState = 'unchecked';
     productionFastDetectorPromise = null;
+    activeProductionFastBundle = null;
   }
   if (!productionFastDetectorPromise) {
     const loadGeneration = productionFastDetectorGeneration;
@@ -578,6 +601,7 @@ async function getProductionFastDetectorBundle(): Promise<ProductionFastDetector
           resolveVerifiedProductionFastModelPath('person'),
         ]);
         if (!facePath || !personPath) {
+          activeProductionFastBundle = null;
           productionFastDetectorState = 'legacy-fallback';
           productionFastDetectorFailure = !facePath && !personPath
             ? 'verified YuNet and NanoDet weights are unavailable'
@@ -615,6 +639,7 @@ async function getProductionFastDetectorBundle(): Promise<ProductionFastDetector
         const loadedPerson = bundle.person;
         face = loadedFace;
         person = loadedPerson;
+        activeProductionFastBundle = bundle;
         productionFastDetectorState = 'active';
         productionFastDetectorFailure = undefined;
         productionFastDetectorRetryAt = Number.POSITIVE_INFINITY;
@@ -624,6 +649,7 @@ async function getProductionFastDetectorBundle(): Promise<ProductionFastDetector
         return bundle;
       } catch (error) {
         if (loadGeneration !== productionFastDetectorGeneration) return null;
+        activeProductionFastBundle = null;
         productionFastDetectorState = 'legacy-fallback';
         productionFastDetectorFailure = error instanceof Error ? error.message : String(error);
         // A verified weight that cannot create a runtime should remain closed
@@ -1246,6 +1272,7 @@ export async function disposeFaceEngine(): Promise<void> {
   gpuAvailable = null;
   actualExecutionProvider = null;
   productionFastDetectorPromise = null;
+  activeProductionFastBundle = null;
   productionFastDetectorState = 'unchecked';
   productionFastDetectorFailure = undefined;
   productionFastDetectorRetryAt = 0;
@@ -1327,6 +1354,7 @@ import {
   extractLargestEmbeddedJpeg,
   getDetectionPixels,
   getThumbnailPayload,
+  jpegDimensions,
   peekPreviewFile,
   peekThumbnailPayload,
   readExifOrientation,
@@ -2257,11 +2285,35 @@ function resolvedPreviewSource(
   };
 }
 
+async function isUsableScannerThumbnail(payload: PreviewPayload): Promise<boolean> {
+  try {
+    const encoded = payload.kind === 'buffer' ? payload.buffer : await readFile(payload.diskPath);
+    const dimensions = jpegDimensions(encoded);
+    return !!dimensions && isUsableDetectionPreviewSize(dimensions.width, dimensions.height);
+  } catch {
+    return false;
+  }
+}
+
 export async function resolvePreprocessSource(
   imagePath: string,
   originalOrientation: ExifOrientation,
   preferScannerThumbnail = false,
 ): Promise<ResolvedPreprocessSource> {
+  // The scanner has usually already decoded and bounded a thumbnail by the
+  // time detector-only review starts. Prefer that handoff for every supported
+  // source type, including ordinary JPEGs. Previously the direct-extension
+  // return below won first, so a cheap YuNet screen reopened every full-size
+  // JPEG and left the four preprocessing workers saturated while the GPU
+  // waited. This is a read-only lookup; a missing/evicted thumbnail falls back
+  // to the original without generating work on the Electron thread.
+  const thumbnail = preferScannerThumbnail
+    ? await peekThumbnailPayload(imagePath).catch(() => undefined)
+    : undefined;
+  if (thumbnail && await isUsableScannerThumbnail(thumbnail)) {
+    return resolvedPreviewSource(imagePath, thumbnail, originalOrientation, 'thumbnail');
+  }
+
   if (WORKER_DIRECT_EXTENSIONS.has(path.extname(imagePath).toLowerCase())) {
     return { sourcePath: imagePath, orientation: originalOrientation, sourceKind: 'original' };
   }
@@ -2273,15 +2325,6 @@ export async function resolvePreprocessSource(
       originalOrientation,
       'preview',
     );
-  }
-
-  // Detector-only RAW uses the scanner's already-encoded thumbnail when one
-  // exists. The read-only peek never invokes Sharp/nativeImage/platform tools.
-  const thumbnail = preferScannerThumbnail
-    ? await peekThumbnailPayload(imagePath).catch(() => undefined)
-    : undefined;
-  if (thumbnail) {
-    return resolvedPreviewSource(imagePath, thumbnail, originalOrientation, 'thumbnail');
   }
 
   // Unseen/cache-off RAW extraction belongs to the supervised process too.
@@ -3121,6 +3164,31 @@ function resultInStoredOrientation(
   };
 }
 
+/** Lightweight, synchronous status for renderer polling; it never loads a model. */
+export function getProductionFastDetectorRuntimeStatus(): ProductionFastDetectorRuntimeStatus {
+  const activeBundle = productionFastDetectorState === 'active' &&
+    activeProductionFastBundle?.generation === productionFastDetectorGeneration
+    ? activeProductionFastBundle
+    : null;
+  return {
+    state: productionFastDetectorState,
+    active: activeBundle !== null,
+    faceModel: getProductionFastDetector('face').id,
+    personModel: getProductionFastDetector('person').id,
+    faceProvider: activeBundle?.face.provider,
+    personProvider: activeBundle?.person.provider,
+    faceRuns: fastFaceRuns,
+    personRuns: fastPersonRuns,
+    ssdFallbacks: fastPersonSsdFallbacks,
+    ssdFallbackRate: fastPersonRuns > 0
+      ? Math.min(1, fastPersonSsdFallbacks / fastPersonRuns)
+      : null,
+    legacyFaceFallbacks: fastCascadeLegacyFaceFallbacks,
+    legacyPersonFallbacks: fastCascadeLegacyPersonFallbacks,
+    failure: productionFastDetectorFailure,
+  };
+}
+
 export function getFaceEngineRuntimeDiagnostics() {
   return {
     preprocessing: getImagePreprocessSupervisorDiagnostics(),
@@ -3137,15 +3205,8 @@ export function getFaceEngineRuntimeDiagnostics() {
       reasons: Object.fromEntries(personRefinementReasons),
     },
     productionFastDetectors: {
-      state: productionFastDetectorState,
+      ...getProductionFastDetectorRuntimeStatus(),
       fingerprint: PRODUCTION_FAST_DETECTOR_FINGERPRINT,
-      faceModel: getProductionFastDetector('face').id,
-      personModel: getProductionFastDetector('person').id,
-      faceRuns: fastFaceRuns,
-      personRuns: fastPersonRuns,
-      legacyFaceFallbacks: fastCascadeLegacyFaceFallbacks,
-      legacyPersonFallbacks: fastCascadeLegacyPersonFallbacks,
-      failure: productionFastDetectorFailure,
     },
   };
 }
@@ -3246,6 +3307,13 @@ async function _analyzeFacesInner(
       seedUpright?.features?.fastPersonDetection === true;
     let legacyFaceUsed = false;
     let legacyPersonUsed = false;
+    let nanoDetAttemptedThisAnalysis = false;
+    let ssdFallbackCountedThisAnalysis = false;
+    const markNanoDetSsdFallback = () => {
+      if (!nanoDetAttemptedThisAnalysis || ssdFallbackCountedThisAnalysis) return;
+      ssdFallbackCountedThisAnalysis = true;
+      fastPersonSsdFallbacks++;
+    };
     let legacyPersonCorroborated = !shouldRunPerson &&
       seedUpright?.features?.personFallbackCorroborated === true;
     let fastPersons: PersonDetectionPass = seedHasPersonStage
@@ -3314,10 +3382,12 @@ async function _analyzeFacesInner(
     const runFastPerson = async (): Promise<PersonDetectionPass> => {
       if (!fastDetectorBundle) return runLegacyPerson();
       try {
+        nanoDetAttemptedThisAnalysis = prepared.nanoDet !== undefined;
         const fast = await runNanoDetFastPass(fastDetectorBundle, prepared.nanoDet);
         const needsFallback = shouldUseLegacyDetectorFallback(fast.boxes, 0.48);
         if (needsFallback) {
           fastPersonCompleted = true;
+          markNanoDetSsdFallback();
           const legacy = await runLegacyPerson();
           return {
             boxes: mergePersonBoxes(fast.boxes, legacy.boxes),
@@ -3329,6 +3399,7 @@ async function _analyzeFacesInner(
       } catch (error) {
         log.warn('[face-engine] NanoDet fast pass failed; using SSD:',
           error instanceof Error ? error.message : String(error));
+        markNanoDetSsdFallback();
         return runLegacyPerson();
       }
     };
@@ -3379,6 +3450,7 @@ async function _analyzeFacesInner(
         });
         // Only the evidence-triggered minority pays for the 640 tensor. It is
         // derived from the retained 1024 surface, never another file decode.
+        markNanoDetSsdFallback();
         const refined = await detectPersonsFromPrepared(personTensorFromSurface(img!, 640));
         legacyPersonCorroborated ||= refined.boxes.length > 0;
         personBoxes = mergePersonBoxes(fastPersons.boxes, refined.boxes);

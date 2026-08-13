@@ -58,6 +58,51 @@ export function isRawFilterPhoto(file: Pick<MediaFile, 'type' | 'extension'>): b
   return file.type === 'photo' && !NON_RAW_PHOTO_EXTENSIONS.has(file.extension.toLowerCase());
 }
 
+/** Only a photo with a usable thumbnail can still produce a visual hash. */
+export function hasPendingVisualHashInput(
+  files: readonly MediaFile[],
+  visualDuplicatesEnabled: boolean,
+  resolveFile: (file: MediaFile) => MediaFile = (file) => file,
+): boolean {
+  return visualDuplicatesEnabled && files.some((file) => {
+    const working = resolveFile(file);
+    return working.type === 'photo' &&
+      !!working.thumbnail &&
+      !working.reviewAnalysisUnavailable &&
+      !working.visualHash;
+  });
+}
+
+export interface TerminalReviewGroupingEvidence {
+  reviewGeneration: number;
+  evidenceRevision: number;
+  faceMatching: boolean;
+  visualDuplicates: boolean;
+  faceEmbeddingThreshold: number;
+  faceSignatureThreshold: number;
+  visualThreshold: number;
+}
+
+export function terminalReviewGroupingKey(evidence: TerminalReviewGroupingEvidence): string {
+  return [
+    evidence.reviewGeneration,
+    evidence.evidenceRevision,
+    Number(evidence.faceMatching),
+    Number(evidence.visualDuplicates),
+    evidence.faceEmbeddingThreshold,
+    evidence.faceSignatureThreshold,
+    evidence.visualThreshold,
+  ].join(':');
+}
+
+export function planTerminalReviewGrouping(
+  lastFinalizedKey: string,
+  evidence: TerminalReviewGroupingEvidence,
+): { key: string; shouldFinalize: boolean } {
+  const key = terminalReviewGroupingKey(evidence);
+  return { key, shouldFinalize: key !== lastFinalizedKey };
+}
+
 // ── Laplacian sharpness-based subject detector ────────────────────────────
 // Uses focus sharpness (Laplacian variance) instead of colour/skin tone so it
 // works for helmeted fighters, animals, objects — anything that is in-focus.
@@ -73,16 +118,56 @@ type ExposureClipboard = {
   whiteBalanceAdjustment?: WhiteBalanceAdjustment;
 };
 
-function formatFaceProviderSummary(models: Array<{ model: string; provider: string }> | undefined, ep?: string | null): string {
-  if (!models?.length) return ep ? `Provider ${ep.toUpperCase()}` : 'Face engine warming';
+export interface FastDetectorProviderStatus {
+  state: 'unchecked' | 'active' | 'legacy-fallback';
+  active: boolean;
+  faceProvider?: string;
+  personProvider?: string;
+  personRuns: number;
+  ssdFallbackRate: number | null;
+}
+
+function formatSsdFallbackRate(rate: number | null): string {
+  if (rate === null || !Number.isFinite(rate)) return 'SSD fallback not measured';
+  const percent = Math.max(0, Math.min(100, rate * 100));
+  const formatted = percent > 0 && percent < 1
+    ? percent.toFixed(1)
+    : Math.round(percent).toString();
+  return `SSD fallback ${formatted}%`;
+}
+
+export function formatFaceProviderSummary(
+  models: Array<{ model: string; provider: string }> | undefined,
+  ep?: string | null,
+  fastDetectors?: FastDetectorProviderStatus,
+): string {
+  if (fastDetectors?.active && fastDetectors.faceProvider && fastDetectors.personProvider) {
+    return [
+      `YuNet ${fastDetectors.faceProvider.toUpperCase()}`,
+      `NanoDet ${fastDetectors.personProvider.toUpperCase()}`,
+      formatSsdFallbackRate(fastDetectors.personRuns > 0
+        ? fastDetectors.ssdFallbackRate
+        : null),
+    ].join(' · ');
+  }
+
+  if (!models?.length) {
+    if (fastDetectors?.state === 'legacy-fallback') return 'YuNet/NanoDet unavailable · using verified fallback';
+    return ep ? `Provider ${ep.toUpperCase()}` : 'Face engine warming';
+  }
   const labels: Record<string, string> = {
-    detector: 'faces',
-    embedder: 'matching',
-    person: 'people',
+    detector: 'UltraFace',
+    embedder: 'SFace',
+    person: 'SSD',
   };
-  return models
-    .map((model) => `${labels[model.model] ?? model.model}: ${model.provider.toUpperCase()}`)
+  const legacy = models
+    .map((model) => `${labels[model.model] ?? model.model} ${model.provider.toUpperCase()}`)
     .join(' · ');
+  if (fastDetectors?.state === 'legacy-fallback') {
+    return `${legacy} · YuNet/NanoDet unavailable`;
+  }
+  if (fastDetectors?.state === 'unchecked') return `${legacy} · YuNet/NanoDet pending`;
+  return legacy;
 }
 
 function formatEtaDuration(seconds: number): string {
@@ -2196,8 +2281,11 @@ export function ThumbnailGrid() {
   const panelPriorityPathsRef = useRef<Set<string>>(new Set());
   const previewPendingUntilRef = useRef<Map<string, number>>(new Map());
   const previewPendingRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const reviewBatchCounterRef = useRef(0);
   const reviewGenerationRef = useRef(0);
+  const reviewLoopScheduleTokenRef = useRef(0);
+  const reviewEvidenceRevisionRef = useRef(0);
+  const lastFinalizedReviewGroupingKeyRef = useRef('');
+  const reviewGroupingCascadeKeyRef = useRef('');
   // Read the mutable overlay directly between intentionally infrequent UI
   // flushes so million-photo jobs advance without duplicating all patch data.
   const liveReviewFile = useCallback((file: MediaFile): MediaFile => {
@@ -2248,7 +2336,6 @@ export function ThumbnailGrid() {
   const importPausedReviewRef = useRef(false);
   const autoSpeedTriggeredRef = useRef(false);
   const reviewScanCursorRef = useRef(0);
-  const lastReviewRegroupAtRef = useRef(0);
   const reviewAdaptiveRef = useRef({
     avgMsPerFile: 0,
     pipelineLimit: Math.max(4, faceConcurrency),
@@ -2868,6 +2955,8 @@ export function ThumbnailGrid() {
   useEffect(() => { reviewVisualDuplicatesRef.current = reviewVisualDuplicates; }, [reviewVisualDuplicates]);
   useEffect(() => { eventModeRef.current = eventMode; }, [eventMode]);
   useEffect(() => {
+    reviewGroupingCascadeKeyRef.current = '';
+    lastFinalizedReviewGroupingKeyRef.current = '';
     if (!sharpnessInFlightRef.current) setReviewLoopTick((value) => value + 1);
   }, [aiReviewEnabled, eventMode, fastKeeperMode, reviewFaceAnalysis, reviewFaceMatching, reviewPersonDetection, reviewVisualDuplicates, superSpeedMode]);
   useEffect(() => {
@@ -2928,7 +3017,11 @@ export function ThumbnailGrid() {
       try {
         const info = await window.electronAPI.getExecutionProvider?.();
         if (cancelled || !info) return;
-        setFaceProviderSummary(formatFaceProviderSummary(info.models, info.ep));
+        setFaceProviderSummary(formatFaceProviderSummary(
+          info.models,
+          info.ep,
+          info.productionFastDetectors,
+        ));
       } catch { /* ignore */ }
     };
     void update();
@@ -2997,6 +3090,9 @@ export function ThumbnailGrid() {
   }, [readyThumbnailCount]);
 
   useEffect(() => {
+    // Every rerun invalidates an older terminal idle callback. Once navigation
+    // becomes quiet its retry tick schedules a fresh, valid callback.
+    const reviewLoopScheduleToken = ++reviewLoopScheduleTokenRef.current;
     if (sharpnessInFlightRef.current) return;
     if (reviewPausedRef.current) return;
     if (!aiReviewEnabledRef.current) return;
@@ -3142,7 +3238,78 @@ export function ThumbnailGrid() {
       .sort((a, b) => a.rank - b.rank)
       .map((entry) => entry.file);
     if (candidates.length === 0) {
-      dispatch({ type: 'COMMIT_REVIEW_SCORES' });
+      const now = Date.now();
+      const deferredNativeReview = [...previewPendingUntilRef.current.values()]
+        .some((retryAt) => retryAt > now);
+      const missingVisualInputs = hasPendingVisualHashInput(
+        currentFiles,
+        currentReviewVisualDuplicates,
+        withWorkingReview,
+      );
+      if (deferredNativeReview || missingVisualInputs) {
+        // Persist completed overlay rows, but do not freeze partial group ids
+        // while a preview/native retry can still change membership.
+        dispatch({ type: 'COMMIT_REVIEW_SCORES' });
+        return;
+      }
+      const groupingEnabled = currentReviewFaceMatching || currentReviewVisualDuplicates;
+      if (!groupingEnabled) {
+        dispatch({ type: 'COMMIT_REVIEW_SCORES' });
+        return;
+      }
+      const groupingPlan = planTerminalReviewGrouping(
+        lastFinalizedReviewGroupingKeyRef.current,
+        {
+          reviewGeneration,
+          evidenceRevision: reviewEvidenceRevisionRef.current,
+          faceMatching: currentReviewFaceMatching,
+          visualDuplicates: currentReviewVisualDuplicates,
+          faceSignatureThreshold: 10,
+          faceEmbeddingThreshold: faceGroupEmbeddingThresholdRef.current,
+          visualThreshold: 8,
+        },
+      );
+      // A focus/navigation tick after review completion must not rebuild face
+      // and visual indexes over the whole catalogue when no evidence changed.
+      if (!groupingPlan.shouldFinalize) return;
+      // Grouping is a full-catalogue calculation. Doing it every 15 seconds on
+      // an active 22k-photo sweep forced repeated 68MB checkpoints and could
+      // block shutdown long enough to look like a crash. Finalize once, after
+      // the scheduler has proved there are no analysis candidates remaining.
+      const finalize = () => {
+        if (
+          reviewGeneration !== reviewGenerationRef.current ||
+          reviewLoopScheduleToken !== reviewLoopScheduleTokenRef.current ||
+          phaseRef.current === 'importing' ||
+          phaseRef.current === 'scanning'
+        ) return;
+        const cascadeKey = `${reviewGeneration}:${Number(currentSuperSpeedMode)}:${Number(currentReviewVisualDuplicates)}`;
+        const wakeSuperSpeedCascade = currentSuperSpeedMode && currentReviewVisualDuplicates &&
+          reviewGroupingCascadeKeyRef.current !== cascadeKey;
+        if (wakeSuperSpeedCascade) reviewGroupingCascadeKeyRef.current = cascadeKey;
+        dispatch({
+          type: 'COMMIT_REVIEW_SCORES',
+          finalizeGroups: {
+            faceMatching: currentReviewFaceMatching,
+            visualDuplicates: currentReviewVisualDuplicates,
+            faceSignatureThreshold: 10,
+            faceEmbeddingThreshold: faceGroupEmbeddingThresholdRef.current,
+            visualThreshold: 8,
+          },
+        });
+        lastFinalizedReviewGroupingKeyRef.current = groupingPlan.key;
+        // Super Speed deliberately screens standalone frames with canvas-only
+        // evidence. A completed visual grouping can reveal comparison frames;
+        // run exactly one follow-up pass so those receive native safeguards.
+        if (wakeSuperSpeedCascade) {
+          window.setTimeout(() => setReviewLoopTick((value) => value + 1), 0);
+        }
+      };
+      if (typeof window.requestIdleCallback === 'function') {
+        window.requestIdleCallback(finalize, { timeout: 1200 });
+      } else {
+        window.setTimeout(finalize, 250);
+      }
       return;
     }
     const run = () => {
@@ -3564,10 +3731,8 @@ export function ThumbnailGrid() {
       return entries;
     })()
       .then((entries) => {
-        // Individual dispatches already fired above; this final batch dispatch
-        // is a no-op for already-dispatched entries but ensures nothing is missed.
-        reviewBatchCounterRef.current += 1;
         if (reviewGeneration !== reviewGenerationRef.current) return;
+        if (entries.length > 0) reviewEvidenceRevisionRef.current++;
         const elapsed = Math.max(1, (typeof performance !== 'undefined' ? performance.now() : Date.now()) - runStartedAt);
         const msPerFile = elapsed / Math.max(1, entries.length);
         const nextAvg = adaptive.avgMsPerFile > 0 ? adaptive.avgMsPerFile * 0.75 + msPerFile * 0.25 : msPerFile;
@@ -3579,32 +3744,6 @@ export function ThumbnailGrid() {
           } else if (nextAvg < 220) {
             adaptive.pipelineLimit = Math.min(16, Math.max(adaptive.pipelineLimit + 2, currentFaceConcurrency));
             adaptive.canvasLimit = Math.min(4, adaptive.canvasLimit + 1);
-          }
-        }
-        const now = Date.now();
-        const regroupIntervalMs = currentFiles.length >= 250_000
-          ? 10 * 60_000
-          : currentFiles.length >= 50_000
-            ? 2 * 60_000
-            : currentFiles.length >= 5_000
-              ? 15_000
-              : 6_000;
-        const finalBatch = entries.length < batchSize;
-        const shouldRefreshGroups = finalBatch || now - lastReviewRegroupAtRef.current >= regroupIntervalMs;
-        if (shouldRefreshGroups && phaseRef.current !== 'importing' && phaseRef.current !== 'scanning') {
-          lastReviewRegroupAtRef.current = now;
-          const regroup = () => {
-            if (reviewGeneration !== reviewGenerationRef.current || phaseRef.current === 'importing') return;
-            if (reviewFaceMatchingRef.current) dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10, embeddingThreshold: faceGroupEmbeddingThresholdRef.current });
-            if (reviewVisualDuplicatesRef.current) dispatch({ type: 'GROUP_VISUAL_DUPLICATES', threshold: 8 });
-            // Grouping can turn a canvas-only standalone frame into a native
-            // comparison candidate. Wake the cascade after reducer state lands.
-            window.setTimeout(() => setReviewLoopTick((value) => value + 1), 0);
-          };
-          if (typeof window.requestIdleCallback === 'function') {
-            window.requestIdleCallback(regroup, { timeout: 1200 });
-          } else {
-            window.setTimeout(regroup, 250);
           }
         }
       })

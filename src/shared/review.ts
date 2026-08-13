@@ -2216,10 +2216,19 @@ export function scoreReview(input: ReviewScoreInput): ReviewScore {
 }
 
 export function groupByVisualHash(files: MediaFile[], threshold = 8): Record<string, string[]> {
+  const searchThreshold = Math.max(0, Math.floor(threshold));
+  // Review hashes are fixed-width 64-bit values. Their common threshold (8)
+  // used to go through the generic BK-tree below, which degenerates towards
+  // O(n²) on uniformly distributed hashes: a 22.5k-photo terminal regroup took
+  // over two minutes and made the renderer look crashed. Three-way Hamming
+  // multi-indexing is exact for thresholds <= 8 and keeps that work near-linear.
+  if (searchThreshold <= 8) {
+    return groupByVisualHash64(files, searchThreshold);
+  }
   return groupByHexSimilarity(
-    files.filter((f) => f.visualHash),
+    files.filter((f) => isVisualHash64(f.visualHash)),
     (file) => file.visualHash,
-    threshold,
+    searchThreshold,
     'visual',
   );
 }
@@ -2289,6 +2298,284 @@ function groupByHexSimilarity(
   }
 
   return groups;
+}
+
+type HammingBucket = number | number[];
+
+const VISUAL_HASH_64 = /^[0-9a-f]{16}$/i;
+
+function isVisualHash64(hash: string | undefined): hash is string {
+  return !!hash && VISUAL_HASH_64.test(hash);
+}
+
+function visualHash64Chunks(hi: number, lo: number): [number, number, number] {
+  // Low-to-high 22/21/21-bit partitions. If a 64-bit pair differs by at most
+  // t bits, one of three partitions differs by at most floor(t / 3) bits.
+  return [
+    lo & 0x003fffff,
+    ((lo >>> 22) | ((hi & 0x000007ff) << 10)) >>> 0,
+    hi >>> 11,
+  ];
+}
+
+function visitHammingVariants(
+  value: number,
+  bitCount: number,
+  radius: number,
+  visit: (variant: number) => void,
+): void {
+  visit(value);
+  if (radius < 1) return;
+  for (let first = 0; first < bitCount; first++) {
+    visit(value ^ (1 << first));
+  }
+  if (radius < 2) return;
+  for (let first = 0; first < bitCount; first++) {
+    const firstMask = 1 << first;
+    for (let second = first + 1; second < bitCount; second++) {
+      visit(value ^ firstMask ^ (1 << second));
+    }
+  }
+}
+
+function appendHammingBucket(index: Map<number, HammingBucket>, key: number, value: number): void {
+  const bucket = index.get(key);
+  if (bucket === undefined) index.set(key, value);
+  else if (typeof bucket === 'number') index.set(key, [bucket, value]);
+  else bucket.push(value);
+}
+
+function removeHammingBucket(index: Map<number, HammingBucket>, key: number, value: number): void {
+  const bucket = index.get(key);
+  if (bucket === undefined) return;
+  if (typeof bucket === 'number') {
+    if (bucket === value) index.delete(key);
+    return;
+  }
+  const position = bucket.indexOf(value);
+  if (position < 0) return;
+  bucket.splice(position, 1);
+  if (bucket.length === 0) index.delete(key);
+  else if (bucket.length === 1) index.set(key, bucket[0]);
+}
+
+interface VisualHashEntry {
+  file: MediaFile;
+  order: number;
+  hash: string;
+  hi: number;
+  lo: number;
+}
+
+interface VisualAnchorGroup {
+  anchor: number;
+  members: number[];
+  latestOrder: number;
+  latestTimestamp?: number;
+  scope?: string;
+}
+
+interface VisualScopeIndex {
+  anchors: number[];
+  chunks?: Array<Map<number, HammingBucket>>;
+  exact?: Map<string, number>;
+}
+
+const MAX_VISUAL_GROUP_SIZE = 64;
+const UNBURSTED_MAX_ORDER_GAP = 2;
+const UNBURSTED_MAX_CAPTURE_GAP_MS = 5_000;
+const VISUAL_SCOPE_INDEX_THRESHOLD = 64;
+
+function captureTimestamp(file: MediaFile): number | undefined {
+  if (!file.dateTaken) return undefined;
+  const timestamp = Date.parse(file.dateTaken);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
+function newVisualScopeIndex(): VisualScopeIndex {
+  return { anchors: [] };
+}
+
+/**
+ * Exact, deterministic anchor grouping for valid 16-hex perceptual hashes.
+ *
+ * A connected-components interpretation is unsafe for event photography:
+ * A~B and B~C can hold while A and C depict different moments, allowing a
+ * long similarity chain to collapse an entire venue into one group. Each
+ * result below stays within the threshold of its fixed first-frame anchor.
+ * Existing burst boundaries are authoritative. Un-bursted files need both
+ * catalogue adjacency and (when known) capture-time adjacency.
+ */
+function groupByVisualHash64(files: MediaFile[], threshold: number): Record<string, string[]> {
+  const hashed: VisualHashEntry[] = files
+    .map((file, order) => ({ file, order }))
+    .filter((entry): entry is { file: MediaFile & { visualHash: string }; order: number } =>
+      isVisualHash64(entry.file.visualHash))
+    .map(({ file, order }) => ({
+      file,
+      order,
+      hash: file.visualHash.toLowerCase(),
+      hi: parseInt(file.visualHash.slice(0, 8), 16) >>> 0,
+      lo: parseInt(file.visualHash.slice(8), 16) >>> 0,
+    }));
+  const count = hashed.length;
+  if (count < 2) return {};
+
+  const candidateSeen = new Uint32Array(count);
+  const scopeIndexes = new Map<string, VisualScopeIndex>();
+  const groups: VisualAnchorGroup[] = [];
+  const groupByAnchor = new Map<number, VisualAnchorGroup>();
+  let activeUnburstedGroups: VisualAnchorGroup[] = [];
+  const chunkRadius = Math.floor(threshold / 3);
+  const chunkBits = [22, 21, 21] as const;
+
+  const removeFullAnchor = (group: VisualAnchorGroup): void => {
+    if (!group.scope) return;
+    const scopeIndex = scopeIndexes.get(group.scope);
+    if (!scopeIndex?.chunks || !scopeIndex.exact) return;
+    const anchor = hashed[group.anchor];
+    const chunks = visualHash64Chunks(anchor.hi, anchor.lo);
+    for (let chunkIndex = 0; chunkIndex < 3; chunkIndex++) {
+      removeHammingBucket(scopeIndex.chunks[chunkIndex], chunks[chunkIndex], group.anchor);
+    }
+    if (scopeIndex.exact.get(anchor.hash) === group.anchor) {
+      scopeIndex.exact.delete(anchor.hash);
+    }
+  };
+
+  const promoteScopeIndex = (scopeIndex: VisualScopeIndex): void => {
+    if (scopeIndex.chunks) return;
+    scopeIndex.chunks = [new Map(), new Map(), new Map()];
+    scopeIndex.exact = new Map();
+    for (const anchorIndex of scopeIndex.anchors) {
+      const group = groupByAnchor.get(anchorIndex);
+      if (!group || group.members.length >= MAX_VISUAL_GROUP_SIZE) continue;
+      const anchor = hashed[anchorIndex];
+      if (!scopeIndex.exact.has(anchor.hash)) scopeIndex.exact.set(anchor.hash, anchorIndex);
+      const chunks = visualHash64Chunks(anchor.hi, anchor.lo);
+      for (let chunkIndex = 0; chunkIndex < 3; chunkIndex++) {
+        appendHammingBucket(scopeIndex.chunks[chunkIndex], chunks[chunkIndex], anchorIndex);
+      }
+    }
+  };
+
+  for (let index = 0; index < count; index++) {
+    const entry = hashed[index];
+    const scope = entry.file.burstId ? `burst:${entry.file.burstId}` : undefined;
+    const timestamp = captureTimestamp(entry.file);
+    const candidates: number[] = [];
+    let scopeIndex: VisualScopeIndex | undefined;
+
+    if (scope) {
+      scopeIndex = scopeIndexes.get(scope);
+      if (scopeIndex) {
+        if (!scopeIndex.chunks || !scopeIndex.exact) {
+          for (const anchor of scopeIndex.anchors) candidates.push(anchor);
+        } else {
+          const exactAnchor = scopeIndex.exact.get(entry.hash);
+          if (exactAnchor !== undefined) {
+            candidates.push(exactAnchor);
+          } else {
+            const chunks = visualHash64Chunks(entry.hi, entry.lo);
+            const seenToken = index + 1;
+            for (let chunkIndex = 0; chunkIndex < 3; chunkIndex++) {
+              visitHammingVariants(chunks[chunkIndex], chunkBits[chunkIndex], chunkRadius, (variant) => {
+                const bucket = scopeIndex!.chunks![chunkIndex].get(variant);
+                if (bucket === undefined) return;
+                if (typeof bucket === 'number') {
+                  if (candidateSeen[bucket] !== seenToken) {
+                    candidateSeen[bucket] = seenToken;
+                    candidates.push(bucket);
+                  }
+                  return;
+                }
+                for (const candidate of bucket) {
+                  if (candidateSeen[candidate] === seenToken) continue;
+                  candidateSeen[candidate] = seenToken;
+                  candidates.push(candidate);
+                }
+              });
+            }
+          }
+        }
+      }
+    } else {
+      activeUnburstedGroups = activeUnburstedGroups.filter((group) =>
+        group.members.length < MAX_VISUAL_GROUP_SIZE &&
+        entry.order - group.latestOrder <= UNBURSTED_MAX_ORDER_GAP);
+      for (const group of activeUnburstedGroups) candidates.push(group.anchor);
+    }
+
+    let bestGroup: VisualAnchorGroup | undefined;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (const candidate of candidates) {
+      const group = groupByAnchor.get(candidate);
+      if (!group || group.members.length >= MAX_VISUAL_GROUP_SIZE) continue;
+      if (!scope) {
+        if (entry.order - group.latestOrder > UNBURSTED_MAX_ORDER_GAP) continue;
+        if (
+          timestamp !== undefined &&
+          group.latestTimestamp !== undefined &&
+          Math.abs(timestamp - group.latestTimestamp) > UNBURSTED_MAX_CAPTURE_GAP_MS
+        ) continue;
+      }
+      const anchor = hashed[candidate];
+      const distance = popcount32(entry.hi ^ anchor.hi) + popcount32(entry.lo ^ anchor.lo);
+      if (
+        distance <= threshold &&
+        (distance < bestDistance ||
+          (distance === bestDistance && group.anchor < (bestGroup?.anchor ?? Number.POSITIVE_INFINITY)))
+      ) {
+        bestDistance = distance;
+        bestGroup = group;
+      }
+    }
+
+    if (bestGroup) {
+      bestGroup.members.push(index);
+      bestGroup.latestOrder = entry.order;
+      bestGroup.latestTimestamp = timestamp;
+      if (bestGroup.members.length >= MAX_VISUAL_GROUP_SIZE) {
+        if (scope) removeFullAnchor(bestGroup);
+        else activeUnburstedGroups = activeUnburstedGroups.filter((group) => group !== bestGroup);
+      }
+      continue;
+    }
+
+    const group: VisualAnchorGroup = {
+      anchor: index,
+      members: [index],
+      latestOrder: entry.order,
+      latestTimestamp: timestamp,
+      scope,
+    };
+    groups.push(group);
+    groupByAnchor.set(index, group);
+    if (scope) {
+      scopeIndex ??= newVisualScopeIndex();
+      scopeIndexes.set(scope, scopeIndex);
+      scopeIndex.anchors.push(index);
+      if (scopeIndex.chunks && scopeIndex.exact) {
+        if (!scopeIndex.exact.has(entry.hash)) scopeIndex.exact.set(entry.hash, index);
+        const chunks = visualHash64Chunks(entry.hi, entry.lo);
+        for (let chunkIndex = 0; chunkIndex < 3; chunkIndex++) {
+          appendHammingBucket(scopeIndex.chunks[chunkIndex], chunks[chunkIndex], index);
+        }
+      } else if (scopeIndex.anchors.length > VISUAL_SCOPE_INDEX_THRESHOLD) {
+        promoteScopeIndex(scopeIndex);
+      }
+    } else {
+      activeUnburstedGroups.push(group);
+    }
+  }
+
+  const result: Record<string, string[]> = {};
+  let groupIndex = 1;
+  for (const group of groups) {
+    if (group.members.length < 2) continue;
+    result[`visual-${groupIndex++}`] = group.members.map((member) => hashed[member].file.path);
+  }
+  return result;
 }
 
 // Embedding deserialization is called in render-path comparisons for every
@@ -2783,7 +3070,7 @@ function popcount32(value: number): number {
 
 /** Parse a 16-hex (64-bit) visualHash into two 32-bit halves for fast Hamming. */
 function parseVisualHash(hash: string | undefined): { hi: number; lo: number } | null {
-  if (!hash || hash.length < 16) return null;
+  if (!isVisualHash64(hash)) return null;
   const hi = parseInt(hash.slice(0, 8), 16);
   const lo = parseInt(hash.slice(8, 16), 16);
   if (!Number.isFinite(hi) || !Number.isFinite(lo)) return null;

@@ -172,6 +172,17 @@ describe('face-cache SQLite storage', () => {
     const seed = await getBestCachedFaceResult(imagePath, hint);
     expect(seed?.result.boxes).toEqual(result.boxes);
     expect(seed?.result.features?.personDetection).toBe(true);
+    await expect(getBestCachedFaceResult(imagePath, hint, 'subjects')).resolves.not.toBeNull();
+  });
+
+  it('does not reuse a detector-only thumbnail record for deeper subject crops', async () => {
+    const source = await stat(imagePath);
+    const hint = { size: source.size, mtimeMs: source.mtimeMs };
+    const { result, hexEmbeddings } = analysisResult({ personDetection: false });
+    await setCachedFaceResult(imagePath, result, hexEmbeddings, 'detect', hint);
+
+    await expect(getBestCachedFaceResult(imagePath, hint)).resolves.not.toBeNull();
+    await expect(getBestCachedFaceResult(imagePath, hint, 'subjects')).resolves.toBeNull();
   });
 
   it('persists exact provenance and compact binary embeddings', async () => {

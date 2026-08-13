@@ -1,8 +1,8 @@
 import { useEffect, useRef } from 'react';
 import type { AppSession, MediaFile } from '../../shared/types';
 import { createSessionDeltaEnvelope } from '../../shared/session-delta';
-import { useAppState, useMergedFiles } from '../context/ImportContext';
-import { acknowledgeSessionChanges, consumeRestoredSessionBaseline, snapshotSessionChanges } from '../utils/sessionChangeJournal';
+import { mergeReviewPatch, useAppState, useMergedFiles, usePendingCommittedReviewOverlay, useReviewScoreOverlay, type ReviewPatch } from '../context/ImportContext';
+import { acknowledgeSessionChanges, consumeRestoredSessionBaseline, currentSessionChangeRevision, snapshotSessionChanges, subscribeSessionChanges } from '../utils/sessionChangeJournal';
 import { getCataloguePathIndex } from '../utils/catalogueDelta';
 
 function sourceSessionId(source: string): string {
@@ -50,6 +50,14 @@ export function sessionSaveMaxWait(fileCount: number): number {
   if (fileCount >= 250_000) return 30_000;
   if (fileCount >= 50_000) return 20_000;
   return 12_000;
+}
+
+export function sessionSaveDelay(fileCount: number): number {
+  if (fileCount >= 250_000) return 15_000;
+  if (fileCount >= 50_000) return 6_000;
+  if (fileCount >= 2_500) return 2_600;
+  if (fileCount >= 800) return 1_800;
+  return 1_200;
 }
 
 function publishSessionPersistenceStatus(
@@ -100,6 +108,8 @@ function buildSessionStatsDelta(
   changedPaths: readonly string[],
   baseline: DurableSessionBaseline,
   queuedCount: number,
+  reviewOverlay?: ReadonlyMap<string, ReviewPatch>,
+  committedOverlay?: ReadonlyMap<string, ReviewPatch>,
 ): { stats: AppSession['stats']; updates: Array<{ index: number; bits: number }> } {
   const indexByPath = getCataloguePathIndex(files);
   let picked = baseline.stats.picked;
@@ -110,7 +120,8 @@ function buildSessionStatsDelta(
     const index = indexByPath.get(filePath);
     if (index === undefined) continue;
     const previous = baseline.statsBits[index] ?? 0;
-    const next = fileStatsBits(files[index]);
+    const file = fileWithLiveReviewOverlay(files[index], reviewOverlay, committedOverlay);
+    const next = fileStatsBits(file);
     picked += Number((next & 1) !== 0) - Number((previous & 1) !== 0);
     rejected += Number((next & 2) !== 0) - Number((previous & 2) !== 0);
     reviewed += Number((next & 4) !== 0) - Number((previous & 4) !== 0);
@@ -128,6 +139,19 @@ export interface SessionBuildResult {
   statUpdates: Array<{ index: number; bits: number }>;
 }
 
+/** Resolve a renderer-held review patch at persistence time, independently of
+ * the deliberately slow UI materialization cadence used for huge catalogues. */
+function fileWithLiveReviewOverlay(
+  file: MediaFile,
+  reviewOverlay?: ReadonlyMap<string, ReviewPatch>,
+  committedOverlay?: ReadonlyMap<string, ReviewPatch>,
+): MediaFile {
+  const committed = committedOverlay?.get(file.path);
+  const withCommitted = committed ? mergeReviewPatch(file, committed) : file;
+  const live = reviewOverlay?.get(file.path);
+  return live ? mergeReviewPatch(withCommitted, live) : withCommitted;
+}
+
 export function buildPersistedSession(
   snapshot: {
     selectedSource: string;
@@ -142,6 +166,8 @@ export function buildPersistedSession(
   },
   sessionId: string,
   baseline: DurableSessionBaseline | null,
+  reviewOverlay?: ReadonlyMap<string, ReviewPatch>,
+  committedOverlay?: ReadonlyMap<string, ReviewPatch>,
 ): SessionBuildResult {
   const changes = snapshotSessionChanges(baseline?.savedRevision ?? -1);
   const baselineMatchesCatalogue = !!baseline
@@ -195,10 +221,13 @@ export function buildPersistedSession(
     : null;
   const deltaStats = useDelta && baseline
     ? changes.paths.length > 0
-      ? buildSessionStatsDelta(snapshot.files, changes.paths, baseline, snapshot.queuedPaths.length)
+      ? buildSessionStatsDelta(snapshot.files, changes.paths, baseline, snapshot.queuedPaths.length, reviewOverlay, committedOverlay)
       : { stats: { ...baseline.stats, queued: snapshot.queuedPaths.length }, updates: [] }
     : null;
-  const stats = deltaStats?.stats ?? buildSessionStats(snapshot.files, snapshot.queuedPaths.length);
+  const fullFiles = !useDelta && (reviewOverlay?.size || committedOverlay?.size)
+    ? snapshot.files.map((file) => fileWithLiveReviewOverlay(file, reviewOverlay, committedOverlay))
+    : snapshot.files;
+  const stats = deltaStats?.stats ?? buildSessionStats(fullFiles, snapshot.queuedPaths.length);
   const common = {
     id: sessionId,
     updatedAt: new Date().toISOString(),
@@ -217,9 +246,9 @@ export function buildPersistedSession(
       revision: changes.revision,
       delta: false,
       noop: false,
-      statsBits: buildSessionStatsBits(snapshot.files),
+      statsBits: buildSessionStatsBits(fullFiles),
       statUpdates: [],
-      session: { ...common, files: snapshot.files.map(stripSessionFile) },
+      session: { ...common, files: fullFiles.map(stripSessionFile) },
     };
   }
 
@@ -228,7 +257,7 @@ export function buildPersistedSession(
   for (const filePath of changes.paths) {
     const index = fileIndexByPath?.get(filePath);
     if (index === undefined) continue;
-    files.push(stripSessionFile(snapshot.files[index]));
+    files.push(stripSessionFile(fileWithLiveReviewOverlay(snapshot.files[index], reviewOverlay, committedOverlay)));
     fileIndexes.push(index);
   }
   return {
@@ -259,8 +288,8 @@ export function buildPersistedSession(
  * after that save. This prevents a quit ACK from covering a mutation that
  * arrived while Electron was cloning or committing the previous snapshot.
  */
-export async function persistUntilRevisionStable(
-  readRevision: () => number,
+export async function persistUntilRevisionStable<T>(
+  readRevision: () => T,
   persist: () => Promise<boolean>,
   maxPasses = 8,
 ): Promise<boolean> {
@@ -288,6 +317,8 @@ export function useSessionPersistence() {
   // large reviews the provider flushes at a bounded interval, so a crash loses
   // at most that interval of canvas evidence; native inference remains cached.
   const files = useMergedFiles();
+  const liveReviewOverlay = useReviewScoreOverlay();
+  const pendingCommittedReviewOverlay = usePendingCommittedReviewOverlay();
   const sessionIdRef = useRef('');
   const sessionSourceRef = useRef<string | null>(null);
   const sessionSaveTimerRef = useRef<number | null>(null);
@@ -358,7 +389,7 @@ export function useSessionPersistence() {
       };
       clearScheduledSaves();
       return persistUntilRevisionStable(
-        () => sessionSnapshotRevisionRef.current,
+        () => `${sessionSnapshotRevisionRef.current}:${currentSessionChangeRevision()}`,
         async () => {
           const active = sessionSavePromiseRef.current;
           if (active && !await active.catch(() => false)) return false;
@@ -432,7 +463,6 @@ export function useSessionPersistence() {
         durableBaselineRef.current = null;
       }
     }
-    const delay = files.length >= 250_000 ? 15_000 : files.length >= 50_000 ? 6_000 : files.length >= 2500 ? 2600 : files.length >= 800 ? 1800 : 1200;
     const persistCurrentSnapshot = (): Promise<boolean> => {
       sessionSaveTimerRef.current = null;
       const snapshot = sessionSnapshotRef.current;
@@ -450,6 +480,8 @@ export function useSessionPersistence() {
         durableSnapshot,
         sessionIdRef.current || sourceSessionId(snapshot.selectedSource),
         durableBaselineRef.current,
+        liveReviewOverlay,
+        pendingCommittedReviewOverlay,
       );
       if (built.noop) {
         acknowledgeSessionChanges(built.revision);
@@ -528,20 +560,31 @@ export function useSessionPersistence() {
       return operation;
     };
     persistCurrentSnapshotRef.current = persistCurrentSnapshot;
-    if (sessionSaveMaxWaitTimerRef.current === null) {
-      sessionSaveMaxWaitTimerRef.current = window.setTimeout(() => {
-        sessionSaveMaxWaitTimerRef.current = null;
-        if (sessionSaveTimerRef.current !== null) {
-          window.clearTimeout(sessionSaveTimerRef.current);
-          sessionSaveTimerRef.current = null;
-        }
+    const schedulePersistence = () => {
+      const snapshot = sessionSnapshotRef.current;
+      if (!snapshot.selectedSource || snapshot.files.length === 0 || snapshot.phase === 'scanning') return;
+      if (sessionSaveMaxWaitTimerRef.current === null) {
+        sessionSaveMaxWaitTimerRef.current = window.setTimeout(() => {
+          sessionSaveMaxWaitTimerRef.current = null;
+          if (sessionSaveTimerRef.current !== null) {
+            window.clearTimeout(sessionSaveTimerRef.current);
+            sessionSaveTimerRef.current = null;
+          }
+          void persistCurrentSnapshotRef.current();
+        }, sessionSaveMaxWait(snapshot.files.length));
+      }
+      if (sessionSaveTimerRef.current !== null) window.clearTimeout(sessionSaveTimerRef.current);
+      sessionSaveTimerRef.current = window.setTimeout(() => {
         void persistCurrentSnapshotRef.current();
-      }, sessionSaveMaxWait(files.length));
-    }
-    sessionSaveTimerRef.current = window.setTimeout(() => {
-      void persistCurrentSnapshot();
-    }, delay);
+      }, sessionSaveDelay(snapshot.files.length));
+    };
+    // Review overlays deliberately avoid React renders for up to 60 seconds on
+    // huge catalogues. Journal notifications keep debounce/max-wait durability
+    // armed even after an earlier save cleared its timers.
+    const unsubscribeSessionChanges = subscribeSessionChanges(schedulePersistence);
+    schedulePersistence();
     return () => {
+      unsubscribeSessionChanges();
       if (sessionSaveTimerRef.current !== null) {
         window.clearTimeout(sessionSaveTimerRef.current);
         sessionSaveTimerRef.current = null;

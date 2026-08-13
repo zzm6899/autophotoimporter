@@ -27,6 +27,33 @@ function seededRandom(seed: number): () => number {
   };
 }
 
+function bruteForceAnchoredVisualGroups(files: MediaFile[], threshold: number): string[][] {
+  const groups: Array<{ anchor: number; members: number[] }> = [];
+  for (let index = 0; index < files.length; index++) {
+    let best: { anchor: number; members: number[] } | undefined;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (const group of groups) {
+      if (group.members.length >= 64) continue;
+      const distance = hammingDistanceHex(
+        files[index].visualHash!,
+        files[group.anchor].visualHash!,
+      );
+      if (
+        distance <= threshold &&
+        (distance < bestDistance || (distance === bestDistance && group.anchor < (best?.anchor ?? Infinity)))
+      ) {
+        best = group;
+        bestDistance = distance;
+      }
+    }
+    if (best) best.members.push(index);
+    else groups.push({ anchor: index, members: [index] });
+  }
+  return groups
+    .filter((group) => group.members.length > 1)
+    .map((group) => group.members.map((index) => files[index].path));
+}
+
 function dot(a: number[], b: number[]): number {
   return a.reduce((sum, value, index) => sum + value * b[index], 0);
 }
@@ -74,22 +101,92 @@ describe('review utilities', () => {
     const mask = 0xffffffffffffffffn;
     const hashes = Array.from({ length: 2_101 }, (_, index) =>
       ((BigInt(index) * 0x9e3779b97f4a7c15n) & mask).toString(16).padStart(16, '0'));
-    const files = hashes.map((hash, index) => file(`/image-${index}.jpg`, hash));
-    files.push(file('/duplicate.jpg', hashes[777]));
+    const files = hashes.map((hash, index) => file(`/image-${index}.jpg`, hash, { burstId: 'large-burst' }));
+    files.push(file('/duplicate.jpg', hashes[777], { burstId: 'large-burst' }));
 
     expect(Object.values(groupByVisualHash(files, 0))).toEqual([
       ['/image-777.jpg', '/duplicate.jpg'],
     ]);
   });
 
-  it('keeps chained visual near-duplicates in one group', () => {
+  it('does not transitively chain different moments into one visual group', () => {
     const groups = groupByVisualHash([
       file('/a.jpg', '0000000000000000'),
       file('/b.jpg', '000000000000000f'),
       file('/c.jpg', '00000000000000ff'),
       file('/d.jpg', 'ffffffffffffffff'),
     ], 4);
-    expect(Object.values(groups)).toEqual([['/a.jpg', '/b.jpg', '/c.jpg']]);
+    expect(Object.values(groups)).toEqual([['/a.jpg', '/b.jpg']]);
+  });
+
+  it('matches brute-force anchored 64-bit grouping for randomized thresholds 0 through 8', () => {
+    const random = seededRandom(0x51a7c0de);
+    for (let threshold = 0; threshold <= 8; threshold++) {
+      const hashes = Array.from({ length: 180 }, (_, index) => {
+        const hi = Math.floor(random() * 0x100000000) >>> 0;
+        const lo = Math.floor(random() * 0x100000000) >>> 0;
+        const hash = hi.toString(16).padStart(8, '0') + lo.toString(16).padStart(8, '0');
+        return file(`/random-${threshold}-${index}.jpg`, hash, { burstId: 'property-burst' });
+      });
+      // Include exact duplicates, chained neighbours, and top-bit changes that
+      // cross the three multi-index partition boundaries.
+      hashes.push(
+        file(`/duplicate-${threshold}.jpg`, hashes[17].visualHash, { burstId: 'property-burst' }),
+        file(`/zero-${threshold}.jpg`, '0000000000000000', { burstId: 'property-burst' }),
+        file(`/high-${threshold}.jpg`, '8000000000000000', { burstId: 'property-burst' }),
+        file(`/boundary-a-${threshold}.jpg`, '0000000000200000', { burstId: 'property-burst' }),
+        file(`/boundary-b-${threshold}.jpg`, '0000080000200000', { burstId: 'property-burst' }),
+      );
+      expect(Object.values(groupByVisualHash(hashes, threshold))).toEqual(
+        bruteForceAnchoredVisualGroups(hashes, threshold),
+      );
+    }
+  });
+
+  it('does not treat terminal analysis markers as perceptual hashes', () => {
+    expect(groupByVisualHash([
+      file('/failed-a.jpg', 'analysis-failed:/a.jpg'),
+      file('/failed-b.jpg', 'analysis-failed:/b.jpg'),
+    ], 8)).toEqual({});
+  });
+
+  it('never merges photos across existing burst boundaries', () => {
+    expect(groupByVisualHash([
+      file('/burst-a.jpg', '0000000000000000', { burstId: 'a' }),
+      file('/burst-b.jpg', '0000000000000000', { burstId: 'b' }),
+      file('/unbursted.jpg', '0000000000000000'),
+    ], 8)).toEqual({});
+  });
+
+  it('groups an adjacent unbursted RAW and JPEG pair without timestamps', () => {
+    expect(Object.values(groupByVisualHash([
+      file('/frame.nef', '1234567890abcdef', { extension: '.nef' }),
+      file('/frame.jpg', '1234567890abcdef'),
+    ], 8))).toEqual([['/frame.nef', '/frame.jpg']]);
+  });
+
+  it('does not group unbursted frames outside local catalogue or capture-time context', () => {
+    expect(groupByVisualHash([
+      file('/early-a.jpg', '0000000000000000', { dateTaken: '2026-07-01T00:00:00Z' }),
+      file('/early-b.jpg', '0000000000000000', { dateTaken: '2026-07-01T00:00:10Z' }),
+      file('/spacer-1.jpg', '1111111111111111'),
+      file('/spacer-2.jpg', '2222222222222222'),
+      file('/late.jpg', '0000000000000000'),
+    ], 8)).toEqual({});
+  });
+
+  it('chooses the nearest then earliest anchor instead of chaining groups', () => {
+    expect(Object.values(groupByVisualHash([
+      file('/zero.jpg', '0000000000000000', { burstId: 'b' }),
+      file('/seven.jpg', '0000000000000007', { burstId: 'b' }),
+      file('/three.jpg', '0000000000000003', { burstId: 'b' }),
+    ], 2))).toEqual([['/seven.jpg', '/three.jpg']]);
+  });
+
+  it('bounds pathological visual groups without losing the final exact pair', () => {
+    const files = Array.from({ length: 130 }, (_, index) =>
+      file(`/same-${index}.jpg`, '0123456789abcdef', { burstId: 'long-burst' }));
+    expect(Object.values(groupByVisualHash(files, 8)).map((group) => group.length)).toEqual([64, 64, 2]);
   });
 
   it('scores protected and rated files above soft unrated files', () => {

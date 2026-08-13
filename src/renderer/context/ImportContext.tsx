@@ -1,4 +1,4 @@
-import { createContext, useContext, useReducer, useRef, useMemo, useCallback, useEffect, useState, type Dispatch, type ReactNode } from 'react';
+import { createContext, useContext, useReducer, useRef, useMemo, useCallback, useEffect, useLayoutEffect, useState, type Dispatch, type ReactNode } from 'react';
 import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, SourceKind, FtpConfig, FtpSyncSettings, FtpSyncStatus, RatingFilter, SelectionSet, LicenseValidation, WatermarkPosition, WatermarkMode, KeybindMap, MetadataExportFlags, ViewOverlayPreferences, EventMode, CullConfidence, KeeperQuota, SourceProfile, ImportConflictPolicy, AppSession, ExperienceMode, ScanDiagnostics } from '../../shared/types';
 import { FOLDER_PRESETS, DEFAULT_KEYBINDS, DEFAULT_METADATA_EXPORT, DEFAULT_VIEW_OVERLAY_PREFERENCES } from '../../shared/types';
 import { groupBursts } from '../../shared/burst';
@@ -13,6 +13,7 @@ export type AppPhase = 'idle' | 'scanning' | 'ready' | 'importing' | 'complete';
 export type ViewMode = 'grid' | 'single' | 'split' | 'compare' | 'settings';
 
 export type FilterMode = 'all' | 'protected' | 'picked' | 'rejected' | 'unrated' | 'duplicates' | 'catalog-duplicates' | 'outside-source' | 'unmarked' | 'queue' | 'best' | 'faces' | 'face-groups' | 'face-gallery' | 'group-photos' | 'blur-risk' | 'near-duplicates' | 'review-needed' | 'needs-exposure' | 'normalized' | 'adjusted' | 'photos' | 'videos' | 'jpeg' | 'raw' | 'import-failures' | 'color-red' | 'color-yellow' | 'color-green' | 'color-blue' | 'color-purple' | RatingFilter | `camera:${string}` | `lens:${string}` | `date:${string}` | `ext:${string}` | `scene:${string}` | `burst:${string}` | `face:${string}`;
+export type ReviewGroupAssignments = ReadonlyMap<string, { id: string; size: number }>;
 const MAX_FACE_CONCURRENCY = 16;
 const REVIEW_OVERLAY_SMALL_DELAY_MS = 80;
 const REVIEW_OVERLAY_MEDIUM_DELAY_MS = 140;
@@ -266,11 +267,17 @@ export type Action =
   | { type: 'CULL_TO_TARGET'; target: number; perGroupCap?: number }
   | { type: 'SET_SHARPNESS_BATCH'; scores: Record<string, number> }
   | { type: 'SET_REVIEW_SCORES'; scores: Record<string, Partial<MediaFile>> }
-  | { type: 'COMMIT_REVIEW_SCORES' }
+  | { type: 'COMMIT_REVIEW_SCORES'; finalizeGroups?: {
+      visualDuplicates: boolean;
+      faceMatching: boolean;
+      visualThreshold?: number;
+      faceSignatureThreshold?: number;
+      faceEmbeddingThreshold?: number;
+    } }
   | { type: 'APPLY_REVIEW_SNAPSHOT'; files: MediaFile[] }
   | { type: 'RESOLVE_SECOND_PASS'; filePaths: string[]; pick: 'selected' | 'rejected' }
-  | { type: 'GROUP_VISUAL_DUPLICATES'; threshold?: number; files?: MediaFile[] }
-  | { type: 'GROUP_FACE_SIMILAR'; threshold?: number; embeddingThreshold?: number; files?: MediaFile[] }
+  | { type: 'GROUP_VISUAL_DUPLICATES'; threshold?: number; files?: MediaFile[]; assignments?: ReviewGroupAssignments }
+  | { type: 'GROUP_FACE_SIMILAR'; threshold?: number; embeddingThreshold?: number; files?: MediaFile[]; assignments?: ReviewGroupAssignments }
   | { type: 'GROUP_SCENE_BUCKETS' }
   | { type: 'PICK_BEST_IN_GROUPS'; files?: MediaFile[] }
   | { type: 'QUEUE_BEST' }
@@ -379,8 +386,6 @@ function trackSessionFileChanges(action: Action): void {
     case 'PICK_BURST_KEEPERS':
     case 'CULL_TO_TARGET':
     case 'APPLY_REVIEW_SNAPSHOT':
-    case 'GROUP_VISUAL_DUPLICATES':
-    case 'GROUP_FACE_SIMILAR':
     case 'GROUP_SCENE_BUCKETS':
     case 'PICK_BEST_IN_GROUPS':
     case 'AUTO_CULL_SAFE':
@@ -694,6 +699,123 @@ function withStaleScanEventIgnored(state: State): State {
       staleEventsIgnored: diagnostics.staleEventsIgnored + 1,
     },
   };
+}
+
+function indexReviewGroups(groups: Record<string, string[]>): ReviewGroupAssignments {
+  const assignments = new Map<string, { id: string; size: number }>();
+  for (const [id, paths] of Object.entries(groups)) {
+    for (const filePath of paths) {
+      const current = assignments.get(filePath);
+      // Face grouping can surface the same group-photo path through more than
+      // one identity. Retain the largest comparison set, matching the legacy
+      // reducer behaviour.
+      if (!current || paths.length > current.size) {
+        assignments.set(filePath, { id, size: paths.length });
+      }
+    }
+  }
+  return assignments;
+}
+
+export function buildVisualGroupAssignments(
+  files: MediaFile[],
+  threshold = 8,
+): ReviewGroupAssignments {
+  return indexReviewGroups(groupByVisualHash(files, threshold));
+}
+
+export function buildFaceGroupAssignments(
+  files: MediaFile[],
+  embeddingThreshold = FACE_GROUP_EMBEDDING_THRESHOLD,
+  signatureThreshold = 10,
+): ReviewGroupAssignments {
+  return indexReviewGroups(groupByFaceSimilarity(files, embeddingThreshold, signatureThreshold));
+}
+
+export interface ReviewGroupingResult {
+  files: MediaFile[];
+  changedPaths: string[];
+}
+
+export function visualGroupAssignmentChanges(
+  files: readonly MediaFile[],
+  assignments: ReviewGroupAssignments,
+): string[] {
+  const changedPaths: string[] = [];
+  for (const file of files) {
+    const group = assignments.get(file.path);
+    if (file.visualGroupId !== group?.id || file.visualGroupSize !== group?.size) {
+      changedPaths.push(file.path);
+    }
+  }
+  return changedPaths;
+}
+
+export function faceGroupAssignmentChanges(
+  files: readonly MediaFile[],
+  assignments: ReviewGroupAssignments,
+): string[] {
+  const changedPaths: string[] = [];
+  for (const file of files) {
+    const group = assignments.get(file.path);
+    if (file.faceGroupId !== group?.id || file.faceGroupSize !== group?.size) {
+      changedPaths.push(file.path);
+    }
+  }
+  return changedPaths;
+}
+
+/**
+ * Materialize derived visual-group metadata while retaining the catalogue
+ * array for a no-op regroup. `changedPaths` is the exact persistence delta,
+ * including rows whose previous group was cleared.
+ */
+export function applyVisualGroupAssignments(
+  files: MediaFile[],
+  assignments: ReviewGroupAssignments,
+): ReviewGroupingResult {
+  let nextFiles: MediaFile[] | undefined;
+  const changedPaths: string[] = [];
+  for (let index = 0; index < files.length; index++) {
+    const file = files[index];
+    const group = assignments.get(file.path);
+    const visualGroupId = group?.id;
+    const visualGroupSize = group?.size;
+    if (file.visualGroupId === visualGroupId && file.visualGroupSize === visualGroupSize) continue;
+    const next = { ...file, visualGroupId, visualGroupSize };
+    const review = scoreReview(next);
+    next.reviewScore = review.score;
+    next.blurRisk = review.blurRisk;
+    next.reviewReasons = review.reasons;
+    nextFiles ??= files.slice();
+    nextFiles[index] = next;
+    changedPaths.push(file.path);
+  }
+  if (!nextFiles) return { files, changedPaths };
+  inheritCataloguePathIndex(files, nextFiles);
+  return { files: nextFiles, changedPaths };
+}
+
+/** Apply face-group metadata with an exact changed-row list for session deltas. */
+export function applyFaceGroupAssignments(
+  files: MediaFile[],
+  assignments: ReviewGroupAssignments,
+): ReviewGroupingResult {
+  let nextFiles: MediaFile[] | undefined;
+  const changedPaths: string[] = [];
+  for (let index = 0; index < files.length; index++) {
+    const file = files[index];
+    const group = assignments.get(file.path);
+    const faceGroupId = group?.id;
+    const faceGroupSize = group?.size;
+    if (file.faceGroupId === faceGroupId && file.faceGroupSize === faceGroupSize) continue;
+    nextFiles ??= files.slice();
+    nextFiles[index] = { ...file, faceGroupId, faceGroupSize };
+    changedPaths.push(file.path);
+  }
+  if (!nextFiles) return { files, changedPaths };
+  inheritCataloguePathIndex(files, nextFiles);
+  return { files: nextFiles, changedPaths };
 }
 
 export function reducer(state: State, action: Action): State {
@@ -1288,47 +1410,19 @@ export function reducer(state: State, action: Action): State {
         files: state.files.map((file) => file.type === 'photo' ? stripLocalFaceAndSubjectData(file) : file),
       };
     case 'GROUP_VISUAL_DUPLICATES': {
-      const groups = groupByVisualHash(action.files ?? state.files, action.threshold ?? 8);
-      const groupByPath = new Map<string, { id: string; size: number }>();
-      for (const [id, paths] of Object.entries(groups)) {
-        for (const p of paths) groupByPath.set(p, { id, size: paths.length });
-      }
-      return {
-        ...state,
-        files: state.files.map((f) => {
-          const group = groupByPath.get(f.path);
-          const next = group
-            ? { ...f, visualGroupId: group.id, visualGroupSize: group.size }
-            : { ...f, visualGroupId: undefined, visualGroupSize: undefined };
-          if (next.visualGroupId === f.visualGroupId && next.visualGroupSize === f.visualGroupSize) return f;
-          const review = scoreReview(next);
-          return { ...next, reviewScore: review.score, blurRisk: review.blurRisk, reviewReasons: review.reasons };
-        }),
-      };
+      const assignments = action.assignments
+        ?? buildVisualGroupAssignments(action.files ?? state.files, action.threshold ?? 8);
+      const result = applyVisualGroupAssignments(state.files, assignments);
+      return result.files === state.files ? state : { ...state, files: result.files };
     }
     case 'GROUP_FACE_SIMILAR': {
-      const groups = groupByFaceSimilarity(
+      const assignments = action.assignments ?? buildFaceGroupAssignments(
         action.files ?? state.files,
         action.embeddingThreshold ?? FACE_GROUP_EMBEDDING_THRESHOLD,
         action.threshold ?? 10,
       );
-      const groupByPath = new Map<string, { id: string; size: number }>();
-      for (const [id, paths] of Object.entries(groups)) {
-        for (const p of paths) {
-          const current = groupByPath.get(p);
-          if (!current || paths.length > current.size) groupByPath.set(p, { id, size: paths.length });
-        }
-      }
-      return {
-        ...state,
-        files: state.files.map((f) => {
-          const group = groupByPath.get(f.path);
-          const faceGroupId = group?.id;
-          const faceGroupSize = group?.size;
-          if (f.faceGroupId === faceGroupId && f.faceGroupSize === faceGroupSize) return f;
-          return { ...f, faceGroupId, faceGroupSize };
-        }),
-      };
+      const result = applyFaceGroupAssignments(state.files, assignments);
+      return result.files === state.files ? state : { ...state, files: result.files };
     }
     case 'GROUP_SCENE_BUCKETS':
       return { ...state, files: assignSceneBuckets(state.files, state.eventMode) };
@@ -1649,13 +1743,20 @@ const DispatchContext = createContext<Dispatch<Action>>(() => {});
 // Components that need merged files call useMergedFiles() instead of
 // reading state.files directly.
 // ---------------------------------------------------------------------------
-export type ReviewPatch = Partial<MediaFile> & { reviewScore?: number; blurRisk?: MediaFile['blurRisk']; reviewReasons?: string[] };
+export type ReviewPatch = Partial<MediaFile> & {
+  reviewScore?: number;
+  blurRisk?: MediaFile['blurRisk'];
+  reviewReasons?: string[];
+  /** Internal durability hint for a patch that changes grouping only. */
+  __preserveReviewScore?: boolean;
+};
 const ReviewScoresContext = createContext<Map<string, ReviewPatch>>(new Map());
+const PendingCommittedReviewContext = createContext<Map<string, ReviewPatch>>(new Map());
 const ReviewScoresVersionContext = createContext<number>(0);
 const MergedFilesContext = createContext<MediaFile[]>(initialState.files);
 const mergedReviewFileCache = new WeakMap<MediaFile, WeakMap<ReviewPatch, MediaFile>>();
 
-function mergeReviewPatch(file: MediaFile, patch: ReviewPatch): MediaFile {
+export function mergeReviewPatch(file: MediaFile, patch: ReviewPatch): MediaFile {
   let byPatch = mergedReviewFileCache.get(file);
   if (!byPatch) {
     byPatch = new WeakMap();
@@ -1664,8 +1765,9 @@ function mergeReviewPatch(file: MediaFile, patch: ReviewPatch): MediaFile {
   const cached = byPatch.get(patch);
   if (cached) return cached;
 
-  const merged = { ...file, ...patch };
-  if (patch.reviewScore === undefined) {
+  const { __preserveReviewScore, ...filePatch } = patch;
+  const merged = { ...file, ...filePatch };
+  if (!__preserveReviewScore && patch.reviewScore === undefined) {
     const review = scoreReview(merged);
     merged.blurRisk = patch.blurRisk ?? review.blurRisk;
     merged.reviewScore = review.score;
@@ -1694,7 +1796,44 @@ export function mergeReviewScorePatches(
   if (!Object.prototype.hasOwnProperty.call(next, 'reviewScore')) delete merged.reviewScore;
   if (!Object.prototype.hasOwnProperty.call(next, 'blurRisk')) delete merged.blurRisk;
   if (!Object.prototype.hasOwnProperty.call(next, 'reviewReasons')) delete merged.reviewReasons;
+  if (!next.__preserveReviewScore) delete merged.__preserveReviewScore;
   return merged;
+}
+
+/** Accumulate committed patches until React has rendered their reducer state. */
+export function stagePendingCommittedReviewPatches(
+  pending: Map<string, ReviewPatch>,
+  incoming: ReadonlyMap<string, ReviewPatch>,
+): void {
+  for (const [filePath, patch] of incoming) {
+    pending.set(filePath, mergeReviewScorePatches(pending.get(filePath), patch));
+  }
+}
+
+/** Stage only the fields owned by terminal grouping. A full MediaFile here can
+ * overwrite a pick/rating dispatched between COMMIT and the next React render. */
+export function stagePendingReviewGroupPatches(
+  pending: Map<string, ReviewPatch>,
+  files: readonly MediaFile[],
+  changedPaths: Iterable<string>,
+): void {
+  const indexByPath = getCataloguePathIndex(files);
+  for (const filePath of changedPaths) {
+    const index = indexByPath.get(filePath);
+    if (index === undefined) continue;
+    const file = files[index];
+    const existing = pending.get(filePath);
+    pending.set(filePath, {
+      ...existing,
+      visualGroupId: file.visualGroupId,
+      visualGroupSize: file.visualGroupSize,
+      faceGroupId: file.faceGroupId,
+      faceGroupSize: file.faceGroupSize,
+      // With no AI patch to materialize, grouping must not recalculate or
+      // replace already-durable review fields on the base row.
+      ...(existing ? {} : { __preserveReviewScore: true }),
+    });
+  }
 }
 
 export function ImportProvider({ children }: { children: ReactNode }) {
@@ -1707,6 +1846,18 @@ export function ImportProvider({ children }: { children: ReactNode }) {
 
   // Mutable map of review score overlays — never triggers a re-render itself.
   const reviewScoresRef = useRef<Map<string, ReviewPatch>>(new Map());
+  // A COMMIT clears the working overlay before React renders the reducer's new
+  // file array. Preserve the just-committed patches in this stable Map so a
+  // synchronous quit/max-wait flush cannot observe old files + an empty overlay.
+  const pendingCommittedReviewRef = useRef<Map<string, ReviewPatch>>(new Map());
+  const pendingCommittedFilesRef = useRef<MediaFile[] | null>(null);
+  const pendingCommitNeedsRenderRef = useRef(false);
+  // Dispatch is intentionally stable and reads this ref synchronously. Point
+  // it at the pending reducer result immediately so a second COMMIT/action in
+  // the same event turn cannot rebuild from stale pre-commit files.
+  stateRef.current = pendingCommittedFilesRef.current
+    ? { ...state, files: pendingCommittedFilesRef.current }
+    : state;
   // Version counter: batched so per-file review updates do not remap every card.
   const [reviewVersion, setReviewVersion] = useState(0);
   const reviewVersionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1730,6 +1881,18 @@ export function ImportProvider({ children }: { children: ReactNode }) {
     if (reviewVersionTimerRef.current) clearTimeout(reviewVersionTimerRef.current);
   }, []);
 
+  // Reducer actions queued after APPLY_REVIEW_SNAPSHOT (for example SET_PICK)
+  // are included in the same or a later committed React render. Retire the
+  // pre-render durability bridge after that commit regardless of array
+  // identity, then point synchronous dispatches at the fully reduced state.
+  useLayoutEffect(() => {
+    if (!pendingCommitNeedsRenderRef.current) return;
+    pendingCommitNeedsRenderRef.current = false;
+    pendingCommittedFilesRef.current = null;
+    pendingCommittedReviewRef.current.clear();
+    stateRef.current = state;
+  });
+
   // Keep the shared review scorer's profile in sync with the active event mode
   // so best-shot/keeper ranking in the grid reflects sports-action weighting.
   useEffect(() => {
@@ -1749,9 +1912,37 @@ export function ImportProvider({ children }: { children: ReactNode }) {
   const dispatch = useCallback<Dispatch<Action>>((action) => {
     trackSessionFileChanges(action);
     if (action.type === 'COMMIT_REVIEW_SCORES') {
-      if (reviewScoresRef.current.size === 0) return;
-      const mergedFiles = mergeReviewScoreOverlay(stateRef.current.files, reviewScoresRef.current);
+      if (reviewScoresRef.current.size === 0 && !action.finalizeGroups) return;
+      stagePendingCommittedReviewPatches(pendingCommittedReviewRef.current, reviewScoresRef.current);
+      let mergedFiles = mergeReviewScoreOverlay(stateRef.current.files, reviewScoresRef.current);
       reviewScoresRef.current.clear();
+      const changedPaths = new Set<string>();
+      if (action.finalizeGroups?.faceMatching) {
+        const assignments = buildFaceGroupAssignments(
+          mergedFiles,
+          action.finalizeGroups.faceEmbeddingThreshold ?? FACE_GROUP_EMBEDDING_THRESHOLD,
+          action.finalizeGroups.faceSignatureThreshold ?? 10,
+        );
+        const grouped = applyFaceGroupAssignments(mergedFiles, assignments);
+        mergedFiles = grouped.files;
+        for (const filePath of grouped.changedPaths) changedPaths.add(filePath);
+      }
+      if (action.finalizeGroups?.visualDuplicates) {
+        const assignments = buildVisualGroupAssignments(
+          mergedFiles,
+          action.finalizeGroups.visualThreshold ?? 8,
+        );
+        const grouped = applyVisualGroupAssignments(mergedFiles, assignments);
+        mergedFiles = grouped.files;
+        for (const filePath of grouped.changedPaths) changedPaths.add(filePath);
+      }
+      if (changedPaths.size > 0) markSessionPathsChanged(changedPaths);
+      // Keep the bridge field-scoped: a later pick/rating action must remain
+      // authoritative even if persistence runs before the bridge is retired.
+      stagePendingReviewGroupPatches(pendingCommittedReviewRef.current, mergedFiles, changedPaths);
+      pendingCommittedFilesRef.current = mergedFiles;
+      pendingCommitNeedsRenderRef.current = true;
+      stateRef.current = { ...stateRef.current, files: mergedFiles };
       rawDispatch({ type: 'APPLY_REVIEW_SNAPSHOT', files: mergedFiles });
       bumpReviewVersionNow();
       return;
@@ -1785,6 +1976,9 @@ export function ImportProvider({ children }: { children: ReactNode }) {
       action.type === 'RESTORE_SESSION'
     ) {
       reviewScoresRef.current.clear();
+      pendingCommittedReviewRef.current.clear();
+      pendingCommittedFilesRef.current = null;
+      pendingCommitNeedsRenderRef.current = false;
       clearEmbeddingCache();
       bumpReviewVersionNow();
     }
@@ -1816,11 +2010,36 @@ export function ImportProvider({ children }: { children: ReactNode }) {
       if (next.length > 0) rawDispatch({ type: 'SET_FILTER', filter: 'queue' });
       return;
     }
-    // Grouping and grouped bulk decisions depend on AI data held in the overlay.
-    // Compute from merged files, then let the reducer write stable state by path.
+    // Grouping depends on AI data held in the overlay. Compute assignments once,
+    // journal only rows whose membership changed, and pass the compact Map into
+    // the reducer. This keeps large-session saves on the SQLite delta path.
+    if (action.type === 'GROUP_VISUAL_DUPLICATES') {
+      const rawFiles = stateRef.current.files;
+      const workingFiles = action.files ?? mergeReviewScoreOverlay(rawFiles, reviewScoresRef.current);
+      const assignments = action.assignments
+        ?? buildVisualGroupAssignments(workingFiles, action.threshold ?? 8);
+      const changedPaths = visualGroupAssignmentChanges(rawFiles, assignments);
+      if (changedPaths.length === 0) return;
+      markSessionPathsChanged(changedPaths);
+      rawDispatch({ ...action, files: workingFiles, assignments });
+      return;
+    }
+    if (action.type === 'GROUP_FACE_SIMILAR') {
+      const rawFiles = stateRef.current.files;
+      const workingFiles = action.files ?? mergeReviewScoreOverlay(rawFiles, reviewScoresRef.current);
+      const assignments = action.assignments ?? buildFaceGroupAssignments(
+        workingFiles,
+        action.embeddingThreshold ?? FACE_GROUP_EMBEDDING_THRESHOLD,
+        action.threshold ?? 10,
+      );
+      const changedPaths = faceGroupAssignmentChanges(rawFiles, assignments);
+      if (changedPaths.length === 0) return;
+      markSessionPathsChanged(changedPaths);
+      rawDispatch({ ...action, files: workingFiles, assignments });
+      return;
+    }
+    // Grouped bulk decisions depend on AI data held in the overlay.
     if (
-      action.type === 'GROUP_FACE_SIMILAR' ||
-      action.type === 'GROUP_VISUAL_DUPLICATES' ||
       action.type === 'AUTO_CULL_SAFE' ||
       action.type === 'PICK_BEST_IN_GROUPS'
     ) {
@@ -1837,11 +2056,13 @@ export function ImportProvider({ children }: { children: ReactNode }) {
     <StateContext.Provider value={state}>
       <DispatchContext.Provider value={dispatch}>
         <ReviewScoresContext.Provider value={reviewScoresRef.current}>
-          <ReviewScoresVersionContext.Provider value={reviewVersion}>
-            <MergedFilesContext.Provider value={mergedFiles}>
-              {children}
-            </MergedFilesContext.Provider>
-          </ReviewScoresVersionContext.Provider>
+          <PendingCommittedReviewContext.Provider value={pendingCommittedReviewRef.current}>
+            <ReviewScoresVersionContext.Provider value={reviewVersion}>
+              <MergedFilesContext.Provider value={mergedFiles}>
+                {children}
+              </MergedFilesContext.Provider>
+            </ReviewScoresVersionContext.Provider>
+          </PendingCommittedReviewContext.Provider>
         </ReviewScoresContext.Provider>
       </DispatchContext.Provider>
     </StateContext.Provider>
@@ -1865,6 +2086,12 @@ export function useReviewScoresVersion(): number {
  * batched UI flushes. Consumers must dispatch SET_REVIEW_SCORES to mutate it. */
 export function useReviewScoreOverlay(): Map<string, ReviewPatch> {
   return useContext(ReviewScoresContext);
+}
+
+/** Review patches already dispatched into reducer state but not yet visible to
+ * consumers in the current render. Intended for durability snapshots only. */
+export function usePendingCommittedReviewOverlay(): Map<string, ReviewPatch> {
+  return useContext(PendingCommittedReviewContext);
 }
 
 /**

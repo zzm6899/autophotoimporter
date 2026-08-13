@@ -1182,11 +1182,12 @@ export async function getCachedFaceResult(
 export async function getBestCachedFaceResult(
   filePath: string,
   identity?: FaceCacheIdentityHint,
+  minimumAnalysisDepth: FaceAnalysisProfile = 'detect',
 ): Promise<{
   result: FaceAnalysisResult;
   hexEmbeddings: string[];
 } | null> {
-  return getCachedFaceResult(filePath, { analysisDepth: 'detect', identity });
+  return getCachedFaceResult(filePath, { analysisDepth: minimumAnalysisDepth, identity });
 }
 
 export async function setCachedFaceResult(

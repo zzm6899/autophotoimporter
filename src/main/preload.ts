@@ -415,6 +415,21 @@ const api = {
       deviceId?: number;
       fallbackReason?: string;
     }>;
+    productionFastDetectors: {
+      state: 'unchecked' | 'active' | 'legacy-fallback';
+      active: boolean;
+      faceModel: string;
+      personModel: string;
+      faceProvider?: 'cpu' | 'dml';
+      personProvider?: 'cpu' | 'dml';
+      faceRuns: number;
+      personRuns: number;
+      ssdFallbacks: number;
+      ssdFallbackRate: number | null;
+      legacyFaceFallbacks: number;
+      legacyPersonFallbacks: number;
+      failure?: string;
+    };
   }> =>
     ipcRenderer.invoke(IPC.FACE_EXECUTION_PROVIDER),
 

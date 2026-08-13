@@ -11,6 +11,19 @@ let fullCheckpointRevision = 0;
 let capturedFullCheckpointRevision = 0;
 const pathRevisions = new Map<string, number>();
 let restoredSessionSeed: { session: AppSession; revision: number } | null = null;
+const changeListeners = new Set<() => void>();
+
+function publishSessionChange(): void {
+  for (const listener of changeListeners) listener();
+}
+
+/** Observe journal mutations that may not trigger React rendering, such as
+ * review-overlay updates on a 250k+ catalogue. Callbacks must schedule work;
+ * they run synchronously before the dispatching event turn completes. */
+export function subscribeSessionChanges(listener: () => void): () => void {
+  changeListeners.add(listener);
+  return () => changeListeners.delete(listener);
+}
 
 export function resetSessionChangeJournal(requireCheckpoint = true): number {
   revision++;
@@ -18,6 +31,7 @@ export function resetSessionChangeJournal(requireCheckpoint = true): number {
   fullCheckpointRevision = requireCheckpoint ? revision : 0;
   capturedFullCheckpointRevision = 0;
   restoredSessionSeed = null;
+  publishSessionChange();
   return revision;
 }
 
@@ -45,6 +59,7 @@ export function markSessionPathsChanged(paths: Iterable<string>): number {
   if (fullCheckpointRevision > 0 && capturedFullCheckpointRevision === 0) {
     for (const _path of paths) {
       revision++;
+      publishSessionChange();
       return revision;
     }
     return revision;
@@ -53,6 +68,7 @@ export function markSessionPathsChanged(paths: Iterable<string>): number {
   if (unique.size === 0) return revision;
   revision++;
   for (const filePath of unique) pathRevisions.set(filePath, revision);
+  publishSessionChange();
   return revision;
 }
 
@@ -61,6 +77,7 @@ export function markSessionCheckpointRequired(): number {
   fullCheckpointRevision = revision;
   capturedFullCheckpointRevision = 0;
   pathRevisions.clear();
+  publishSessionChange();
   return revision;
 }
 

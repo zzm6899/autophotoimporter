@@ -74,6 +74,15 @@ import {
 
 const tempDirs: string[] = [];
 
+function jpegHeader(width: number, height: number): Buffer {
+  const buffer = Buffer.alloc(23);
+  buffer.set([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08]);
+  buffer.writeUInt16BE(height, 7);
+  buffer.writeUInt16BE(width, 9);
+  buffer.set([0x03, 0x01, 0x11, 0x00, 0x02, 0x11, 0x00, 0x03, 0x11, 0x00, 0xff, 0xd9], 11);
+  return buffer;
+}
+
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
@@ -364,6 +373,43 @@ describe('face-engine EXIF orientation', () => {
     });
   });
 
+  it('uses the scanner thumbnail before reopening a full-size JPEG for detector-only review', async () => {
+    const thumbnail = jpegHeader(320, 213);
+    previewMocks.thumbnailPeek.mockResolvedValueOnce({
+      kind: 'buffer', buffer: thumbnail, persisted: false,
+    });
+
+    await expect(resolvePreprocessSource('/photos/frame.jpg', 6, true)).resolves.toEqual({
+      sourcePath: '/photos/frame.jpg',
+      inputBuffer: thumbnail,
+      orientation: 6,
+      useSourceOrientation: true,
+      sourceKind: 'thumbnail-buffer',
+    });
+  });
+
+  it('falls back to the original JPEG when the scanner thumbnail is unavailable', async () => {
+    previewMocks.thumbnailPeek.mockResolvedValueOnce(undefined);
+
+    await expect(resolvePreprocessSource('/photos/frame.jpg', 1, true)).resolves.toEqual({
+      sourcePath: '/photos/frame.jpg',
+      orientation: 1,
+      sourceKind: 'original',
+    });
+  });
+
+  it('rejects a tiny embedded JPEG thumbnail instead of weakening detector recall', async () => {
+    previewMocks.thumbnailPeek.mockResolvedValueOnce({
+      kind: 'buffer', buffer: jpegHeader(160, 120), persisted: false,
+    });
+
+    await expect(resolvePreprocessSource('/photos/frame.jpg', 1, true)).resolves.toEqual({
+      sourcePath: '/photos/frame.jpg',
+      orientation: 1,
+      sourceKind: 'original',
+    });
+  });
+
   it.each([6, 8] as const)('retains orientation %i for a stored-pixel RAW preview', async (orientation) => {
     await expect(resolvePreprocessSource('/photos/frame.raw', orientation)).resolves.toEqual({
       sourcePath: '/cache/generated-preview.jpg',
@@ -385,12 +431,13 @@ describe('face-engine EXIF orientation', () => {
   });
 
   it('uses a scanner thumbnail for detector-only RAW independently of persistent preview cache', async () => {
+    const thumbnail = jpegHeader(320, 213);
     previewMocks.thumbnailPeek.mockResolvedValueOnce({
-      kind: 'buffer', buffer: Buffer.from([1, 2, 3]), persisted: false,
+      kind: 'buffer', buffer: thumbnail, persisted: false,
     });
     const source = await resolvePreprocessSource('/photos/unseen.cr3', 1, true);
     expect(source.sourceKind).toBe('thumbnail-buffer');
-    expect(Array.from(source.inputBuffer ?? [])).toEqual([1, 2, 3]);
+    expect(source.inputBuffer).toEqual(thumbnail);
     expect(source.useSourceOrientation).toBe(true);
   });
 });

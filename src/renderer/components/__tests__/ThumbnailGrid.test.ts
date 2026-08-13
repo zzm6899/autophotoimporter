@@ -1,6 +1,98 @@
 import { describe, expect, it } from 'vitest';
-import { alignBestOfBatchOffset, bestOfAutomaticDecision, getReviewStartTarget, getSelectedReviewStartTarget, isJpegFamilyPhoto, isRawFilterPhoto, nextOptionalReviewFeatureFailure, reconcileOptionalReviewFeatureAvailability, shouldFinalizeFaceAnalysisFailure, shouldOpenBestOfSelectionPanel, shouldQueueVisibleImportablePaths, shouldRunOnnxForReview, sliceBestOfBatchPathPage, summarizeBestOfBatchPage, summarizeReviewFlowHealth, summarizeReviewFlowNextStep } from '../ThumbnailGrid';
+import { alignBestOfBatchOffset, bestOfAutomaticDecision, formatFaceProviderSummary, getReviewStartTarget, getSelectedReviewStartTarget, hasPendingVisualHashInput, isJpegFamilyPhoto, isRawFilterPhoto, nextOptionalReviewFeatureFailure, planTerminalReviewGrouping, reconcileOptionalReviewFeatureAvailability, shouldFinalizeFaceAnalysisFailure, shouldOpenBestOfSelectionPanel, shouldQueueVisibleImportablePaths, shouldRunOnnxForReview, sliceBestOfBatchPathPage, summarizeBestOfBatchPage, summarizeReviewFlowHealth, summarizeReviewFlowNextStep } from '../ThumbnailGrid';
 import type { MediaFile } from '../../../shared/types';
+
+describe('face provider status', () => {
+  it('names the promoted detectors, their providers, and observed SSD fallback rate', () => {
+    expect(formatFaceProviderSummary([], 'mixed', {
+      state: 'active',
+      active: true,
+      faceProvider: 'dml',
+      personProvider: 'dml',
+      personRuns: 40,
+      ssdFallbackRate: 0.125,
+    })).toBe('YuNet DML · NanoDet DML · SSD fallback 13%');
+  });
+
+  it('does not invent a fallback percentage before NanoDet has processed a photo', () => {
+    expect(formatFaceProviderSummary([], 'dml', {
+      state: 'active',
+      active: true,
+      faceProvider: 'dml',
+      personProvider: 'cpu',
+      personRuns: 0,
+      ssdFallbackRate: null,
+    })).toBe('YuNet DML · NanoDet CPU · SSD fallback not measured');
+  });
+
+  it('shows the verified legacy route when the promoted pair is unavailable', () => {
+    expect(formatFaceProviderSummary([
+      { model: 'detector', provider: 'dml' },
+      { model: 'person', provider: 'cpu' },
+    ], 'mixed', {
+      state: 'legacy-fallback',
+      active: false,
+      personRuns: 0,
+      ssdFallbackRate: null,
+    })).toBe('UltraFace DML · SSD CPU · YuNet/NanoDet unavailable');
+  });
+});
+
+describe('terminal review grouping', () => {
+  const photo = (path: string, overrides: Partial<MediaFile> = {}): MediaFile => ({
+    path,
+    name: path.slice(1),
+    size: 1,
+    type: 'photo',
+    extension: '.jpg',
+    ...overrides,
+  });
+
+  it('does not wait forever for a hash that cannot be produced', () => {
+    expect(hasPendingVisualHashInput([
+      photo('/no-thumbnail.jpg'),
+      photo('/unavailable.jpg', { thumbnail: 'keptra-preview://unavailable', reviewAnalysisUnavailable: true }),
+      { ...photo('/video.mp4', { thumbnail: 'keptra-preview://video' }), type: 'video', extension: '.mp4' },
+    ], true)).toBe(false);
+
+    expect(hasPendingVisualHashInput([
+      photo('/ready.jpg', { thumbnail: 'keptra-preview://ready' }),
+    ], true)).toBe(true);
+    expect(hasPendingVisualHashInput([
+      photo('/ready.jpg', { thumbnail: 'keptra-preview://ready' }),
+    ], false)).toBe(false);
+  });
+
+  it('finalizes once, permits one evidence-producing cascade, then ignores navigation ticks', () => {
+    const initialEvidence = {
+      reviewGeneration: 4,
+      evidenceRevision: 20,
+      faceMatching: true,
+      visualDuplicates: true,
+      faceEmbeddingThreshold: 0.6,
+      faceSignatureThreshold: 10,
+      visualThreshold: 8,
+    };
+    const first = planTerminalReviewGrouping('', initialEvidence);
+    expect(first.shouldFinalize).toBe(true);
+
+    // Focus/navigation changed, but review evidence did not.
+    expect(planTerminalReviewGrouping(first.key, initialEvidence).shouldFinalize).toBe(false);
+
+    // Native comparison analysis after grouping produced new evidence.
+    const cascade = planTerminalReviewGrouping(first.key, {
+      ...initialEvidence,
+      evidenceRevision: initialEvidence.evidenceRevision + 1,
+    });
+    expect(cascade.shouldFinalize).toBe(true);
+
+    // The terminal pass after that cascade is stable; later navigation is a no-op.
+    expect(planTerminalReviewGrouping(cascade.key, {
+      ...initialEvidence,
+      evidenceRevision: initialEvidence.evidenceRevision + 1,
+    }).shouldFinalize).toBe(false);
+  });
+});
 
 describe('summarizeReviewFlowNextStep', () => {
   it('shows the importable count when some queued files are blocked', () => {

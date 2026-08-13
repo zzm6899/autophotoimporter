@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 1.5.14 - 2026-08-13
+
+### Fixed
+- Stopped large AI reviews from regrouping and rewriting the full session every 15 seconds. Face and visual grouping now finalize after the analysis sweep and persist only rows whose group membership changed, preventing the long UI freezes that could look like an application crash near completion.
+- Made terminal grouping stable across navigation, delayed previews, unavailable thumbnails, and the one Super Speed comparison follow-up, without repeatedly rebuilding the catalogue.
+- Prevented perceptual-hash similarity chains from collapsing unrelated event moments into one giant comparison group. Visual groups now respect burst boundaries, local capture context, a fixed representative, and a bounded group size.
+- Serialized optional MoveNet pose inference and made its shutdown lifecycle wait safely for in-flight native work before releasing the DirectML session.
+
+### Performance
+- Detector-only JPEG review now reuses an existing quality-safe scanner thumbnail when available, while rejecting tiny camera thumbnails and falling back to the original image to preserve small-face recall.
+- Replaced the quadratic 64-bit visual-hash search used at review completion with an exact indexed search; the saved 22,529-photo HYROX catalogue groups in tens of milliseconds instead of freezing the renderer for minutes.
+- The review status now names the active YuNet and NanoDet providers and reports the observed selective SSD fallback rate.
+
 ## 1.5.13 - 2026-08-13
 
 ### Performance

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { acknowledgeSessionChanges, consumeRestoredSessionBaseline, markSessionPathsChanged, resetSessionChangeJournal, snapshotSessionChanges, stageRestoredSessionBaseline } from '../sessionChangeJournal';
+import { acknowledgeSessionChanges, consumeRestoredSessionBaseline, markSessionPathsChanged, resetSessionChangeJournal, snapshotSessionChanges, stageRestoredSessionBaseline, subscribeSessionChanges } from '../sessionChangeJournal';
 
 describe('sessionChangeJournal', () => {
   beforeEach(() => resetSessionChangeJournal(true));
@@ -43,5 +43,20 @@ describe('sessionChangeJournal', () => {
     expect(consumeRestoredSessionBaseline('/different', 1)).toBeNull();
     expect(consumeRestoredSessionBaseline('/scan', 1)).toEqual({ session, revision });
     expect(consumeRestoredSessionBaseline('/scan', 1)).toBeNull();
+  });
+
+  it('notifies durability scheduling for journal mutations without treating ACKs as new work', () => {
+    let calls = 0;
+    const unsubscribe = subscribeSessionChanges(() => { calls++; });
+    try {
+      const changed = markSessionPathsChanged(['/scan/a.jpg']);
+      expect(calls).toBe(1);
+      acknowledgeSessionChanges(changed);
+      expect(calls).toBe(1);
+    } finally {
+      unsubscribe();
+    }
+    markSessionPathsChanged(['/scan/b.jpg']);
+    expect(calls).toBe(1);
   });
 });

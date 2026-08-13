@@ -18,7 +18,7 @@ import { generatePreview, generatePreviewPayload, getThumbnailPayload, peekPrevi
 import { checkForUpdate, fetchUpdateHistory, readLastKnownGoodUpdateMetadata } from './services/update-checker';
 import { probeFtp, mirrorFtp } from './services/ftp-source';
 import { activateLicenseInput, checkHostedLicenseStatus, validateLicenseKey } from './services/license';
-import { analyzeFaces, cancelActiveFacePreprocessing, disposeFaceEngine, faceModelsAvailable, serializeEmbedding, isGpuAvailable, getActualExecutionProvider, getFaceFeatureOptions, getFaceProviderDiagnostics, configureGpuAcceleration, configureGpuDevice, configureCpuOptimization, configureFaceFeatureOptions, configureFaceThroughput, clearImageDecodeCache, diagnoseFaceEngine, runFaceGpuStressTest, isNanoDetSportsFallbackActive } from './services/face-engine';
+import { analyzeFaces, cancelActiveFacePreprocessing, disposeFaceEngine, faceModelsAvailable, serializeEmbedding, isGpuAvailable, getActualExecutionProvider, getFaceFeatureOptions, getFaceProviderDiagnostics, getProductionFastDetectorRuntimeStatus, configureGpuAcceleration, configureGpuDevice, configureCpuOptimization, configureFaceFeatureOptions, configureFaceThroughput, clearImageDecodeCache, diagnoseFaceEngine, runFaceGpuStressTest, isNanoDetSportsFallbackActive } from './services/face-engine';
 import type { ExifOrientation, FaceAnalysisProfile } from './services/face-engine';
 import { PRODUCTION_FAST_DETECTOR_FINGERPRINT } from './services/detector-model-manifest';
 import { getBestCachedFaceResult, getCachedFaceResult, setCachedFaceResult, clearFaceCache, closeFaceCache } from './services/face-cache';
@@ -3856,6 +3856,7 @@ export function registerIpcHandlers(): void {
     return {
       ep: getActualExecutionProvider(),
       models: getFaceProviderDiagnostics(),
+      productionFastDetectors: getProductionFastDetectorRuntimeStatus(),
     };
   });
 
@@ -4076,9 +4077,18 @@ export function registerIpcHandlers(): void {
           // analysis”. Seed enrichment from the best shallower record so a
           // subjects→full transition does not decode and detect everything a
           // second time.
+          // A detector-only record may have been produced from a compact
+          // scanner thumbnail. Never carry those face boxes into eye/identity
+          // or subject analysis: deeper profiles must run on their 1024px
+          // analysis surface. A subjects record remains a safe seed for full
+          // pose/embedding enrichment without repeating detection.
           const cachedSeed = profile === 'detect'
             ? undefined
-            : (await getBestCachedFaceResult(filePath, verifiedIdentitiesByPath.get(filePath)).catch(() => null))?.result;
+            : (await getBestCachedFaceResult(
+                filePath,
+                verifiedIdentitiesByPath.get(filePath),
+                'subjects',
+              ).catch(() => null))?.result;
           // A legacy result is useful only while the promoted pair is absent.
           // Once the verified fast route is active, seeding from legacy boxes
           // would tell the resume planner that detection was already complete
