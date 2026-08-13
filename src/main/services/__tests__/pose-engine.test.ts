@@ -59,6 +59,31 @@ describe('MoveNet session creation', () => {
       logSeverityLevel: 3,
     });
   });
+
+  it('falls back to CPU when DirectML session creation is unavailable', async () => {
+    const nativeSession = { run: vi.fn(), release: vi.fn() };
+    const create = vi.fn()
+      .mockRejectedValueOnce(new Error('display adapter is unavailable'))
+      .mockResolvedValueOnce(nativeSession);
+
+    await expect(createPoseInferenceSession(
+      { create },
+      'movenet_thunder.onnx',
+      'win32',
+    )).resolves.toBe(nativeSession);
+    expect(create).toHaveBeenNthCalledWith(1, 'movenet_thunder.onnx', {
+      executionProviders: ['dml', 'cpu'],
+      executionMode: 'sequential',
+      enableMemPattern: false,
+      graphOptimizationLevel: 'all',
+      logSeverityLevel: 3,
+    });
+    expect(create).toHaveBeenNthCalledWith(2, 'movenet_thunder.onnx', {
+      executionProviders: ['cpu'],
+      graphOptimizationLevel: 'all',
+      logSeverityLevel: 3,
+    });
+  });
 });
 
 describe('MoveNet native session lifecycle', () => {
