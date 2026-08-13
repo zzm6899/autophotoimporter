@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -26,9 +27,9 @@ afterEach(async () => {
 });
 
 describe('pose model integrity', () => {
-  it('accepts the repository MoveNet model pinned by the production manifest', async () => {
+  it('accepts the installed pinned MoveNet model and fails closed before models are downloaded', async () => {
     const modelPath = path.resolve(process.cwd(), 'models', 'movenet_thunder.onnx');
-    await expect(verifyPoseModelFile(modelPath)).resolves.toBe(true);
+    await expect(verifyPoseModelFile(modelPath)).resolves.toBe(existsSync(modelPath));
   });
 
   it('rejects an untrusted file', async () => {
