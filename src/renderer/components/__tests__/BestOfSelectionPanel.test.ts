@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { actionableBestOfCandidates, bestOfShortcutAction, rankBestOfSelection, summarizeBestOfActions, summarizeBestOfReadiness } from '../BestOfSelectionPanel';
+import { actionableBestOfCandidates, bestOfShortcutAction, fitOrientedImagePlane, rankBestOfSelection, summarizeBestOfActions, summarizeBestOfReadiness } from '../BestOfSelectionPanel';
 import type { MediaFile } from '../../../shared/types';
 
 function photo(name: string, pick?: MediaFile['pick']): MediaFile {
@@ -100,6 +100,35 @@ describe('summarizeBestOfActions', () => {
 
     expect(candidates[0].name).toBe('viable.jpg');
     expect(candidates.some((file) => file.pick === 'rejected')).toBe(false);
+  });
+});
+
+describe('fitOrientedImagePlane', () => {
+  it('fits an unrotated stored-pixel plane without changing its aspect ratio', () => {
+    const plane = fitOrientedImagePlane(6000, 4000, 400, 300, 1);
+
+    expect(plane).not.toBeNull();
+    expect(plane!.width).toBeCloseTo(400);
+    expect(plane!.height).toBeCloseTo(266.667, 2);
+    expect(plane!.displayWidth).toBeCloseTo(400);
+    expect(plane!.displayHeight).toBeCloseTo(266.667, 2);
+  });
+
+  it.each([5, 6, 7, 8])('fits EXIF orientation %s against its upright, axis-swapped bounds', (orientation) => {
+    const plane = fitOrientedImagePlane(6000, 4000, 400, 300, orientation);
+
+    expect(plane).not.toBeNull();
+    expect(plane!.width).toBeCloseTo(300);
+    expect(plane!.height).toBeCloseTo(200);
+    expect(plane!.displayWidth).toBeCloseTo(200);
+    expect(plane!.displayHeight).toBeCloseTo(300);
+    expect(plane!.displayWidth).toBeLessThanOrEqual(400);
+    expect(plane!.displayHeight).toBeLessThanOrEqual(300);
+  });
+
+  it('rejects invalid dimensions instead of producing an unusable transform plane', () => {
+    expect(fitOrientedImagePlane(0, 4000, 400, 300, 6)).toBeNull();
+    expect(fitOrientedImagePlane(6000, 4000, Number.NaN, 300, 6)).toBeNull();
   });
 });
 

@@ -337,6 +337,21 @@ describe('selectKeepersToTarget', () => {
     for (const d of distinct) expect(result.keep).toContain(d.path);
   });
 
+  it('suppresses near-duplicates when a top hash bit crosses bucket boundaries', () => {
+    const files = [
+      file('/best.jpg', { visualHash: '0000000000000000', sharpnessScore: 120, blurRisk: 'low' }),
+      file('/top-bit-near.jpg', { visualHash: '8000000000000000', sharpnessScore: 110, blurRisk: 'low' }),
+      file('/distinct.jpg', { visualHash: 'ffffffffffffffff', sharpnessScore: 100, blurRisk: 'low' }),
+    ];
+
+    const result = selectKeepersToTarget(files, { target: 2, dedupeHashDistance: 1 });
+
+    expect(result.keep).toContain('/best.jpg');
+    expect(result.keep).toContain('/distinct.jpg');
+    expect(result.keep).not.toContain('/top-bit-near.jpg');
+    expect(result.dedupedNearDuplicates).toBeGreaterThanOrEqual(1);
+  });
+
   it('still meets the budget by filling with near-duplicates only as a last resort', () => {
     const dupHash = 'ffffffffffffffff';
     const dups = Array.from({ length: 10 }, (_, i) =>

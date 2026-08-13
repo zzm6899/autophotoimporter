@@ -81,7 +81,7 @@ export function HelpBar() {
     : 0;
 
   return (
-    <div className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-surface-alt/95 backdrop-blur-sm">
+    <div className="z-40 shrink-0 border-t border-border bg-surface-alt/95 backdrop-blur-sm">
       {isImporting && (
         <div className="h-0.5 bg-border">
           <div
@@ -165,10 +165,10 @@ export function HelpBar() {
             </button>
           </span>
         )}
-        {selectedPaths.length > 0 && <span className="shrink-0 text-blue-300">{selectedPaths.length} selected</span>}
-        {queuedPaths.length > 0 && <span className="shrink-0 text-emerald-300">{queuedPaths.length} queued</span>}
-        {picked > 0 && <span className="shrink-0 text-yellow-300">{picked} picked</span>}
-        {rejected > 0 && <span className="shrink-0 text-red-300">{rejected} rejected</span>}
+        {selectedPaths.length > 0 && <span className="shrink-0 text-blue-700 dark:text-blue-300">{selectedPaths.length} selected</span>}
+        {queuedPaths.length > 0 && <span className="shrink-0 text-emerald-700 dark:text-emerald-300">{queuedPaths.length} queued</span>}
+        {picked > 0 && <span className="shrink-0 text-amber-700 dark:text-yellow-300">{picked} picked</span>}
+        {rejected > 0 && <span className="shrink-0 text-red-700 dark:text-red-300">{rejected} rejected</span>}
         {files.length > 0 && (
           <span
             className="shrink-0 text-text-faint"
@@ -192,7 +192,7 @@ export function HelpBar() {
           </button>
         )}
         {ftpSyncStatus.state === 'running' && (
-          <span className="shrink-0 text-blue-300" title={ftpSyncStatus.message}>
+          <span className="shrink-0 text-blue-700 dark:text-blue-300" title={ftpSyncStatus.message}>
             FTP sync {ftpSyncStatus.done && ftpSyncStatus.total ? `${ftpSyncStatus.done}/${ftpSyncStatus.total}` : 'running'}
           </span>
         )}

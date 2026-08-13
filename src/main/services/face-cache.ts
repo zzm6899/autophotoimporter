@@ -6,8 +6,8 @@
  * folder (or rescans the same SD card) the ONNX inference results are
  * restored from disk in microseconds instead of being recomputed.
  *
- * Cache key: md5(absPath + mtimeMs + size). Same shape as exif-parser's
- * thumbnail cache so a file rename or a content edit invalidates the entry.
+ * Cache key: md5(absPath + mtimeMs + size + pipeline fingerprint). A file
+ * rename/content edit or any model/preprocessing revision invalidates it.
  *
  * Layout on disk:
  *   <userData>/face-cache/<keyPrefix>/<key>.json
@@ -24,14 +24,18 @@ import { stat, readFile, writeFile, mkdir, readdir, unlink } from 'node:fs/promi
 import { app } from 'electron';
 import crypto from 'node:crypto';
 import type { FaceAnalysisResult, FaceBox } from './face-engine';
+import { FACE_PIPELINE_FINGERPRINT } from './face-model-manifest';
 import type { PoseKeypoints } from '../../shared/types';
 
-const SCHEMA_VERSION = 2;
+// v4 records exact model/preprocessing provenance and orientation-normalized
+// inference, so previous results must not be reused.
+const SCHEMA_VERSION = 4;
 const MAX_ENTRIES = 50_000;       // ~50k photos worth of cached face data
 const PRUNE_BATCH = 5_000;        // remove this many oldest entries when over the cap
 
 interface CachedEntry {
   v: number;             // schema version
+  pipelineFingerprint: string;
   key: string;           // hash key (also the filename minus .json)
   path: string;          // for debug/audit
   size: number;          // input file size at cache time
@@ -45,9 +49,17 @@ interface CachedEntry {
   features: {
     faceMatching: boolean;
     personDetection: boolean;
+    poseAnalysis: boolean;
     embeddingLimit: number;
   };
 }
+
+type RequiredFeatures = {
+  faceMatching?: boolean;
+  personDetection?: boolean;
+  poseAnalysis?: boolean;
+  embeddingLimit?: number;
+};
 
 let cacheDirPromise: Promise<string> | null = null;
 let inMemoryHits = new Map<string, CachedEntry>(); // process-lifetime fast path
@@ -81,7 +93,7 @@ export async function cacheKeyFor(filePath: string): Promise<string | null> {
     const s = await stat(filePath);
     return crypto
       .createHash('md5')
-      .update(`${filePath}|${s.mtimeMs}|${s.size}`)
+      .update(`${filePath}|${s.mtimeMs}|${s.size}|${FACE_PIPELINE_FINGERPRINT}`)
       .digest('hex');
   } catch {
     return null;
@@ -108,14 +120,14 @@ export async function getCachedFaceResult(filePath: string): Promise<{
 } | null>;
 export async function getCachedFaceResult(
   filePath: string,
-  requiredFeatures: { faceMatching?: boolean; personDetection?: boolean; embeddingLimit?: number },
+  requiredFeatures: RequiredFeatures,
 ): Promise<{
   result: FaceAnalysisResult;
   hexEmbeddings: string[];
 } | null>;
 export async function getCachedFaceResult(
   filePath: string,
-  requiredFeatures?: { faceMatching?: boolean; personDetection?: boolean; embeddingLimit?: number },
+  requiredFeatures?: RequiredFeatures,
 ): Promise<{
   result: FaceAnalysisResult;
   hexEmbeddings: string[];
@@ -137,6 +149,7 @@ export async function getCachedFaceResult(
     const raw = await readFile(file, 'utf-8');
     const entry = JSON.parse(raw) as CachedEntry;
     if (entry.v !== SCHEMA_VERSION) return null;
+    if (entry.pipelineFingerprint !== FACE_PIPELINE_FINGERPRINT) return null;
     if (!cacheEntryHasRequiredFeatures(entry, requiredFeatures)) return null;
     rememberInMemory(key, entry);
     return rehydrate(entry);
@@ -147,11 +160,12 @@ export async function getCachedFaceResult(
 
 function cacheEntryHasRequiredFeatures(
   entry: CachedEntry,
-  requiredFeatures?: { faceMatching?: boolean; personDetection?: boolean; embeddingLimit?: number },
+  requiredFeatures?: RequiredFeatures,
 ): boolean {
   if (!entry.features) return false;
   if (requiredFeatures?.faceMatching && !entry.features.faceMatching) return false;
   if (requiredFeatures?.personDetection && !entry.features.personDetection) return false;
+  if (requiredFeatures?.poseAnalysis && !entry.features.poseAnalysis) return false;
   if (
     requiredFeatures?.faceMatching &&
     requiredFeatures.embeddingLimit &&
@@ -201,6 +215,7 @@ export async function setCachedFaceResult(
   }
   const entry: CachedEntry = {
     v: SCHEMA_VERSION,
+    pipelineFingerprint: FACE_PIPELINE_FINGERPRINT,
     key,
     path: filePath,
     size: s.size,
@@ -214,6 +229,7 @@ export async function setCachedFaceResult(
     features: result.features ?? {
       faceMatching: hexEmbeddings.length > 0 || result.boxes.length === 0,
       personDetection: true,
+      poseAnalysis: false,
       embeddingLimit: hexEmbeddings.length,
     },
   };
@@ -232,9 +248,8 @@ export async function setCachedFaceResult(
 
 async function pruneIfTooLarge(): Promise<void> {
   const dir = await getCacheDir();
-  let total = 0;
   type FileInfo = { full: string; key: string; cachedAt: number };
-  const files: FileInfo[] = [];
+  const cacheFiles: Array<{ full: string; key: string }> = [];
   try {
     const shards = await readdir(dir);
     for (const shard of shards) {
@@ -243,24 +258,38 @@ async function pruneIfTooLarge(): Promise<void> {
       try { entries = await readdir(shardDir); } catch { continue; }
       for (const name of entries) {
         if (!name.endsWith('.json')) continue;
-        total++;
-        if (total > MAX_ENTRIES + PRUNE_BATCH * 4) {
-          // Sample-only LRU: read mtime as a proxy for cachedAt to avoid reading every file
-          const full = path.join(shardDir, name);
-          try {
-            const st = await stat(full);
-            files.push({ full, key: name.replace(/\.json$/, ''), cachedAt: st.mtimeMs });
-          } catch { /* ignore */ }
-        }
+        cacheFiles.push({
+          full: path.join(shardDir, name),
+          key: name.replace(/\.json$/, ''),
+        });
       }
     }
   } catch {
     return;
   }
-  if (total <= MAX_ENTRIES) return;
+  if (cacheFiles.length <= MAX_ENTRIES) return;
 
+  // Only stat entries after the cheap directory count establishes that pruning
+  // is required. Process in bounded batches to avoid an enormous Promise fanout.
+  const files: FileInfo[] = [];
+  for (let start = 0; start < cacheFiles.length; start += 128) {
+    const batch = cacheFiles.slice(start, start + 128);
+    const details = await Promise.all(batch.map(async (file) => {
+      try {
+        const fileStat = await stat(file.full);
+        return { ...file, cachedAt: fileStat.mtimeMs };
+      } catch {
+        return null;
+      }
+    }));
+    for (const detail of details) if (detail) files.push(detail);
+  }
   files.sort((a, b) => a.cachedAt - b.cachedAt);
-  const toRemove = files.slice(0, Math.min(PRUNE_BATCH, files.length));
+  const removeCount = Math.min(
+    files.length,
+    Math.max(PRUNE_BATCH, cacheFiles.length - MAX_ENTRIES),
+  );
+  const toRemove = files.slice(0, removeCount);
   for (const f of toRemove) {
     await unlink(f.full).catch(() => undefined);
     inMemoryHits.delete(f.key);

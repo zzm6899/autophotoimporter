@@ -1,5 +1,5 @@
 import { useMemo, useEffect, useState } from 'react';
-import { useAppState, useAppDispatch } from '../context/ImportContext';
+import { useAppState, useAppDispatch, useMergedFiles } from '../context/ImportContext';
 import { useImport } from '../hooks/useImport';
 import { ImportResumeView } from './ImportResumeView';
 import { DestinationPreview } from './import/DestinationPreview';
@@ -10,6 +10,8 @@ import { formatSize } from '../utils/formatters';
 import { summarizeImportScopePriority } from '../utils/importScopeSummary';
 import { formatWhiteBalanceKelvin, kelvinToWhiteBalanceTemperature, WHITE_BALANCE_MAX_KELVIN, WHITE_BALANCE_MIN_KELVIN, whiteBalanceTemperatureToKelvin } from '../../shared/exposure';
 import { getSecondPassReasons, needsSecondPass } from '../../shared/review-lane';
+import { hasCullingAnalysis, selectKeepersToTarget } from '../../shared/review';
+import { useBulkAiPreview, type BulkAiDecisionItem } from '../context/BulkAiPreviewContext';
 
 const FORMAT_EXT: Record<string, string> = {
   jpeg: '.jpg',
@@ -159,7 +161,7 @@ const SPEED_PROFILES: Array<{
 export function DestinationPanel() {
   const {
     destination, skipDuplicates, saveFormat, jpegQuality, folderPreset, customPattern,
-    files, phase, importRunning, importProgress, importResult, selectedSource, selectedPaths, queuedPaths,
+    phase, importRunning, importProgress, importResult, selectedSource, selectedPaths, queuedPaths,
     separateProtected, protectedFolderName, backupDestRoot, ftpDestEnabled, ftpDestConfig,
     metadataKeywords, metadataTitle, metadataCaption, metadataCreator, metadataCopyright,
     watermarkEnabled, watermarkMode, watermarkText, watermarkImagePath, watermarkOpacity, watermarkPositionLandscape, watermarkPositionPortrait, watermarkScale,
@@ -173,7 +175,9 @@ export function DestinationPanel() {
     licenseStatus,
     experienceMode,
   } = useAppState();
+  const files = useMergedFiles();
   const dispatch = useAppDispatch();
+  const { openBulkAiPreview } = useBulkAiPreview();
   const { startImport } = useImport();
   const isPro = experienceMode === 'pro';
   const [freeBytes, setFreeBytes] = useState<number | null>(null);
@@ -543,6 +547,7 @@ export function DestinationPanel() {
   const canImport = licenseValid && selectedSource && destination && ftpReady && importFiles.length > 0 && phase === 'ready';
   const totalSize = importFiles.reduce((sum, f) => sum + f.size, 0);
   const allScannedTotalSize = allScannedImportFiles.reduce((sum, f) => sum + f.size, 0);
+  const allScannedRejectedCount = allScannedImportFiles.filter((file) => file.pick === 'rejected').length;
   const importScopeIsSubset = allScannedImportFiles.length > importFiles.length || allScannedTotalSize > totalSize;
   const importScopePriorityNotice = summarizeImportScopePriority({
     selectedPathCount: selectedPaths.length,
@@ -696,6 +701,12 @@ export function DestinationPanel() {
   };
   const handleImportAllScanned = async () => {
     if (allScannedImportFiles.length === 0) return;
+    if (
+      allScannedRejectedCount > 0 &&
+      !window.confirm(
+        `Import all scanned media, including ${allScannedRejectedCount} rejected file${allScannedRejectedCount === 1 ? '' : 's'}?\n\nUse the main Import button instead to leave rejected photos on the source.`,
+      )
+    ) return;
     await startImport({
       selectedPathsOverride: allScannedImportFiles.map((file) => file.path),
       includeRejected: true,
@@ -719,8 +730,34 @@ export function DestinationPanel() {
   }, {} as Record<string, number>);
   const resolveSecondPass = (pick: 'selected' | 'rejected') => {
     if (secondPassPaths.length === 0) return;
-    dispatch({ type: 'RESOLVE_SECOND_PASS', filePaths: secondPassPaths, pick });
-    dispatch({ type: 'SET_FILTER', filter: 'review-needed' });
+    const protectedFiles = pick === 'rejected'
+      ? secondPassFiles.filter((file) => file.isProtected || (file.rating ?? 0) > 0 || file.pick === 'selected')
+      : [];
+    const protectedPaths = new Set(protectedFiles.map((file) => file.path));
+    const candidates = secondPassFiles.filter((file) => !protectedPaths.has(file.path));
+    openBulkAiPreview({
+      id: `second-pass:${pick}:${Date.now()}`,
+      title: `Preview second-pass ${pick === 'selected' ? 'picks' : 'rejects'}`,
+      summary: `Review all ${candidates.length} proposed ${pick === 'selected' ? 'pick' : 'reject'} decisions before resolving the AI review lane.`,
+      items: candidates.map((file): BulkAiDecisionItem => ({
+        path: file.path,
+        outcome: pick === 'selected' ? 'keep' : 'reject',
+        score: file.reviewScore,
+        confidence: 'low',
+        groupLabel: 'second-pass review',
+        reasons: [...getSecondPassReasons(file), ...(file.reviewReasons ?? [])].slice(0, 8),
+      })),
+      unchangedCount: files.length - candidates.length,
+      warnings: [
+        'These photos were placed in second pass because the automated evidence is incomplete or ambiguous.',
+        ...(protectedFiles.length > 0 ? [`${protectedFiles.length} protected, rated or manually picked photo${protectedFiles.length === 1 ? ' is' : 's are'} excluded from rejection.`] : []),
+      ],
+      applyLabel: pick === 'selected' ? 'Pick reviewed photos' : 'Reject reviewed photos',
+      onApply: (selected) => {
+        dispatch({ type: 'RESOLVE_SECOND_PASS', filePaths: selected.map((item) => item.path), pick });
+        dispatch({ type: 'SET_FILTER', filter: 'review-needed' });
+      },
+    });
   };
   const openSecondPassLane = () => {
     dispatch({ type: 'SET_FILTER', filter: 'review-needed' });
@@ -1030,12 +1067,59 @@ export function DestinationPanel() {
         const safeTarget = Math.max(1, Math.min(cullTarget || 1, photoCount || 1));
         const runCull = () => {
           if (photoCount === 0) return;
-          const ok = window.confirm(
-            `Cull ${photoCount.toLocaleString()} photos down to the strongest ${safeTarget.toLocaleString()}?\n\n` +
-            `Keeps one best frame per burst/similar group first for variety, always keeps protected and rated shots, ` +
-            `and marks the rest as rejected. You can undo this.`,
+          const photos = files.filter((file) => file.type === 'photo');
+          const isManualKeeper = (file: typeof photos[number]) => file.pick !== 'rejected' && (
+            file.isProtected || (file.rating ?? 0) > 0 || file.pick === 'selected'
           );
-          if (ok) dispatch({ type: 'CULL_TO_TARGET', target: safeTarget });
+          const hasReliableAnalysis = (file: typeof photos[number]) => {
+            if (!hasCullingAnalysis(file)) return false;
+            const hasDetectedSubject = (file.faceBoxes?.length ?? 0) > 0 || (file.personBoxes?.length ?? 0) > 0;
+            if (!hasDetectedSubject) return true;
+            const confidence = file.sceneAnalysis?.subjectFocusConfidence;
+            return typeof confidence === 'number' && confidence >= 0.2;
+          };
+          const decisionReady = photos.filter((file) =>
+            file.pick !== 'rejected' && (isManualKeeper(file) || hasReliableAnalysis(file)),
+          );
+          const result = selectKeepersToTarget(decisionReady, { target: safeTarget, eventMode });
+          const keep = new Set(result.keep);
+          const pendingCount = photos.length - decisionReady.length;
+          openBulkAiPreview({
+            id: `cull-target:${safeTarget}:${Date.now()}`,
+            title: `Preview cull to ${safeTarget.toLocaleString()}`,
+            summary: `The strongest ${result.kept.toLocaleString()} decision-ready photos are proposed as picks; pending analysis and explicit manual rejects stay unchanged.`,
+            items: decisionReady.map((file): BulkAiDecisionItem => ({
+              path: file.path,
+              outcome: keep.has(file.path) ? 'keep' : 'reject',
+              score: file.reviewScore,
+              confidence: file.isProtected || (file.rating ?? 0) > 0 || file.pick === 'selected'
+                ? 'manual'
+                : typeof file.reviewScore === 'number' ? 'medium' : 'low',
+              groupLabel: file.burstId ? 'burst' : file.visualGroupId ? 'similar set' : file.sceneAnalysis?.kind,
+              reasons: [...new Set([
+                ...(file.reviewReasons ?? []),
+                ...(file.sceneAnalysis?.subjectReasons ?? file.sceneAnalysis?.reasons ?? []),
+                keep.has(file.path)
+                  ? file.isProtected || (file.rating ?? 0) > 0 || file.pick === 'selected'
+                    ? 'protected or manually prioritised keeper'
+                    : 'ranked within keeper budget'
+                  : 'outside reviewed keeper budget',
+              ])].slice(0, 8),
+            })),
+            unchangedCount: files.length - decisionReady.length,
+            warnings: [
+              `${result.mandatory} protected, rated or manually picked photo${result.mandatory === 1 ? '' : 's'} retained.`,
+              `${result.dedupedNearDuplicates} near-duplicate candidate${result.dedupedNearDuplicates === 1 ? '' : 's'} suppressed while filling the target.`,
+              `${pendingCount} pending, low-confidence, or manually rejected photo${pendingCount === 1 ? '' : 's'} left unchanged.`,
+              'Uncheck any row you do not want changed. Source files are never deleted.',
+            ],
+            applyLabel: 'Apply reviewed keeper budget',
+            onApply: (selected) => dispatch({
+              type: 'APPLY_AUTO_CULL_PROPOSAL',
+              keep: selected.filter((item) => item.outcome === 'keep').map((item) => item.path),
+              reject: selected.filter((item) => item.outcome === 'reject').map((item) => item.path),
+            }),
+          });
         };
         return (
           <div className="px-2.5 mb-2.5">
@@ -1829,25 +1913,37 @@ export function DestinationPanel() {
           }
         </button>
         {importScopeIsSubset && (
-          <button
-            onClick={() => { void handleImportAllScanned(); }}
-            disabled={!canImportAllScanned || allScannedInsufficientSpace || outputPathBlocked}
-            className="w-full mt-1 py-1 rounded text-[10px] bg-surface-raised hover:bg-border text-text-secondary transition-colors disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-surface-raised"
-            title={
-              allScannedInsufficientSpace
-                ? `Not enough free space for all scanned media — need ${formatSize(allScannedTotalSize)}.`
-                : skipDuplicates
-                  ? 'Import every scanned media file, including rejected files. Duplicate skipping is still on; disable Skip Duplicates for a byte-for-byte Explorer-style copy.'
-                  : 'Import every scanned media file, including rejected files.'
-            }
-          >
-            Import All Scanned {allScannedImportFiles.length} File{allScannedImportFiles.length !== 1 ? 's' : ''} · {formatSize(allScannedTotalSize)}
-          </button>
+          <div className="mt-1">
+            <button
+              onClick={() => { void handleImportAllScanned(); }}
+              disabled={!canImportAllScanned || allScannedInsufficientSpace || outputPathBlocked}
+              className="w-full py-1 rounded text-[10px] bg-surface-raised hover:bg-border text-text-secondary transition-colors disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-surface-raised"
+              title={
+                allScannedInsufficientSpace
+                  ? `Not enough free space for all scanned media — need ${formatSize(allScannedTotalSize)}.`
+                  : skipDuplicates
+                    ? 'Import every scanned media file. Duplicate skipping remains enabled.'
+                    : 'Import every scanned media file.'
+              }
+            >
+              Import All Scanned {allScannedImportFiles.length} File{allScannedImportFiles.length !== 1 ? 's' : ''} · {formatSize(allScannedTotalSize)}
+            </button>
+            {allScannedRejectedCount > 0 && (
+              <div className="mt-1 text-[10px] text-amber-700 dark:text-amber-300">
+                Includes {allScannedRejectedCount} rejected file{allScannedRejectedCount === 1 ? '' : 's'}; confirmation required.
+              </div>
+            )}
+          </div>
         )}
         {hasQueue && (
           <button
             onClick={() => {
-              if (!queueActionsDisabled) dispatch({ type: 'QUEUE_CLEAR' });
+              if (
+                !queueActionsDisabled &&
+                window.confirm(`Remove all ${queuedPaths.length} files from the import queue?\n\nPick, reject, and star ratings will be kept.`)
+              ) {
+                dispatch({ type: 'QUEUE_CLEAR' });
+              }
             }}
             disabled={queueActionsDisabled}
             className="w-full mt-1 py-1 rounded text-[10px] bg-surface-raised hover:bg-border text-text-secondary transition-colors disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-surface-raised"

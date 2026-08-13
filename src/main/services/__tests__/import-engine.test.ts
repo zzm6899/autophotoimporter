@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
-import type { MediaFile, ImportConfig, ImportProgress, WatermarkConfig } from '../../../shared/types';
+import type { MediaFile, ImportConfig, ImportProgress, ImportResult, WatermarkConfig } from '../../../shared/types';
 
 // Mocks
 vi.mock('node:fs/promises', () => ({
@@ -324,6 +324,50 @@ describe('importFiles', () => {
     expect(mockCopyFile).toHaveBeenCalledOnce();
   });
 
+  it('checkpoints the pending plan before copying and the completed state afterwards', async () => {
+    const checkpoints: ImportResult[] = [];
+
+    const importResult = await importFiles(
+      [makeFile()],
+      makeConfig(),
+      onProgress,
+      async (checkpoint) => {
+        checkpoints.push(checkpoint);
+      },
+    );
+
+    expect(checkpoints.length).toBeGreaterThanOrEqual(2);
+    expect(checkpoints[0]).toEqual(expect.objectContaining({
+      imported: 0,
+      ledgerItems: [expect.objectContaining({ status: 'pending' })],
+    }));
+    expect(checkpoints.at(-1)).toEqual(expect.objectContaining({
+      imported: 1,
+      ledgerItems: [expect.objectContaining({ status: 'imported' })],
+    }));
+    expect(importResult.errors).toHaveLength(0);
+  });
+
+  it('keeps a successful copy successful while surfacing persistent recovery-write failure', async () => {
+    const importResult = await importFiles(
+      [makeFile()],
+      makeConfig(),
+      onProgress,
+      async () => {
+        throw new Error('recovery disk unavailable');
+      },
+    );
+
+    expect(importResult.imported).toBe(1);
+    expect(importResult.ledgerItems).toEqual([
+      expect.objectContaining({ status: 'imported' }),
+    ]);
+    expect(importResult.errors).toContainEqual({
+      file: 'import-recovery',
+      error: 'Could not save import recovery state: recovery disk unavailable',
+    });
+  });
+
   afterEach(() => {
     globalThis.fetch = originalFetch;
   });
@@ -526,7 +570,7 @@ describe('importFiles', () => {
     );
   });
 
-  it('uses direct copy for scanned USB card sources without backup or checksum work', async () => {
+  it('commits scanned USB card sources atomically after checking source stability', async () => {
     const result = await importFiles([
       makeFile({ sourceModifiedAtMs: 1000 }),
     ], makeConfig({ sourceProfile: 'usb' }), onProgress);
@@ -535,11 +579,30 @@ describe('importFiles', () => {
     expect(result.errors).toHaveLength(0);
     expect(mockCopyFile).toHaveBeenCalledWith(
       '/src/IMG_001.jpg',
-      expect.stringContaining('IMG_001.jpg'),
+      expect.stringContaining('.keptra-'),
       expect.any(Number),
     );
-    expect(String(mockCopyFile.mock.calls[0]?.[1])).not.toContain('.keptra-');
-    expect(mockRename).not.toHaveBeenCalled();
+    expect(mockRename).toHaveBeenCalledWith(
+      expect.stringContaining('.keptra-'),
+      expect.stringContaining('IMG_001.jpg'),
+    );
+  });
+
+  it('defers a scanned USB card source that changed after scan', async () => {
+    mockStat.mockImplementation(async (target) => {
+      if (String(target) === '/src/IMG_001.jpg') return { size: 7000, mtimeMs: 2000 } as any;
+      return { size: 5000 } as any;
+    });
+
+    const result = await importFiles([
+      makeFile({ sourceModifiedAtMs: 1000 }),
+    ], makeConfig({ sourceProfile: 'usb' }), onProgress);
+
+    expect(result.imported).toBe(0);
+    expect(result.errors).toEqual([
+      { file: 'IMG_001.jpg', error: expect.stringContaining('Source changed since scan') },
+    ]);
+    expect(mockCopyFile).not.toHaveBeenCalled();
   });
 
   it('dry-run records planned ledger items without writing files', async () => {

@@ -63,9 +63,9 @@ function SourceCard({
 }
 
 export function SourcePanel() {
-  const { volumes, selectedSource, scanDiagnostics, files, phase, sourceKind, scanPaused, volumeImportQueue, experienceMode } = useAppState();
+  const { volumes, selectedSource, scanDiagnostics, files, phase, sourceKind, scanPaused, volumeImportQueue, experienceMode, importRunning } = useAppState();
   const dispatch = useAppDispatch();
-  const { startScan, pauseScan, resumeScan } = useFileScanner();
+  const { startScan, cancelScan, pauseScan, resumeScan } = useFileScanner();
   const isPro = experienceMode === 'pro';
 
   const [dragOver, setDragOver] = useState(false);
@@ -74,8 +74,11 @@ export function SourcePanel() {
   const [watchFolders, setWatchFolders] = useState<WatchFolder[]>([]);
   const [watchNotice, setWatchNotice] = useState<string | null>(null);
   const [catalogNotice, setCatalogNotice] = useState<string | null>(null);
-  const sourceChangeLocked = phase === 'scanning';
-  const sourceBusyTitle = 'Scan is running. Wait for it to finish before changing source.';
+  const [scanStopping, setScanStopping] = useState(false);
+  const sourceChangeLocked = phase === 'scanning' || importRunning;
+  const sourceBusyTitle = importRunning
+    ? 'Import is running. Wait for it to finish before changing source.'
+    : 'Scan is running. Stop it before changing source.';
 
   useEffect(() => {
     if (!isPro && sourceKind === 'ftp') {
@@ -190,6 +193,16 @@ export function SourcePanel() {
     }
   };
 
+  const handleStopScan = async () => {
+    if (scanStopping) return;
+    setScanStopping(true);
+    try {
+      await cancelScan();
+    } finally {
+      setScanStopping(false);
+    }
+  };
+
   const handleClearCatalogMemory = async () => {
     if (!selectedSource || !window.confirm('Clear catalog memory for the current source? This only removes local catalog memory for this source path. It does not delete photos.')) return;
     const result = await window.electronAPI.clearCatalogSource(selectedSource);
@@ -231,7 +244,7 @@ export function SourcePanel() {
           title="SD card / drive"
           description={dcimVolumeCount > 0 ? `${dcimVolumeCount} camera source${dcimVolumeCount === 1 ? '' : 's'} detected.` : 'Plug in a card or external drive.'}
           status={dcimVolumeCount > 0 ? 'detected' : sourceKind === 'volume' ? 'ready' : 'local'}
-          active={sourceKind === 'volume'}
+          active={sourceKind === 'volume' && (!selectedSource || volumes.some((volume) => volume.path === selectedSource))}
           disabled={sourceChangeLocked}
           onClick={() => dispatch({ type: 'SET_SOURCE_KIND', kind: 'volume' })}
         />
@@ -516,15 +529,28 @@ export function SourcePanel() {
 
       {/* Scanning indicator */}
       {phase === 'scanning' && (
-        <div className="px-2.5 py-2 flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 px-2.5 py-2">
           <div className={`w-3 h-3 border-[1.5px] border-text-muted border-t-text rounded-full ${scanPaused ? '' : 'animate-spin'}`} />
           <span className="text-[10px] text-text-muted">{scanPaused ? 'Scan paused' : 'Scanning...'}</span>
-          <button
-            onClick={() => scanPaused ? resumeScan() : pauseScan()}
-            className="ml-auto text-[10px] text-text-secondary hover:text-text"
-          >
-            {scanPaused ? 'Resume' : 'Pause'}
-          </button>
+          <div className="ml-auto flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => scanPaused ? resumeScan() : pauseScan()}
+              disabled={scanStopping}
+              className="rounded px-2 py-1 text-[10px] text-text-secondary hover:bg-surface-raised hover:text-text disabled:opacity-40"
+            >
+              {scanPaused ? 'Resume' : 'Pause'}
+            </button>
+            <button
+              type="button"
+              onClick={() => { void handleStopScan(); }}
+              disabled={scanStopping}
+              className="rounded border border-red-500/25 bg-red-500/10 px-2 py-1 text-[10px] text-red-700 hover:bg-red-500/20 disabled:opacity-40 dark:text-red-300"
+              title="Stop scanning and review any files found so far"
+            >
+              {scanStopping ? 'Stopping' : 'Stop'}
+            </button>
+          </div>
         </div>
       )}
 
@@ -548,7 +574,7 @@ export function SourcePanel() {
               </div>
               <div className="flex gap-2">
                 <span className="text-text-secondary font-medium shrink-0">4.</span>
-                <span>Use <strong className="text-text-secondary">Safe Cull</strong> or <strong className="text-text-secondary">Best Shot</strong> to let AI pre-select for you.</span>
+                <span>Use <strong className="text-text-secondary">Cull Preview</strong> or <strong className="text-text-secondary">Best</strong> to inspect every AI suggestion before applying it.</span>
               </div>
             </div>
           </>

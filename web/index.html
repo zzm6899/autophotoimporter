@@ -3,876 +3,871 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Keptra — Cull before import</title>
-  <meta name="description" content="Cull before import, copy only the keepers, and keep every photo workflow local. Local-first photo ingest and culling for Mac and Windows." />
+  <title>Keptra — Review before you import</title>
+  <meta name="description" content="Review a shoot, choose the keepers, and copy them safely. Keptra is a local-first photo culling and ingest app for Windows and macOS." />
+  <meta name="theme-color" content="#0b1012" />
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    *, *::before, *::after { box-sizing: border-box; }
+    * { margin: 0; }
     :root {
-      --bg: #0c0f11; --surface: #141719; --surface-raised: #1c2124;
-      --border: #2b3337; --text: #f2f6f7; --text-muted: #9ba9ae; --text-faint: #69777d;
-      --accent: #37b69f; --accent-hover: #45c6af; --accent-soft: rgba(55,182,159,.15); --green: #5ad69d;
-      --radius: 8px;
-      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-      --mono: "SF Mono", "Fira Code", Consolas, monospace;
-      --page-width: 1120px;
-      --shadow-lg: 0 32px 80px rgba(0,0,0,.45);
+      --bg: #0b1012;
+      --surface: #111719;
+      --surface-raised: #182124;
+      --border: #2b393d;
+      --border-strong: #405157;
+      --text: #f3f7f8;
+      --text-muted: #acbabf;
+      --text-faint: #829196;
+      --accent: #42c9ad;
+      --accent-hover: #63d8c0;
+      --accent-ink: #031310;
+      --green: #6fdda9;
+      --warning: #f0c36b;
+      --radius: 14px;
+      --page: 1120px;
+      --font: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      --shadow: 0 30px 80px rgba(0, 0, 0, .42);
     }
-    html { scroll-behavior: smooth; }
+
+    html { color-scheme: dark; scroll-behavior: smooth; }
     body {
-      font-family: var(--font);
-      background: linear-gradient(180deg, #0a0d0f 0%, #0c0f11 38%, #101416 100%);
+      min-width: 300px;
+      background:
+        radial-gradient(circle at 50% -12%, rgba(66, 201, 173, .12), transparent 32rem),
+        linear-gradient(180deg, #090d0f 0%, var(--bg) 45%, #0d1416 100%);
       color: var(--text);
+      font-family: var(--font);
       line-height: 1.6;
       -webkit-font-smoothing: antialiased;
-      overflow-x: hidden;
     }
+    body, button { font-family: var(--font); }
+    img, video { max-width: 100%; }
     a { color: inherit; text-decoration: none; }
-    nav {
-      position: fixed; top: 12px; left: 16px; right: 16px; z-index: 100;
-      display: flex; align-items: center; justify-content: space-between;
-      max-width: min(calc(100% - 32px), var(--page-width));
-      margin: 0 auto;
-      padding: 0 1.25rem; height: 64px;
-      background: rgba(13,13,15,0.82); backdrop-filter: blur(16px);
-      border: 1px solid rgba(255,255,255,.08);
-      border-radius: 12px;
-      box-shadow: 0 18px 44px rgba(0,0,0,.28);
+    button { color: inherit; }
+
+    :focus-visible {
+      outline: 3px solid var(--accent);
+      outline-offset: 3px;
     }
-    .nav-logo { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 1rem; letter-spacing: 0; }
-    .nav-logo svg { width: 28px; height: 28px; }
-    .nav-links { display: flex; align-items: center; justify-content: center; gap: 1.5rem; font-size: 0.875rem; color: var(--text-muted); flex: 1; }
-    .nav-links a:hover { color: var(--text); }
-    .nav-cta { padding: 0.6rem 1rem; background: var(--accent); color: #041210; border-radius: 8px; font-size: 0.875rem; font-weight: 700; transition: background 0.15s, transform 0.1s; box-shadow: 0 14px 32px rgba(55,182,159,.14); }
-    .nav-cta:hover { background: var(--accent-hover); }
-    .nav-menu-toggle {
-      display: none; align-items: center; justify-content: center; flex-direction: column; gap: 4px;
-      width: 42px; height: 42px; border-radius: 8px; border: 1px solid var(--border);
-      background: var(--surface-raised); cursor: pointer;
-    }
-    .nav-menu-toggle span { width: 16px; height: 2px; border-radius: 999px; background: var(--text); }
-    .mobile-menu {
-      position: fixed; top: 88px; left: 16px; right: 16px; z-index: 95;
-      max-width: min(calc(100% - 32px), var(--page-width));
-      margin: 0 auto;
-      padding: 0.8rem;
-      display: grid;
-      gap: 0.55rem;
-      background: rgba(20,20,22,.96);
-      border: 1px solid rgba(255,255,255,.08);
-      border-radius: 12px;
-      box-shadow: 0 24px 48px rgba(0,0,0,.38);
-      opacity: 0;
-      pointer-events: none;
-      transform: translateY(-8px);
-      transition: opacity 0.18s ease, transform 0.18s ease;
-    }
-    .mobile-menu.open { opacity: 1; pointer-events: auto; transform: translateY(0); }
-    .mobile-menu a {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 0.9rem 1rem;
+
+    .skip-link {
+      position: fixed;
+      left: 1rem;
+      top: 1rem;
+      z-index: 999;
+      transform: translateY(-150%);
       border-radius: 8px;
-      background: var(--surface-raised);
-      border: 1px solid var(--border);
-      color: var(--text);
-      font-size: 0.95rem;
-      font-weight: 500;
-    }
-    .mobile-menu a.mobile-menu-cta {
       background: var(--accent);
-      border-color: transparent;
-      color: #041210;
-      font-weight: 600;
-    }
-    .hero { padding: clamp(7.5rem, 14vw, 9.5rem) clamp(1.25rem, 4vw, 2rem) clamp(3rem, 6vw, 4rem); text-align: center; max-width: 860px; margin: 0 auto; position: relative; }
-    .hero-badge { display: inline-flex; align-items: center; gap: 6px; font-size: 0.75rem; font-weight: 500; letter-spacing: .04em; color: var(--text-muted); text-transform: uppercase; border: 1px solid var(--border); border-radius: 999px; padding: 4px 12px; margin-bottom: 1.5rem; }
-    .hero-badge span { color: var(--green); }
-    h1 { font-size: clamp(2.2rem, 5vw, 3.8rem); font-weight: 700; letter-spacing: 0; line-height: 1.1; margin-bottom: 1.25rem; }
-    h1 em { font-style: normal; color: var(--accent); }
-    .hero-sub { font-size: clamp(0.98rem, 1.6vw, 1.08rem); color: var(--text-muted); max-width: 38rem; margin: 0 auto 2.25rem; line-height: 1.75; }
-    .hero-actions { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
-    .hero-proof { display: flex; justify-content: center; gap: 0.75rem; flex-wrap: wrap; margin-top: 1.35rem; }
-    .hero-proof-item {
-      padding: 0.65rem 0.9rem;
-      border-radius: 999px;
-      border: 1px solid var(--border);
-      background: rgba(28,28,31,.82);
-      color: var(--text-muted);
-      font-size: 0.8rem;
-      line-height: 1.3;
-    }
-    .btn-primary { display: inline-flex; align-items: center; gap: 8px; padding: 0.75rem 1.75rem; background: var(--accent); color: #041210; border-radius: var(--radius); font-size: 0.95rem; font-weight: 700; transition: background 0.15s, transform 0.1s; }
-    .btn-primary:hover { background: var(--accent-hover); transform: translateY(-1px); }
-    .btn-secondary { display: inline-flex; align-items: center; gap: 8px; padding: 0.75rem 1.75rem; background: var(--surface-raised); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); font-size: 0.95rem; font-weight: 500; transition: background 0.15s, transform 0.1s; }
-    .btn-secondary:hover { background: var(--border); transform: translateY(-1px); }
-    .hero-demo { max-width: 1080px; margin: clamp(2rem, 5vw, 3.5rem) auto 0; padding: 0 clamp(1rem, 4vw, 2rem); }
-    .demo-frame { border-radius: 12px; border: 1px solid rgba(255,255,255,.08); overflow: hidden; background: var(--surface); box-shadow: var(--shadow-lg); }
-    .demo-frame svg, .demo-frame img { display: block; width: 100%; height: auto; aspect-ratio: 960 / 560; object-fit: cover; }
-    .platform-strip { border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 1.75rem 2rem; text-align: center; background: var(--surface); margin-top: 5rem; }
-    .platform-strip p { color: var(--text-muted); font-size: 0.8rem; margin-bottom: 1rem; text-transform: uppercase; letter-spacing: .06em; font-weight: 500; }
-    .platform-badges { display: flex; justify-content: center; gap: 1.25rem; flex-wrap: wrap; }
-    .platform-badge { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 0.875rem; font-weight: 500; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 10px; padding: 0.55rem 1.1rem; }
-    .trust-section { max-width: var(--page-width); margin: 2rem auto 0; padding: 0 clamp(1.25rem, 4vw, 2rem); }
-    .trust-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.9rem; }
-    .trust-card { border: 1px solid var(--border); border-radius: 8px; background: rgba(20,23,25,.82); padding: 1rem; min-height: 118px; }
-    .trust-label { font-size: 0.68rem; font-weight: 800; color: var(--text-faint); letter-spacing: .1em; text-transform: uppercase; margin-bottom: 0.45rem; }
-    .trust-value { font-size: 1rem; color: var(--text); font-weight: 700; line-height: 1.3; margin-bottom: 0.35rem; }
-    .trust-copy { color: var(--text-muted); font-size: 0.82rem; line-height: 1.55; }
-    .graphics-section { padding: clamp(3.5rem, 7vw, 5rem) clamp(1.25rem, 4vw, 2rem) 0; max-width: var(--page-width); margin: 0 auto; }
-    .graphics-head { display: flex; justify-content: space-between; align-items: end; gap: 2rem; margin-bottom: 1.5rem; }
-    .graphics-head .section-sub { max-width: 520px; }
-    .graphics-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
-    .graphic-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      overflow: hidden;
-      min-width: 0;
-      transition: transform 0.15s ease, border-color 0.15s ease;
-    }
-    .graphic-card:hover { transform: translateY(-2px); border-color: rgba(55,182,159,.55); }
-    .graphic-card img { display: block; width: 100%; height: auto; aspect-ratio: 720 / 420; object-fit: cover; border-bottom: 1px solid var(--border); }
-    .graphic-copy { padding: 1rem; }
-    .graphic-copy h3 { font-size: 0.95rem; line-height: 1.3; margin-bottom: 0.35rem; letter-spacing: 0; }
-    .graphic-copy p { color: var(--text-muted); font-size: 0.84rem; line-height: 1.6; }
-    .showcase-section {
-      padding: clamp(3.5rem, 7vw, 5rem) clamp(1.25rem, 4vw, 2rem) 0;
-      max-width: var(--page-width);
-      margin: 0 auto;
-    }
-    .showcase-head {
-      display: grid;
-      grid-template-columns: minmax(0, 0.75fr) minmax(0, 1fr);
-      gap: clamp(1.25rem, 4vw, 3rem);
-      align-items: end;
-      margin-bottom: 2rem;
-    }
-    .showcase-head .section-sub { max-width: 620px; }
-    .showcase-video-frame {
-      border-radius: 12px;
-      border: 1px solid rgba(255,255,255,.08);
-      overflow: hidden;
-      background: var(--surface);
-      box-shadow: var(--shadow-lg);
-    }
-    .showcase-video {
-      display: block;
-      width: 100%;
-      height: auto;
-      aspect-ratio: 16 / 9;
-      object-fit: cover;
-      background: #0c0f11;
-    }
-    .storyline-grid {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 0.85rem;
-      margin-top: 1rem;
-    }
-    .story-card {
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      background: var(--surface);
-      padding: 1rem;
-    }
-    .story-step {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 1.75rem;
-      height: 1.75rem;
-      border-radius: 999px;
-      background: var(--accent);
-      color: #041210;
-      font-size: 0.78rem;
+      color: var(--accent-ink);
+      padding: .65rem 1rem;
       font-weight: 800;
-      margin-bottom: 0.75rem;
     }
-    .story-card h3 { font-size: 0.95rem; line-height: 1.3; margin-bottom: 0.35rem; letter-spacing: 0; }
-    .story-card p { color: var(--text-muted); font-size: 0.82rem; line-height: 1.6; }
-    .section { padding: clamp(3.5rem, 7vw, 5rem) clamp(1.25rem, 4vw, 2rem); max-width: var(--page-width); margin: 0 auto; }
-    .section-label { font-size: 0.75rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); margin-bottom: 0.75rem; }
-    .section-title { font-size: clamp(1.6rem, 3vw, 2.4rem); font-weight: 700; letter-spacing: 0; margin-bottom: 0.75rem; }
-    .section-sub { color: var(--text-muted); font-size: 1rem; max-width: 480px; line-height: 1.7; }
-    .features-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 1.25rem; margin-top: 3rem; }
-    .feature-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.5rem; transition: border-color 0.2s; }
-    .feature-card:hover { border-color: #444; }
-    .feature-icon { width: 38px; height: 38px; border-radius: 9px; background: var(--surface-raised); display: flex; align-items: center; justify-content: center; margin-bottom: 1rem; font-size: 1.1rem; }
-    .feature-title { font-weight: 600; font-size: 0.95rem; margin-bottom: 0.4rem; }
-    .feature-desc { color: var(--text-muted); font-size: 0.85rem; line-height: 1.65; }
-    .gif-features { margin-top: 2rem; }
-    .gif-row { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr); gap: clamp(1.5rem, 4vw, 3.5rem); align-items: center; margin-bottom: clamp(3rem, 8vw, 6rem); }
-    .gif-row.reverse { direction: rtl; }
-    .gif-row.reverse > * { direction: ltr; }
-    .gif-frame { border-radius: var(--radius); border: 1px solid var(--border); overflow: hidden; background: var(--surface); box-shadow: 0 16px 48px rgba(0,0,0,.35); }
-    .gif-frame svg, .gif-frame img { display: block; width: 100%; height: auto; aspect-ratio: 720 / 444; object-fit: cover; }
-    .gif-frame picture { display: block; }
-    .gif-text h3 { font-size: 1.5rem; font-weight: 700; letter-spacing: 0; margin-bottom: 0.75rem; line-height: 1.25; }
-    .gif-text p { color: var(--text-muted); font-size: 0.9375rem; line-height: 1.75; margin-bottom: 1rem; }
-    .tag-list { display: flex; flex-wrap: wrap; gap: 6px; }
-    .tag { font-size: 0.75rem; font-family: var(--mono); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; color: var(--text-muted); }
-    .pricing-section { padding: clamp(3.5rem, 7vw, 5rem) clamp(1.25rem, 4vw, 2rem); max-width: 920px; margin: 0 auto; text-align: center; }
-    .pricing-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.25rem; margin-top: 3rem; text-align: left; }
-    .pricing-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 2rem; }
-    .pricing-card.featured { border-color: rgba(55,182,159,.62); background: rgba(55,182,159,.06); }
-    .pricing-tier { font-size: 0.7rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 1rem; }
-    .pricing-card.featured .pricing-tier { color: var(--accent); }
-    .pricing-price { font-size: 2.4rem; font-weight: 700; letter-spacing: 0; margin-bottom: 0.25rem; }
-    .pricing-price span { font-size: 1rem; font-weight: 400; color: var(--text-muted); }
-    .pricing-note { font-size: 0.8rem; color: var(--text-muted); margin-bottom: 1.75rem; }
-    .pricing-btn { display: block; width: 100%; text-align: center; padding: 0.7rem 1.5rem; border-radius: 10px; font-size: 0.9rem; font-weight: 600; background: var(--surface-raised); color: var(--text); border: 1px solid var(--border); transition: background 0.15s; cursor: pointer; }
-    .pricing-btn:hover { background: var(--border); }
-    .pricing-card.featured .pricing-btn { background: var(--accent); color: #041210; border-color: transparent; font-weight: 700; }
-    .pricing-card.featured .pricing-btn:hover { background: var(--accent-hover); }
-    .pricing-features { margin-top: 1.75rem; }
-    .pricing-features li { list-style: none; font-size: 0.875rem; color: var(--text-muted); padding: 0.4rem 0; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
-    .pricing-features li:last-child { border-bottom: none; }
-    .pricing-features li::before { content: "✓"; color: var(--green); font-size: 0.8rem; flex-shrink: 0; }
-    .pricing-helper { margin-top: 1.25rem; color: var(--text-muted); font-size: 0.875rem; }
-    .pricing-helper a { color: var(--text); text-decoration: underline; text-underline-offset: 0.18em; }
-    .device-picker {
-      margin: 1.1rem 0 1.35rem;
-      padding: 1rem;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      background: rgba(255,255,255,.03);
-    }
-    .device-picker-head {
+    .skip-link:focus { transform: translateY(0); }
+
+    nav {
+      position: fixed;
+      z-index: 100;
+      top: 12px;
+      left: 16px;
+      right: 16px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 0.75rem;
-      margin-bottom: 0.8rem;
-      font-size: 0.82rem;
+      width: min(calc(100% - 32px), var(--page));
+      height: 64px;
+      margin: 0 auto;
+      padding: 0 1rem;
+      border: 1px solid rgba(255, 255, 255, .1);
+      border-radius: 14px;
+      background: rgba(11, 16, 18, .9);
+      box-shadow: 0 18px 44px rgba(0, 0, 0, .28);
+      backdrop-filter: blur(18px);
+    }
+    .nav-logo {
+      display: inline-flex;
+      align-items: center;
+      gap: .65rem;
+      font-size: 1rem;
+      font-weight: 750;
+    }
+    .nav-logo svg { width: 29px; height: 29px; flex: none; }
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 1.55rem;
       color: var(--text-muted);
+      font-size: .875rem;
+    }
+    .nav-links a:hover { color: var(--text); }
+    .nav-cta,
+    .btn-primary,
+    .mobile-menu-cta {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      border: 1px solid transparent;
+      border-radius: 10px;
+      background: var(--accent);
+      color: var(--accent-ink);
+      font-size: .9rem;
+      font-weight: 800;
+      transition: background .15s ease, transform .15s ease;
+    }
+    .nav-cta { min-height: 40px; padding: .45rem 1rem; }
+    .btn-primary { padding: .75rem 1.35rem; }
+    .nav-cta:hover, .btn-primary:hover, .mobile-menu-cta:hover {
+      background: var(--accent-hover);
+      transform: translateY(-1px);
+    }
+    .nav-menu-toggle {
+      display: none;
+      width: 44px;
+      height: 44px;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 5px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--surface-raised);
+      cursor: pointer;
+    }
+    .nav-menu-toggle span {
+      width: 18px;
+      height: 2px;
+      border-radius: 999px;
+      background: var(--text);
+    }
+    .mobile-menu {
+      position: fixed;
+      z-index: 95;
+      top: 88px;
+      left: 16px;
+      right: 16px;
+      display: grid;
+      gap: .5rem;
+      width: min(calc(100% - 32px), var(--page));
+      margin: 0 auto;
+      padding: .75rem;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: rgba(17, 23, 25, .98);
+      box-shadow: var(--shadow);
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(-8px);
+      transition: opacity .18s ease, transform .18s ease;
+    }
+    .mobile-menu.open { opacity: 1; pointer-events: auto; transform: translateY(0); }
+    .mobile-menu a {
+      display: flex;
+      min-height: 44px;
+      align-items: center;
+      justify-content: space-between;
+      padding: .7rem .85rem;
+      border-radius: 9px;
+      color: var(--text-muted);
+    }
+    .mobile-menu a:hover { background: var(--surface-raised); color: var(--text); }
+    .mobile-menu a.mobile-menu-cta { color: var(--accent-ink); }
+
+    main { overflow: hidden; }
+    .hero {
+      width: min(100%, 880px);
+      margin: 0 auto;
+      padding: clamp(8.5rem, 15vw, 10.5rem) 1.25rem clamp(3rem, 7vw, 5rem);
+      text-align: center;
+    }
+    .eyebrow {
+      margin-bottom: 1rem;
+      color: var(--accent);
+      font-size: .75rem;
+      font-weight: 800;
+      letter-spacing: .11em;
       text-transform: uppercase;
-      letter-spacing: .06em;
     }
-    .device-picker-head strong {
+    h1 {
+      max-width: 800px;
+      margin: 0 auto;
+      font-size: clamp(2.55rem, 7vw, 5.15rem);
+      font-weight: 780;
+      letter-spacing: -.055em;
+      line-height: 1.02;
+      text-wrap: balance;
+    }
+    .hero-copy {
+      max-width: 650px;
+      margin: 1.5rem auto 0;
+      color: var(--text-muted);
+      font-size: clamp(1rem, 1.8vw, 1.17rem);
+      line-height: 1.75;
+      text-wrap: balance;
+    }
+    .hero-action { margin-top: 1.8rem; }
+    .hero-note {
+      margin-top: .85rem;
+      color: var(--text-faint);
+      font-size: .8rem;
+    }
+
+    .product-shot {
+      width: min(calc(100% - 2rem), var(--page));
+      margin: 0 auto;
+    }
+    .product-frame {
+      overflow: hidden;
+      border: 1px solid var(--border-strong);
+      border-radius: 16px;
+      background: #070a0b;
+      box-shadow: var(--shadow);
+    }
+    .product-frame img {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+    .product-caption {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: .8rem 1rem;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text-muted);
+      font-size: .8rem;
+    }
+    .live-label {
+      display: inline-flex;
+      align-items: center;
+      gap: .45rem;
       color: var(--text);
-      font-size: 0.86rem;
-      letter-spacing: 0;
-      text-transform: none;
+      font-weight: 700;
     }
+    .live-label::before {
+      width: .5rem;
+      height: .5rem;
+      border-radius: 50%;
+      background: var(--green);
+      content: "";
+    }
+
+    .truth-strip {
+      margin-top: clamp(3rem, 7vw, 5rem);
+      border-block: 1px solid var(--border);
+      background: rgba(17, 23, 25, .72);
+    }
+    .truth-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      width: min(calc(100% - 2rem), var(--page));
+      margin: 0 auto;
+    }
+    .truth-item { padding: 1.4rem 1.5rem; }
+    .truth-item + .truth-item { border-left: 1px solid var(--border); }
+    .truth-item strong { display: block; margin-bottom: .25rem; font-size: .93rem; }
+    .truth-item span { color: var(--text-muted); font-size: .82rem; line-height: 1.55; }
+
+    .section {
+      width: min(calc(100% - 2rem), var(--page));
+      margin: 0 auto;
+      padding: clamp(4.5rem, 9vw, 7.5rem) 0;
+    }
+    .section-head { max-width: 690px; margin-bottom: clamp(2.3rem, 5vw, 4rem); }
+    .section-head.center { margin-inline: auto; text-align: center; }
+    .section-kicker {
+      margin-bottom: .55rem;
+      color: var(--accent);
+      font-size: .74rem;
+      font-weight: 800;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+    h2 {
+      font-size: clamp(2rem, 4vw, 3.35rem);
+      font-weight: 760;
+      letter-spacing: -.035em;
+      line-height: 1.12;
+      text-wrap: balance;
+    }
+    .section-intro {
+      margin-top: .9rem;
+      color: var(--text-muted);
+      font-size: 1rem;
+      line-height: 1.75;
+    }
+
+    .workflow-list { display: grid; gap: clamp(3.5rem, 8vw, 6.5rem); }
+    .workflow-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1.12fr) minmax(280px, .88fr);
+      gap: clamp(2rem, 6vw, 5rem);
+      align-items: center;
+    }
+    .workflow-row:nth-child(even) .workflow-media { order: 2; }
+    .workflow-media {
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      box-shadow: 0 20px 54px rgba(0, 0, 0, .3);
+    }
+    .workflow-media picture, .workflow-media img { display: block; width: 100%; }
+    .workflow-media img { height: auto; aspect-ratio: 720 / 444; object-fit: cover; }
+    .media-caption {
+      padding: .65rem .8rem;
+      border-top: 1px solid var(--border);
+      color: var(--text-faint);
+      font-size: .74rem;
+    }
+    .step-number {
+      display: inline-grid;
+      width: 2rem;
+      height: 2rem;
+      place-items: center;
+      margin-bottom: 1rem;
+      border-radius: 50%;
+      background: var(--accent);
+      color: var(--accent-ink);
+      font-size: .8rem;
+      font-weight: 900;
+    }
+    .workflow-copy h3 {
+      margin-bottom: .75rem;
+      font-size: clamp(1.55rem, 3vw, 2.15rem);
+      letter-spacing: -.025em;
+      line-height: 1.2;
+    }
+    .workflow-copy p { color: var(--text-muted); font-size: .96rem; line-height: 1.75; }
+    .plain-list { display: grid; gap: .6rem; margin-top: 1.25rem; padding: 0; list-style: none; }
+    .plain-list li {
+      position: relative;
+      padding-left: 1.35rem;
+      color: var(--text-muted);
+      font-size: .88rem;
+    }
+    .plain-list li::before {
+      position: absolute;
+      left: 0;
+      color: var(--green);
+      content: "✓";
+      font-weight: 900;
+    }
+
+    .tour {
+      padding-block: clamp(4rem, 8vw, 7rem);
+      border-block: 1px solid var(--border);
+      background: var(--surface);
+    }
+    .tour-inner { width: min(calc(100% - 2rem), var(--page)); margin: 0 auto; }
+    .video-frame {
+      overflow: hidden;
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius);
+      background: #070a0b;
+      box-shadow: var(--shadow);
+    }
+    .video-frame video { display: block; width: 100%; aspect-ratio: 16 / 9; background: #070a0b; object-fit: cover; }
+    .tour-summary {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1px;
+      margin-top: 1px;
+      background: var(--border);
+    }
+    .tour-summary div { padding: 1rem; background: var(--surface-raised); }
+    .tour-summary strong { display: block; margin-bottom: .2rem; font-size: .85rem; }
+    .tour-summary span { color: var(--text-muted); font-size: .78rem; }
+
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1rem;
+    }
+    .feature-card {
+      padding: 1.35rem;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--surface);
+    }
+    .feature-card strong { display: block; margin-bottom: .4rem; font-size: .95rem; }
+    .feature-card p { color: var(--text-muted); font-size: .84rem; line-height: 1.65; }
+
+    .pricing-section {
+      width: min(calc(100% - 2rem), 920px);
+      margin: 0 auto;
+      padding: clamp(4.5rem, 9vw, 7.5rem) 0;
+      text-align: center;
+    }
+    .plan-toggle {
+      display: inline-flex;
+      max-width: 100%;
+      gap: 2px;
+      margin-top: 2rem;
+      padding: 4px;
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--surface-raised);
+      scrollbar-width: none;
+    }
+    .plan-toggle::-webkit-scrollbar { display: none; }
+    .plan-tab {
+      display: inline-flex;
+      flex: 1 0 auto;
+      align-items: center;
+      justify-content: center;
+      gap: .4rem;
+      min-height: 40px;
+      padding: .45rem 1rem;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: .86rem;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+    .plan-tab:hover { color: var(--text); }
+    .plan-tab.active { background: var(--accent); color: var(--accent-ink); font-weight: 800; }
+    .save-badge {
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: rgba(111, 221, 169, .16);
+      color: var(--green);
+      font-size: .64rem;
+      font-weight: 800;
+    }
+    .plan-tab.active .save-badge { background: rgba(3, 19, 16, .15); color: var(--accent-ink); }
+    .pricing-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 1rem;
+      margin-top: 1.4rem;
+      text-align: left;
+    }
+    .pricing-card {
+      padding: clamp(1.4rem, 4vw, 2rem);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+    }
+    .pricing-card.featured { border-color: rgba(66, 201, 173, .58); background: rgba(66, 201, 173, .055); }
+    .pricing-tier {
+      margin-bottom: .9rem;
+      color: var(--text-muted);
+      font-size: .7rem;
+      font-weight: 850;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+    .featured .pricing-tier { color: var(--accent); }
+    .pricing-price { margin-bottom: .15rem; font-size: 2.35rem; font-weight: 780; line-height: 1.15; }
+    .pricing-price span, .pricing-period { color: var(--text-muted); font-size: .95rem; font-weight: 450; }
+    .price-loading { color: var(--text-faint); font-size: 1rem; font-weight: 450; }
+    .pricing-note { min-height: 2.6rem; margin-bottom: 1.1rem; color: var(--text-muted); font-size: .8rem; }
+    .pricing-btn {
+      display: flex;
+      min-height: 44px;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      padding: .65rem 1rem;
+      border: 1px solid var(--border-strong);
+      border-radius: 9px;
+      background: var(--surface-raised);
+      color: var(--text);
+      cursor: pointer;
+      font-size: .88rem;
+      font-weight: 750;
+      text-align: center;
+    }
+    .pricing-btn:hover { border-color: var(--accent); background: #203034; }
+    .device-picker {
+      margin-bottom: 1rem;
+      padding: .9rem;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, .025);
+    }
+    .device-picker-head {
+      display: flex;
+      justify-content: space-between;
+      gap: .75rem;
+      margin-bottom: .7rem;
+      color: var(--text-muted);
+      font-size: .76rem;
+    }
+    .device-picker-head strong { color: var(--text); }
     .device-stepper {
       display: grid;
-      grid-template-columns: 44px minmax(0, 1fr) 44px;
+      grid-template-columns: 44px 1fr 44px;
       align-items: center;
-      gap: 0.75rem;
+      gap: .6rem;
     }
     .device-stepper-btn {
       width: 44px;
       height: 44px;
-      border-radius: 8px;
       border: 1px solid var(--border);
+      border-radius: 9px;
       background: var(--surface-raised);
-      color: var(--text);
-      font-size: 1.25rem;
-      font-weight: 700;
       cursor: pointer;
-      transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.1s, opacity 0.15s;
+      font-size: 1.2rem;
+      font-weight: 800;
     }
-    .device-stepper-btn:hover:not(:disabled) {
-      border-color: rgba(55,182,159,.55);
-      color: var(--accent);
-      transform: translateY(-1px);
-    }
-    .device-stepper-btn:focus-visible {
-      outline: 2px solid var(--accent);
-      outline-offset: 2px;
-    }
-    .device-stepper-btn:disabled {
-      cursor: not-allowed;
-      opacity: 0.38;
-    }
+    .device-stepper-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+    .device-stepper-btn:disabled { cursor: not-allowed; opacity: .38; }
     .device-stepper-value {
       display: flex;
       min-height: 44px;
       align-items: center;
       justify-content: center;
-      gap: 0.45rem;
-      border-radius: 8px;
-      border: 1px solid rgba(55,182,159,.36);
+      gap: .4rem;
+      border-radius: 9px;
       background: var(--accent);
-      color: #041210;
-      font-weight: 800;
+      color: var(--accent-ink);
+      font-weight: 850;
     }
-    .device-stepper-value strong {
-      font-size: 1.25rem;
-      line-height: 1;
-    }
-    .device-stepper-value span {
-      font-size: 0.88rem;
-      line-height: 1;
-    }
-    .device-stepper-range {
-      margin-top: 0.65rem;
+    .device-stepper-range, .device-pricing-copy, .pricing-micro {
+      margin-top: .6rem;
       color: var(--text-faint);
-      font-size: 0.76rem;
-      line-height: 1.45;
+      font-size: .74rem;
+      line-height: 1.5;
     }
-    .device-pricing-copy,
-    .pricing-micro {
-      margin-top: 0.75rem;
+    .device-pricing-copy, .pricing-micro { color: var(--text-muted); }
+    .pricing-features { display: grid; gap: .25rem; margin-top: 1.25rem; padding: 0; list-style: none; }
+    .pricing-features li {
+      position: relative;
+      padding: .35rem 0 .35rem 1.25rem;
+      border-bottom: 1px solid var(--border);
       color: var(--text-muted);
-      font-size: 0.82rem;
-      line-height: 1.6;
+      font-size: .82rem;
     }
-    .pricing-micro { margin-top: 0.9rem; }
-    .cta-section { padding: clamp(4rem, 8vw, 6rem) clamp(1.25rem, 4vw, 2rem); text-align: center; border-top: 1px solid var(--border); }
-    .cta-section h2 { font-size: clamp(1.8rem, 3.5vw, 2.6rem); font-weight: 700; letter-spacing: 0; margin-bottom: 1rem; }
-    .cta-section p { color: var(--text-muted); font-size: 1rem; margin-bottom: 2rem; }
-    footer { border-top: 1px solid var(--border); padding: 2rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; color: var(--text-muted); font-size: 0.8125rem; max-width: var(--page-width); margin: 0 auto; }
-    .footer-logo { display: flex; align-items: center; gap: 8px; font-weight: 600; color: var(--text); }
-    .footer-logo svg { width: 20px; height: 20px; }
-    .footer-links { display: flex; gap: 1.5rem; }
+    .pricing-features li:last-child { border: 0; }
+    .pricing-features li::before { position: absolute; left: 0; color: var(--green); content: "✓"; }
+    .pricing-helper { margin-top: 1rem; color: var(--text-muted); font-size: .82rem; }
+    .pricing-helper a, .privacy-note a { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
+
+    .final-cta {
+      padding: clamp(4.5rem, 9vw, 7rem) 1rem;
+      border-top: 1px solid var(--border);
+      text-align: center;
+    }
+    .final-cta h2 { max-width: 680px; margin: 0 auto; }
+    .final-cta p { margin: .8rem auto 1.5rem; color: var(--text-muted); }
+    .privacy-note { max-width: 680px; margin: 1rem auto 0; color: var(--text-faint); font-size: .75rem; }
+
+    footer {
+      display: flex;
+      width: min(calc(100% - 2rem), var(--page));
+      margin: 0 auto;
+      padding: 2rem 0 2.5rem;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1.5rem;
+      border-top: 1px solid var(--border);
+      color: var(--text-faint);
+      font-size: .77rem;
+    }
+    .footer-logo { display: flex; align-items: center; gap: .55rem; color: var(--text); font-weight: 800; }
+    .footer-logo svg { width: 25px; height: 25px; }
+    .footer-links { display: flex; flex-wrap: wrap; justify-content: center; gap: 1rem; }
     .footer-links a:hover { color: var(--text); }
+
     @media (max-width: 900px) {
-      nav {
-        top: 0; left: 0; right: 0;
-        max-width: none;
-        border-radius: 0;
-        border-left: none;
-        border-right: none;
-        height: 64px;
-        padding: 0 1rem;
-      }
       .nav-links, .nav-cta { display: none; }
-      .nav-menu-toggle { display: inline-flex; }
-      .hero { padding-top: 7.25rem; }
-      .hero-actions { flex-direction: column; align-items: stretch; }
-      .hero-actions a { width: 100%; justify-content: center; }
-      .hero-proof-item { flex: 1 1 calc(50% - 0.75rem); }
-      .graphics-head { display: block; }
-      .graphics-grid { grid-template-columns: 1fr; }
-      .trust-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .showcase-head { grid-template-columns: 1fr; align-items: start; }
-      .storyline-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .gif-row, .gif-row.reverse { grid-template-columns: 1fr; direction: ltr; }
-      .pricing-grid { grid-template-columns: 1fr; }
-      .section-sub { max-width: none; }
+      .nav-menu-toggle { display: flex; }
+      .truth-grid, .tour-summary, .feature-grid { grid-template-columns: 1fr; }
+      .truth-item + .truth-item { border-top: 1px solid var(--border); border-left: 0; }
+      .workflow-row { grid-template-columns: 1fr; }
+      .workflow-row:nth-child(even) .workflow-media { order: 0; }
+      .workflow-copy { max-width: 650px; }
     }
     @media (max-width: 680px) {
-      .hero { padding-left: 1rem; padding-right: 1rem; }
-      .hero-badge { font-size: 0.7rem; padding: 4px 10px; }
-      .hero-sub { margin-bottom: 1.5rem; }
-      .hero-proof {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        width: 100%;
-      }
-      .hero-proof-item { min-width: 0; text-align: center; }
-      .hero-demo { padding: 0 1rem; }
-      .demo-frame { border-radius: 14px; }
-      .platform-strip { margin-top: 3.5rem; padding-left: 1rem; padding-right: 1rem; }
-      .graphics-section, .showcase-section { padding-left: 1rem; padding-right: 1rem; }
-      .features-grid { grid-template-columns: 1fr; }
-      .storyline-grid { grid-template-columns: 1fr; }
-      .pricing-card { padding: 1.5rem; }
-      .pricing-price { font-size: 2rem; }
-      .device-picker-head { align-items: flex-start; flex-direction: column; }
-      .cta-section p { max-width: 28rem; margin-left: auto; margin-right: auto; }
-      footer {
-        padding: 1.75rem 1rem 2.25rem;
-        flex-direction: column;
-        align-items: flex-start;
-      }
-      .footer-links { flex-wrap: wrap; gap: 0.85rem 1.25rem; }
+      nav { height: 58px; }
+      .mobile-menu { top: 82px; }
+      .hero { padding-top: 7.5rem; }
+      .product-caption { display: block; }
+      .product-caption > span:last-child { display: block; margin-top: .3rem; }
+      .pricing-grid { grid-template-columns: 1fr; }
+      .plan-toggle { display: flex; width: 100%; }
+      .plan-tab { padding-inline: .65rem; }
+      footer { flex-direction: column; text-align: center; }
     }
-    @media (max-width: 480px) {
-      .hero-proof { grid-template-columns: 1fr; }
-      .mobile-menu { left: 12px; right: 12px; top: 76px; }
-      .gif-text h3 { font-size: 1.3rem; }
-      .gif-text p { font-size: 0.9rem; }
-      .section, .pricing-section, .cta-section { padding-left: 1rem; padding-right: 1rem; }
-      .platform-badges { gap: 0.75rem; }
-      .platform-badge { width: 100%; justify-content: center; }
-      .trust-grid { grid-template-columns: 1fr; }
+    @media (max-width: 420px) {
+      h1 { font-size: 2.45rem; }
+      .hero, .section, .tour-inner, .pricing-section, .product-shot, .truth-grid, footer {
+        width: min(calc(100% - 1.25rem), var(--page));
+      }
+      .hero { padding-inline: 0; }
     }
     @media (prefers-reduced-motion: reduce) {
-      *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
     }
   </style>
 </head>
 <body>
+<a class="skip-link" href="#main-content">Skip to content</a>
 
-<!-- NAV -->
-<nav>
-  <a href="/" class="nav-logo">
+<nav aria-label="Primary navigation">
+  <a href="/" class="nav-logo" aria-label="Keptra home">
     <svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect width="256" height="256" rx="56" fill="#0D1416"/><rect x="13" y="13" width="230" height="230" rx="46" fill="#142629" stroke="#37B69F" stroke-width="12"/><path d="M128 49L178 136H78L128 49Z" fill="#37B69F"/><path d="M211 116L161 202L112 116H211Z" fill="#52D7B5"/><path d="M55 152L104 67L154 152H55Z" fill="#2585A1"/><path d="M88 139L121 173L190 92" stroke="#F6FBFA" stroke-width="21" stroke-linecap="round" stroke-linejoin="round"/><path d="M67 67H101M67 67V101M188 67H222M222 67V101M67 188V222H101M188 222H222V188" stroke="#F6FBFA" stroke-opacity=".78" stroke-width="11" stroke-linecap="round"/></svg>
     Keptra
   </a>
   <div class="nav-links">
-    <a href="#workflow">How it works</a>
-    <a href="#features">Benefits</a>
-    <a href="#showcase">Demo</a>
+    <a href="#workflow">Workflow</a>
+    <a href="#tour">Product tour</a>
     <a href="#pricing">Pricing</a>
-    <a href="download.html">Download</a>
   </div>
-  <a href="download.html" class="nav-cta">Download free →</a>
+  <a href="download.html" class="nav-cta">Download free</a>
   <button class="nav-menu-toggle" id="navMenuToggle" type="button" aria-expanded="false" aria-controls="mobileMenu" aria-label="Open navigation menu">
-    <span></span>
-    <span></span>
-    <span></span>
+    <span></span><span></span><span></span>
   </button>
 </nav>
-<div class="mobile-menu" id="mobileMenu">
-  <a href="#workflow">How it works <span>→</span></a>
-  <a href="#features">Benefits <span>→</span></a>
-  <a href="#showcase">Demo <span>→</span></a>
-  <a href="#pricing">Pricing <span>→</span></a>
-  <a href="download.html">Download <span>→</span></a>
-  <a href="https://keptra.z2hs.au/manage-license">Manage license <span>→</span></a>
-  <a href="download.html" class="mobile-menu-cta">Download free <span>→</span></a>
+
+<div class="mobile-menu" id="mobileMenu" aria-hidden="true" inert>
+  <a href="#workflow">Workflow <span aria-hidden="true">→</span></a>
+  <a href="#tour">Product tour <span aria-hidden="true">→</span></a>
+  <a href="#pricing">Pricing <span aria-hidden="true">→</span></a>
+  <a href="https://keptra.z2hs.au/manage-license">Manage license <span aria-hidden="true">→</span></a>
+  <a href="download.html" class="mobile-menu-cta">Download free <span aria-hidden="true">→</span></a>
 </div>
 
-<!-- HERO -->
-<section class="hero">
-  <div class="hero-badge"><span>●</span> Local-first for Mac &amp; Windows</div>
-  <h1>Cull before<br/><em>import</em></h1>
-  <p class="hero-sub">
-    Review a card before it hits your library. Pick keepers locally, skip the obvious rejects, and copy only the photos that deserve clean, verified folders.
-  </p>
-  <div class="hero-actions">
-    <a href="download.html" class="btn-primary">
-      <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor"><path d="M10 2a.75.75 0 01.75.75v8.69l2.97-2.97a.75.75 0 111.06 1.06l-4.25 4.25a.75.75 0 01-1.06 0L5.22 9.53a.75.75 0 011.06-1.06l2.97 2.97V2.75A.75.75 0 0110 2zM3 15.75a.75.75 0 000 1.5h14a.75.75 0 000-1.5H3z"/></svg>
-      Download free
-    </a>
-    <a href="#showcase" class="btn-secondary">Watch demo</a>
-  </div>
-  <div class="hero-proof">
-    <div class="hero-proof-item">Import only keepers</div>
-    <div class="hero-proof-item">Photos stay local</div>
-    <div class="hero-proof-item">Cards, folders, FTP</div>
-    <div class="hero-proof-item">Verified handoff</div>
-  </div>
-</section>
+<main id="main-content">
+  <section class="hero" aria-labelledby="hero-title">
+    <p class="eyebrow">Photo culling and safe ingest</p>
+    <h1 id="hero-title">Bring home the keepers, not the whole card.</h1>
+    <p class="hero-copy">
+      Keptra helps you review a shoot before import, choose the strongest frames, and copy them into clean folders with an optional verified backup.
+    </p>
+    <div class="hero-action">
+      <a href="download.html" class="btn-primary">Download Keptra free <span aria-hidden="true">→</span></a>
+    </div>
+    <p class="hero-note">Windows and macOS · No card required to try it</p>
+  </section>
 
-<!-- HERO ANIMATED DEMO -->
-<div class="hero-demo">
-  <div class="demo-frame">
-    <picture>
-      <source media="(prefers-reduced-motion: reduce)" srcset="assets/demo/real-app-capture.png">
-      <img src="assets/demo/face-review.gif" data-poster="assets/demo/real-app-capture.png" alt="Keptra app showing local face review and culling workflow" width="960" height="560">
-    </picture>
-  </div>
-</div>
+  <figure class="product-shot" aria-labelledby="product-shot-caption">
+    <div class="product-frame">
+      <img src="assets/demo/keptra-live.png" alt="Current Keptra desktop workspace showing Source, Review, Destination, and Import steps" width="1280" height="800" fetchpriority="high">
+      <figcaption class="product-caption" id="product-shot-caption">
+        <span class="live-label">Current application</span>
+        <span>One route from source to reviewed, verified files.</span>
+      </figcaption>
+    </div>
+  </figure>
 
-<!-- PLATFORM STRIP -->
-<div class="platform-strip">
-  <p>Works with your existing editing workflow</p>
-  <div class="platform-badges">
-    <div class="platform-badge">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg>
-      macOS 12+
-    </div>
-    <div class="platform-badge">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.557l7.357-1.002.003 7.096-7.354.042L3 5.557zm7.354 6.913l.004 7.098L3.003 18.56l-.002-6.14 7.353.05zm.892-8.046L21 2.5v8.402l-9.754.077V4.424zm9.758 8.048l-.002 8.31L11.246 19.44v-7.022l9.758.054z"/></svg>
-      Windows 10+
-    </div>
-    <div class="platform-badge">
-      <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor"><path d="M10.75 2.75a.75.75 0 00-1.5 0v8.614L6.295 8.235a.75.75 0 10-1.09 1.03l4.25 4.5a.75.75 0 001.09 0l4.25-4.5a.75.75 0 00-1.09-1.03l-2.955 3.129V2.75z"/><path d="M3.5 12.75a.75.75 0 00-1.5 0v2.5A2.75 2.75 0 004.75 18h10.5A2.75 2.75 0 0018 15.25v-2.5a.75.75 0 00-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5z"/></svg>
-      Verified imports
-    </div>
-    <div class="platform-badge">
-      <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4.5 2A1.5 1.5 0 003 3.5v13A1.5 1.5 0 004.5 18h11a1.5 1.5 0 001.5-1.5V7.621a1.5 1.5 0 00-.44-1.06l-4.12-4.122A1.5 1.5 0 0011.378 2H4.5zm2.25 8.5a.75.75 0 000 1.5h6.5a.75.75 0 000-1.5h-6.5zm0 3a.75.75 0 000 1.5h6.5a.75.75 0 000-1.5h-6.5zm0-6a.75.75 0 000 1.5h6.5a.75.75 0 000-1.5h-6.5z" clip-rule="evenodd"/></svg>
-      RAW, JPEG, video
-    </div>
-  </div>
-</div>
-
-<section class="trust-section" aria-label="Product trust signals">
-  <div class="trust-grid">
-    <article class="trust-card">
-      <div class="trust-label">Storage model</div>
-      <div class="trust-value">Local-first</div>
-      <p class="trust-copy">Files stay on your workstation and copy directly to the folders you choose.</p>
-    </article>
-    <article class="trust-card">
-      <div class="trust-label">Workflow</div>
-      <div class="trust-value">Cull first</div>
-      <p class="trust-copy">Pick, reject, and queue before anything lands in your photo library.</p>
-    </article>
-    <article class="trust-card">
-      <div class="trust-label">Sources</div>
-      <div class="trust-value">Cards, folders, FTP</div>
-      <p class="trust-copy">Simple local ingest by default, with Pro controls for camera FTP and staged folders.</p>
-    </article>
-    <article class="trust-card">
-      <div class="trust-label">Support</div>
-      <div class="trust-value">Direct email</div>
-      <p class="trust-copy"><a href="mailto:help@z2hs.au">help@z2hs.au</a> for setup, licensing, or release questions.</p>
-    </article>
-  </div>
-</section>
-
-<!-- WORKFLOW GRAPHICS -->
-<section class="graphics-section" aria-labelledby="workflow-graphics-title">
-  <div class="graphics-head">
-    <div>
-      <div class="section-label">Visual workflow</div>
-      <h2 class="section-title" id="workflow-graphics-title">From card to clean folders</h2>
-    </div>
-    <p class="section-sub">Keptra keeps the import step focused: decide what stays, let local review surface the risky shots, then copy only verified files to the right places.</p>
-  </div>
-  <div class="graphics-grid">
-    <article class="graphic-card">
-      <img src="assets/graphics/keeper-pipeline.svg" alt="Memory card photos moving through keyboard picks into selected keeper photos" width="720" height="420" loading="lazy">
-      <div class="graphic-copy">
-        <h3>Cull before you copy</h3>
-        <p>Move through the card with single-key picks, rejects, and ratings before anything lands in your library.</p>
+  <section class="truth-strip" aria-label="How Keptra handles photos">
+    <div class="truth-grid">
+      <div class="truth-item">
+        <strong>Your photos stay on your computer</strong>
+        <span>Photo review and analysis happen locally. Keptra does not upload your shoot to a culling cloud.</span>
       </div>
-    </article>
-    <article class="graphic-card">
-      <img src="assets/graphics/local-ai-review.svg" alt="Offline face review panel showing sharpness and local processing checks" width="720" height="420" loading="lazy">
-      <div class="graphic-copy">
-        <h3>Review stays local</h3>
-        <p>Face and sharpness checks run on the machine beside your files, giving useful flags without cloud uploads.</p>
+      <div class="truth-item">
+        <strong>Originals stay untouched while you review</strong>
+        <span>Picks, rejects, ratings, and AI suggestions do not move or delete source files.</span>
       </div>
-    </article>
-    <article class="graphic-card">
-      <img src="assets/graphics/verified-import.svg" alt="Selected files copied into dated folders with checksum verification and backup mirroring" width="720" height="420" loading="lazy">
-      <div class="graphic-copy">
-        <h3>Verify every transfer</h3>
-        <p>Selected shots copy into organized folders, checksum cleanly, and can mirror to a second destination.</p>
-      </div>
-    </article>
-  </div>
-</section>
-
-<!-- PRODUCT SHOWCASE VIDEO -->
-<section class="showcase-section" id="showcase" aria-labelledby="product-showcase-title">
-  <div class="showcase-head">
-    <div>
-      <div class="section-label">30-second showcase</div>
-      <h2 class="section-title" id="product-showcase-title">A complete card-to-drive story</h2>
-    </div>
-    <p class="section-sub">The new product video follows a real photographer handoff: the card arrives full, Keptra narrows the shoot, local review catches risky frames, and only verified keepers land in clean folders.</p>
-  </div>
-  <div class="showcase-video-frame">
-    <video class="showcase-video" controls muted playsinline preload="metadata" poster="assets/demo/real-app-capture.png">
-      <source src="assets/video/keptra-showcase.mp4" type="video/mp4">
-    </video>
-  </div>
-  <div class="storyline-grid" aria-label="Product showcase storyline">
-    <article class="story-card">
-      <span class="story-step">1</span>
-      <h3>The card is full</h3>
-      <p>Open on the post-shoot moment: lots of files, little time, and a need to get organized.</p>
-    </article>
-    <article class="story-card">
-      <span class="story-step">2</span>
-      <h3>Cull before import</h3>
-      <p>Keyboard picks and rejects turn a full card into a clean shortlist before copying begins.</p>
-    </article>
-    <article class="story-card">
-      <span class="story-step">3</span>
-      <h3>Local AI helps</h3>
-      <p>Sharpness, face review, and burst checks surface the easy misses without uploading photos.</p>
-    </article>
-    <article class="story-card">
-      <span class="story-step">4</span>
-      <h3>Verified keepers land</h3>
-      <p>Selected files copy into dated folders, mirror to backup or FTP, and checksum cleanly.</p>
-    </article>
-  </div>
-</section>
-
-<!-- FEATURES -->
-<section class="section" id="features">
-  <div class="section-label">Features</div>
-  <h2 class="section-title">What's in the box</h2>
-  <p class="section-sub">No bloat. Just the things that matter at the card-to-drive step.</p>
-  <div class="features-grid">
-    <div class="feature-card">
-      <div class="feature-icon">⌨️</div>
-      <div class="feature-title">Keyboard culling</div>
-      <div class="feature-desc">P picks, X rejects, 1–5 rates. Arrow keys navigate. You never have to click anything — just work through your shots as fast as you can see them.</div>
-    </div>
-    <div class="feature-card">
-      <div class="feature-icon">🤖</div>
-      <div class="feature-title">AI sharpness review</div>
-      <div class="feature-desc">Local face detection, embeddings, and sharpness scoring run in the background as you browse. On Windows, DirectML is used only when the detector or embedder benchmarks faster and stays stable; otherwise Keptra falls back to CPU automatically.</div>
-    </div>
-    <div class="feature-card">
-      <div class="feature-icon">⚡</div>
-      <div class="feature-title">Burst grouping</div>
-      <div class="feature-desc">Rapid-fire sequences are grouped as bursts. Open one, pick your frame, collapse the rest. Shift+B grabs the sharpest shot and moves on.</div>
-    </div>
-    <div class="feature-card">
-      <div class="feature-icon">🔍</div>
-      <div class="feature-title">Duplicate skipping</div>
-      <div class="feature-desc">Re-insert a card you partially imported yesterday. Keptra compares filenames and sizes against what's already on disk, and skips anything already there.</div>
-    </div>
-    <div class="feature-card">
-      <div class="feature-icon">📁</div>
-      <div class="feature-title">Folder presets</div>
-      <div class="feature-desc">Choose a date-based preset (<code>YYYY/MM/DD</code>, <code>YYYY-MM</code>) or build your own pattern with custom tokens. Your library stays organized automatically.</div>
-    </div>
-    <div class="feature-card">
-      <div class="feature-icon">🔄</div>
-      <div class="feature-title">Auto-import</div>
-      <div class="feature-desc">Insert a card and Keptra gets to work without you touching a thing. Useful when you're juggling gear and just need everything off the card.</div>
-    </div>
-    <div class="feature-card">
-      <div class="feature-icon">📡</div>
-      <div class="feature-title">FTP mirror</div>
-      <div class="feature-desc">Set a second destination over FTP/FTPS and every import lands there too — in real time. Works with local NAS addresses or remote servers.</div>
-    </div>
-    <div class="feature-card">
-      <div class="feature-icon">✅</div>
-      <div class="feature-title">Checksum verify</div>
-      <div class="feature-desc">Every file is checksummed after copying. If a single byte is wrong, you'll know before the card gets formatted. Your images arrive exactly as shot.</div>
-    </div>
-    <div class="feature-card">
-      <div class="feature-icon">💾</div>
-      <div class="feature-title">Backup destination</div>
-      <div class="feature-desc">Add a second local folder and every import is mirrored there. It's not a backup tool — but it means you always have two copies the moment a card is done.</div>
-    </div>
-  </div>
-</section>
-
-<!-- WORKFLOW DEMOS -->
-<section class="section gif-features" id="workflow">
-  <div class="section-label">How it works</div>
-  <h2 class="section-title">Card in, keepers out</h2>
-
-  <!-- Demo 1: Culling -->
-  <div class="gif-row" style="margin-top:3rem">
-    <div class="gif-frame">
-      <picture>
-        <source media="(prefers-reduced-motion: reduce)" srcset="assets/demo/best-of.png">
-        <img src="assets/demo/best-of.gif" data-poster="assets/demo/best-of.png" alt="Keyboard culling and best-of selection demo" loading="lazy" width="720" height="444">
-      </picture>
-    </div>
-    <div class="gif-text">
-      <h3>Cull at full speed — no mouse needed</h3>
-      <p>P picks, X rejects, arrows navigate. Every EXIF field is visible at a glance: aperture, shutter, ISO, focal length. The filmstrip on the right tracks your decisions — green picks, red rejects, blue for your current position.</p>
-      <p>Star ratings are a single key press. You'll clear 500 shots in under 10 minutes once you stop reaching for the mouse.</p>
-      <div class="tag-list">
-        <span class="tag">P — Pick</span>
-        <span class="tag">X — Reject</span>
-        <span class="tag">Space — Full res</span>
-        <span class="tag">1–5 — Star rating</span>
-        <span class="tag">EXIF overlay</span>
+      <div class="truth-item">
+        <strong>You approve the import</strong>
+        <span>Preview the plan, choose the destination, and decide which files are copied.</span>
       </div>
     </div>
-  </div>
+  </section>
 
-  <!-- Demo 2: AI Review -->
-  <div class="gif-row reverse">
-    <div class="gif-frame">
-      <picture>
-        <source media="(prefers-reduced-motion: reduce)" srcset="assets/demo/face-review.png">
-        <img src="assets/demo/face-review.gif" data-poster="assets/demo/face-review.png" alt="Local face review with grouping demo" loading="lazy" width="720" height="444">
-      </picture>
-    </div>
-    <div class="gif-text">
-      <h3>Local face review stays private and fast</h3>
-      <p>Keptra runs an ONNX neural net in the background while you browse — no GPU required, nothing leaves your machine. Every photo gets a sharpness score, a face count, and an eyes-open check.</p>
-      <p>Blurry shots drift to the bottom of the grid. Eyes-closed flags appear before you import. You still make all the calls — the AI just removes the donkey work.</p>
-      <div class="tag-list">
-        <span class="tag">Sharpness score</span>
-        <span class="tag">Face detection</span>
-        <span class="tag">Eyes-open check</span>
-        <span class="tag">Runs offline</span>
-        <span class="tag">No cloud upload</span>
-      </div>
-    </div>
-  </div>
+  <section class="section" id="workflow" aria-labelledby="workflow-title">
+    <header class="section-head">
+      <p class="section-kicker">Three clear steps</p>
+      <h2 id="workflow-title">From full card to a clean handoff.</h2>
+      <p class="section-intro">The everyday workflow stays simple. Deeper automation and delivery controls are there when a job needs them.</p>
+    </header>
 
-  <!-- Demo 3: Import -->
-  <div class="gif-row">
-    <div class="gif-frame">
-      <picture>
-        <source media="(prefers-reduced-motion: reduce)" srcset="assets/demo/gpu-diagnostics.png">
-        <img src="assets/demo/gpu-diagnostics.gif" data-poster="assets/demo/gpu-diagnostics.png" alt="GPU face diagnostics settings demo" loading="lazy" width="720" height="444">
-      </picture>
-    </div>
-    <div class="gif-text">
-      <h3>GPU diagnostics are plain to see</h3>
-      <p>Keptra shows the active AI provider, whether GPU acceleration is available, and when it has fallen back to CPU. You can run a smoke benchmark from settings instead of guessing why a machine feels slow.</p>
-      <p>Support diagnostics collect the app version, update endpoint state, license state, and performance notes in one place, so troubleshooting does not turn into a hunt through hidden folders.</p>
-      <div class="tag-list">
-        <span class="tag">Provider status</span>
-        <span class="tag">GPU fallback</span>
-        <span class="tag">Smoke bench</span>
-        <span class="tag">Copy diagnostics</span>
-        <span class="tag">Update repair</span>
-      </div>
-    </div>
-  </div>
-
-  <!-- Demo 4: Burst grouping -->
-  <div class="gif-row reverse">
-    <div class="gif-frame">
-      <picture>
-        <source media="(prefers-reduced-motion: reduce)" srcset="assets/demo/best-of.png">
-        <img src="assets/demo/best-of.gif" data-poster="assets/demo/best-of.png" alt="Best-of burst comparison demo" loading="lazy" width="720" height="444">
-      </picture>
-    </div>
-    <div class="gif-text">
-      <h3>Bursts collapse into one tile</h3>
-      <p>When Keptra spots a tight cluster — same subject, fraction of a second apart — it stacks the frames into one thumbnail with a count badge.</p>
-      <p>Press B to fan them out and compare side by side. Sharpness scores sit below each frame. Shift+B picks the winner and moves you on without you lifting your eyes from the screen.</p>
-      <div class="tag-list">
-        <span class="tag">B — expand burst</span>
-        <span class="tag">Shift+B — pick best</span>
-        <span class="tag">Sharpness scores</span>
-        <span class="tag">Side-by-side compare</span>
-        <span class="tag">Configurable window</span>
-      </div>
-    </div>
-  </div>
-
-  <!-- Demo 5: Auto-import -->
-  <div class="gif-row">
-    <div class="gif-frame">
-      <picture>
-        <source media="(prefers-reduced-motion: reduce)" srcset="assets/demo/auto-import.png">
-        <img src="assets/demo/auto-import.gif" data-poster="assets/demo/auto-import.png" alt="Auto-import from card detection demo" loading="lazy" width="720" height="444">
-      </picture>
-    </div>
-    <div class="gif-text">
-      <h3>Insert a card, walk away</h3>
-      <p>Turn on auto-import and Keptra watches for any new card. The moment one is detected, it starts scanning — no clicking, no dialogs. Files land in your date-based folders automatically.</p>
-      <p>It checks for duplicates before copying, so re-inserting a card from yesterday skips anything already on disk. Handy when you're juggling multiple bodies or backing up mid-shoot.</p>
-      <div class="tag-list">
-        <span class="tag">Zero-click import</span>
-        <span class="tag">Duplicate detection</span>
-        <span class="tag">Date organisation</span>
-        <span class="tag">Backup mirror</span>
-        <span class="tag">Auto eject when done</span>
-      </div>
-    </div>
-  </div>
-
-</section>
-
-<!-- PRICING -->
-<section class="pricing-section" id="pricing">
-  <div class="section-label" style="text-align:center">Pricing</div>
-  <h2 class="section-title">Pick your plan</h2>
-  <p class="section-sub" style="max-width:560px;margin:0.75rem auto 0">No lock-in. Pick a plan, choose how many devices it should cover on day one, and check out with the right seat count already baked into the license.</p>
-
-  <!-- Plan toggle -->
-  <div class="plan-toggle" id="planToggle">
-    <button class="plan-tab active" data-plan="monthly">Monthly</button>
-    <button class="plan-tab" data-plan="yearly">Yearly <span class="save-badge" id="saveBadge"></span></button>
-    <button class="plan-tab" data-plan="lifetime">Lifetime</button>
-  </div>
-
-  <div class="pricing-grid">
-    <div class="pricing-card">
-      <div class="pricing-tier">Free</div>
-      <div class="pricing-price">$0</div>
-      <div class="pricing-note">No credit card. No time limit.</div>
-      <a href="download.html" class="pricing-btn">Download free</a>
-      <ul class="pricing-features">
-        <li>Full culling &amp; import</li>
-        <li>Keyboard shortcuts</li>
-        <li>Duplicate detection</li>
-        <li>Date-based folder presets</li>
-        <li>Checksum verification</li>
-        <li>1 device</li>
-      </ul>
-    </div>
-
-    <div class="pricing-card featured">
-      <div class="pricing-tier">Pro</div>
-      <div class="pricing-price" id="proPrice"><span class="price-loading">Loading…</span></div>
-      <div class="pricing-note" id="proNote">Free trial — no payment needed to start.</div>
-      <div class="device-picker">
-        <div class="device-picker-head">
-          <span>License seats</span>
-          <strong id="deviceCountLabel">1 device</strong>
+    <div class="workflow-list">
+      <article class="workflow-row">
+        <figure class="workflow-media">
+          <picture>
+            <source media="(prefers-reduced-motion: reduce)" srcset="assets/demo/auto-import.png">
+            <img src="assets/demo/auto-import.gif" alt="Keptra import progress showing copied files, backup status, checksum verification, and duplicate skips" width="720" height="444" loading="lazy">
+          </picture>
+          <figcaption class="media-caption">Workflow demonstration · import progress</figcaption>
+        </figure>
+        <div class="workflow-copy">
+          <span class="step-number" aria-hidden="true">1</span>
+          <h3>Import safely</h3>
+          <p>Start from an SD card, external drive, folder, or FTP source. Check the exact plan before copying, then optionally verify the destination and create a second local copy.</p>
+          <ul class="plain-list">
+            <li>Import Check before files move</li>
+            <li>Duplicate and destination-conflict handling</li>
+            <li>Optional checksum verification and backup destination</li>
+          </ul>
         </div>
-        <div class="device-stepper" id="deviceOptions" aria-label="Choose license device count">
-          <button type="button" class="device-stepper-btn" id="deviceMinus" aria-label="Remove one device">-</button>
-          <div class="device-stepper-value" aria-live="polite">
-            <strong id="deviceStepperCount">1</strong>
-            <span id="deviceStepperUnit">device</span>
+      </article>
+
+      <article class="workflow-row">
+        <figure class="workflow-media">
+          <picture>
+            <source media="(prefers-reduced-motion: reduce)" srcset="assets/demo/best-of.png">
+            <img src="assets/demo/best-of.gif" alt="Keptra Best-of comparison ranking several similar photographs for photographer review" width="720" height="444" loading="lazy">
+          </picture>
+          <figcaption class="media-caption">Workflow demonstration · Best-of comparison</figcaption>
+        </figure>
+        <div class="workflow-copy">
+          <span class="step-number" aria-hidden="true">2</span>
+          <h3>Find the best</h3>
+          <p>Keptra groups bursts and similar frames so you can compare fewer decisions. Local analysis can surface sharpness, faces, people, and eye-region detail as review signals—not as permission to delete a photo.</p>
+          <ul class="plain-list">
+            <li>Burst and near-duplicate grouping</li>
+            <li>Side-by-side Best-of review</li>
+            <li>Conservative suggestions with visible reasons</li>
+          </ul>
+        </div>
+      </article>
+
+      <article class="workflow-row">
+        <figure class="workflow-media">
+          <picture>
+            <source media="(prefers-reduced-motion: reduce)" srcset="assets/demo/face-review.png">
+            <img src="assets/demo/face-review.gif" alt="Keptra review grid showing local face grouping and photo scores" width="720" height="444" loading="lazy">
+          </picture>
+          <figcaption class="media-caption">Workflow demonstration · local review</figcaption>
+        </figure>
+        <div class="workflow-copy">
+          <span class="step-number" aria-hidden="true">3</span>
+          <h3>Review and hand off</h3>
+          <p>Use familiar picks, rejects, stars, filters, and keyboard navigation. Queue only what should leave the card, then open the destination or export Lightroom helper files and an import manifest.</p>
+          <ul class="plain-list">
+            <li>P to pick, X to reject, 1–5 to rate</li>
+            <li>Second-pass lane for uncertain frames</li>
+            <li>Import report, manifest, and Lightroom handoff helpers</li>
+          </ul>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <section class="tour" id="tour" aria-labelledby="tour-title">
+    <div class="tour-inner">
+      <header class="section-head center">
+        <p class="section-kicker">Product tour</p>
+        <h2 id="tour-title">See the complete workflow.</h2>
+        <p class="section-intro">A short walkthrough from a connected card to reviewed files in their destination.</p>
+      </header>
+      <div class="video-frame">
+        <video controls muted playsinline preload="metadata" poster="assets/demo/keptra-live.png" aria-label="Keptra product workflow demonstration">
+          <source src="assets/video/keptra-showcase.mp4" type="video/mp4">
+          Your browser cannot play this video. The workflow is summarized directly below.
+        </video>
+      </div>
+      <div class="tour-summary" aria-label="Video summary">
+        <div><strong>Choose a source</strong><span>Use a card, folder, drive, or configured FTP source.</span></div>
+        <div><strong>Make the calls</strong><span>Review groups, mark keepers, and inspect risky frames.</span></div>
+        <div><strong>Verify the result</strong><span>Copy the approved set and keep an inspectable import record.</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="practical-title">
+    <header class="section-head">
+      <p class="section-kicker">Built for real shoots</p>
+      <h2 id="practical-title">Useful when the deadline is closer than the edit.</h2>
+    </header>
+    <div class="feature-grid">
+      <article class="feature-card"><strong>Cards and folders first</strong><p>Removable drives are detected, protected in-camera files are surfaced, and folder sources work the same way.</p></article>
+      <article class="feature-card"><strong>Fast keyboard review</strong><p>Navigate, pick, reject, rate, compare, and undo without moving between separate applications.</p></article>
+      <article class="feature-card"><strong>Clean folder rules</strong><p>Preview date-based or custom destination paths before committing an import.</p></article>
+      <article class="feature-card"><strong>Local photo analysis</strong><p>Supported face, person, similarity, and quality signals run on the device; provider fallback is visible in diagnostics.</p></article>
+      <article class="feature-card"><strong>Recovery-aware import</strong><p>A saved import ledger tracks completed, failed, and pending files so interrupted work can be retried.</p></article>
+      <article class="feature-card"><strong>No forced catalogue</strong><p>Continue into your preferred folder workflow, or create helper artifacts for Lightroom Classic.</p></article>
+    </div>
+  </section>
+
+  <section class="pricing-section" id="pricing" aria-labelledby="pricing-title">
+    <p class="section-kicker">Pricing</p>
+    <h2 id="pricing-title">Review free. Upgrade when you are ready to import.</h2>
+    <p class="section-intro">The free tier is for browsing and manual culling. Pro unlocks verified import and the full workflow. Live prices are shown in AUD.</p>
+
+    <div class="plan-toggle" id="planToggle" aria-label="Choose billing period">
+      <button type="button" class="plan-tab active" data-plan="monthly" aria-pressed="true">Monthly</button>
+      <button type="button" class="plan-tab" data-plan="yearly" aria-pressed="false">Yearly <span class="save-badge" id="saveBadge"></span></button>
+      <button type="button" class="plan-tab" data-plan="lifetime" aria-pressed="false">Lifetime</button>
+    </div>
+
+    <div class="pricing-grid">
+      <article class="pricing-card">
+        <div class="pricing-tier">Free</div>
+        <div class="pricing-price">$0</div>
+        <div class="pricing-note">No credit card. No time limit.</div>
+        <a href="download.html" class="pricing-btn">Download free</a>
+        <ul class="pricing-features">
+          <li>Unlimited browsing and manual culling</li>
+          <li>Keyboard picks, rejects, and ratings</li>
+          <li>EXIF, duplicate, and burst review</li>
+          <li>Read-only review of source files</li>
+          <li>1 device</li>
+        </ul>
+      </article>
+
+      <article class="pricing-card featured">
+        <div class="pricing-tier">Pro</div>
+        <div class="pricing-price" id="proPrice"><span class="price-loading">Loading…</span></div>
+        <div class="pricing-note" id="proNote">Free trial — no payment needed to start.</div>
+        <div class="device-picker">
+          <div class="device-picker-head">
+            <span>License seats</span>
+            <strong id="deviceCountLabel">1 device</strong>
           </div>
-          <button type="button" class="device-stepper-btn" id="devicePlus" aria-label="Add one device">+</button>
+          <div class="device-stepper" id="deviceOptions" aria-label="Choose license device count">
+            <button type="button" class="device-stepper-btn" id="deviceMinus" aria-label="Remove one device">−</button>
+            <div class="device-stepper-value" aria-live="polite">
+              <strong id="deviceStepperCount">1</strong>
+              <span id="deviceStepperUnit">device</span>
+            </div>
+            <button type="button" class="device-stepper-btn" id="devicePlus" aria-label="Add one device">+</button>
+          </div>
+          <div class="device-stepper-range" id="deviceStepperRange">Choose 1 to 5 devices.</div>
+          <div class="device-pricing-copy" id="devicePricingCopy">1 device is included by default.</div>
         </div>
-        <div class="device-stepper-range" id="deviceStepperRange">Choose 1 to 5 devices.</div>
-        <div class="device-pricing-copy" id="devicePricingCopy">1 device is included by default.</div>
-      </div>
-      <a href="#" class="pricing-btn" id="proBuyBtn">Buy license →</a>
-      <div class="pricing-micro" id="pricingToday">Your selected device count will carry through to checkout and license generation.</div>
-      <ul class="pricing-features">
-        <li>Everything in Free</li>
-        <li id="proDeviceFeature">1 device included at checkout</li>
-        <li>AI sharpness scoring</li>
-        <li>Local face detection, grouping, and GPU diagnostics</li>
-        <li>Burst auto-pick (Shift+B)</li>
-        <li>FTP mirror output</li>
-        <li>Auto-import on card insert</li>
-        <li>Backup destination</li>
-        <li>Exposure normalization</li>
-        <li>Priority support</li>
-      </ul>
+        <a href="#" class="pricing-btn" id="proBuyBtn">Buy license →</a>
+        <div class="pricing-micro" id="pricingToday">Your device count carries through to checkout and license generation.</div>
+        <ul class="pricing-features">
+          <li>Everything in Free, plus verified import</li>
+          <li id="proDeviceFeature">1 device included at checkout</li>
+          <li>Local review suggestions and grouping</li>
+          <li>Backup destination and checksum verification</li>
+          <li>FTP source and output workflows</li>
+          <li>Auto-import and date folders</li>
+          <li>Exposure normalization and metadata tools</li>
+          <li>Priority support</li>
+        </ul>
+      </article>
     </div>
+
+    <p class="pricing-helper">Already have a timed license? <a href="https://keptra.z2hs.au/manage-license">Manage, renew, or add devices</a>.</p>
+  </section>
+
+  <section class="final-cta" aria-labelledby="final-cta-title">
+    <h2 id="final-cta-title">Make the next card easier to finish.</h2>
+    <p>Try the review workflow free, then decide whether Pro fits the job.</p>
+    <a href="download.html" class="btn-primary">Download Keptra free <span aria-hidden="true">→</span></a>
+    <p class="privacy-note">Photo review is local. An internet connection may be used for the initial model download, licensing, updates, or online checkout.</p>
+  </section>
+</main>
+
+<footer>
+  <div class="footer-logo">
+    <svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect width="256" height="256" rx="56" fill="#0D1416"/><rect x="13" y="13" width="230" height="230" rx="46" fill="#142629" stroke="#37B69F" stroke-width="12"/><path d="M128 49L178 136H78L128 49Z" fill="#37B69F"/><path d="M211 116L161 202L112 116H211Z" fill="#52D7B5"/><path d="M55 152L104 67L154 152H55Z" fill="#2585A1"/><path d="M88 139L121 173L190 92" stroke="#F6FBFA" stroke-width="21" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    Keptra
   </div>
-
-  <p style="margin-top:1.5rem;color:var(--text-muted);font-size:0.8rem">
-    Want to try Pro first?
-    <a href="download.html" style="color:var(--accent)">Download and start a free trial</a> from inside the app — no card required.
-  </p>
-  <p class="pricing-helper">
-    Already have a timed license? <a href="https://keptra.z2hs.au/manage-license">Manage, renew, or add devices</a>.
-  </p>
-</section>
-
-<style>
-  .plan-toggle {
-    display: inline-flex;
-    background: var(--surface-raised);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 4px;
-    gap: 2px;
-    margin: 2rem 0 0;
-    max-width: 100%;
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-  .plan-toggle::-webkit-scrollbar { display: none; }
-  .plan-tab {
-    padding: 0.45rem 1.1rem;
-    border-radius: 6px;
-    border: none;
-    background: transparent;
-    color: var(--text-muted);
-    font-size: 0.875rem;
-    font-weight: 500;
-    cursor: pointer;
-    transition: background 0.15s, color 0.15s;
-    font-family: var(--font);
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    flex: 1 0 auto;
-    white-space: nowrap;
-  }
-  .plan-tab:hover { color: var(--text); }
-  .plan-tab.active { background: var(--accent); color: #041210; font-weight: 700; }
-  .save-badge {
-    font-size: 0.65rem;
-    font-weight: 700;
-    background: rgba(52,211,153,0.18);
-    color: var(--green);
-    border-radius: 4px;
-    padding: 1px 5px;
-    letter-spacing: .02em;
-  }
-  .plan-tab.active .save-badge { background: rgba(4,18,16,0.16); color: #041210; }
-  .price-loading { color: var(--text-faint); font-size: 1.2rem; font-weight: 400; }
-  .pricing-period { font-size: 1rem; font-weight: 400; color: var(--text-muted); }
-  @media (max-width: 560px) {
-    .plan-toggle { display: flex; width: 100%; }
-    .plan-tab { justify-content: center; padding: 0.7rem 1rem; }
-  }
-</style>
+  <div class="footer-links">
+    <a href="download.html">Download</a>
+    <a href="#pricing">Pricing</a>
+    <a href="https://keptra.z2hs.au/manage-license">Manage license</a>
+    <a href="mailto:help@z2hs.au">Contact</a>
+  </div>
+  <div>© 2026 Keptra</div>
+</footer>
 
 <script>
 (function() {
@@ -880,28 +875,29 @@
   const menu = document.getElementById('mobileMenu');
   if (!toggle || !menu) return;
 
-  const closeMenu = () => {
-    menu.classList.remove('open');
-    toggle.setAttribute('aria-expanded', 'false');
+  const setMenu = (open) => {
+    menu.classList.toggle('open', open);
+    menu.setAttribute('aria-hidden', open ? 'false' : 'true');
+    menu.inert = !open;
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    toggle.setAttribute('aria-label', open ? 'Close navigation menu' : 'Open navigation menu');
   };
+  const closeMenu = () => setMenu(false);
 
   toggle.addEventListener('click', (event) => {
     event.stopPropagation();
-    const willOpen = !menu.classList.contains('open');
-    menu.classList.toggle('open', willOpen);
-    toggle.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+    setMenu(!menu.classList.contains('open'));
   });
-
-  menu.querySelectorAll('a').forEach((link) => {
-    link.addEventListener('click', closeMenu);
-  });
-
+  menu.querySelectorAll('a').forEach((link) => link.addEventListener('click', closeMenu));
   document.addEventListener('click', (event) => {
-    if (!menu.contains(event.target) && !toggle.contains(event.target)) {
+    if (!menu.contains(event.target) && !toggle.contains(event.target)) closeMenu();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && menu.classList.contains('open')) {
       closeMenu();
+      toggle.focus();
     }
   });
-
   window.addEventListener('resize', () => {
     if (window.innerWidth > 900) closeMenu();
   });
@@ -987,7 +983,7 @@
     }
     if (noteEl) {
       if (activePlan === 'lifetime') {
-        noteEl.textContent = 'Pay once. All future updates included.';
+        noteEl.textContent = 'One-time payment for the selected device count.';
       } else if (activePlan === 'yearly') {
         const monthly = pricingData.plans.monthly.price;
         const saving = Math.round((1 - (plan.price / 12) / monthly) * 100);
@@ -996,9 +992,7 @@
         noteEl.textContent = pricingData.trial_days + '-day free trial — no payment needed to start.';
       }
     }
-    if (deviceLabelEl) {
-      deviceLabelEl.textContent = deviceLabel(activeDevices);
-    }
+    if (deviceLabelEl) deviceLabelEl.textContent = deviceLabel(activeDevices);
     if (devicePricingEl) {
       if (extraSeatPrice > 0 && extraSeats > 0) {
         devicePricingEl.textContent = deviceLabel(includedDevices) + ' included. ' + extraSeats + ' extra ' + (extraSeats === 1 ? 'device adds ' : 'devices add ') + fmt(extraSeats * extraSeatPrice, cur) + ' once at checkout.';
@@ -1017,14 +1011,11 @@
           : 'Today: ' + fmt(plan.price, cur) + ' with ' + deviceLabel(activeDevices) + ' included.';
       }
     }
-    if (deviceFeatureEl) {
-      deviceFeatureEl.textContent = deviceLabel(activeDevices) + ' included at checkout';
-    }
+    if (deviceFeatureEl) deviceFeatureEl.textContent = deviceLabel(activeDevices) + ' included at checkout';
     if (btnEl) {
       btnEl.href = 'checkout.html?plan=' + activePlan + '&devices=' + activeDevices;
       btnEl.textContent = activeDevices > 1 ? 'Buy ' + deviceLicenseLabel(activeDevices) + ' →' : 'Buy license →';
     }
-    // Update save badge
     const badge = document.getElementById('saveBadge');
     if (badge && pricingData.plans.monthly && pricingData.plans.yearly) {
       const monthly = pricingData.plans.monthly.price;
@@ -1036,25 +1027,24 @@
 
   async function loadPricing() {
     try {
-      const r = await fetch(BASE + '/api/v1/pricing');
-      if (!r.ok) throw new Error('non-200');
-      pricingData = await r.json();
+      const response = await fetch(BASE + '/api/v1/pricing');
+      if (!response.ok) throw new Error('non-200');
+      pricingData = await response.json();
       activeDevices = Math.max(1, Number(pricingData.includedDevices || 1));
       renderDeviceOptions();
       renderPrice();
-    } catch (e) {
-      // Fallback to hardcoded defaults if API unreachable
+    } catch (error) {
       pricingData = {
         currency: 'AUD',
         plans: {
-          monthly:  { price: 9,   label: 'Monthly',  period: '/mo' },
-          yearly:   { price: 49,  label: 'Yearly',   period: '/yr' },
-          lifetime: { price: 49,  label: 'Lifetime', period: '' },
+          monthly: { price: 9, label: 'Monthly', period: '/mo' },
+          yearly: { price: 49, label: 'Yearly', period: '/yr' },
+          lifetime: { price: 49, label: 'Lifetime', period: '' },
         },
         deviceUpgradePrice: 500,
         includedDevices: 1,
         maxCheckoutDevices: 5,
-        trial_days: 7,
+        trial_days: 14,
       };
       activeDevices = 1;
       renderDeviceOptions();
@@ -1062,11 +1052,15 @@
     }
   }
 
-  document.querySelectorAll('.plan-tab').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.plan-tab').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      activePlan = btn.dataset.plan;
+  document.querySelectorAll('.plan-tab').forEach((button) => {
+    button.addEventListener('click', () => {
+      document.querySelectorAll('.plan-tab').forEach((item) => {
+        item.classList.remove('active');
+        item.setAttribute('aria-pressed', 'false');
+      });
+      button.classList.add('active');
+      button.setAttribute('aria-pressed', 'true');
+      activePlan = button.dataset.plan;
       renderPrice();
     });
   });
@@ -1074,30 +1068,5 @@
   loadPricing();
 })();
 </script>
-
-<!-- CTA -->
-<section class="cta-section">
-  <h2>Give your next shoot a clean start</h2>
-  <p>Download free. Your first card takes about two minutes to set up.</p>
-  <a href="download.html" class="btn-primary" style="display:inline-flex;margin:0 auto;">
-    Download Keptra — it's free →
-  </a>
-</section>
-
-<!-- FOOTER -->
-<footer>
-  <div class="footer-logo">
-    <svg viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect width="256" height="256" rx="56" fill="#0D1416"/><rect x="13" y="13" width="230" height="230" rx="46" fill="#142629" stroke="#37B69F" stroke-width="12"/><path d="M128 49L178 136H78L128 49Z" fill="#37B69F"/><path d="M211 116L161 202L112 116H211Z" fill="#52D7B5"/><path d="M55 152L104 67L154 152H55Z" fill="#2585A1"/><path d="M88 139L121 173L190 92" stroke="#F6FBFA" stroke-width="21" stroke-linecap="round" stroke-linejoin="round"/><path d="M67 67H101M67 67V101M188 67H222M222 67V101M67 188V222H101M188 222H222V188" stroke="#F6FBFA" stroke-opacity=".78" stroke-width="11" stroke-linecap="round"/></svg>
-    Keptra
-  </div>
-  <div class="footer-links">
-    <a href="download.html">Download</a>
-    <a href="#pricing">Pricing</a>
-    <a href="https://keptra.z2hs.au/manage-license">Manage license</a>
-    <a href="mailto:help@z2hs.au">Contact</a>
-  </div>
-  <div>© 2025 Keptra. All rights reserved.</div>
-</footer>
-
 </body>
 </html>

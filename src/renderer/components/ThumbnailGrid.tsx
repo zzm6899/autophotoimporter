@@ -2,11 +2,11 @@ import { useMemo, useEffect, useCallback, useRef, useState, useDeferredValue } f
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { AlertTriangle, ClipboardCheck, Copy, Download, Eye, Gauge, ListChecks, MoreHorizontal, Pause, Play, RefreshCw, ShieldCheck, Sparkles, Trash2, Users, Wand2 } from 'lucide-react';
 // Main grid / single / split view orchestrator.
-import { useAppState, useAppDispatch, useMergedFiles } from '../context/ImportContext';
+import { queueBestPaths, useAppState, useAppDispatch, useMergedFiles } from '../context/ImportContext';
 import type { FilterMode } from '../context/ImportContext';
 import { useFileScanner } from '../hooks/useFileScanner';
 import { useImport } from '../hooks/useImport';
-import type { CatalogFaceSearchResult, MediaFile, WhiteBalanceAdjustment } from '../../shared/types';
+import type { CatalogFaceSearchResult, EventMode, MediaFile, SceneAnalysisKind, WhiteBalanceAdjustment } from '../../shared/types';
 import { ThumbnailCard } from './ThumbnailCard';
 import { SingleView } from './SingleView';
 import { CompareView } from './CompareView';
@@ -19,9 +19,11 @@ import { ActionButton, ToolbarGroup } from './ui';
 import { applyCanvasSafeCrossOrigin, getCachedPreview, getPreviewCacheStats, setBackgroundPreviewPaused, warmPreviews } from '../utils/previewCache';
 import { getSourceFolderLabel, isPathInsideSourceRoot } from '../utils/sourcePath';
 import { clampStops, getEffectiveExposureStops, getNormalizedExposureStops, normalizeExposureStops } from '../../shared/exposure';
-import { cosineSimilarity, deserializeEmbedding, FACE_GROUP_EMBEDDING_THRESHOLD, faceSignalConfidence, focusQuality, humanMomentQuality, isUsablyFocused, type FaceIdentityGroup } from '../../shared/review';
+import { buildAutoCullProposal, cosineSimilarity, deserializeEmbedding, FACE_GROUP_EMBEDDING_THRESHOLD, faceSignalConfidence, focusQuality, hasCullingAnalysis, humanMomentQuality, isUsablyFocused, type FaceIdentityGroup } from '../../shared/review';
 import { needsSecondPass } from '../../shared/review-lane';
 import { useFaceIdentityWorker } from '../hooks/useFaceIdentityWorker';
+import { analyzeSceneFromImage } from '../utils/sceneAnalysis';
+import { useBulkAiPreview, type BulkAiDecisionItem } from '../context/BulkAiPreviewContext';
 
 const SIMPLE_FILTERS = new Set<string>([
   'all',
@@ -464,10 +466,18 @@ function faceMatchFingerprint(files: MediaFile[], enabled: boolean): string {
   return `${count}:${(hash >>> 0).toString(36)}`;
 }
 
-function normalizeFaceEngineBoxes(boxes: Array<{ x: number; y: number; width: number; height: number; score?: number }> | undefined): MediaFaceBox[] {
+function normalizeFaceEngineBoxes(boxes: Array<{ x: number; y: number; width: number; height: number; score?: number; eyeScore?: number; eyeSharpness?: number }> | undefined): MediaFaceBox[] {
   return (boxes ?? [])
     .filter((box) => box.width > 0 && box.height > 0)
-    .map((box) => ({ x: box.x, y: box.y, width: box.width, height: box.height, score: box.score }));
+    .map((box) => ({
+      x: box.x,
+      y: box.y,
+      width: box.width,
+      height: box.height,
+      score: box.score,
+      eyeScore: box.eyeScore,
+      eyeSharpness: box.eyeSharpness,
+    }));
 }
 
 function clampUnit(value: number): number {
@@ -1570,6 +1580,7 @@ function regionSharpness(data: Uint8ClampedArray, width: number, height: number,
 type ThumbnailSignals = {
   sharpnessScore?: number;
   visualHash?: string;
+  sceneAnalysis?: MediaFile['sceneAnalysis'];
   subject?: {
     subjectSharpnessScore: number;
     faceCount: number;
@@ -1679,15 +1690,40 @@ function analyzeSubjectFromImage(img: HTMLImageElement): NonNullable<ThumbnailSi
 
 async function analyzeThumbnailSignals(
   src: string,
-  needs: { sharpness?: boolean; visualHash?: boolean; subject?: boolean },
+  needs: {
+    sharpness?: boolean;
+    visualHash?: boolean;
+    subject?: boolean;
+    scene?: boolean;
+    preferredSceneKind?: SceneAnalysisKind;
+    hasPeople?: boolean;
+    orientation?: number;
+    faceBoxes?: MediaFile['faceBoxes'];
+    personBoxes?: MediaFile['personBoxes'];
+  },
 ): Promise<ThumbnailSignals> {
-  if (!needs.sharpness && !needs.visualHash && !needs.subject) return {};
+  if (!needs.sharpness && !needs.visualHash && !needs.subject && !needs.scene) return {};
   const img = await loadReviewImage(src);
   const result: ThumbnailSignals = {};
   if (needs.sharpness) result.sharpnessScore = scoreSharpnessFromImage(img);
   if (needs.visualHash) result.visualHash = visualHashFromImage(img);
   if (needs.subject) result.subject = analyzeSubjectFromImage(img);
+  if (needs.scene) {
+    result.sceneAnalysis = analyzeSceneFromImage(img, {
+      preferredKind: needs.preferredSceneKind,
+      hasPeople: needs.hasPeople,
+      orientation: needs.orientation,
+      boxCoordinateSpace: 'stored',
+      faceBoxes: needs.faceBoxes,
+      personBoxes: needs.personBoxes,
+    });
+  }
   return result;
+}
+
+function preferredSceneKindForEventMode(eventMode: EventMode): SceneAnalysisKind | undefined {
+  if (eventMode === 'landscape' || eventMode === 'architecture' || eventMode === 'interior') return eventMode;
+  return undefined;
 }
 
 function faceCropSignature(
@@ -2013,7 +2049,7 @@ async function visualHash(src: string): Promise<string> {
 }
 
 export function ThumbnailGrid() {
-  const { phase, importRunning, selectedSource, scanError, focusedIndex, focusedPath, viewMode, filter, gridSortOrder, thumbnailSize, importFailedPaths, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, exposureAdjustmentStep, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused, fastKeeperMode, aiReviewEnabled, autoSpeedMode, faceConcurrency, gpuFaceAcceleration, reviewFaceAnalysis, reviewFaceMatching, reviewPersonDetection, reviewVisualDuplicates, keybinds, metadataKeywords, whiteBalanceTemperature, whiteBalanceTint, destination, activeScanId, skipDuplicates, licenseStatus, ftpDestEnabled, ftpDestConfig, experienceMode } = useAppState();
+  const { phase, importRunning, selectedSource, scanError, focusedIndex, focusedPath, viewMode, filter, gridSortOrder, thumbnailSize, importFailedPaths, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, exposureAdjustmentStep, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused, fastKeeperMode, aiReviewEnabled, autoSpeedMode, faceConcurrency, gpuFaceAcceleration, reviewFaceAnalysis, reviewFaceMatching, reviewPersonDetection, reviewVisualDuplicates, keybinds, metadataKeywords, whiteBalanceTemperature, whiteBalanceTint, destination, activeScanId, skipDuplicates, licenseStatus, ftpDestEnabled, ftpDestConfig, experienceMode, eventMode, cullConfidence, groupPhotoEveryoneGood, keeperQuota } = useAppState();
   const isPro = experienceMode === 'pro';
   // useMergedFiles() overlays face/review scores without re-running the full
   // reducer map — O(n) only when scores.size > 0, otherwise returns the same array.
@@ -2021,6 +2057,7 @@ export function ThumbnailGrid() {
   const { startScan } = useFileScanner();
   const { startImport } = useImport();
   const dispatch = useAppDispatch();
+  const { openBulkAiPreview } = useBulkAiPreview();
   const queueActionsDisabled = phase === 'scanning';
   const gridRef = useRef<HTMLDivElement>(null);
   const flatScrollRef = useRef<HTMLDivElement>(null);
@@ -2122,6 +2159,7 @@ export function ThumbnailGrid() {
   const reviewFaceMatchingRef = useRef(reviewFaceMatching);
   const reviewPersonDetectionRef = useRef(reviewPersonDetection);
   const reviewVisualDuplicatesRef = useRef(reviewVisualDuplicates);
+  const eventModeRef = useRef(eventMode);
   const faceGroupEmbeddingThresholdRef = useRef(FACE_GROUP_EMBEDDING_THRESHOLD);
   const importPausedReviewRef = useRef(false);
   const autoSpeedTriggeredRef = useRef(false);
@@ -2696,6 +2734,7 @@ export function ThumbnailGrid() {
   useEffect(() => { reviewFaceMatchingRef.current = reviewFaceMatching; }, [reviewFaceMatching]);
   useEffect(() => { reviewPersonDetectionRef.current = reviewPersonDetection; }, [reviewPersonDetection]);
   useEffect(() => { reviewVisualDuplicatesRef.current = reviewVisualDuplicates; }, [reviewVisualDuplicates]);
+  useEffect(() => { eventModeRef.current = eventMode; }, [eventMode]);
   useEffect(() => {
     const stopBackgroundReview = () => {
       reviewGenerationRef.current++;
@@ -2897,7 +2936,12 @@ export function ThumbnailGrid() {
       const needsCanvas = !!f.thumbnail && !(
         typeof f.sharpnessScore === 'number' &&
         (!currentReviewVisualDuplicates || f.visualHash) &&
-        (currentFastKeeperMode || !currentReviewFaceAnalysis || typeof f.subjectSharpnessScore === 'number')
+        (currentFastKeeperMode || !currentReviewFaceAnalysis || typeof f.subjectSharpnessScore === 'number') &&
+        f.sceneAnalysis !== undefined &&
+        (
+          ((f.faceBoxes?.length ?? 0) === 0 && (f.personBoxes?.length ?? 0) === 0) ||
+          typeof f.sceneAnalysis.subjectFocusConfidence === 'number'
+        )
       );
       if (!needsOnnx && !needsCanvas) return;
       offerCandidate(f);
@@ -2964,6 +3008,11 @@ export function ThumbnailGrid() {
           const needsSharpness = hasThumbnail && typeof f.sharpnessScore !== 'number';
           const needsVisualHash = hasThumbnail && currentReviewVisualDuplicates && !f.visualHash;
           const needsSubject = hasThumbnail && currentReviewFaceAnalysis && !(typeof f.subjectSharpnessScore === 'number' && f.faceBoxes !== undefined);
+          const hasStoredSubjectBoxes = (f.faceBoxes?.length ?? 0) > 0 || (f.personBoxes?.length ?? 0) > 0;
+          const needsScene = hasThumbnail && (
+            f.sceneAnalysis === undefined ||
+            (hasStoredSubjectBoxes && typeof f.sceneAnalysis.subjectFocusConfidence !== 'number')
+          );
           const needsOnnx = shouldRunOnnxForReview(f, {
             reviewFaceAnalysis: currentReviewFaceAnalysis,
             reviewFaceMatching: currentReviewFaceMatching,
@@ -2981,12 +3030,20 @@ export function ThumbnailGrid() {
                   onnxInvocationError = error instanceof Error ? error.message : String(error);
                   return [] as Awaited<ReturnType<typeof window.electronAPI.analyzeFaces>>;
                 }),
-            (!needsSharpness && !needsVisualHash && !needsSubject)
+            (!needsSharpness && !needsVisualHash && !needsSubject && !needsScene)
               ? Promise.resolve({} as ThumbnailSignals)
               : withCanvasSlot(() => analyzeThumbnailSignals(thumbnail, {
                   sharpness: needsSharpness,
                   visualHash: needsVisualHash,
                   subject: needsSubject,
+                  scene: needsScene,
+                  preferredSceneKind: preferredSceneKindForEventMode(eventModeRef.current),
+                  hasPeople:
+                    (f.faceCount ?? f.faceBoxes?.length ?? 0) > 0 ||
+                    (f.personCount ?? f.personBoxes?.length ?? 0) > 0,
+                  orientation: f.orientation,
+                  faceBoxes: f.faceBoxes,
+                  personBoxes: f.personBoxes,
                 })),
           ]);
           const sharpnessScore = needsSharpness
@@ -3035,6 +3092,9 @@ export function ThumbnailGrid() {
           const onnxFaceBoxes = normalizeFaceEngineBoxes(onnxOk ? onnx.boxes : undefined);
           const onnxEmbeddingBoxes = normalizeFaceEngineBoxes(onnxOk ? onnx.embeddingBoxes : undefined);
           const onnxPersonBoxes = normalizeFaceEngineBoxes(onnxOk ? onnx.personBoxes : undefined);
+          const explicitSceneKind = preferredSceneKindForEventMode(eventModeRef.current);
+          const detectedPeople = onnxFaceBoxes.length > 0 || onnxPersonBoxes.length > 0;
+          const sceneAnalysis = thumbnailSignals.sceneAnalysis ?? f.sceneAnalysis;
           const mergedReasons = [
             ...(subject.subjectReasons ?? []),
             ...(onnxFaceBoxes.length > 0 ? ['onnx faces'] : []),
@@ -3052,7 +3112,18 @@ export function ThumbnailGrid() {
           const patch: Partial<MediaFile> = {};
           if (hash !== undefined) patch.visualHash = hash;
           if (sharpnessScore !== undefined) patch.sharpnessScore = sharpnessScore;
-          if (subject.subjectSharpnessScore !== undefined) patch.subjectSharpnessScore = subject.subjectSharpnessScore;
+          if (sceneAnalysis !== undefined) {
+            patch.sceneAnalysis = detectedPeople && !explicitSceneKind
+              ? { ...sceneAnalysis, kind: 'people', confidence: 1 }
+              : sceneAnalysis;
+          }
+          const roiSubjectSharpness = sceneAnalysis?.subjectSharpnessScore;
+          const roiSubjectConfidence = sceneAnalysis?.subjectFocusConfidence ?? 0;
+          if (typeof roiSubjectSharpness === 'number' && roiSubjectConfidence >= 0.2) {
+            patch.subjectSharpnessScore = roiSubjectSharpness;
+          } else if (subject.subjectSharpnessScore !== undefined) {
+            patch.subjectSharpnessScore = subject.subjectSharpnessScore;
+          }
           if (subject.faceSignature !== undefined) patch.faceSignature = subject.faceSignature;
           if (resolvedFaceBoxes !== undefined) {
             patch.faceCount = resolvedFaceBoxes.length;
@@ -3087,6 +3158,7 @@ export function ThumbnailGrid() {
           else if (f.poses !== undefined) patch.poses = f.poses;
           patch.subjectReasons = [...new Set([
             ...mergedReasons,
+            ...(sceneAnalysis?.subjectReasons ?? []),
             ...(terminalOnnxFailure ? ['face analysis unavailable'] : []),
           ])];
           if (reviewGeneration === reviewGenerationRef.current) {
@@ -3307,6 +3379,89 @@ export function ThumbnailGrid() {
     if (!confirmBulkAction(label, visiblePaths.length)) return;
     bulkPickVisible(pick);
   }, [bulkPickVisible, confirmBulkAction, visiblePaths.length]);
+  const decisionReasons = useCallback((file: MediaFile, fallback: string): string[] => {
+    const sceneReasons = file.sceneAnalysis?.subjectReasons ?? file.sceneAnalysis?.reasons ?? [];
+    const focusEvidence = typeof file.sceneAnalysis?.subjectSharpnessScore === 'number'
+      ? [`subject sharpness ${Math.round(file.sceneAnalysis.subjectSharpnessScore)}`]
+      : typeof file.subjectSharpnessScore === 'number'
+        ? [`subject sharpness ${Math.round(file.subjectSharpnessScore)}`]
+        : [];
+    const areaEvidence = typeof file.sceneAnalysis?.subjectArea === 'number'
+      ? [`subject covers ${Math.round(file.sceneAnalysis.subjectArea * 100)}% of frame`]
+      : [];
+    return [...new Set([
+      ...(file.reviewReasons ?? []),
+      ...(file.subjectReasons ?? []),
+      ...sceneReasons,
+      ...focusEvidence,
+      ...areaEvidence,
+      fallback,
+    ])].slice(0, 8);
+  }, []);
+  const openDecisionPreview = useCallback((options: {
+    id: string;
+    title: string;
+    summary: string;
+    items: BulkAiDecisionItem[];
+    unchangedCount?: number;
+    warnings?: string[];
+    applyLabel?: string;
+    onApply: (items: BulkAiDecisionItem[]) => void;
+  }) => {
+    if (options.items.length === 0) return;
+    openBulkAiPreview(options);
+  }, [openBulkAiPreview]);
+  const openAutoCullProposal = useCallback((scopeFiles: MediaFile[] = files) => {
+    const proposal = buildAutoCullProposal(scopeFiles, {
+      eventMode,
+      confidence: cullConfidence,
+      groupPhotoEveryoneGood,
+      keeperQuota,
+      skipDuplicates,
+    });
+    const byPath = new Map(scopeFiles.map((file) => [file.path, file]));
+    const itemByPath = new Map(proposal.groups.flatMap((group) => group.items.map((item) => [item.path, { group, item }] as const)));
+    const items: BulkAiDecisionItem[] = [
+      ...proposal.keep.map((path): BulkAiDecisionItem => {
+        const file = byPath.get(path);
+        const entry = itemByPath.get(path);
+        return {
+          path,
+          outcome: 'keep',
+          score: entry?.item.score ?? file?.reviewScore,
+          confidence: entry?.group.confidence ?? 'medium',
+          groupLabel: entry ? `${entry.group.kind} · ${entry.group.paths.length} photos` : undefined,
+          reasons: entry?.item.reasons ?? (file ? decisionReasons(file, 'strongest comparison in group') : ['strongest comparison in group']),
+        };
+      }),
+      ...proposal.reject.map((path): BulkAiDecisionItem => {
+        const file = byPath.get(path);
+        const entry = itemByPath.get(path);
+        return {
+          path,
+          outcome: 'reject',
+          score: entry?.item.score ?? file?.reviewScore,
+          confidence: entry?.group.confidence ?? 'medium',
+          groupLabel: entry ? `${entry.group.kind} · ${entry.group.paths.length} photos` : undefined,
+          reasons: entry?.item.reasons ?? (file ? decisionReasons(file, 'weaker alternate in a comparable group') : ['weaker alternate in a comparable group']),
+        };
+      }),
+    ];
+    openDecisionPreview({
+      id: `safe-cull:${Date.now()}`,
+      title: 'Preview safe cull decisions',
+      summary: `${proposal.genre} scoring proposes ${proposal.keep.length} picks and ${proposal.reject.length} rejects. Nothing changes until you review and apply the checked rows.`,
+      items,
+      unchangedCount: proposal.uncertain.length + proposal.unanalysed.length,
+      warnings: ['Uncertain and unanalysed photos stay unchanged. Source files are never deleted.'],
+      applyLabel: 'Apply culling decisions',
+      onApply: (selected) => dispatch({
+        type: 'APPLY_AUTO_CULL_PROPOSAL',
+        keep: selected.filter((item) => item.outcome === 'keep').map((item) => item.path),
+        reject: selected.filter((item) => item.outcome === 'reject').map((item) => item.path),
+      }),
+    });
+  }, [cullConfidence, decisionReasons, dispatch, eventMode, files, groupPhotoEveryoneGood, keeperQuota, openDecisionPreview, skipDuplicates]);
   const toolbarFtpReady = !ftpDestEnabled || (!!ftpDestConfig.host && !!ftpDestConfig.remotePath);
   const toolbarImportDisabled =
     queuedImportablePaths.length === 0 ||
@@ -3343,12 +3498,141 @@ export function ThumbnailGrid() {
 
   const enterQueueKeepersMode = useCallback(() => {
     if (queueActionsDisabled) return;
-    dispatch({ type: 'QUEUE_BEST' });
-    dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' });
-    multiClickSelectRef.current = true;
-    setMultiClickSelect(true);
-    setReviewSprintMode(false);
-  }, [dispatch, queueActionsDisabled]);
+    const proposed = queueBestPaths(files, {
+      cullConfidence,
+      groupPhotoEveryoneGood,
+      keeperQuota,
+      skipDuplicates,
+    });
+    const existing = new Set(queuedPaths);
+    const additions = proposed.filter((path) => !existing.has(path));
+    const byPath = new Map(files.map((file) => [file.path, file]));
+    openDecisionPreview({
+      id: `queue-keepers:${Date.now()}`,
+      title: 'Preview keeper queue',
+      summary: `${additions.length} AI-ranked keeper${additions.length === 1 ? '' : 's'} will be added. Existing manually queued files are preserved.`,
+      items: additions.map((path): BulkAiDecisionItem => {
+        const file = byPath.get(path);
+        return {
+          path,
+          outcome: 'queue',
+          score: file?.reviewScore,
+          confidence: typeof file?.reviewScore === 'number' ? 'medium' : 'low',
+          groupLabel: file?.burstId ? 'burst keeper' : file?.visualGroupId ? 'similar-set keeper' : 'standalone keeper',
+          reasons: file ? decisionReasons(file, 'highest-ranked importable keeper') : ['highest-ranked importable keeper'],
+        };
+      }),
+      unchangedCount: files.length - additions.length,
+      warnings: ['This adds to the queue; it does not remove manual queue choices or change pick/reject flags.'],
+      applyLabel: 'Add reviewed keepers',
+      onApply: (selected) => {
+        dispatch({ type: 'QUEUE_ADD_PATHS', paths: selected.map((item) => item.path) });
+        dispatch({ type: 'SET_FILTER', filter: 'queue' });
+        dispatch({ type: 'SET_VIEW_MODE', mode: 'grid' });
+        multiClickSelectRef.current = true;
+        setMultiClickSelect(true);
+        setReviewSprintMode(false);
+      },
+    });
+  }, [cullConfidence, decisionReasons, dispatch, files, groupPhotoEveryoneGood, keeperQuota, openDecisionPreview, queueActionsDisabled, queuedPaths, skipDuplicates]);
+
+  const openPickBestGroupsPreview = useCallback(() => {
+    const groups = new Map<string, MediaFile[]>();
+    const add = (key: string, file: MediaFile) => groups.set(key, [...(groups.get(key) ?? []), file]);
+    for (const file of files) {
+      if (file.burstId && (file.burstSize ?? 0) > 1) add(`burst:${file.burstId}`, file);
+      if (file.visualGroupId && (file.visualGroupSize ?? 0) > 1) add(`visual:${file.visualGroupId}`, file);
+      if (file.faceGroupId && (file.faceGroupSize ?? 0) > 1) add(`face:${file.faceGroupId}`, file);
+    }
+    const groupedPaths = new Set<string>();
+    const keep = new Set<string>();
+    const labels = new Map<string, Set<string>>();
+    for (const [key, group] of groups) {
+      if (group.length < 2) continue;
+      const groupType = key.split(':', 1)[0];
+      for (const file of group) {
+        const hasDetectedSubject = (file.faceBoxes?.length ?? 0) > 0 || (file.personBoxes?.length ?? 0) > 0;
+        const subjectConfidence = file.sceneAnalysis?.subjectFocusConfidence;
+        const reliableAnalysis = hasCullingAnalysis(file) && (
+          !hasDetectedSubject || (typeof subjectConfidence === 'number' && subjectConfidence >= 0.2)
+        );
+        const manualKeeper = file.pick !== 'rejected' && (
+          file.isProtected || (file.rating ?? 0) > 0 || file.pick === 'selected'
+        );
+        if (file.pick !== 'rejected' && (reliableAnalysis || manualKeeper)) groupedPaths.add(file.path);
+        const current = labels.get(file.path) ?? new Set<string>();
+        current.add(`${groupType} · ${group.length} photos`);
+        labels.set(file.path, current);
+        // An explicit reject is the photographer's latest decision and must win
+        // over older protection/rating metadata.
+        if (file.pick !== 'rejected' && (file.isProtected || (file.rating ?? 0) > 0 || file.pick === 'selected')) keep.add(file.path);
+      }
+      const winner = rankBestOfSelection(group.filter((file) => {
+        if (file.pick === 'rejected') return false;
+        const hasDetectedSubject = (file.faceBoxes?.length ?? 0) > 0 || (file.personBoxes?.length ?? 0) > 0;
+        const subjectConfidence = file.sceneAnalysis?.subjectFocusConfidence;
+        return hasCullingAnalysis(file) && (
+          !hasDetectedSubject || (typeof subjectConfidence === 'number' && subjectConfidence >= 0.2)
+        );
+      }))[0];
+      if (winner) keep.add(winner.path);
+    }
+    const affected = files.filter((file) => groupedPaths.has(file.path));
+    openDecisionPreview({
+      id: `group-best:${Date.now()}`,
+      title: 'Preview group keeper decisions',
+      summary: `Review the proposed best frames across ${groups.size} burst, similar-photo and face groups. Pending or low-confidence subject analysis stays unchanged.`,
+      items: affected.map((file): BulkAiDecisionItem => ({
+        path: file.path,
+        outcome: keep.has(file.path) ? 'keep' : 'reject',
+        score: file.reviewScore,
+        confidence: typeof file.reviewScore === 'number' ? 'medium' : 'low',
+        groupLabel: [...(labels.get(file.path) ?? [])].join(' · '),
+        reasons: decisionReasons(file, keep.has(file.path) ? 'best or protected frame in group' : 'weaker alternate in group'),
+      })),
+      unchangedCount: Math.max(0, files.length - affected.length),
+      warnings: ['Every proposed pick and reject is listed. Protected, rated and manually picked photos remain keepers; explicit manual rejects remain rejected. Source files are never deleted.'],
+      applyLabel: 'Apply group decisions',
+      onApply: (selected) => dispatch({
+        type: 'APPLY_AUTO_CULL_PROPOSAL',
+        keep: selected.filter((item) => item.outcome === 'keep').map((item) => item.path),
+        reject: selected.filter((item) => item.outcome === 'reject').map((item) => item.path),
+      }),
+    });
+  }, [decisionReasons, dispatch, files, openDecisionPreview]);
+
+  const openBlurRejectPreview = useCallback(() => {
+    const protectedCount = files.filter((file) =>
+      file.blurRisk === 'high' && (file.isProtected || (file.rating ?? 0) > 0 || file.pick === 'selected'),
+    ).length;
+    const candidates = files.filter((file) =>
+      file.blurRisk === 'high' && !file.isProtected && (file.rating ?? 0) === 0 && file.pick !== 'selected',
+    );
+    openDecisionPreview({
+      id: `blur-reject:${Date.now()}`,
+      title: 'Preview high-blur rejects',
+      summary: `${candidates.length} high-blur candidate${candidates.length === 1 ? '' : 's'} can be rejected after review.`,
+      items: candidates.map((file): BulkAiDecisionItem => ({
+        path: file.path,
+        outcome: 'reject',
+        score: file.reviewScore,
+        confidence: typeof file.sceneAnalysis?.subjectFocusConfidence === 'number' && file.sceneAnalysis.subjectFocusConfidence >= 0.65 ? 'high' : 'medium',
+        groupLabel: file.sceneAnalysis?.kind,
+        reasons: decisionReasons(file, 'high blur risk'),
+      })),
+      unchangedCount: files.length - candidates.length,
+      warnings: [
+        `${protectedCount} protected, rated or manually picked high-blur photo${protectedCount === 1 ? ' was' : 's were'} excluded.`,
+        'A sharp background is not used to excuse a soft detected subject.',
+      ],
+      applyLabel: 'Reject reviewed blur candidates',
+      onApply: (selected) => dispatch({
+        type: 'APPLY_AUTO_CULL_PROPOSAL',
+        keep: [],
+        reject: selected.map((item) => item.path),
+      }),
+    });
+  }, [decisionReasons, dispatch, files, openDecisionPreview]);
 
   const handleCardClick = useCallback((index: number, e: React.MouseEvent) => {
     const currentSortedFiles = sortedFilesRef.current;
@@ -3689,10 +3973,10 @@ export function ThumbnailGrid() {
           openBestOfBatch(0);
           return;
         case 'bulk.safe-cull':
-          dispatch({ type: 'AUTO_CULL_SAFE' });
+          openAutoCullProposal();
           return;
         case 'bulk.pick-burst-best':
-          dispatch({ type: 'PICK_BEST_IN_GROUPS' });
+          openPickBestGroupsPreview();
           return;
         case 'bulk.pick-visible':
           bulkPickVisible('selected');
@@ -3704,10 +3988,7 @@ export function ThumbnailGrid() {
           bulkPickVisible(undefined);
           return;
         case 'bulk.reject-blur': {
-          const blurPaths = files.filter((f) => f.blurRisk === 'high' && f.pick !== 'selected').map((f) => f.path);
-          if (blurPaths.length > 0) {
-            dispatch({ type: 'SET_PICK_BATCH', filePaths: blurPaths, pick: 'rejected' });
-          }
+          openBlurRejectPreview();
           return;
         }
         default:
@@ -3733,6 +4014,9 @@ export function ThumbnailGrid() {
     focusedIndex,
     handleBackToMain,
     importVisible,
+    openAutoCullProposal,
+    openBlurRejectPreview,
+    openPickBestGroupsPreview,
     openBestOfBatch,
     openBestOfSelection,
     pauseAiReview,
@@ -4467,14 +4751,42 @@ export function ThumbnailGrid() {
     )
   ), [compareDisplayFiles, getThumbnailWhiteBalance]);
   const handleCompareWinner = useCallback((winner: MediaFile) => {
-    const comparedPaths = compareDisplayFiles.map((file) => file.path);
-    const rejectPaths = comparedPaths.filter((path) => path !== winner.path);
-    dispatch({ type: 'SET_PICK', filePath: winner.path, pick: 'selected' });
-    if (rejectPaths.length > 0) {
-      dispatch({ type: 'SET_PICK_BATCH', filePaths: rejectPaths, pick: 'rejected' });
-    }
-    queuePaths([winner.path]);
-  }, [compareDisplayFiles, dispatch, queuePaths]);
+    const keep = new Set(compareDisplayFiles
+      .filter((file) => file.path === winner.path || (
+        file.pick !== 'rejected' && (file.isProtected || (file.rating ?? 0) > 0 || file.pick === 'selected')
+      ))
+      .map((file) => file.path));
+    openDecisionPreview({
+      id: `compare-winner:${Date.now()}`,
+      title: 'Preview comparison winner',
+      summary: `Review the pick/reject result for all ${compareDisplayFiles.length} compared photos before applying it.`,
+      items: compareDisplayFiles.map((file): BulkAiDecisionItem => ({
+        path: file.path,
+        outcome: keep.has(file.path) ? 'keep' : 'reject',
+        score: file.reviewScore,
+        confidence: file.path === winner.path ? 'manual' : typeof file.reviewScore === 'number' ? 'medium' : 'low',
+        groupLabel: 'comparison',
+        reasons: decisionReasons(file, file.path === winner.path
+          ? 'chosen comparison winner'
+          : keep.has(file.path)
+            ? 'protected, rated or manually picked'
+            : 'other compared candidate'),
+      })),
+      unchangedCount: Math.max(0, files.length - compareDisplayFiles.length),
+      warnings: ['Every pick and reject is listed. The selected winner is queued only after these decisions are applied.'],
+      applyLabel: 'Apply comparison decisions',
+      onApply: (selected) => {
+        dispatch({
+          type: 'APPLY_AUTO_CULL_PROPOSAL',
+          keep: selected.filter((item) => item.outcome === 'keep').map((item) => item.path),
+          reject: selected.filter((item) => item.outcome === 'reject').map((item) => item.path),
+        });
+        if (selected.some((item) => item.path === winner.path && item.outcome === 'keep')) {
+          dispatch({ type: 'QUEUE_ADD_PATHS', paths: [winner.path], preserveFilter: true });
+        }
+      },
+    });
+  }, [compareDisplayFiles, decisionReasons, dispatch, files.length, openDecisionPreview]);
   const handleCompareReject = useCallback((file: MediaFile) => {
     dispatch({ type: 'SET_PICK', filePath: file.path, pick: 'rejected' });
   }, [dispatch]);
@@ -4494,14 +4806,41 @@ export function ThumbnailGrid() {
     return bestScope.paths.map((p) => byPath.get(p)).filter((f): f is NonNullable<typeof f> => !!f);
   }, [bestScope, files, selectedFiles]);
   const bestOfSelection = bestPanelFiles.length > 0 ? rankBestOfSelection(bestPanelFiles)[0] : null;
-  const rejectBestPanelRest = useCallback((best: MediaFile) => {
-    dispatch({
-      type: 'SET_PICK_BATCH',
-      filePaths: bestPanelFiles.filter((f) => f.path !== best.path).map((f) => f.path),
-      pick: 'rejected',
+  const rejectBestPanelRest = useCallback((best: MediaFile, advanceAfterApply = false) => {
+    const keep = new Set(bestPanelFiles
+      .filter((file) => file.path === best.path || (
+        file.pick !== 'rejected' && (file.isProtected || (file.rating ?? 0) > 0 || file.pick === 'selected')
+      ))
+      .map((file) => file.path));
+    openDecisionPreview({
+      id: `best-of:${Date.now()}`,
+      title: `Preview ${bestScope?.title ?? 'Best Of'} decisions`,
+      summary: `All ${bestPanelFiles.length} photos in this comparison are listed. Review every proposed pick and reject before anything changes.`,
+      items: bestPanelFiles.map((file): BulkAiDecisionItem => ({
+        path: file.path,
+        outcome: keep.has(file.path) ? 'keep' : 'reject',
+        score: file.reviewScore,
+        confidence: typeof file.reviewScore === 'number' ? 'medium' : 'low',
+        groupLabel: bestScope?.subtitle ?? bestScope?.title,
+        reasons: decisionReasons(file, file.path === best.path
+          ? 'top-ranked candidate in this comparison'
+          : keep.has(file.path)
+            ? 'protected, rated or manually picked'
+            : 'lower-ranked comparable frame'),
+      })),
+      unchangedCount: Math.max(0, files.length - bestPanelFiles.length),
+      warnings: ['Protected, rated and manually picked alternatives remain keepers. The source is never deleted.'],
+      applyLabel: 'Apply Best Of decisions',
+      onApply: (selected) => {
+        dispatch({
+          type: 'APPLY_AUTO_CULL_PROPOSAL',
+          keep: selected.filter((item) => item.outcome === 'keep').map((item) => item.path),
+          reject: selected.filter((item) => item.outcome === 'reject').map((item) => item.path),
+        });
+        if (advanceAfterApply && bestScope?.canNextBatch) openAdjacentBatch(1);
+      },
     });
-    dispatch({ type: 'SET_PICK', filePath: best.path, pick: 'selected' });
-  }, [bestPanelFiles, dispatch]);
+  }, [bestPanelFiles, bestScope, decisionReasons, dispatch, files.length, openAdjacentBatch, openDecisionPreview]);
   const forceVisibleThumbnails = useCallback((index: number, filePath: string) => {
     if (selectedIndices.has(index) || queuedSet.has(filePath) || index === focusedIndex) return true;
     if (sortedFiles.length <= 72) return true;
@@ -4783,7 +5122,10 @@ export function ThumbnailGrid() {
   }, [sortedFiles]);
   const allTargetsNormalized = normalizeTargetPaths.length > 0 &&
     normalizeTargetPaths.every((p) => files.find((f) => f.path === p)?.normalizeToAnchor);
-  const duplicateCount = reviewStats.duplicates;
+  const duplicateCount = useMemo(
+    () => files.reduce((count, file) => count + (file.visualGroupId ? 1 : 0), 0),
+    [files],
+  );
   const catalogMatchCount = useMemo(() => {
     let count = 0;
     for (const file of files) if (file.duplicateMemory) count++;
@@ -5432,7 +5774,12 @@ export function ThumbnailGrid() {
               icon={Trash2}
               tone="danger"
               onClick={() => {
-                if (!queueActionsDisabled) dispatch({ type: 'QUEUE_CLEAR' });
+                if (
+                  !queueActionsDisabled &&
+                  window.confirm(`Remove all ${queuedPaths.length} files from the import queue?\n\nPick, reject, and star ratings will be kept.`)
+                ) {
+                  dispatch({ type: 'QUEUE_CLEAR' });
+                }
               }}
               disabled={queueActionsDisabled}
               title={queueActionsDisabled
@@ -5621,24 +5968,18 @@ export function ThumbnailGrid() {
             <ActionButton
               icon={ShieldCheck}
               tone="danger"
-              onClick={() => {
-                if (!confirmBulkAction('Auto-cull grouped', groupedDecisionCount)) return;
-                dispatch({ type: 'AUTO_CULL_SAFE' });
-              }}
+              onClick={() => openAutoCullProposal()}
               disabled={groupedDecisionCount === 0}
-              title="Auto-reject clearly worse shots in bursts, similar photos, and face groups when a strong keeper exists. Never touches protected, starred, or already-picked files. Undo: Ctrl+Z."
+              title="Preview proposed keepers, clear rejects, uncertain photos, and unfinished analysis before applying any pick/reject changes. Source files are never deleted."
             >
-              Safe Cull
+              Cull Preview
             </ActionButton>
             {groupedDecisionCount > 0 && (
               <ActionButton
                 icon={Sparkles}
                 tone="warning"
-                onClick={() => {
-                  if (!confirmBulkAction('Pick best and reject alternates in', groupedDecisionCount)) return;
-                  dispatch({ type: 'PICK_BEST_IN_GROUPS' });
-                }}
-                title="Pick the top-scored shot in each burst, similar photo group, or face group and reject the rest."
+                onClick={openPickBestGroupsPreview}
+                title="Preview every proposed best-frame pick and alternate reject before applying the group decisions."
               >
                 Pick Best
               </ActionButton>
@@ -5696,10 +6037,9 @@ export function ThumbnailGrid() {
               openAdjacentBatch(1);
             }
           }}
-          onRejectRest={rejectBestPanelRest}
+          onRejectRest={(best) => rejectBestPanelRest(best, false)}
           onRejectRestAndNext={(best) => {
-            rejectBestPanelRest(best);
-            if (bestScope?.canNextBatch) openAdjacentBatch(1);
+            rejectBestPanelRest(best, true);
           }}
         />
       )}

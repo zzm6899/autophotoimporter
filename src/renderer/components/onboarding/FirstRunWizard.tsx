@@ -4,6 +4,7 @@ import type { ExperienceMode, SourceKind } from '../../../shared/types';
 import { FOLDER_PRESETS } from '../../../shared/types';
 import { useAppDispatch } from '../../context/ImportContext';
 import { OnboardingStep } from './OnboardingStep';
+import { signalFirstRunWizardFinished, signalFirstRunWizardStarted } from './onboardingFlow';
 
 type WizardStep = 0 | 1 | 2 | 3 | 4 | 5;
 
@@ -56,7 +57,10 @@ export function FirstRunWizard() {
     window.electronAPI.getSettings()
       .then((settings) => {
         if (cancelled) return;
-        if (!settings.firstRunWizardSeen) setShow(true);
+        if (!settings.firstRunWizardSeen) {
+          signalFirstRunWizardStarted();
+          setShow(true);
+        }
         setExperienceMode(settings.experienceMode ?? 'simple');
         setDestination(settings.lastDestination ?? '');
         setFolderPreset(settings.folderPreset ?? 'date-flat');
@@ -102,11 +106,13 @@ export function FirstRunWizard() {
       autoImportDestRoot: autoImport && destination ? destination : '',
       openFolderOnComplete,
     });
+    signalFirstRunWizardFinished();
     setShow(false);
   };
 
-  const skip = () => {
-    void window.electronAPI.setSettings({ firstRunWizardSeen: true, autoImportPromptSeen: true });
+  const skip = async () => {
+    await window.electronAPI.setSettings({ firstRunWizardSeen: true, autoImportPromptSeen: true });
+    signalFirstRunWizardFinished();
     setShow(false);
   };
 
@@ -130,7 +136,7 @@ export function FirstRunWizard() {
           </div>
           <button
             type="button"
-            onClick={skip}
+            onClick={() => { void skip(); }}
             className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border bg-surface-alt text-text-muted hover:text-text"
             aria-label="Skip first-run setup"
             title="Skip first-run setup"
@@ -310,7 +316,7 @@ export function FirstRunWizard() {
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={skip}
+              onClick={() => { void skip(); }}
               className="rounded-md px-3 py-1.5 text-xs text-text-muted hover:text-text-secondary"
             >
               Skip

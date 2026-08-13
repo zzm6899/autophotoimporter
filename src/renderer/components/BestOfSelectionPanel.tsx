@@ -1,8 +1,9 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from 'react';
 import type { MediaFile } from '../../shared/types';
 import { formatFileSize, formatExposure } from '../utils/formatters';
 import { getCachedPreview } from '../utils/previewCache';
 import { bestShotScore, explainBestShotSelection, rankBestShots, scoreGapConfidence } from '../../shared/review';
+import { orientationSwapsAxes, orientationTransform } from '../utils/orientation';
 
 interface BestOfSelectionPanelProps {
   files: MediaFile[];
@@ -26,6 +27,124 @@ interface BestOfSelectionPanelProps {
   queuedPaths?: string[];
 }
 
+export interface OrientedImagePlaneLayout {
+  /** Stored-pixel plane dimensions before the EXIF transform is applied. */
+  width: number;
+  height: number;
+  /** Upright visual bounds after the EXIF transform is applied. */
+  displayWidth: number;
+  displayHeight: number;
+}
+
+/**
+ * Fit a stored-pixel image plane inside an upright display area. Orientations
+ * 5-8 swap axes, so sizing the raw plane against the container directly would
+ * rotate a landscape-sized rectangle into a clipped portrait rectangle.
+ */
+export function fitOrientedImagePlane(
+  naturalWidth: number,
+  naturalHeight: number,
+  containerWidth: number,
+  containerHeight: number,
+  orientation?: number,
+): OrientedImagePlaneLayout | null {
+  if (
+    naturalWidth <= 0 || naturalHeight <= 0 ||
+    containerWidth <= 0 || containerHeight <= 0 ||
+    !Number.isFinite(naturalWidth) || !Number.isFinite(naturalHeight) ||
+    !Number.isFinite(containerWidth) || !Number.isFinite(containerHeight)
+  ) return null;
+
+  const swapsAxes = orientationSwapsAxes(orientation);
+  const uprightWidth = swapsAxes ? naturalHeight : naturalWidth;
+  const uprightHeight = swapsAxes ? naturalWidth : naturalHeight;
+  const scale = Math.min(containerWidth / uprightWidth, containerHeight / uprightHeight);
+  return {
+    width: naturalWidth * scale,
+    height: naturalHeight * scale,
+    displayWidth: uprightWidth * scale,
+    displayHeight: uprightHeight * scale,
+  };
+}
+
+function OrientedImagePlane({
+  src,
+  alt,
+  orientation,
+  knownNatural,
+  transformPrefix,
+  transition,
+  draggable = false,
+  onNatural,
+  children,
+  hostClassName = 'absolute inset-0 flex items-center justify-center',
+}: {
+  src: string;
+  alt: string;
+  orientation?: number;
+  knownNatural?: { w: number; h: number } | null;
+  transformPrefix?: string;
+  transition?: string;
+  draggable?: boolean;
+  onNatural?: (natural: { w: number; h: number }) => void;
+  children?: ReactNode;
+  hostClassName?: string;
+}) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const [hostSize, setHostSize] = useState<{ w: number; h: number } | null>(null);
+  const [loadedNatural, setLoadedNatural] = useState<{ w: number; h: number } | null>(knownNatural ?? null);
+
+  useEffect(() => {
+    if (knownNatural) setLoadedNatural(knownNatural);
+  }, [knownNatural]);
+
+  useEffect(() => {
+    const element = hostRef.current;
+    if (!element) return;
+    const update = (w: number, h: number) => setHostSize((current) =>
+      current?.w === w && current.h === h ? current : { w, h });
+    const observer = new ResizeObserver(([entry]) => update(entry.contentRect.width, entry.contentRect.height));
+    observer.observe(element);
+    update(element.clientWidth, element.clientHeight);
+    return () => observer.disconnect();
+  }, []);
+
+  const natural = knownNatural ?? loadedNatural;
+  const plane = natural && hostSize
+    ? fitOrientedImagePlane(natural.w, natural.h, hostSize.w, hostSize.h, orientation)
+    : null;
+  const transform = [transformPrefix, orientationTransform(orientation)].filter(Boolean).join(' ') || undefined;
+
+  return (
+    <div ref={hostRef} className={hostClassName}>
+      <div
+        className="relative shrink-0"
+        style={{
+          width: plane?.width ?? '100%',
+          height: plane?.height ?? '100%',
+          transform,
+          transformOrigin: 'center center',
+          transition,
+        }}
+      >
+        <img
+          src={src}
+          alt={alt}
+          className="absolute inset-0 h-full w-full object-contain"
+          style={{ imageOrientation: 'none' }}
+          draggable={draggable}
+          onLoad={(event) => {
+            const next = { w: event.currentTarget.naturalWidth, h: event.currentTarget.naturalHeight };
+            setLoadedNatural(next);
+            onNatural?.(next);
+          }}
+        />
+        {children}
+      </div>
+    </div>
+  );
+}
+
 function explain(file: MediaFile): string {
   const parts = [
     file.isProtected ? 'protected' : '',
@@ -36,9 +155,12 @@ function explain(file: MediaFile): string {
     typeof file.subjectSharpnessScore === 'number' ? `subject ${file.subjectSharpnessScore}` : '',
     typeof file.reviewScore === 'number' ? `score ${file.reviewScore}` : '',
     typeof file.sharpnessScore === 'number' ? `sharp ${file.sharpnessScore}` : '',
+    file.sceneAnalysis?.kind && file.sceneAnalysis.kind !== 'people' ? `${file.sceneAnalysis.kind} profile` : '',
+    typeof file.sceneAnalysis?.focusCoverage === 'number' ? `${Math.round(file.sceneAnalysis.focusCoverage * 100)}% frame focus` : '',
     file.blurRisk && file.blurRisk !== 'low' ? `${file.blurRisk} blur risk` : '',
     ...(file.reviewReasons ?? []),
     ...(file.subjectReasons ?? []),
+    ...(file.sceneAnalysis?.reasons ?? []),
   ].filter(Boolean);
   return [...new Set(parts)].join(', ') || 'ranked by file metadata';
 }
@@ -61,6 +183,7 @@ function hasBestOfQualitySignal(file: MediaFile): boolean {
     typeof file.reviewScore === 'number' ||
     typeof file.subjectSharpnessScore === 'number' ||
     typeof file.sharpnessScore === 'number' ||
+    file.sceneAnalysis !== undefined ||
     typeof file.blurRisk === 'string'
   );
 }
@@ -312,7 +435,7 @@ function LetterboxedFaceBoxes({
               width: `${(box.width * rW / cSize.w) * 100}%`,
               height: `${(box.height * rH / cSize.h) * 100}%`,
             }}
-            title={eyeScore >= 2 ? 'Eyes open detected' : eyeScore === 1 ? 'One eye visible' : 'Face detected'}
+            title={eyeScore >= 2 ? 'Both eye regions have usable detail' : eyeScore === 1 ? 'One eye region has usable detail' : 'Face detected; eye detail is unclear'}
           />
         );
       })}
@@ -477,24 +600,17 @@ function ImageLightbox({
         onDoubleClick={handleDoubleClick}
       >
         {src ? (
-          <div
-            className="relative"
-            style={{
-              transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-              transformOrigin: 'center center',
-              transition: isDragging.current ? 'none' : 'transform 0.15s ease-out',
-            }}
+          <OrientedImagePlane
+            key={`${file.path}:${src}`}
+            src={src}
+            alt={file.name}
+            orientation={file.orientation}
+            knownNatural={imgNatural}
+            transformPrefix={`translate(${pan.x}px, ${pan.y}px) scale(${zoom})`}
+            transition={isDragging.current ? 'none' : 'transform 0.15s ease-out'}
+            onNatural={setImgNatural}
+            hostClassName="absolute inset-4 flex items-center justify-center sm:inset-8"
           >
-            <img
-              src={src}
-              alt={file.name}
-              className="max-w-[92vw] max-h-[calc(100vh-8rem)] object-contain"
-              draggable={false}
-              onLoad={(e) => {
-                const el = e.currentTarget;
-                setImgNatural({ w: el.naturalWidth, h: el.naturalHeight });
-              }}
-            />
             {zoom <= 1 && imgNatural && (file.faceBoxes?.length ?? 0) > 0 && (
               <div className="absolute inset-0 pointer-events-none">
                 {file.personBoxes?.map((box, i) => (
@@ -522,7 +638,7 @@ function ImageLightbox({
                       width: `${box.width * 100}%`,
                       height: `${box.height * 100}%`,
                     }}
-                    title={(box.eyeScore ?? 0) >= 2 ? 'Eyes open' : 'Face detected'}
+                    title={(box.eyeScore ?? 0) >= 2 ? 'Both eye regions have usable detail' : 'Face detected; eye detail is unclear'}
                   />
                 ))}
               </div>
@@ -544,7 +660,7 @@ function ImageLightbox({
                 ))}
               </div>
             )}
-          </div>
+          </OrientedImagePlane>
         ) : (
           <div className="text-white/40 text-sm">Loading preview…</div>
         )}
@@ -589,10 +705,10 @@ function ImageLightbox({
             title={f.name}
           >
             {(previews.get(f.path) ?? f.thumbnail) ? (
-              <img
-                src={previews.get(f.path) ?? f.thumbnail}
+              <OrientedImagePlane
+                src={(previews.get(f.path) ?? f.thumbnail)!}
                 alt={f.name}
-                className="w-full h-full object-cover"
+                orientation={f.orientation}
               />
             ) : (
               <div className="w-full h-full bg-white/10" />
@@ -940,7 +1056,7 @@ export function BestOfSelectionPanel({
               )}
               <div className="mt-2 flex flex-wrap gap-1 text-[9px] text-text-muted">
                 <span className="px-1.5 py-0.5 rounded bg-surface" title="Protected files and star ratings are trusted first.">1 protected/rating</span>
-                <span className="px-1.5 py-0.5 rounded bg-surface" title="Face detector + eye-open landmarks + subject sharpness.">2 faces/eyes/subject</span>
+                <span className="px-1.5 py-0.5 rounded bg-surface" title="Face detector + eye-region detail + subject sharpness.">2 faces/eyes/subject</span>
                 <span className="px-1.5 py-0.5 rounded bg-surface" title="Whole-image sharpness, blur risk, and smart review score.">3 sharpness/review</span>
               </div>
             </div>
@@ -955,7 +1071,7 @@ export function BestOfSelectionPanel({
               <div className="border border-border bg-surface-alt rounded p-2">
                 <div className="text-[9px] text-text-muted uppercase">Subject</div>
                 <div className="text-sm font-semibold text-yellow-300">{best.subjectSharpnessScore ?? '-'}</div>
-                <div className="text-[9px] text-text-muted">{best.faceCount ? `${best.faceCount} face` : 'center'}</div>
+                <div className="text-[9px] text-text-muted">{best.faceCount ? `${best.faceCount} face` : best.sceneAnalysis?.kind ?? 'scene'}</div>
               </div>
               <div className="border border-border bg-surface-alt rounded p-2">
                 <div className="text-[9px] text-text-muted uppercase">Review</div>
@@ -980,17 +1096,30 @@ export function BestOfSelectionPanel({
                     title="Click to expand · ← → navigate · P pick · X reject"
                   >
                     {src ? (
-                      <img src={src} alt={file.name} className="w-full h-full object-contain" decoding="async" loading={idx < 2 ? 'eager' : 'lazy'} />
+                      <OrientedImagePlane
+                        src={src}
+                        alt={file.name}
+                        orientation={file.orientation}
+                        knownNatural={nat}
+                        onNatural={(natural) => setImgNaturals((current) => {
+                          const existing = current.get(file.path);
+                          if (existing?.w === natural.w && existing.h === natural.h) return current;
+                          const next = new Map(current);
+                          next.set(file.path, natural);
+                          return next;
+                        })}
+                      >
+                        {nat && ((file.faceBoxes?.length ?? 0) > 0 || (file.personBoxes?.length ?? 0) > 0) && (
+                          <LetterboxedFaceBoxes
+                            boxes={file.faceBoxes ?? []}
+                            personBoxes={file.personBoxes ?? []}
+                            imgNaturalW={nat.w}
+                            imgNaturalH={nat.h}
+                          />
+                        )}
+                      </OrientedImagePlane>
                     ) : (
                       <span className="text-xs text-text-muted">No preview</span>
-                    )}
-                    {src && nat && ((file.faceBoxes?.length ?? 0) > 0 || (file.personBoxes?.length ?? 0) > 0) && (
-                      <LetterboxedFaceBoxes
-                        boxes={file.faceBoxes ?? []}
-                        personBoxes={file.personBoxes ?? []}
-                        imgNaturalW={nat.w}
-                        imgNaturalH={nat.h}
-                      />
                     )}
                     <div className="absolute top-2 left-2 px-2 py-0.5 rounded bg-black/70 text-white text-[10px] font-semibold">#{idx + 1}</div>
                     {idx === 0 && (
@@ -1018,9 +1147,9 @@ export function BestOfSelectionPanel({
                     </div>
                     <div className="mt-1 text-[10px] text-text-secondary">{explain(file)}</div>
                     <div className="mt-2 grid grid-cols-3 gap-1 text-[9px]">
-                      <div className="bg-surface rounded px-1.5 py-1" title="Subject/face-region sharpness.">
-                        <div className="text-text-muted">Subject</div>
-                        <div className="text-yellow-300 font-mono">{file.subjectSharpnessScore ?? '-'}</div>
+                      <div className="bg-surface rounded px-1.5 py-1" title="Subject sharpness, or broad scene focus when no person is present.">
+                        <div className="text-text-muted">{file.sceneAnalysis && file.sceneAnalysis.kind !== 'people' ? 'Coverage' : 'Subject'}</div>
+                        <div className="text-yellow-300 font-mono">{file.sceneAnalysis && file.sceneAnalysis.kind !== 'people' && typeof file.sceneAnalysis.focusCoverage === 'number' ? `${Math.round(file.sceneAnalysis.focusCoverage * 100)}%` : file.subjectSharpnessScore ?? '-'}</div>
                       </div>
                       <div className="bg-surface rounded px-1.5 py-1" title="Whole-thumbnail sharpness.">
                         <div className="text-text-muted">Sharp</div>

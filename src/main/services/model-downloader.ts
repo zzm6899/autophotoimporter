@@ -12,9 +12,10 @@
  *   ensureModelsDownloaded(mainWindow);
  */
 
-import { existsSync, createWriteStream } from 'node:fs';
+import { createReadStream, createWriteStream, existsSync, statSync } from 'node:fs';
 import { mkdir, rename, unlink } from 'node:fs/promises';
 import { get } from 'node:https';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { app } from 'electron';
 import type { BrowserWindow } from 'electron';
@@ -30,30 +31,42 @@ interface ModelSpec {
   /** Expected file size in bytes — used for progress estimation when
    *  Content-Length is absent. 0 = unknown. */
   approxBytes: number;
+  /** Pinned content digest so a partial/corrupt download never reaches ONNX. */
+  sha256: string;
 }
 
-// Models are hosted as assets on a stable pinned release in this repo.
-// Run `node scripts/publish-models.mjs --token <ghp_xxx>` once to create
-// the release and upload the files. The tag never changes between app versions
-// so these URLs remain stable indefinitely.
+// Core models are hosted as assets on a stable pinned release in this repo.
+// Pose uses an immutable upstream revision until it is mirrored to that release.
 const MODEL_RELEASE_BASE =
   'https://github.com/zzm6899/autophotoimporter/releases/download/models-v1';
+const SFACE_MODEL_URL =
+  'https://media.githubusercontent.com/media/opencv/opencv_zoo/ba91a3b91d00d76e86540d4013f944bd6b514e39/models/face_recognition_sface/face_recognition_sface_2021dec.onnx';
+const DEPRECATED_MODELS = ['w600k_mbf.onnx'] as const;
 
 const MODELS: ModelSpec[] = [
   {
     name: 'version-RFB-640.onnx',
     url: `${MODEL_RELEASE_BASE}/version-RFB-640.onnx`,
     approxBytes: 1_600_000,
+    sha256: '8f4c659275977e7a3bfbfa339a9c769ad793df50f9c0baa8c14b11baa1646430',
   },
   {
-    name: 'w600k_mbf.onnx',
-    url: `${MODEL_RELEASE_BASE}/w600k_mbf.onnx`,
-    approxBytes: 5_200_000,
+    name: 'face_recognition_sface_2021dec.onnx',
+    url: SFACE_MODEL_URL,
+    approxBytes: 38_696_353,
+    sha256: '0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79',
   },
   {
     name: 'ssd_mobilenet_v1_12.onnx',
     url: `${MODEL_RELEASE_BASE}/ssd_mobilenet_v1_12.onnx`,
     approxBytes: 29_000_000,
+    sha256: 'b8fba5e404077d4048d27fcd1667e85e27e192eb9bf51e696c46a3acd7d21058',
+  },
+  {
+    name: 'movenet_thunder.onnx',
+    url: 'https://huggingface.co/Xenova/movenet-singlepose-thunder/resolve/38296077a99667cdad67af5096ce7eeb9b327453/onnx/model.onnx?download=true',
+    approxBytes: 25_067_197,
+    sha256: '3dca9f6e5f8a64dc9935a5be06fd8bf81bf01e696c9c05c6f2a650e0a401b763',
   },
 ];
 
@@ -77,12 +90,35 @@ function modelSearchDirs(): string[] {
   return [path.join(app.getAppPath(), 'models')];
 }
 
-function modelExists(name: string): boolean {
-  return modelSearchDirs().some((dir) => existsSync(path.join(dir, name)));
+async function digestFile(file: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = createHash('sha256');
+    const stream = createReadStream(file);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('end', () => resolve(hash.digest('hex')));
+    stream.on('error', reject);
+  });
 }
 
-function allModelsPresent(): boolean {
-  return MODELS.every((m) => modelExists(m.name));
+async function modelExists(model: ModelSpec): Promise<boolean> {
+  for (const dir of modelSearchDirs()) {
+    const file = path.join(dir, model.name);
+    if (!existsSync(file)) continue;
+    try {
+      if (statSync(file).size < model.approxBytes * 0.85) continue;
+      // Package contents and existing userData models can predate integrity
+      // verification. Validate them before declaring the capability ready.
+      if (await digestFile(file) === model.sha256) return true;
+    } catch {
+      continue;
+    }
+  }
+  return false;
+}
+
+async function allModelsPresent(): Promise<boolean> {
+  const present = await Promise.all(MODELS.map(modelExists));
+  return present.every(Boolean);
 }
 
 // ---------------------------------------------------------------------------
@@ -119,6 +155,7 @@ function downloadFile(
   url: string,
   dest: string,
   approxBytes: number,
+  expectedSha256: string,
   onProgress: (received: number, total: number) => void,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -126,7 +163,7 @@ function downloadFile(
     let redirectCount = 0;
 
     function fetch(u: string): void {
-      get(u, (res) => {
+      const request = get(u, (res) => {
         const { statusCode, headers } = res;
 
         if (statusCode === 301 || statusCode === 302 || statusCode === 307 || statusCode === 308) {
@@ -135,7 +172,8 @@ function downloadFile(
             return reject(new Error('Too many redirects'));
           }
           res.resume();
-          return fetch(headers.location as string);
+          if (!headers.location) return reject(new Error(`Redirect from ${u} omitted Location`));
+          return fetch(new URL(headers.location, u).toString());
         }
 
         if (statusCode !== 200) {
@@ -145,10 +183,12 @@ function downloadFile(
 
         const total = parseInt(headers['content-length'] ?? '0', 10) || approxBytes;
         let received = 0;
+        const hash = createHash('sha256');
         const file = createWriteStream(tmp);
 
         res.on('data', (chunk: Buffer) => {
           received += chunk.length;
+          hash.update(chunk);
           onProgress(received, total);
         });
 
@@ -157,6 +197,11 @@ function downloadFile(
         file.on('finish', () => {
           file.close((err) => {
             if (err) return reject(err);
+            const digest = hash.digest('hex');
+            if (digest !== expectedSha256) {
+              void unlink(tmp).catch(() => {});
+              return reject(new Error(`Integrity check failed for ${path.basename(dest)}`));
+            }
             rename(tmp, dest).then(resolve).catch(reject);
           });
         });
@@ -170,7 +215,12 @@ function downloadFile(
           void unlink(tmp).catch(() => {});
           reject(err);
         });
-      }).on('error', reject);
+      });
+      request.setTimeout(60_000, () => request.destroy(new Error(`Timed out downloading ${u}`)));
+      request.on('error', (error) => {
+        void unlink(tmp).catch(() => {});
+        reject(error);
+      });
     }
 
     fetch(url);
@@ -191,7 +241,10 @@ let downloadInProgress = false;
  */
 export async function ensureModelsDownloaded(win: BrowserWindow | null): Promise<void> {
   if (downloadInProgress) return;
-  if (allModelsPresent()) return; // fast path — nothing to do
+  await Promise.all(DEPRECATED_MODELS.map((name) =>
+    unlink(path.join(downloadModelsDir(), name)).catch(() => undefined),
+  ));
+  if (await allModelsPresent()) return;
 
   downloadInProgress = true;
   broadcast(win, { status: 'checking' });
@@ -200,7 +253,8 @@ export async function ensureModelsDownloaded(win: BrowserWindow | null): Promise
     const targetDir = downloadModelsDir();
     await mkdir(targetDir, { recursive: true });
 
-    const missing = MODELS.filter((m) => !modelExists(m.name));
+    const presence = await Promise.all(MODELS.map(modelExists));
+    const missing = MODELS.filter((_, index) => !presence[index]);
     broadcast(win, { status: 'downloading', remaining: missing.length });
 
     for (const model of missing) {
@@ -210,6 +264,7 @@ export async function ensureModelsDownloaded(win: BrowserWindow | null): Promise
         model.url,
         dest,
         model.approxBytes,
+        model.sha256,
         (received, total) => {
           const percent = Math.round((received / total) * 100);
           broadcast(win, {

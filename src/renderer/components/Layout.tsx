@@ -70,7 +70,7 @@ export function Layout({ left, center, right }: LayoutProps) {
           : 'Ready';
 
   return (
-    <div className="h-screen flex flex-col bg-surface text-text">
+    <div className="flex h-full min-h-0 flex-col bg-surface text-text">
       {/* Titlebar drag region */}
       <div className="h-10 shrink-0 border-b border-border bg-surface-alt [-webkit-app-region:drag] relative flex items-center px-3">
         <div className="flex min-w-0 items-center gap-2">
@@ -147,7 +147,7 @@ export function Layout({ left, center, right }: LayoutProps) {
 
       <WorkflowStepper modelDownload={modelDl} />
 
-      <div className="flex flex-1 min-h-0 pb-7">
+      <div className="flex min-h-0 flex-1">
         {/* Left panel - Source */}
         {showLeftPanel && (
           <div className="w-[232px] shrink-0 border-r border-border bg-surface-alt overflow-y-auto">

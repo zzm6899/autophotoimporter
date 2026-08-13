@@ -5,6 +5,7 @@ import { decodeImage, getCachedPreview } from '../utils/previewCache';
 import { buildPreviewExposureFilter, buildPreviewWhiteBalanceFilter } from '../../shared/exposure';
 import { bestShotScore } from '../../shared/review';
 import { buildAiBadges, buildAiReasons } from '../utils/aiReasons';
+import { orientationTransform } from '../utils/orientation';
 
 interface CompareViewProps {
   files: MediaFile[];
@@ -119,7 +120,7 @@ export function CompareView({
                 alt={file.name}
                 className="max-w-full max-h-full object-contain transition-transform duration-100"
                 draggable={false}
-                style={{ transform: `scale(${zoom})`, filter: previewFilter }}
+                style={{ transform: `${orientationTransform(file.orientation) ?? ''} scale(${zoom})`, transformOrigin: 'center', imageOrientation: 'none', filter: previewFilter }}
               />
             ) : (
               <div className="text-xs text-text-muted">No preview</div>

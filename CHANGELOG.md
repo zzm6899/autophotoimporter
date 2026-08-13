@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.5.12 - 2026-08-13
+
+- Replaced the non-commercial WebFace600K recognition weight with the Apache-2.0 OpenCV SFace model, pinned by immutable source revision and SHA-256, and packaged its license/provenance notices.
+
+### Added
+- A complete review ledger now previews every AI-driven bulk pick, reject, and queue decision before applying it, including Safe Cull, Best Of, group keepers, blur rejection, keeper queues, second-pass review, comparison winners, and target-count culling.
+- Landscape, architecture, and interior review now use scene-specific focus coverage, corner detail, clipping, tonal range, horizon, vertical-line, and composition evidence.
+- Subject-focus analysis measures detected face and body regions separately from the background, with confidence, coverage, subject area, and explainable reasons.
+
+### Changed
+- EXIF orientations 1-8 now share one display and analysis transform across thumbnails, detail views, comparison views, Best Of, and bulk previews.
+- First-run guidance, empty states, scan controls, layout, contrast, focus styling, and the public website were simplified around Import safely -> Find the best -> Review and hand off.
+- Model downloads are checksum-verified, inference failures stay retryable, stale cache entries are fingerprinted, person detection uses an adaptive cascade, and release packages discard foreign ONNX Runtime binaries.
+
+### Fixed
+- Sharp backgrounds can no longer hide a blurry detected subject, while tiny or low-confidence subjects stay in manual review instead of becoming automatic rejects.
+- AI proposals invalidate when the source, scan, file set, or analysis evidence changes; explicit manual rejects retain precedence and queue previews preserve later manual additions.
+- Import recovery now checkpoints before copying and journals per-file outcomes atomically so interrupted imports can be resumed safely.
+
+### Verified
+- `npm run typecheck` - clean
+- `npm test` - 617 passed, 11 skipped (47 files)
+- Packaged Windows build, package smoke, and six-screen visual smoke - clean
+
 ## 1.5.11 - 2026-08-01
 
 ### Fixed

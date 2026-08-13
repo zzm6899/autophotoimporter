@@ -25,6 +25,30 @@ function reviewOverlayDelayMs(fileCount: number): number {
   return REVIEW_OVERLAY_SMALL_DELAY_MS;
 }
 
+/** Remove detector-dependent ROI evidence while retaining scene-only metrics. */
+export function invalidateSceneSubjectAnalysis(
+  analysis: MediaFile['sceneAnalysis'],
+): MediaFile['sceneAnalysis'] {
+  if (!analysis) return undefined;
+  const {
+    subjectSharpnessScore: _subjectSharpnessScore,
+    backgroundSharpnessScore: _backgroundSharpnessScore,
+    subjectFocusConfidence: _subjectFocusConfidence,
+    subjectFocusCoverage: _subjectFocusCoverage,
+    subjectArea: _subjectArea,
+    subjectCountAnalyzed: _subjectCountAnalyzed,
+    subjectReasons,
+    reasons,
+    ...sceneOnly
+  } = analysis;
+  const staleReasons = new Set(subjectReasons ?? []);
+  const sceneReasons = reasons?.filter((reason) => !staleReasons.has(reason));
+  return {
+    ...sceneOnly,
+    ...(sceneReasons && sceneReasons.length > 0 ? { reasons: sceneReasons } : {}),
+  };
+}
+
 interface State {
   volumes: Volume[];
   selectedSource: string | null;
@@ -257,6 +281,7 @@ export type Action =
   | { type: 'PICK_BEST_IN_GROUPS'; files?: MediaFile[] }
   | { type: 'QUEUE_BEST' }
   | { type: 'AUTO_CULL_SAFE'; files?: MediaFile[] }
+  | { type: 'APPLY_AUTO_CULL_PROPOSAL'; keep: string[]; reject: string[] }
   | { type: 'SYNC_EDITS_FROM_FOCUSED'; filePath?: string }
   | { type: 'REJECT_DUPLICATES' }
   | { type: 'UNDO_FILE_EDIT' }
@@ -492,7 +517,7 @@ function normalizeKnownPaths(files: MediaFile[], paths: string[]): string[] {
   return normalized;
 }
 
-function queueBestPaths(
+export function queueBestPaths(
   files: MediaFile[],
   options: { cullConfidence?: CullConfidence; groupPhotoEveryoneGood?: boolean; keeperQuota?: KeeperQuota; skipDuplicates?: boolean } = {},
 ): string[] {
@@ -1149,6 +1174,8 @@ export function reducer(state: State, action: Action): State {
             personCount: undefined,
             personBoxes: undefined,
             subjectSharpnessScore: undefined,
+            subjectReasons: undefined,
+            sceneAnalysis: invalidateSceneSubjectAnalysis(f.sceneAnalysis),
           },
         ),
       };
@@ -1241,6 +1268,16 @@ export function reducer(state: State, action: Action): State {
         if (keep.has(f.path)) return { ...f, pick: 'selected' };
         if (reject.has(f.path)) return { ...f, pick: 'rejected' };
         return f;
+      }));
+    }
+    case 'APPLY_AUTO_CULL_PROPOSAL': {
+      const keep = new Set(action.keep);
+      const reject = new Set(action.reject);
+      if (keep.size === 0 && reject.size === 0) return state;
+      return withFileHistory(state, state.files.map((file) => {
+        if (keep.has(file.path)) return { ...file, pick: 'selected' };
+        if (reject.has(file.path)) return { ...file, pick: 'rejected' };
+        return file;
       }));
     }
     case 'REJECT_DUPLICATES':
@@ -1487,7 +1524,7 @@ const DispatchContext = createContext<Dispatch<Action>>(() => {});
 // Components that need merged files call useMergedFiles() instead of
 // reading state.files directly.
 // ---------------------------------------------------------------------------
-type ReviewPatch = Partial<MediaFile> & { reviewScore?: number; blurRisk?: MediaFile['blurRisk']; reviewReasons?: string[] };
+export type ReviewPatch = Partial<MediaFile> & { reviewScore?: number; blurRisk?: MediaFile['blurRisk']; reviewReasons?: string[] };
 const ReviewScoresContext = createContext<Map<string, ReviewPatch>>(new Map());
 const ReviewScoresVersionContext = createContext<number>(0);
 const mergedReviewFileCache = new WeakMap<MediaFile, WeakMap<ReviewPatch, MediaFile>>();
@@ -1519,6 +1556,23 @@ function mergeReviewScoreOverlay(files: MediaFile[], overlay: Map<string, Review
     if (!patch) return f;
     return mergeReviewPatch(f, patch);
   });
+}
+
+/**
+ * Preserve completed ONNX stages when a later canvas-only ROI patch arrives.
+ * Derived review fields are invalidated unless the new patch explicitly owns
+ * them, ensuring mergeReviewPatch recalculates them from the combined evidence.
+ */
+export function mergeReviewScorePatches(
+  previous: ReviewPatch | undefined,
+  next: ReviewPatch,
+): ReviewPatch {
+  if (!previous) return next;
+  const merged: ReviewPatch = { ...previous, ...next };
+  if (!Object.prototype.hasOwnProperty.call(next, 'reviewScore')) delete merged.reviewScore;
+  if (!Object.prototype.hasOwnProperty.call(next, 'blurRisk')) delete merged.blurRisk;
+  if (!Object.prototype.hasOwnProperty.call(next, 'reviewReasons')) delete merged.reviewReasons;
+  return merged;
 }
 
 export function ImportProvider({ children }: { children: ReactNode }) {
@@ -1567,7 +1621,13 @@ export function ImportProvider({ children }: { children: ReactNode }) {
       if (Object.keys(scores).length === 0) return;
       let dirty = false;
       for (const [p, patch] of Object.entries(scores)) {
-        if (patch) { reviewScoresRef.current.set(p, patch); dirty = true; }
+        if (patch) {
+          reviewScoresRef.current.set(
+            p,
+            mergeReviewScorePatches(reviewScoresRef.current.get(p), patch),
+          );
+          dirty = true;
+        }
       }
       if (dirty) bumpReviewVersionSoon();
       return;
@@ -1650,6 +1710,11 @@ export function useAppState() {
 
 export function useAppDispatch() {
   return useContext(DispatchContext);
+}
+
+/** Monotonic revision for renderer-held AI evidence. */
+export function useReviewScoresVersion(): number {
+  return useContext(ReviewScoresVersionContext);
 }
 
 /**

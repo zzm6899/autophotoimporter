@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
 const CACHE_DIR = join(ROOT, 'models');
+const DEPRECATED_ASSETS = ['w600k_mbf.onnx'];
 
 // ---------------------------------------------------------------------------
 // Config
@@ -39,7 +40,7 @@ const RELEASE_NAME = 'Culling Vision Models';
 const RELEASE_BODY =
   'Stable ONNX review-model assets for Photo Importer.\n\n' +
   '- `version-RFB-640.onnx` - UltraFace RFB face detector (~1.6 MB)\n' +
-  '- `w600k_mbf.onnx` - MobileFaceNet WebFace600K embeddings (~5 MB)\n\n' +
+  '- `face_recognition_sface_2021dec.onnx` - OpenCV SFace embeddings (~37 MB, Apache-2.0)\n\n' +
   '- `ssd_mobilenet_v1_12.onnx` - SSD MobileNet person detector (~28 MB)\n\n' +
   'Do not delete this release - the app downloads models from here on first launch.';
 
@@ -50,9 +51,9 @@ const MODELS = [
     approxBytes: 1_600_000,
   },
   {
-    name: 'w600k_mbf.onnx',
-    url: 'https://github.com/ruhyadi/vision-fr/releases/download/v1.0.0/w600k_mbf.onnx',
-    approxBytes: 5_200_000,
+    name: 'face_recognition_sface_2021dec.onnx',
+    url: 'https://media.githubusercontent.com/media/opencv/opencv_zoo/ba91a3b91d00d76e86540d4013f944bd6b514e39/models/face_recognition_sface/face_recognition_sface_2021dec.onnx',
+    approxBytes: 38_696_353,
   },
   {
     name: 'ssd_mobilenet_v1_12.onnx',
@@ -187,6 +188,16 @@ try {
 }
 
 const uploadBaseUrl = release.upload_url.replace('{?name,label}', '');
+
+for (const name of DEPRECATED_ASSETS) {
+  const existing = (release.assets ?? []).find((asset) => asset.name === name);
+  if (!existing) continue;
+  console.log(`Removing deprecated asset ${name} (id=${existing.id})...`);
+  const response = await ghFetch(`/repos/${REPO}/releases/assets/${existing.id}`, { method: 'DELETE' });
+  if (!response.ok) throw new Error(`Could not remove deprecated asset ${name}: HTTP ${response.status}`);
+  release.assets = release.assets.filter((asset) => asset.id !== existing.id);
+  console.log('[ok] Removed\n');
+}
 
 // 3. Download models locally (cache in models/ dir) then upload
 await mkdir(CACHE_DIR, { recursive: true });

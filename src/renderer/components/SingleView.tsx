@@ -22,6 +22,7 @@ import {
 import { bestShotScore } from '../../shared/review';
 import { Histogram } from './Histogram';
 import { applyCanvasSafeCrossOrigin, decodeImage, getCachedPreview, hasCachedPreview } from '../utils/previewCache';
+import { orientationQuarterTurns, orientationTransform } from '../utils/orientation';
 import { buildAiReasons } from '../utils/aiReasons';
 import { getSourceFolderLabel } from '../utils/sourcePath';
 
@@ -46,43 +47,22 @@ const WB_PRESETS = [
 
 type MediaFaceBox = NonNullable<MediaFile['faceBoxes']>[number];
 
-function normalizeFaceEngineBoxes(boxes: Array<{ x: number; y: number; width: number; height: number; score?: number }> | undefined): MediaFaceBox[] {
+function normalizeFaceEngineBoxes(boxes: Array<{ x: number; y: number; width: number; height: number; score?: number; eyeScore?: number; eyeSharpness?: number }> | undefined): MediaFaceBox[] {
   return (boxes ?? [])
     .filter((box) => box.width > 0 && box.height > 0)
-    .map((box) => ({ x: box.x, y: box.y, width: box.width, height: box.height, score: box.score }));
+    .map((box) => ({
+      x: box.x,
+      y: box.y,
+      width: box.width,
+      height: box.height,
+      score: box.score,
+      eyeScore: box.eyeScore,
+      eyeSharpness: box.eyeSharpness,
+    }));
 }
 
 function isRawPhoto(file: MediaFile) {
   return file.type === 'photo' && RAW_EXT_RE.test(file.name || file.extension);
-}
-
-function orientationTransform(orientation?: number) {
-  switch (orientation) {
-    case 2: return 'scaleX(-1)';
-    case 3: return 'rotate(180deg)';
-    case 4: return 'scaleY(-1)';
-    case 5: return 'rotate(90deg) scaleX(-1)';
-    case 6: return 'rotate(90deg)';
-    case 7: return 'rotate(270deg) scaleX(-1)';
-    case 8: return 'rotate(270deg)';
-    default: return undefined;
-  }
-}
-
-function orientationQuarterTurns(orientation?: number) {
-  switch (orientation) {
-    case 3:
-    case 4:
-      return 2;
-    case 5:
-    case 6:
-      return 1;
-    case 7:
-    case 8:
-      return 3;
-    default:
-      return 0;
-  }
 }
 
 export function SingleView({ file, files, index, total, aiPaused = false }: SingleViewProps) {
@@ -728,7 +708,7 @@ export function SingleView({ file, files, index, total, aiPaused = false }: Sing
                   ? 'Estimated face region'
                   : file.faceGroupId
                     ? 'Show similar photos of this face'
-                    : (box.eyeScore ?? 0) >= 2 ? 'Eyes open' : (box.eyeScore ?? 0) === 1 ? 'One eye visible' : 'Face detected'}
+                    : (box.eyeScore ?? 0) >= 2 ? 'Both eye regions have usable detail' : (box.eyeScore ?? 0) === 1 ? 'One eye region has usable detail' : 'Face detected; eye detail is unclear'}
                 aria-label={file.faceGroupId ? 'Show similar photos of this face' : 'Face detected'}
               />
             ))}

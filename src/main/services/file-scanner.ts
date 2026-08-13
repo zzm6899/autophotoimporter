@@ -11,8 +11,7 @@ const FAST_THUMB_CONCURRENCY_DEFAULT = 24;
 const FAST_THUMB_CONCURRENCY_MAX = 48;
 const SLOW_THUMB_CONCURRENCY = 4;   // PowerShell resize — one per process, keep low
 const SHARP_THUMB_CONCURRENCY = 10; // sharp resizes in-process on worker threads — no spawn cost
-const SLOW_THUMB_TIMEOUT_MS = 8000; // Keep the first slow-path attempt responsive.
-const SLOW_THUMB_RETRY_TIMEOUT_MS = 25000; // Some RAW decoders need longer on a cold cache.
+const SLOW_THUMB_TIMEOUT_MS = 25000; // Includes the platform decoder's own 15s deadline.
 const DIRECTORY_WALK_CONCURRENCY = 8;
 
 /** Wraps a promise with a hard deadline — rejects if it exceeds timeoutMs. */
@@ -230,17 +229,13 @@ function createFastThumbConcurrencyController(): FastThumbConcurrencyController 
   };
 }
 
-async function ensureSlowThumbnailWithRetry(filePath: string): Promise<boolean> {
+async function ensureSlowThumbnail(filePath: string): Promise<boolean> {
   try {
-    if (await withTimeout(ensureGeneratedThumbnail(filePath), SLOW_THUMB_TIMEOUT_MS)) return true;
-  } catch {
-    // A platform resize may finish just after the first deadline and leave its
-    // cached JPEG behind. Re-check it once with a bounded, longer allowance.
-  }
-
-  await new Promise<void>((resolve) => setTimeout(resolve, 350));
-  try {
-    return await withTimeout(ensureGeneratedThumbnail(filePath), SLOW_THUMB_RETRY_TIMEOUT_MS);
+    // Use one bounded attempt. Promise.race cannot cancel its input; the old
+    // 8-second timeout launched a retry while the first 15-second platform
+    // decoder was still writing the same cache path. That doubled subprocess,
+    // disk, and file-handle work on slow RAW files.
+    return await withTimeout(ensureGeneratedThumbnail(filePath), SLOW_THUMB_TIMEOUT_MS);
   } catch {
     return false;
   }
@@ -312,7 +307,7 @@ function generateThumbnailsInBackground(
           try {
             // Hard per-file timeout so a single corrupted/huge file can't
             // block the entire thumbnail queue indefinitely.
-            const ok = await ensureSlowThumbnailWithRetry(file.path);
+            const ok = await ensureSlowThumbnail(file.path);
             if (ok) onThumbnail(file.path);
           } catch {
             // Corrupted file or timeout — skip silently, grid shows placeholder

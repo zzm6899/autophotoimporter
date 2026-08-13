@@ -303,8 +303,11 @@ function resolveImportConcurrency(config: ImportConfig): number {
   return RAW_COPY_CONCURRENCY;
 }
 
-function shouldCheckSourceStability(config: ImportConfig): boolean {
-  return config.sourceProfile !== 'usb' && config.sourceProfile !== 'ssd';
+function shouldCheckSourceStability(_config: ImportConfig): boolean {
+  // A fast card/SSD can still be removed or can contain a file that is being
+  // written by a tethered camera. Source profiles tune concurrency; they must
+  // not weaken the integrity guarantees of an import.
+  return true;
 }
 
 function isCardImport(config: ImportConfig): boolean {
@@ -1405,6 +1408,7 @@ export async function importFiles(
   files: MediaFile[],
   config: ImportConfig,
   onProgress: (progress: ImportProgress) => void,
+  onLedgerCheckpoint?: (checkpoint: ImportResult) => void | Promise<void>,
 ): Promise<ImportResult> {
   currentJob?.cancel();
   const job = new JobController('import');
@@ -1418,6 +1422,7 @@ export async function importFiles(
   let verified = 0;
   let checksumVerified = 0;
   let bytesTransferred = 0;
+  let importLogCsvPath: string | undefined;
   const errors: ImportError[] = [];
   const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
   const { saveFormat, jpegQuality } = config;
@@ -1476,8 +1481,65 @@ export async function importFiles(
     });
   }
 
+  let pendingLedgerCheckpoint: ImportResult | null = null;
+  let ledgerCheckpointDrain: Promise<void> | null = null;
+  let lastLedgerCheckpointError: unknown = null;
+
+  function currentLedgerCheckpoint(): ImportResult {
+    return {
+      imported,
+      skipped,
+      verified,
+      checksumVerified,
+      errors: errors.map((error) => ({ ...error })),
+      totalBytes: bytesTransferred,
+      durationMs: Date.now() - startTime,
+      importLogCsvPath,
+      ledgerItems: [...ledgerItemsBySource.values()].map((item) => ({ ...item })),
+    };
+  }
+
+  async function persistLedgerCheckpoint(checkpoint: ImportResult): Promise<void> {
+    if (!onLedgerCheckpoint) return;
+    try {
+      await onLedgerCheckpoint(checkpoint);
+      lastLedgerCheckpointError = null;
+    } catch (error) {
+      // A recovery write must not turn an otherwise good photo copy into a
+      // failed copy. Keep importing and surface the persistence problem once
+      // all queued checkpoints have had a chance to recover.
+      lastLedgerCheckpointError = error;
+    }
+  }
+
+  function queueLedgerCheckpoint(): void {
+    if (!onLedgerCheckpoint) return;
+    // Replacing the pending snapshot coalesces bursts from concurrent workers.
+    // The active writer still completes in order, while the next write always
+    // contains every state transition seen so far.
+    pendingLedgerCheckpoint = currentLedgerCheckpoint();
+    if (ledgerCheckpointDrain) return;
+    ledgerCheckpointDrain = (async () => {
+      while (pendingLedgerCheckpoint) {
+        const checkpoint = pendingLedgerCheckpoint;
+        pendingLedgerCheckpoint = null;
+        await persistLedgerCheckpoint(checkpoint);
+      }
+    })().finally(() => {
+      ledgerCheckpointDrain = null;
+    });
+  }
+
+  async function flushLedgerCheckpoints(): Promise<void> {
+    while (ledgerCheckpointDrain || pendingLedgerCheckpoint) {
+      if (!ledgerCheckpointDrain) queueLedgerCheckpoint();
+      await ledgerCheckpointDrain;
+    }
+  }
+
   function recordLedgerItem(file: MediaFile, item: ImportLedgerItem): void {
     ledgerItemsBySource.set(file.path, item);
+    queueLedgerCheckpoint();
   }
 
   function brightnessFor(file: MediaFile): number {
@@ -1801,6 +1863,11 @@ export async function importFiles(
     }
   }
 
+  // Establish a complete all-pending recovery plan before the first copy. If
+  // the app exits during a large first file, recovery still knows every source
+  // and intended destination.
+  await persistLedgerCheckpoint(currentLedgerCheckpoint());
+
   let nextIndex = 0;
 
   // Rolling 3-second window for transfer speed calculation.
@@ -1932,7 +1999,6 @@ export async function importFiles(
   }
   if (currentJob === job) currentJob = null;
 
-  let importLogCsvPath: string | undefined;
   try {
     if (imported + skipped > 0) {
       importLogCsvPath = await writeImportLogCsv(config, [...ledgerItemsBySource.values()]);
@@ -1941,6 +2007,19 @@ export async function importFiles(
     errors.push({
       file: 'import-log',
       error: logErr instanceof Error ? logErr.message : 'Could not write local import log CSV',
+    });
+  }
+
+  // Persist the final counters and import-log path, and wait for the serialized
+  // writer so the returned result never races a stale recovery checkpoint.
+  queueLedgerCheckpoint();
+  await flushLedgerCheckpoints();
+  if (lastLedgerCheckpointError) {
+    errors.push({
+      file: 'import-recovery',
+      error: lastLedgerCheckpointError instanceof Error
+        ? `Could not save import recovery state: ${lastLedgerCheckpointError.message}`
+        : 'Could not save import recovery state',
     });
   }
 

@@ -1,12 +1,12 @@
 # Architecture & Engineering Status
 
-Last updated: 2026-04-29
+Last updated: 2026-08-13
 
 ## Current architecture snapshot
 
 - Desktop app: Electron + Vite + React renderer.
 - Main process services: volume discovery, import engine, EXIF pipeline, FTP mirror source, duplicate detection, update checker, and license validation.
-- AI stack: ONNX Runtime with runtime provider fallback (DirectML / CoreML / CUDA / CPU depending on host).
+- AI stack: ONNX Runtime; benchmark-gated DirectML for face detection/embedding on Windows, CPU person detection and CPU-only inference on macOS/Linux.
 - Deployment: desktop installers plus optional self-hosted update/admin stack under `deploy/truenas/`.
 
 ## Delivery status

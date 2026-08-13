@@ -61,6 +61,27 @@ describe('review utilities', () => {
     expect(Object.values(groups)).toEqual([['/a.jpg', '/b.jpg']]);
   });
 
+  it('groups hashes that differ across a distant top-byte bucket', () => {
+    const groups = groupByVisualHash([
+      file('/zero.jpg', '0000000000000000'),
+      file('/top-bit.jpg', '8000000000000000'),
+      file('/different.jpg', 'ffffffffffffffff'),
+    ], 1);
+    expect(Object.values(groups)).toEqual([['/zero.jpg', '/top-bit.jpg']]);
+  });
+
+  it('groups duplicate hashes in shoots larger than 2,000 files', () => {
+    const mask = 0xffffffffffffffffn;
+    const hashes = Array.from({ length: 2_101 }, (_, index) =>
+      ((BigInt(index) * 0x9e3779b97f4a7c15n) & mask).toString(16).padStart(16, '0'));
+    const files = hashes.map((hash, index) => file(`/image-${index}.jpg`, hash));
+    files.push(file('/duplicate.jpg', hashes[777]));
+
+    expect(Object.values(groupByVisualHash(files, 0))).toEqual([
+      ['/image-777.jpg', '/duplicate.jpg'],
+    ]);
+  });
+
   it('keeps chained visual near-duplicates in one group', () => {
     const groups = groupByVisualHash([
       file('/a.jpg', '0000000000000000'),
@@ -76,6 +97,49 @@ describe('review utilities', () => {
     const weak = scoreReview({ sharpnessScore: 10 });
     expect(strong.score).toBeGreaterThan(weak.score);
     expect(weak.blurRisk).toBe('high');
+  });
+
+  it('does not let a sharp background hide a soft detected subject', () => {
+    const result = scoreReview({
+      sharpnessScore: 900,
+      subjectSharpnessScore: 180,
+      faceCount: 1,
+      faceBoxes: [{ x: 0.2, y: 0.15, width: 0.3, height: 0.35, score: 0.95 }],
+      sceneAnalysis: {
+        kind: 'people',
+        confidence: 1,
+        subjectSharpnessScore: 12,
+        backgroundSharpnessScore: 900,
+        subjectFocusConfidence: 0.92,
+      },
+    });
+
+    expect(result.blurRisk).toBe('high');
+    expect(result.reasons).toContain('subject soft');
+  });
+
+  it('keeps low-confidence subject focus neutral instead of trusting a sharp background fallback', () => {
+    const input = {
+      sharpnessScore: 900,
+      subjectSharpnessScore: 900,
+      faceCount: 1,
+      faceDetection: 'native' as const,
+      faceBoxes: [{ x: 0.48, y: 0.45, width: 0.05, height: 0.08, score: 0.99 }],
+      sceneAnalysis: {
+        kind: 'people' as const,
+        confidence: 1,
+        subjectSharpnessScore: 12,
+        backgroundSharpnessScore: 900,
+        subjectFocusConfidence: 0.1,
+      },
+    };
+
+    const result = scoreReview(input);
+    expect(result.blurRisk).toBe('medium');
+    expect(result.reasons).toContain('subject focus needs review');
+    expect(result.reasons).not.toContain('subject sharp');
+    expect(focusQuality(input)).toBeLessThan(0.7);
+    expect(isUsablyFocused(input)).toBe(false);
   });
 
   it('groups face embeddings with cosine similarity', () => {
@@ -295,8 +359,34 @@ describe('review utilities', () => {
     });
 
     expect(review.reasons).toContain('1 face');
-    expect(review.reasons).toContain('eyes sharp');
+    expect(review.reasons).toContain('strong eye detail');
     expect(review.score).toBeGreaterThan(50);
+  });
+
+  it('treats missing eye analysis as neutral rather than failed eye detail', () => {
+    const common = { x: 0.25, y: 0.18, width: 0.2, height: 0.24, score: 0.96 };
+    const unknown = file('/unknown.jpg', undefined, { faceCount: 1, faceBoxes: [common], subjectSharpnessScore: 120 });
+    const neutral = file('/neutral.jpg', undefined, {
+      faceCount: 1,
+      faceBoxes: [{ ...common, eyeSharpness: 0.5 }],
+      subjectSharpnessScore: 120,
+    });
+    const weak = file('/weak.jpg', undefined, {
+      faceCount: 1,
+      faceBoxes: [{ ...common, eyeSharpness: 0 }],
+      subjectSharpnessScore: 120,
+    });
+    const strong = file('/strong.jpg', undefined, {
+      faceCount: 1,
+      faceBoxes: [{ ...common, eyeSharpness: 1 }],
+      subjectSharpnessScore: 120,
+    });
+
+    expect(humanMomentQuality(unknown)).toBe(humanMomentQuality(neutral));
+    expect(humanMomentQuality(unknown)).toBeGreaterThan(humanMomentQuality(weak));
+    expect(humanMomentQuality(unknown)).toBeLessThan(humanMomentQuality(strong));
+    expect(scoreReview(unknown).reasons).not.toContain('strong eye detail');
+    expect(scoreReview(unknown).reasons).not.toContain('usable eye detail');
   });
 
   it('scores person boxes even when a legacy result has no person count', () => {
@@ -393,7 +483,7 @@ describe('review utilities', () => {
     expect(bestInGroup([softGroup])?.path).toBeUndefined();
   });
 
-  it('prefers open eyes and smiles for portrait burst picks', () => {
+  it('prefers strong eye detail and expression for portrait burst picks', () => {
     const ranked = rankBestShots([
       file('/sharper-blink.jpg', undefined, {
         faceCount: 1,
@@ -414,7 +504,7 @@ describe('review utilities', () => {
     expect(humanMomentQuality(ranked[0])).toBeGreaterThan(humanMomentQuality(ranked[1]));
   });
 
-  it('explains why an open-eyes portrait wins over a sharper blink frame', () => {
+  it('explains why an expressive portrait with stronger eye detail wins', () => {
     const explanation = explainBestShotSelection([
       file('/sharper-blink.jpg', undefined, {
         faceCount: 1,
@@ -434,7 +524,7 @@ describe('review utilities', () => {
 
     expect(explanation?.bestPath).toBe('/open-smile.jpg');
     expect(explanation?.summary).toContain('Beat sharper-blink.jpg by');
-    expect(explanation?.wins.some((item) => item.startsWith('Better eyes/smile'))).toBe(true);
+    expect(explanation?.wins.some((item) => item.startsWith('Better eye/expression detail'))).toBe(true);
     expect(explanation?.cautions).toContain('Runner-up is sharper by 32');
   });
 

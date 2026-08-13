@@ -35,7 +35,7 @@ import exifr from 'exifr';
 import { stat, readFile, unlink } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { resolvePattern } from '../../../shared/types';
-import { parseExifDate, extractEmbeddedThumbnail, generatePreview, generateThumbnail, getRawPreviewCacheDiagnostics, resetRawPreviewCacheDiagnostics, setRawPreviewCache, setRawPreviewQuality } from '../exif-parser';
+import { parseExifDate, extractEmbeddedThumbnail, generatePreview, generateThumbnail, getRawPreviewCacheDiagnostics, normalizeExifOrientation, readExifOrientation, resetRawPreviewCacheDiagnostics, setRawPreviewCache, setRawPreviewQuality } from '../exif-parser';
 
 const mockExifrParse = vi.mocked(exifr.parse);
 const mockExifrThumbnail = vi.mocked(exifr.thumbnail);
@@ -233,6 +233,22 @@ describe('parseExifDate', () => {
 
     await parseExifDate(file);
     expect(mockExifrParse).not.toHaveBeenCalled();
+  });
+});
+
+describe('EXIF orientation for AI preprocessing', () => {
+  it('normalizes mirrored text orientations without treating them as normal', () => {
+    expect(normalizeExifOrientation('Mirror horizontal')).toBe(2);
+    expect(normalizeExifOrientation('Mirror vertical')).toBe(4);
+    expect(normalizeExifOrientation('Mirror horizontal and rotate 270 CW')).toBe(5);
+    expect(normalizeExifOrientation('Mirror horizontal and rotate 90 CW')).toBe(7);
+  });
+
+  it('reads only orientation and safely defaults malformed metadata', async () => {
+    mockExifrParse.mockResolvedValueOnce({ Orientation: 'Rotate 270 CW' });
+    await expect(readExifOrientation('/photos/portrait.jpg')).resolves.toBe(8);
+    mockExifrParse.mockRejectedValueOnce(new Error('broken EXIF'));
+    await expect(readExifOrientation('/photos/broken.jpg')).resolves.toBe(1);
   });
 });
 

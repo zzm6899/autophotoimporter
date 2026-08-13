@@ -20,6 +20,7 @@ function getRendererDevServerUrl(): string | undefined {
 const rendererDevServerUrl = getRendererDevServerUrl();
 const packageSmokeMode = process.env.KEPTRA_PACKAGE_SMOKE === '1';
 const packageSmokeShowWindow = process.env.KEPTRA_PACKAGE_SMOKE_SHOW === '1';
+const PACKAGE_SMOKE_RENDER_TIMEOUT_MS = 45_000;
 
 if (rendererDevServerUrl) {
   app.setPath('userData', path.join(app.getPath('appData'), 'Keptra Dev'));
@@ -60,7 +61,7 @@ function getWindowIconPath(): string | undefined {
 
 function modelSmokeStatus() {
   const resourcesPath = process.resourcesPath;
-  const models = ['version-RFB-640.onnx', 'w600k_mbf.onnx', 'ssd_mobilenet_v1_12.onnx'];
+  const models = ['version-RFB-640.onnx', 'face_recognition_sface_2021dec.onnx', 'ssd_mobilenet_v1_12.onnx'];
   return {
     resourcesPath,
     onnxRuntimeNode: existsSync(path.join(resourcesPath, 'onnxruntime-node', 'dist', 'index.js')),
@@ -321,7 +322,7 @@ const createWindow = () => {
   if (packageSmokeMode) {
     const timeout = setTimeout(() => {
       finishPackageSmoke(false, { error: 'Timed out waiting for renderer smoke check', resources: modelSmokeStatus() });
-    }, 15000);
+    }, PACKAGE_SMOKE_RENDER_TIMEOUT_MS);
     mainWindow.webContents.once('did-finish-load', () => {
       void mainWindow?.webContents.executeJavaScript(`
         (async () => {

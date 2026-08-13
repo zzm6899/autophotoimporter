@@ -1,4 +1,4 @@
-import type { CullConfidence, EventMode, KeeperQuota, MediaFile, PoseKeypoint, PoseKeypoints } from './types';
+import type { CullingGenre, CullConfidence, EventMode, KeeperQuota, MediaFile, PoseKeypoint, PoseKeypoints } from './types';
 import { COCO_KP, isSportsEventMode } from './types';
 
 // ---------------------------------------------------------------------------
@@ -13,6 +13,7 @@ import { COCO_KP, isSportsEventMode } from './types';
 // ---------------------------------------------------------------------------
 
 let activeEventMode: EventMode = 'general';
+let activeCullingGenre: CullingGenre = 'auto';
 
 export function configureReviewProfile(mode: EventMode | undefined): void {
   activeEventMode = mode ?? 'general';
@@ -22,8 +23,25 @@ export function getReviewProfile(): EventMode {
   return activeEventMode;
 }
 
+export function configureCullingGenre(genre: CullingGenre | undefined): void {
+  activeCullingGenre = genre ?? 'auto';
+}
+
+export function getCullingGenre(): CullingGenre {
+  return activeCullingGenre;
+}
+
 function sportsModeActive(): boolean {
   return isSportsEventMode(activeEventMode);
+}
+
+function activeGenre(): CullingGenre {
+  if (activeCullingGenre !== 'auto') return activeCullingGenre;
+  if (sportsModeActive()) return 'sports';
+  if (activeEventMode === 'landscape' || activeEventMode === 'architecture' || activeEventMode === 'interior') {
+    return activeEventMode;
+  }
+  return 'auto';
 }
 
 export interface ReviewScoreInput {
@@ -38,6 +56,7 @@ export interface ReviewScoreInput {
   isProtected?: boolean;
   exposureValue?: number;
   visualGroupSize?: number;
+  sceneAnalysis?: MediaFile['sceneAnalysis'];
 }
 
 export interface ReviewScore {
@@ -49,6 +68,40 @@ export interface ReviewScore {
 function clamp01(value: number | undefined, fallback = 0): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
   return Math.max(0, Math.min(1, value));
+}
+
+type SubjectSharpnessInput = Pick<MediaFile, 'subjectSharpnessScore' | 'sceneAnalysis'> &
+  Partial<Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'personCount' | 'personBoxes'>>;
+
+function hasDetectedSubject(file: SubjectSharpnessInput): boolean {
+  return (file.faceCount ?? file.faceBoxes?.length ?? 0) > 0 ||
+    (file.personCount ?? file.personBoxes?.length ?? 0) > 0;
+}
+
+function subjectFocusConfidence(file: SubjectSharpnessInput): number | undefined {
+  const confidence = file.sceneAnalysis?.subjectFocusConfidence;
+  return typeof confidence === 'number' && Number.isFinite(confidence) ? confidence : undefined;
+}
+
+function resolvedSubjectSharpness(file: SubjectSharpnessInput): number | undefined {
+  const scene = file.sceneAnalysis;
+  if (hasDetectedSubject(file) && scene) {
+    if (
+      typeof scene?.subjectSharpnessScore === 'number' &&
+      Number.isFinite(scene.subjectSharpnessScore) &&
+      (subjectFocusConfidence(file) ?? 0) >= 0.2
+    ) {
+      return scene.subjectSharpnessScore;
+    }
+    // A centre-weighted legacy score frequently measures a crisp background.
+    // Once scene analysis has begun for a detected subject it is not valid
+    // fallback evidence: wait for a reliable ROI measurement instead.
+    return undefined;
+  }
+  // Backwards compatibility for sessions that predate scene ROI analysis. Bulk
+  // proposal readiness still treats detected boxes without ROI confidence as
+  // unanalysed, so this legacy value cannot drive a new automatic decision.
+  return file.subjectSharpnessScore;
 }
 
 function boxCenterScore(box: { x: number; y: number; width: number; height: number }): number {
@@ -119,10 +172,13 @@ export function athleteContactSignal(file: Pick<MediaFile, 'personBoxes' | 'pers
  * softer whole frame is a strong "caught the moment" cue.
  */
 export function frozenActionSignal(
-  file: Pick<MediaFile, 'sharpnessScore' | 'subjectSharpnessScore' | 'blurRisk'>,
+  file: Pick<MediaFile, 'sharpnessScore' | 'subjectSharpnessScore' | 'sceneAnalysis' | 'blurRisk'> &
+    Partial<Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'personCount' | 'personBoxes'>>,
 ): number {
   if (file.blurRisk === 'high') return 0;
-  const subject = file.subjectSharpnessScore ?? file.sharpnessScore ?? 0;
+  const resolved = resolvedSubjectSharpness(file);
+  if (hasDetectedSubject(file) && resolved === undefined) return 0;
+  const subject = resolved ?? file.sharpnessScore ?? 0;
   const whole = file.sharpnessScore ?? subject;
   // Laplacian-variance sharpness spans 0..several-thousand on a well-lit sports
   // shoot, so a linear threshold saturates instantly. Compress with sqrt and a
@@ -331,7 +387,7 @@ export function sportsActionQuality(file: MediaFile): number {
 }
 
 export function faceSignalConfidence(
-  file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'faceDetection' | 'subjectSharpnessScore'>,
+  file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'faceDetection' | 'subjectSharpnessScore' | 'sceneAnalysis'>,
 ): number {
   const boxes = file.faceBoxes ?? [];
   const faceCount = file.faceCount ?? boxes.length;
@@ -342,8 +398,9 @@ export function faceSignalConfidence(
     : (file.faceDetection === 'estimated' ? 0.38 : 0.58);
   const largestFaceArea = boxes.reduce((best, box) => Math.max(best, box.width * box.height), 0);
   const areaSignal = boxes.length > 0 ? clamp01(largestFaceArea / 0.035) : 0.35;
-  const sharpSignal = typeof file.subjectSharpnessScore === 'number'
-    ? clamp01(file.subjectSharpnessScore / 135)
+  const subjectSharpness = resolvedSubjectSharpness(file);
+  const sharpSignal = typeof subjectSharpness === 'number'
+    ? clamp01(subjectSharpness / 135)
     : 0.5;
   const nativeSignal = file.faceDetection === 'native' ? 0.12 : file.faceDetection === 'estimated' ? -0.16 : 0;
   const groupSignal = faceCount >= 2 ? 0.06 : 0;
@@ -358,17 +415,39 @@ export function faceSignalConfidence(
   );
 }
 
+type FaceBoxSignal = NonNullable<MediaFile['faceBoxes']>[number];
+
+/**
+ * Normalized eye-region detail. Missing analysis is deliberately neutral: an
+ * older cache entry or a face that was not large enough to inspect must not be
+ * scored as though the eyes were known to be soft/closed.
+ */
+function eyeDetailSignal(box: FaceBoxSignal, fallback = 0.5): number {
+  if (typeof box.eyeSharpness === 'number' && Number.isFinite(box.eyeSharpness)) {
+    return clamp01(box.eyeSharpness);
+  }
+  if (typeof box.eyeScore === 'number' && Number.isFinite(box.eyeScore)) {
+    return clamp01(box.eyeScore / 2);
+  }
+  return fallback;
+}
+
+function hasEyeDetailSignal(box: FaceBoxSignal): boolean {
+  return (typeof box.eyeSharpness === 'number' && Number.isFinite(box.eyeSharpness)) ||
+    (typeof box.eyeScore === 'number' && Number.isFinite(box.eyeScore));
+}
+
 export function humanMomentQuality(
-  file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'personCount' | 'personBoxes' | 'subjectSharpnessScore'>,
+  file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'personCount' | 'personBoxes' | 'subjectSharpnessScore' | 'sceneAnalysis'>,
 ): number {
   const faceBoxes = file.faceBoxes ?? [];
   const personBoxes = file.personBoxes ?? [];
   const faceCount = file.faceCount ?? faceBoxes.length;
   const personCount = file.personCount ?? personBoxes.length;
-  const sharp = Math.min(24, (file.subjectSharpnessScore ?? 0) / 6);
+  const sharp = Math.min(24, (resolvedSubjectSharpness(file) ?? 0) / 6);
 
   if (faceBoxes.length > 0) {
-    const eyeScores = faceBoxes.map((box) => clamp01((box.eyeScore ?? 0) / 2));
+    const eyeScores = faceBoxes.map((box) => eyeDetailSignal(box));
     const smileScores = faceBoxes.map((box) => clamp01(box.smileScore ?? box.expressionScore, 0.5));
     const avgEye = eyeScores.reduce((sum, score) => sum + score, 0) / eyeScores.length;
     const minEye = Math.min(...eyeScores);
@@ -402,15 +481,18 @@ export function humanMomentQuality(
   return Math.round(sharp);
 }
 
-export function faceQuality(file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'faceDetection' | 'subjectSharpnessScore'>): number {
+export function faceQuality(file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'faceDetection' | 'subjectSharpnessScore' | 'sceneAnalysis'>): number {
   const boxes = file.faceBoxes ?? [];
-  const bestEye = boxes.reduce((best, box) => Math.max(best, box.eyeScore ?? 0), 0);
-  const eyeSum = boxes.reduce((sum, box) => sum + (box.eyeScore ?? 0), 0);
+  // Keep the historical 0..2 weighting while treating an unmeasured eye region
+  // as the midpoint rather than the worst possible result.
+  const eyeDetails = boxes.map((box) => eyeDetailSignal(box) * 2);
+  const bestEye = eyeDetails.reduce((best, detail) => Math.max(best, detail), 0);
+  const eyeSum = eyeDetails.reduce((sum, detail) => sum + detail, 0);
   const expression = boxes.reduce((sum, box) => sum + clamp01(box.smileScore ?? box.expressionScore, 0.5), 0);
   const faceCount = file.faceCount ?? boxes.length;
   const faceArea = boxes.reduce((sum, box) => sum + box.width * box.height, 0);
   const largestFaceArea = boxes.reduce((best, box) => Math.max(best, box.width * box.height), 0);
-  const sharp = Math.min(60, (file.subjectSharpnessScore ?? 0) / 3);
+  const sharp = Math.min(60, (resolvedSubjectSharpness(file) ?? 0) / 3);
   const faceConfidence = faceSignalConfidence(file);
   return Math.round(
     (Math.min(faceCount, 4) * 18 +
@@ -424,7 +506,7 @@ export function faceQuality(file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'f
 }
 
 export function subjectPresenceQuality(
-  file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'faceDetection' | 'personCount' | 'personBoxes' | 'subjectSharpnessScore'>,
+  file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'faceDetection' | 'personCount' | 'personBoxes' | 'subjectSharpnessScore' | 'sceneAnalysis'>,
 ): number {
   const face = faceQuality(file);
   const personBoxes = file.personBoxes ?? [];
@@ -433,23 +515,23 @@ export function subjectPresenceQuality(
   const personScore = Math.round(
     Math.min(personCount, 3) * 12 +
     Math.min(26, personArea * 90) +
-    Math.min(20, (file.subjectSharpnessScore ?? 0) / 5),
+    Math.min(20, (resolvedSubjectSharpness(file) ?? 0) / 5),
   );
   return Math.max(face, personScore);
 }
 
 export function focusQuality(
-  file: Pick<MediaFile, 'sharpnessScore' | 'subjectSharpnessScore' | 'blurRisk' | 'faceCount' | 'faceBoxes' | 'personCount' | 'personBoxes'>,
+  file: Pick<MediaFile, 'sharpnessScore' | 'subjectSharpnessScore' | 'sceneAnalysis' | 'blurRisk' | 'faceCount' | 'faceBoxes' | 'personCount' | 'personBoxes'>,
 ): number {
   const wholeSharp = file.sharpnessScore ?? 0;
-  const subjectSharp = file.subjectSharpnessScore;
+  const subjectSharp = resolvedSubjectSharpness(file);
   const hasSubjects =
     (file.faceCount ?? file.faceBoxes?.length ?? 0) > 0 ||
     (file.personCount ?? file.personBoxes?.length ?? 0) > 0;
   const wholeSignal = clamp01((wholeSharp - 45) / 135);
   const subjectSignal = typeof subjectSharp === 'number'
     ? clamp01((subjectSharp - (hasSubjects ? 38 : 48)) / (hasSubjects ? 82 : 92))
-    : wholeSignal;
+    : hasSubjects ? 0.5 : wholeSignal;
   const combined = hasSubjects
     ? subjectSignal * 0.72 + wholeSignal * 0.28
     : Math.max(subjectSignal, wholeSignal * 0.92);
@@ -459,14 +541,193 @@ export function focusQuality(
   return combined;
 }
 
+// ---------------------------------------------------------------------------
+// Genre-aware scene scoring
+// ---------------------------------------------------------------------------
+
+export interface GenreScoreBreakdown {
+  genre: Exclude<CullingGenre, 'auto'>;
+  score: number;
+  confidence: number;
+  reasons: string[];
+  cautions: string[];
+}
+
+function hasPeople(file: MediaFile): boolean {
+  return (file.faceCount ?? file.faceBoxes?.length ?? 0) > 0 ||
+    (file.personCount ?? file.personBoxes?.length ?? 0) > 0;
+}
+
+function inferredGenre(file: MediaFile, requested: CullingGenre = 'auto'): Exclude<CullingGenre, 'auto'> {
+  if (requested !== 'auto') return requested;
+  if (sportsModeActive()) return 'sports';
+  if (activeEventMode === 'landscape' || activeEventMode === 'architecture' || activeEventMode === 'interior') {
+    return activeEventMode;
+  }
+  const faces = file.faceCount ?? file.faceBoxes?.length ?? 0;
+  const persons = file.personCount ?? file.personBoxes?.length ?? 0;
+  if (faces >= 3 || persons >= 3) return 'group';
+  if (faces > 0 || persons > 0) return 'portrait';
+  const scene = file.sceneAnalysis;
+  if (scene && clamp01(scene.confidence) >= 0.52 && scene.kind !== 'people') return scene.kind;
+  if (isDetailStoryKeeper(file)) return 'detail';
+  return 'general';
+}
+
+function measured(values: Array<number | undefined>): number {
+  let count = 0;
+  for (const value of values) {
+    if (typeof value === 'number' && Number.isFinite(value)) count++;
+  }
+  return count;
+}
+
+function sceneMetricConfidence(file: MediaFile, genre: Exclude<CullingGenre, 'auto'>): number {
+  if (genre === 'portrait' || genre === 'group') return faceSignalConfidence(file);
+  if (genre === 'sports') {
+    const people = hasPeople(file) ? 0.35 : 0;
+    const pose = (file.poses?.length ?? 0) > 0 ? 0.35 : (file.personBoxes?.length ?? 0) > 0 ? 0.18 : 0;
+    const focus = typeof resolvedSubjectSharpness(file) === 'number' || typeof file.sharpnessScore === 'number' ? 0.2 : 0;
+    return clamp01(people + pose + focus + 0.1);
+  }
+  const scene = file.sceneAnalysis;
+  if (!scene) return 0.2;
+  const geometryCount = measured([
+    scene.focusCoverage, scene.focusUniformity, scene.edgeSharpness, scene.centerSharpness,
+    scene.cornerSharpness, scene.highlightClipping, scene.shadowClipping, scene.dynamicRange,
+    scene.compositionBalance, scene.lineStrength,
+  ]);
+  const tiltCount = measured([scene.horizonTiltDeg, scene.verticalTiltDeg]);
+  return clamp01(clamp01(scene.confidence) * 0.55 + Math.min(0.35, geometryCount * 0.045) + Math.min(0.1, tiltCount * 0.05));
+}
+
+function normalizedSharpness(value: number | undefined, floor = 35, span = 125): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 0.5;
+  return clamp01((Math.sqrt(Math.max(0, value)) - Math.sqrt(floor)) /
+    Math.max(1e-6, Math.sqrt(floor + span) - Math.sqrt(floor)));
+}
+
+function clippingQuality(value: number | undefined, gentleLimit: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 0.5;
+  return clamp01(1 - clamp01(value) / gentleLimit);
+}
+
+function tiltQuality(value: number | undefined, toleranceDeg: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 0.5;
+  return clamp01(1 - Math.abs(value) / toleranceDeg);
+}
+
+/** Pure deterministic score details used by ranking, proposal previews and tests. */
+export function scoreGenre(file: MediaFile, requestedGenre: CullingGenre = 'auto'): GenreScoreBreakdown {
+  const genre = inferredGenre(file, requestedGenre);
+  const scene = file.sceneAnalysis;
+  const reasons: string[] = [];
+  const cautions: string[] = [];
+  const confidence = sceneMetricConfidence(file, genre);
+  let quality = 0;
+
+  if (genre === 'portrait') {
+    const face = clamp01(faceQuality(file) / 150);
+    const moment = clamp01(humanMomentQuality(file) / 125);
+    const focus = focusQuality(file);
+    quality = face * 0.38 + moment * 0.35 + focus * 0.27;
+    if (moment >= 0.7) reasons.push('strong eye/expression moment');
+    if (focus >= 0.7) reasons.push('sharp subject');
+    if (weakFacePenalty(file) >= 42) cautions.push('uncertain eye/face detail');
+  } else if (genre === 'group') {
+    const coverage = clamp01(groupCoverageQuality(file) / 34);
+    const weakest = weakestFaceSignal(file);
+    const focus = focusQuality(file);
+    quality = coverage * 0.42 + weakest * 0.32 + focus * 0.26;
+    if (coverage >= 0.7) reasons.push('strong group coverage');
+    if (weakest >= 0.62) reasons.push('consistent face detail');
+    if (weakest < 0.48) cautions.push('one or more faces need review');
+  } else if (genre === 'sports') {
+    const action = clamp01((sportsActionQuality(file) + 40) / 250);
+    const focus = focusQuality(file);
+    const contact = Math.max(athleteContactSignal(file), poseContactSignal(file));
+    quality = action * 0.5 + focus * 0.3 + contact * 0.2;
+    if (contact >= 0.5) reasons.push('peak athlete contact');
+    if (frozenActionSignal(file) >= 0.55) reasons.push('frozen action');
+    if (file.blurRisk === 'high') cautions.push('high motion blur risk');
+  } else {
+    const wholeFocus = focusQuality(file);
+    const coverage = clamp01(scene?.focusCoverage, 0.5);
+    const uniformity = clamp01(scene?.focusUniformity, 0.5);
+    const edge = normalizedSharpness(scene?.edgeSharpness ?? file.sharpnessScore);
+    const center = normalizedSharpness(scene?.centerSharpness ?? file.subjectSharpnessScore ?? file.sharpnessScore);
+    const corner = normalizedSharpness(scene?.cornerSharpness);
+    const highlights = clippingQuality(scene?.highlightClipping, genre === 'interior' ? 0.2 : 0.14);
+    const shadows = clippingQuality(scene?.shadowClipping, genre === 'interior' ? 0.28 : 0.2);
+    const dynamicRange = clamp01(scene?.dynamicRange, 0.5);
+    const composition = clamp01(scene?.compositionBalance, 0.5);
+    const lineStrength = clamp01(scene?.lineStrength, 0.5);
+    const horizon = tiltQuality(scene?.horizonTiltDeg, 5);
+    const vertical = tiltQuality(scene?.verticalTiltDeg, 6);
+
+    if (genre === 'landscape') {
+      quality = coverage * 0.18 + uniformity * 0.14 + edge * 0.1 + corner * 0.08 +
+        highlights * 0.12 + shadows * 0.07 + dynamicRange * 0.1 + composition * 0.12 + horizon * 0.09;
+      if (coverage >= 0.72 && uniformity >= 0.65) reasons.push('broad edge-to-edge focus');
+      if (horizon >= 0.8) reasons.push('level horizon');
+      if (scene?.highlightClipping !== undefined && highlights < 0.35) cautions.push('highlight clipping risk');
+    } else if (genre === 'architecture') {
+      quality = edge * 0.18 + corner * 0.12 + coverage * 0.12 + uniformity * 0.1 +
+        lineStrength * 0.14 + vertical * 0.14 + composition * 0.1 + highlights * 0.06 + shadows * 0.04;
+      if (lineStrength >= 0.7 && edge >= 0.65) reasons.push('crisp structural lines');
+      if (vertical >= 0.8) reasons.push('controlled verticals');
+      if (scene?.verticalTiltDeg !== undefined && vertical < 0.35) cautions.push('vertical perspective needs review');
+    } else if (genre === 'interior') {
+      quality = coverage * 0.15 + uniformity * 0.14 + corner * 0.12 + center * 0.08 +
+        highlights * 0.14 + shadows * 0.1 + dynamicRange * 0.08 + composition * 0.09 + vertical * 0.1;
+      if (coverage >= 0.7 && corner >= 0.6) reasons.push('room detail holds into corners');
+      if (highlights >= 0.7 && shadows >= 0.65) reasons.push('balanced interior exposure');
+      if (scene?.highlightClipping !== undefined && highlights < 0.35) cautions.push('window/highlight clipping risk');
+    } else if (genre === 'detail') {
+      quality = center * 0.35 + wholeFocus * 0.25 + composition * 0.2 + highlights * 0.12 + shadows * 0.08;
+      if (center >= 0.7) reasons.push('crisp focal detail');
+    } else {
+      quality = wholeFocus * 0.32 + coverage * 0.12 + uniformity * 0.1 + highlights * 0.11 +
+        shadows * 0.08 + dynamicRange * 0.08 + composition * 0.12 + center * 0.07;
+      if (wholeFocus >= 0.7) reasons.push('strong overall sharpness');
+    }
+
+    if (file.blurRisk === 'high') cautions.push('high blur risk');
+    if (scene && scene.kind !== 'general' && scene.kind !== genre && clamp01(scene.confidence) >= 0.7) {
+      cautions.push(`scene analysis suggests ${scene.kind}`);
+    }
+  }
+
+  if (confidence < 0.5) cautions.push('limited analysis confidence');
+  return {
+    genre,
+    score: Math.round(clamp01(quality) * 100),
+    confidence: Math.round(confidence * 100) / 100,
+    reasons: reasons.slice(0, 3),
+    cautions: cautions.slice(0, 3),
+  };
+}
+
+function genreScoreBonus(file: MediaFile): number {
+  const requested = activeGenre();
+  // Preserve historical general-mode ranking unless a specialised scene metric
+  // or explicit profile is available.
+  if (requested === 'auto' && !file.sceneAnalysis) return 0;
+  const result = scoreGenre(file, requested);
+  const confidenceWeight = 0.35 + result.confidence * 0.65;
+  return Math.round((result.score - 50) * 1.35 * confidenceWeight);
+}
+
 export function isUsablyFocused(
-  file: Pick<MediaFile, 'sharpnessScore' | 'subjectSharpnessScore' | 'blurRisk' | 'faceCount' | 'faceBoxes' | 'personCount' | 'personBoxes'>,
+  file: Pick<MediaFile, 'sharpnessScore' | 'subjectSharpnessScore' | 'sceneAnalysis' | 'blurRisk' | 'faceCount' | 'faceBoxes' | 'personCount' | 'personBoxes'>,
 ): boolean {
   const hasSubjects =
     (file.faceCount ?? file.faceBoxes?.length ?? 0) > 0 ||
     (file.personCount ?? file.personBoxes?.length ?? 0) > 0;
   if (file.blurRisk === 'high') return false;
-  if (hasSubjects && typeof file.subjectSharpnessScore === 'number' && file.subjectSharpnessScore < 45) return false;
+  const subjectSharpness = resolvedSubjectSharpness(file);
+  if (hasSubjects && subjectSharpness === undefined) return false;
+  if (hasSubjects && typeof subjectSharpness === 'number' && subjectSharpness < 45) return false;
   return focusQuality(file) >= (hasSubjects ? 0.34 : 0.4);
 }
 
@@ -475,18 +736,19 @@ export function keeperScore(file: MediaFile): number {
     (file.isProtected ? 120 : 0) +
     (file.rating ?? 0) * 30 +
     subjectPresenceQuality(file) +
-    Math.min(70, (file.subjectSharpnessScore ?? 0) / 2.4) +
+    Math.min(70, (resolvedSubjectSharpness(file) ?? 0) / 2.4) +
     Math.min(45, (file.sharpnessScore ?? 0) / 6) +
     Math.min(55, file.reviewScore ?? 0) -
     (file.blurRisk === 'high' ? 90 : file.blurRisk === 'medium' ? 30 : 0) +
-    (sportsModeActive() ? sportsActionQuality(file) : 0)
+    (sportsModeActive() ? sportsActionQuality(file) : 0) +
+    genreScoreBonus(file)
   );
 }
 
 export function bestShotScore(file: MediaFile): number {
   const face = faceQuality(file);
   const subject = subjectPresenceQuality(file);
-  const subjectSharp = file.subjectSharpnessScore ?? 0;
+  const subjectSharp = resolvedSubjectSharpness(file) ?? 0;
   const wholeSharp = file.sharpnessScore ?? 0;
   const review = file.reviewScore ?? 0;
   const hasFaces = (file.faceCount ?? file.faceBoxes?.length ?? 0) > 0;
@@ -519,6 +781,7 @@ export function bestShotScore(file: MediaFile): number {
   if (hasFaces && subjectSharp > 0 && subjectSharp < 38) score -= 55;
   if (!hasFaces && subjectSharp > 0 && subjectSharp < 28) score -= 25;
   if (sportsModeActive()) score += sportsActionQuality(file);
+  score += genreScoreBonus(file);
   return Math.round(score);
 }
 
@@ -552,6 +815,13 @@ export function inferSceneBucket(file: MediaFile, eventMode: EventMode = 'genera
     if (frozenActionSignal(file) >= 0.55) return 'Kicks / action';
     if (persons === 1 && faces <= 1) return 'Poomsae / form';
     return 'Athletes';
+  }
+  const people = (file.faceCount ?? file.faceBoxes?.length ?? 0) > 0 ||
+    (file.personCount ?? file.personBoxes?.length ?? 0) > 0;
+  if (!people) {
+    if (eventMode === 'landscape') return 'Landscape';
+    if (eventMode === 'architecture') return 'Architecture / exterior';
+    if (eventMode === 'interior') return 'Interior / rooms';
   }
   if ((file.faceCount ?? file.faceBoxes?.length ?? 0) >= 3 || (file.personCount ?? file.personBoxes?.length ?? 0) >= 3) {
     return 'Groups';
@@ -614,7 +884,7 @@ export function rankBestShots(files: MediaFile[]): MediaFile[] {
     bestShot: bestShotScore(file),
     subjectPresence: subjectPresenceQuality(file),
     face: faceQuality(file),
-    subjectSharpness: file.subjectSharpnessScore ?? 0,
+    subjectSharpness: resolvedSubjectSharpness(file) ?? 0,
     highBlur: Number(file.blurRisk === 'high'),
     sharpness: file.sharpnessScore ?? 0,
     review: file.reviewScore ?? 0,
@@ -650,6 +920,27 @@ export interface AutoCullDecision {
 
 export function scoreGapConfidence(gap: number): AutoCullDecision['confidence'] {
   return gap >= 72 ? 'high' : gap >= 28 ? 'medium' : 'low';
+}
+
+function proposalComparisonConfidence(
+  best: MediaFile | null,
+  runnerUp: MediaFile | undefined,
+  genre: CullingGenre,
+): AutoCullDecision['confidence'] {
+  if (!best || !runnerUp) return 'low';
+  if (
+    (hasDetectedSubject(best) && (subjectFocusConfidence(best) ?? 0) < 0.2) ||
+    (hasDetectedSubject(runnerUp) && (subjectFocusConfidence(runnerUp) ?? 0) < 0.2)
+  ) return 'low';
+  const bestAnalysis = scoreGenre(best, genre);
+  const runnerAnalysis = scoreGenre(runnerUp, genre);
+  const evidence = Math.min(bestAnalysis.confidence, runnerAnalysis.confidence);
+  if (evidence < 0.5) return 'low';
+  const scoreGap = Math.max(0, bestShotScore(best) - bestShotScore(runnerUp));
+  const genreGap = Math.max(0, bestAnalysis.score - runnerAnalysis.score);
+  if (scoreGap >= 72 && (genreGap >= 16 || evidence >= 0.82)) return 'high';
+  if (scoreGap >= 28 || genreGap >= 18) return 'medium';
+  return 'low';
 }
 
 export interface BestShotExplanation {
@@ -694,7 +985,7 @@ function faceUsabilityScore(file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'f
   if (boxes.length === 0) return file.faceDetection === 'estimated' ? 0.42 : 0.58;
 
   const usable = boxes.reduce((sum, box) => {
-    const eye = clamp01((box.eyeScore ?? 0) / 2);
+    const eye = eyeDetailSignal(box);
     const detection = clamp01(box.score, file.faceDetection === 'estimated' ? 0.45 : 0.78);
     const expression = expressionSignal(box);
     const size = clamp01((box.width * box.height) / 0.028);
@@ -711,7 +1002,7 @@ function groupCoverageQuality(file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 
   if (faceCount < 2 && personCount < 2) return 0;
 
   const usableFaces = faceBoxes.filter((box) =>
-    clamp01((box.eyeScore ?? 0) / 2) >= 0.5 &&
+    eyeDetailSignal(box) >= 0.5 &&
     clamp01(box.score, file.faceDetection === 'estimated' ? 0.45 : 0.78) >= 0.68,
   ).length;
   const usableRatio = faceCount > 0
@@ -780,10 +1071,10 @@ export function explainBestShotSelection(files: MediaFile[]): BestShotExplanatio
 
   const bestHuman = humanMomentQuality(best);
   const runnerHuman = runnerUp ? humanMomentQuality(runnerUp) : 0;
-  if (runnerUp && bestHuman - runnerHuman >= 12) pushUnique(wins, `Better eyes/smile +${bestHuman - runnerHuman}`);
+  if (runnerUp && bestHuman - runnerHuman >= 12) pushUnique(wins, `Better eye/expression detail +${bestHuman - runnerHuman}`);
 
-  const bestSubject = best.subjectSharpnessScore ?? best.sharpnessScore;
-  const runnerSubject = runnerUp ? runnerUp.subjectSharpnessScore ?? runnerUp.sharpnessScore : undefined;
+  const bestSubject = resolvedSubjectSharpness(best) ?? best.sharpnessScore;
+  const runnerSubject = runnerUp ? resolvedSubjectSharpness(runnerUp) ?? runnerUp.sharpnessScore : undefined;
   if (typeof bestSubject === 'number' && typeof runnerSubject === 'number') {
     const subjectGap = Math.round(bestSubject - runnerSubject);
     if (subjectGap >= 12) pushUnique(wins, `Sharper subject +${subjectGap}`);
@@ -811,6 +1102,18 @@ export function explainBestShotSelection(files: MediaFile[]): BestShotExplanatio
   if (runnerUp && runnerWeakPenalty - bestWeakPenalty >= 18) pushUnique(wins, 'Cleaner face/eye reliability');
   const bestDetail = detailStoryQuality(best);
   if (bestDetail >= 34 && bestFaces === 0) pushUnique(wins, 'Strong detail/story frame');
+
+  const requestedGenre = activeGenre();
+  if (runnerUp && (requestedGenre !== 'auto' || best.sceneAnalysis || runnerUp.sceneAnalysis)) {
+    const bestGenre = scoreGenre(best, requestedGenre);
+    const runnerGenre = scoreGenre(runnerUp, requestedGenre);
+    const genreGap = bestGenre.score - runnerGenre.score;
+    if (bestGenre.confidence >= 0.5 && runnerGenre.confidence >= 0.5 && genreGap >= 12) {
+      pushUnique(wins, `Stronger ${bestGenre.genre} quality +${genreGap}`);
+      if (bestGenre.reasons[0]) pushUnique(wins, bestGenre.reasons[0]);
+    }
+    for (const caution of bestGenre.cautions) pushUnique(cautions, caution);
+  }
 
   if (runnerUp && blurRank(best) < blurRank(runnerUp)) pushUnique(wins, 'Lower blur risk');
   if (best.blurRisk === 'high') pushUnique(cautions, 'Top pick still has high blur risk');
@@ -841,13 +1144,57 @@ export interface AutoCullOptions {
   confidence?: CullConfidence;
   groupPhotoEveryoneGood?: boolean;
   keeperQuota?: KeeperQuota;
+  /** Optional explicit profile; omitted preserves the configured legacy profile. */
+  eventMode?: EventMode;
+  /** Optional genre override; omitted preserves automatic inference. */
+  genre?: CullingGenre;
+}
+
+function genreComparisonReasons(best: MediaFile, candidate: MediaFile): string[] {
+  const genre = activeGenre();
+  const bestGenre = scoreGenre(best, genre);
+  const candidateGenre = scoreGenre(candidate, genre);
+  // Low-confidence scene inference must not become extra rejection evidence.
+  if (bestGenre.confidence < 0.5 || candidateGenre.confidence < 0.5) return [];
+
+  const reasons: string[] = [];
+  if (bestGenre.score - candidateGenre.score >= 18) {
+    reasons.push(`weaker ${bestGenre.genre} quality`);
+  }
+  if (bestGenre.genre === 'sports' && sportsActionQuality(best) - sportsActionQuality(candidate) >= 48) {
+    reasons.push('weaker action moment');
+  }
+  if (bestGenre.genre === 'group' && groupCoverageQuality(best) - groupCoverageQuality(candidate) >= 10) {
+    reasons.push('weaker group coverage');
+  }
+
+  const bestScene = best.sceneAnalysis;
+  const candidateScene = candidate.sceneAnalysis;
+  if (bestScene && candidateScene) {
+    const bestClipping = clamp01(bestScene.highlightClipping) + clamp01(bestScene.shadowClipping);
+    const candidateClipping = clamp01(candidateScene.highlightClipping) + clamp01(candidateScene.shadowClipping);
+    if (candidateClipping - bestClipping >= 0.18) reasons.push('more highlight/shadow clipping');
+    if (clamp01(bestScene.focusCoverage) - clamp01(candidateScene.focusCoverage) >= 0.2) reasons.push('less focus coverage');
+    if (clamp01(bestScene.focusUniformity) - clamp01(candidateScene.focusUniformity) >= 0.2) reasons.push('less even scene focus');
+    if ((bestGenre.genre === 'architecture' || bestGenre.genre === 'interior') &&
+      typeof bestScene.verticalTiltDeg === 'number' && typeof candidateScene.verticalTiltDeg === 'number' &&
+      Math.abs(candidateScene.verticalTiltDeg) - Math.abs(bestScene.verticalTiltDeg) >= 2.5) {
+      reasons.push('weaker vertical alignment');
+    }
+    if (bestGenre.genre === 'landscape' &&
+      typeof bestScene.horizonTiltDeg === 'number' && typeof candidateScene.horizonTiltDeg === 'number' &&
+      Math.abs(candidateScene.horizonTiltDeg) - Math.abs(bestScene.horizonTiltDeg) >= 2.5) {
+      reasons.push('less level horizon');
+    }
+  }
+  return reasons;
 }
 
 function weakestFaceSignal(file: Pick<MediaFile, 'faceBoxes'>): number {
   const boxes = file.faceBoxes ?? [];
   if (boxes.length === 0) return 1;
   return Math.min(...boxes.map((box) => {
-    const eye = clamp01((box.eyeScore ?? 0) / 2);
+    const eye = eyeDetailSignal(box);
     const detection = clamp01(box.score, 0.8);
     const expression = clamp01(box.smileScore ?? box.expressionScore, 0.5);
     return eye * 0.55 + detection * 0.3 + expression * 0.15;
@@ -874,14 +1221,14 @@ function addQuotaKeepers(ranked: MediaFile[], keep: Set<string>, options: AutoCu
       humanMomentQuality(b) - humanMomentQuality(a),
     )[0];
     const sharpBest = candidates.slice().sort((a, b) =>
-      (b.subjectSharpnessScore ?? b.sharpnessScore ?? 0) - (a.subjectSharpnessScore ?? a.sharpnessScore ?? 0),
+      (resolvedSubjectSharpness(b) ?? b.sharpnessScore ?? 0) - (resolvedSubjectSharpness(a) ?? a.sharpnessScore ?? 0),
     )[0];
     if (smileBest) keep.add(smileBest.path);
     if (sharpBest) keep.add(sharpBest.path);
   }
 }
 
-export function autoCullGroup(files: MediaFile[], options: AutoCullOptions = {}): AutoCullDecision {
+function autoCullGroupWithActiveProfile(files: MediaFile[], options: AutoCullOptions): AutoCullDecision {
   const ranked = rankBestShots(files);
   const best = ranked.find(isAutoBestCandidate) ?? null;
   const keep = new Set<string>();
@@ -934,13 +1281,14 @@ export function autoCullGroup(files: MediaFile[], options: AutoCullOptions = {})
     const weakFace = weakestFaceSignal(file);
     if (file.blurRisk === 'high') fileReasons.push('high blur risk');
     if (faceQuality(best) - faceQuality(file) >= 42) fileReasons.push('weaker face/eye detail');
-    if (bestHumanMoment - fileHumanMoment >= 28) fileReasons.push('weaker eyes/smile moment');
+    if (bestHumanMoment - fileHumanMoment >= 28) fileReasons.push('weaker eye/expression detail');
     if (bestFaceCount >= 2 && bestFaceCount - fileFaceCount >= 1) fileReasons.push('missing group faces');
     if (bestPersonCount >= 2 && bestPersonCount - filePersonCount >= 1) fileReasons.push('fewer people detected');
-    if (groupMode && bestFaceCount >= 2 && weakFace < 0.58 && bestWeakestFace - weakFace >= 0.12) fileReasons.push('blink/weak face risk');
+    if (groupMode && bestFaceCount >= 2 && weakFace < 0.58 && bestWeakestFace - weakFace >= 0.12) fileReasons.push('unclear eye/face detail');
     if (groupMode && (bestFaceCount >= 2 || bestPersonCount >= 2) && (fileFaceCount < bestFaceCount || filePersonCount < bestPersonCount)) fileReasons.push('everyone-good miss');
-    if ((best.subjectSharpnessScore ?? 0) - (file.subjectSharpnessScore ?? 0) >= 28) fileReasons.push('softer subject');
+    if ((resolvedSubjectSharpness(best) ?? 0) - (resolvedSubjectSharpness(file) ?? 0) >= 28) fileReasons.push('softer subject');
     if ((best.reviewScore ?? 0) - (file.reviewScore ?? 0) >= 22) fileReasons.push('lower review score');
+    for (const reason of genreComparisonReasons(best, file)) pushUnique(fileReasons, reason);
     if (bestScore - fileScore >= scoreGapThreshold) fileReasons.push('lower best-shot score');
     const enoughReasons = fileReasons.length >= requiredReasons &&
       (confidence !== 'conservative' || bestScore - fileScore >= 60);
@@ -958,6 +1306,19 @@ export function autoCullGroup(files: MediaFile[], options: AutoCullOptions = {})
     reasons,
     bestExplanation: explainBestShotSelection(files) ?? undefined,
   };
+}
+
+export function autoCullGroup(files: MediaFile[], options: AutoCullOptions = {}): AutoCullDecision {
+  const previousMode = getReviewProfile();
+  const previousGenre = getCullingGenre();
+  if (options.eventMode) configureReviewProfile(options.eventMode);
+  if (options.genre) configureCullingGenre(options.genre);
+  try {
+    return autoCullGroupWithActiveProfile(files, options);
+  } finally {
+    configureReviewProfile(previousMode);
+    configureCullingGenre(previousGenre);
+  }
 }
 
 export function hammingDistanceHex(a: string, b: string): number {
@@ -979,9 +1340,65 @@ export function hammingDistanceHex(a: string, b: string): number {
   return distance;
 }
 
+interface MetricSearchNode<TKey, TValue> {
+  key: TKey;
+  value: TValue;
+  children: Map<number, MetricSearchNode<TKey, TValue>>;
+}
+
+/**
+ * Exact metric search using a BK-tree. Only one representative is stored for
+ * identical keys, which avoids quadratic work for shoots containing many
+ * copies of the same perceptual hash.
+ */
+class MetricSearchIndex<TKey, TValue> {
+  private root: MetricSearchNode<TKey, TValue> | null = null;
+
+  constructor(private readonly distance: (a: TKey, b: TKey) => number) {}
+
+  add(key: TKey, value: TValue): void {
+    if (!this.root) {
+      this.root = { key, value, children: new Map() };
+      return;
+    }
+
+    let node = this.root;
+    while (true) {
+      const edge = this.distance(key, node.key);
+      if (edge === 0) return;
+      const child = node.children.get(edge);
+      if (child) node = child;
+      else {
+        node.children.set(edge, { key, value, children: new Map() });
+        return;
+      }
+    }
+  }
+
+  findWithin(key: TKey, threshold: number): TValue[] {
+    if (!this.root || threshold < 0) return [];
+    const matches: TValue[] = [];
+    const pending = [this.root];
+
+    while (pending.length > 0) {
+      const node = pending.pop()!;
+      const distance = this.distance(key, node.key);
+      if (distance <= threshold) matches.push(node.value);
+      const minimumEdge = Math.max(0, distance - threshold);
+      const maximumEdge = distance + threshold;
+      for (const [edge, child] of node.children) {
+        if (edge >= minimumEdge && edge <= maximumEdge) pending.push(child);
+      }
+    }
+
+    return matches;
+  }
+}
+
 export function scoreReview(input: ReviewScoreInput): ReviewScore {
   const sharpness = input.sharpnessScore ?? 0;
-  const subjectSharpness = input.subjectSharpnessScore ?? 0;
+  const measuredSubjectSharpness = resolvedSubjectSharpness(input);
+  const subjectSharpness = measuredSubjectSharpness ?? 0;
   const rating = input.rating ?? 0;
   const faceBoxes = input.faceBoxes ?? [];
   const personBoxes = input.personBoxes ?? [];
@@ -1004,9 +1421,12 @@ export function scoreReview(input: ReviewScoreInput): ReviewScore {
     reasons.push(`${faceCount} face${faceCount === 1 ? '' : 's'}`);
     if (confidence >= 0.78) reasons.push('strong face signal');
     else if (confidence < 0.52) reasons.push('check face confidence');
-    const eyeScore = faceBoxes.reduce((best, box) => Math.max(best, box.eyeScore ?? 0), 0);
-    if (eyeScore >= 2) reasons.push('eyes sharp');
-    else if (eyeScore === 1) reasons.push('face present');
+    const measuredEyes = faceBoxes.filter(hasEyeDetailSignal);
+    if (measuredEyes.length > 0) {
+      const eyeDetail = measuredEyes.reduce((best, box) => Math.max(best, eyeDetailSignal(box)), 0);
+      if (eyeDetail >= 0.75) reasons.push('strong eye detail');
+      else if (eyeDetail >= 0.45) reasons.push('usable eye detail');
+    }
   } else if (personCount > 0) {
     score += 12 + Math.min(14, subjectPresenceQuality(input) / 6);
     reasons.push(`${personCount} person${personCount === 1 ? '' : 's'}`);
@@ -1023,13 +1443,25 @@ export function scoreReview(input: ReviewScoreInput): ReviewScore {
   if (input.visualGroupSize && input.visualGroupSize > 1) reasons.push('similar');
   if (typeof input.exposureValue === 'number') score += 5;
 
-  const blurRisk: ReviewScore['blurRisk'] =
-    Math.max(sharpness, subjectSharpness) < 25 ? 'high'
-    : Math.max(sharpness, subjectSharpness) < 70 ? 'medium'
-    : 'low';
-  if (blurRisk === 'high') score -= 25;
-  if (blurRisk === 'medium') score -= 8;
-  if (blurRisk !== 'low' && !reasons.includes('soft')) reasons.push('soft');
+  // When a person is detected, focus on the subject region. A crisp background
+  // must not turn a visibly soft face/body into a low-blur keeper.
+  const hasDetectedSubject = faceCount > 0 || personCount > 0;
+  const subjectFocusPending = hasDetectedSubject && measuredSubjectSharpness === undefined;
+  const blurSharpness = subjectFocusPending ? undefined : measuredSubjectSharpness ?? sharpness;
+  const blurRisk: ReviewScore['blurRisk'] = subjectFocusPending
+    ? 'medium'
+    : (blurSharpness ?? 0) < 25 ? 'high'
+      : (blurSharpness ?? 0) < 70 ? 'medium'
+        : 'low';
+  if (subjectFocusPending) {
+    // `medium` is the existing review-needed state. Do not label the subject
+    // soft, because a low-confidence ROI is unknown rather than known-bad.
+    reasons.push('subject focus needs review');
+  } else {
+    if (blurRisk === 'high') score -= 25;
+    if (blurRisk === 'medium') score -= 8;
+    if (blurRisk !== 'low' && !reasons.includes('soft')) reasons.push('soft');
+  }
 
   return {
     score: Math.max(0, Math.min(100, Math.round(score))),
@@ -1056,11 +1488,6 @@ export function groupByFaceSignature(files: MediaFile[], threshold = 10): Record
   );
 }
 
-// O(n²) pairwise comparison — skip when the hashed set is too large to avoid
-// blocking the renderer thread. At 2 000 entries this is ~2 M comparisons;
-// beyond that the grouping cost outweighs the benefit.
-const VISUAL_SIMILARITY_MAX_FILES = 2000;
-
 function groupByHexSimilarity(
   files: MediaFile[],
   hashFor: (file: MediaFile) => string | undefined,
@@ -1071,9 +1498,9 @@ function groupByHexSimilarity(
     .map((file, order) => ({ file, hash: hashFor(file), order }))
     .filter((entry): entry is { file: MediaFile; hash: string; order: number } => !!entry.hash);
 
-  if (hashed.length > VISUAL_SIMILARITY_MAX_FILES) return {};
-
   const parent = new Map<string, string>();
+  const searchThreshold = Math.max(0, Math.floor(threshold));
+  const hashIndex = new MetricSearchIndex<string, typeof hashed[number]>(hammingDistanceHex);
 
   const find = (path: string): string => {
     const current = parent.get(path) ?? path;
@@ -1090,12 +1517,11 @@ function groupByHexSimilarity(
   };
 
   for (const entry of hashed) parent.set(entry.file.path, entry.file.path);
-  for (let i = 0; i < hashed.length; i++) {
-    for (let j = i + 1; j < hashed.length; j++) {
-      if (hammingDistanceHex(hashed[i].hash, hashed[j].hash) <= threshold) {
-        union(hashed[i].file.path, hashed[j].file.path);
-      }
+  for (const entry of hashed) {
+    for (const match of hashIndex.findWithin(entry.hash, searchThreshold)) {
+      union(entry.file.path, match.file.path);
     }
+    hashIndex.add(entry.hash, entry);
   }
 
   const connected = new Map<string, typeof hashed>();
@@ -1567,6 +1993,8 @@ export interface KeeperTargetOptions {
   target: number;
   /** Retune scoring for a sports/event mode while selecting. */
   eventMode?: EventMode;
+  /** Override automatic genre inference while selecting. */
+  genre?: CullingGenre;
   /** Max keepers per near-duplicate group before the budget is spread wider. Default 1. */
   perGroupCap?: number;
   /**
@@ -1620,39 +2048,24 @@ function parseVisualHash(hash: string | undefined): { hi: number; lo: number } |
 
 /**
  * Tracks the perceptual hashes of frames already kept so visual near-duplicates
- * can be suppressed regardless of burst/group metadata. Buckets by the top 8
- * hash bits to keep the common case near-O(1); near-dups that cross a bucket
- * boundary are still caught by also scanning neighbouring buckets.
+ * can be suppressed regardless of burst/group metadata. Metric search checks
+ * every Hamming-neighbourhood exactly, including hashes whose first differing
+ * bit puts them in a numerically distant top-byte bucket.
  */
 class NearDuplicateIndex {
-  private readonly buckets = new Map<number, Array<{ hi: number; lo: number }>>();
-  constructor(private readonly threshold: number) {}
+  private readonly index = new MetricSearchIndex<{ hi: number; lo: number }, true>(
+    (a, b) => popcount32(a.hi ^ b.hi) + popcount32(a.lo ^ b.lo),
+  );
 
-  private bucketKey(h: { hi: number }): number {
-    return h.hi >>> 24; // top 8 bits
-  }
+  constructor(private readonly threshold: number) {}
 
   isNearDuplicate(h: { hi: number; lo: number }): boolean {
     if (this.threshold <= 0) return false;
-    const base = this.bucketKey(h);
-    // Scan a small neighbourhood of bucket keys so a flipped top bit can't hide
-    // a near-duplicate. The threshold is small, so this stays cheap.
-    for (let k = base - 1; k <= base + 1; k++) {
-      const bucket = this.buckets.get(k & 0xff);
-      if (!bucket) continue;
-      for (const kept of bucket) {
-        const dist = popcount32(h.hi ^ kept.hi) + popcount32(h.lo ^ kept.lo);
-        if (dist <= this.threshold) return true;
-      }
-    }
-    return false;
+    return this.index.findWithin(h, this.threshold).length > 0;
   }
 
   add(h: { hi: number; lo: number }): void {
-    const key = this.bucketKey(h);
-    const bucket = this.buckets.get(key);
-    if (bucket) bucket.push(h);
-    else this.buckets.set(key, [h]);
+    this.index.add(h, true);
   }
 }
 
@@ -1661,7 +2074,9 @@ export function selectKeepersToTarget(files: MediaFile[], options: KeeperTargetO
   const perGroupCap = Math.max(1, Math.floor(options.perGroupCap ?? 1));
   const hashThreshold = Math.max(0, Math.floor(options.dedupeHashDistance ?? 8));
   const prevProfile = getReviewProfile();
+  const prevGenre = getCullingGenre();
   if (options.eventMode) configureReviewProfile(options.eventMode);
+  if (options.genre) configureCullingGenre(options.genre);
 
   try {
     const keep = new Set<string>();
@@ -1742,5 +2157,230 @@ export function selectKeepersToTarget(files: MediaFile[], options: KeeperTargetO
     };
   } finally {
     configureReviewProfile(prevProfile);
+    configureCullingGenre(prevGenre);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Non-destructive automated culling proposals
+// ---------------------------------------------------------------------------
+
+export interface AutoCullProposalOptions extends AutoCullOptions {
+  /** Visual-hash distance used to form deterministic comparison groups. */
+  visualHashDistance?: number;
+  /** When true, already camera/import-marked duplicates are omitted. */
+  skipDuplicates?: boolean;
+}
+
+export type AutoCullProposalDisposition = 'keep' | 'reject' | 'uncertain' | 'unanalysed';
+
+export interface AutoCullProposalItem {
+  path: string;
+  disposition: AutoCullProposalDisposition;
+  score: number;
+  genre: Exclude<CullingGenre, 'auto'>;
+  analysisConfidence: number;
+  reasons: string[];
+}
+
+export interface AutoCullProposalGroup {
+  id: string;
+  kind: 'burst' | 'visual' | 'standalone';
+  paths: string[];
+  bestPath?: string;
+  confidence: AutoCullDecision['confidence'];
+  items: AutoCullProposalItem[];
+}
+
+export interface AutoCullProposal {
+  eventMode: EventMode;
+  genre: CullingGenre;
+  keep: string[];
+  reject: string[];
+  uncertain: string[];
+  unanalysed: string[];
+  groups: AutoCullProposalGroup[];
+  reasons: Record<string, string[]>;
+  /** Always false: the API is advisory and never mutates MediaFile.pick. */
+  automaticDeletion: false;
+}
+
+export function hasCullingAnalysis(file: MediaFile): boolean {
+  const hasSubjectBoxes = (file.faceBoxes?.length ?? 0) > 0 || (file.personBoxes?.length ?? 0) > 0;
+  // ONNX boxes arrive before the renderer's follow-up ROI pass. Treat that
+  // interval as genuinely unanalysed so a bulk proposal cannot race ahead of
+  // subject focus. A finite low confidence means the pass completed, but its
+  // disposition is handled conservatively below.
+  if (hasSubjectBoxes && subjectFocusConfidence(file) === undefined) return false;
+  return typeof file.reviewScore === 'number' ||
+    typeof file.sharpnessScore === 'number' ||
+    typeof file.subjectSharpnessScore === 'number' ||
+    !!file.sceneAnalysis ||
+    (file.faceBoxes?.length ?? 0) > 0 ||
+    (file.personBoxes?.length ?? 0) > 0 ||
+    (file.poses?.length ?? 0) > 0;
+}
+
+function stableGroupEntries(files: MediaFile[], visualHashDistance: number): Array<{
+  id: string;
+  kind: AutoCullProposalGroup['kind'];
+  files: MediaFile[];
+}> {
+  const byPath = new Map(files.map((file) => [file.path, file]));
+  const assigned = new Set<string>();
+  const groups: Array<{ id: string; kind: AutoCullProposalGroup['kind']; files: MediaFile[] }> = [];
+  const bursts = new Map<string, MediaFile[]>();
+
+  for (const file of files) {
+    if (!file.burstId || (file.burstSize ?? 0) < 2) continue;
+    const group = bursts.get(file.burstId);
+    if (group) group.push(file);
+    else bursts.set(file.burstId, [file]);
+  }
+  for (const [id, group] of [...bursts].sort(([a], [b]) => a.localeCompare(b))) {
+    const available = group.filter((file) => !assigned.has(file.path));
+    if (available.length < 2) continue;
+    available.forEach((file) => assigned.add(file.path));
+    groups.push({ id: `burst:${id}`, kind: 'burst', files: available });
+  }
+
+  const availableForVisual = files.filter((file) => !assigned.has(file.path) && file.visualHash);
+  const visualGroups = groupByVisualHash(availableForVisual, visualHashDistance);
+  for (const [id, paths] of Object.entries(visualGroups)) {
+    const group = paths.map((path) => byPath.get(path)).filter((file): file is MediaFile => !!file && !assigned.has(file.path));
+    if (group.length < 2) continue;
+    group.forEach((file) => assigned.add(file.path));
+    groups.push({ id, kind: 'visual', files: group });
+  }
+
+  for (const file of files) {
+    if (!assigned.has(file.path)) groups.push({ id: `standalone:${file.path}`, kind: 'standalone', files: [file] });
+  }
+  return groups;
+}
+
+/**
+ * Build a deterministic, fully explainable proposal. It never changes picks or
+ * deletes files: callers must present/accept the proposal separately. Only
+ * well-supported comparisons become proposed rejects; close or incomplete
+ * decisions remain uncertain/unanalysed.
+ */
+export function buildAutoCullProposal(
+  files: MediaFile[],
+  options: AutoCullProposalOptions = {},
+): AutoCullProposal {
+  const eventMode = options.eventMode ?? getReviewProfile();
+  const genre = options.genre ?? 'auto';
+  const previousMode = getReviewProfile();
+  const previousGenre = getCullingGenre();
+  configureReviewProfile(eventMode);
+  configureCullingGenre(genre);
+
+  try {
+    const eligible = files.filter((file) =>
+      file.type === 'photo' &&
+      (!options.skipDuplicates || !file.duplicate),
+    );
+    const groups = stableGroupEntries(eligible, Math.max(0, Math.floor(options.visualHashDistance ?? 8)));
+    const aggregate: Record<AutoCullProposalDisposition, string[]> = {
+      keep: [], reject: [], uncertain: [], unanalysed: [],
+    };
+    const reasons: Record<string, string[]> = {};
+    const proposalGroups: AutoCullProposalGroup[] = [];
+
+    for (const group of groups) {
+      const ranked = rankBestShots(group.files);
+      const decision = group.files.length > 1
+        ? autoCullGroup(group.files, options)
+        : null;
+      const best = decision?.best ?? ranked.find(isAutoBestCandidate) ?? null;
+      // Include a soft/blurred runner-up in confidence measurement: it may be
+      // ineligible as a keeper precisely because the comparison evidence is
+      // strong. Manual rejects remain explicit and are not used as runners.
+      const runnerUp = ranked.find((file) => file.path !== best?.path && file.pick !== 'rejected');
+      const comparisonConfidence = proposalComparisonConfidence(best, runnerUp, genre);
+      const decisionRejects = new Set(decision?.reject ?? []);
+      const decisionKeeps = new Set(decision?.keep ?? []);
+      const items: AutoCullProposalItem[] = [];
+      const bestExposure = best?.exposureValue;
+
+      for (const file of ranked) {
+        const analysis = scoreGenre(file, genre);
+        let disposition: AutoCullProposalDisposition;
+        const itemReasons: string[] = [];
+
+        if (file.pick === 'rejected') {
+          disposition = 'reject';
+          itemReasons.push('manual reject');
+        } else if (isMandatoryKeeper(file)) {
+          disposition = 'keep';
+          itemReasons.push('manual/protected keeper');
+        } else if (!hasCullingAnalysis(file)) {
+          disposition = 'unanalysed';
+          itemReasons.push('quality analysis not available');
+        } else if (hasDetectedSubject(file) && (subjectFocusConfidence(file) ?? 0) < 0.2) {
+          disposition = 'uncertain';
+          itemReasons.push('subject focus confidence too low for an automatic decision');
+        } else if (file.path !== best?.path &&
+          typeof bestExposure === 'number' && typeof file.exposureValue === 'number' &&
+          Math.abs(file.exposureValue - bestExposure) >= 0.7) {
+          // Exposure brackets may share the same perceptual hash yet carry
+          // different recoverable highlight/shadow detail. Keep them visible
+          // for review instead of treating one as a redundant frame.
+          disposition = 'uncertain';
+          itemReasons.push(`distinct exposure variant (${Math.abs(file.exposureValue - bestExposure).toFixed(1)} EV)`);
+          itemReasons.push(...analysis.cautions);
+        } else if (decisionRejects.has(file.path) && comparisonConfidence !== 'low' && analysis.confidence >= 0.5) {
+          disposition = 'reject';
+          itemReasons.push(...(decision?.reasons[file.path] ?? ['lower-ranked repeat']));
+        } else if (group.kind === 'standalone') {
+          disposition = 'uncertain';
+          itemReasons.push('no comparable burst or near-duplicate');
+          itemReasons.push(...analysis.cautions);
+        } else if (decisionKeeps.has(file.path) || file.path === best?.path) {
+          disposition = 'keep';
+          itemReasons.push(...(analysis.reasons.length > 0 ? analysis.reasons : ['best available representative']));
+        } else {
+          disposition = 'uncertain';
+          itemReasons.push(...(analysis.cautions.length > 0 ? analysis.cautions : ['close comparison — review recommended']));
+        }
+
+        const uniqueReasons = [...new Set(itemReasons)].slice(0, 5);
+        aggregate[disposition].push(file.path);
+        reasons[file.path] = uniqueReasons;
+        items.push({
+          path: file.path,
+          disposition,
+          score: bestShotScore(file),
+          genre: analysis.genre,
+          analysisConfidence: analysis.confidence,
+          reasons: uniqueReasons,
+        });
+      }
+
+      proposalGroups.push({
+        id: group.id,
+        kind: group.kind,
+        paths: group.files.map((file) => file.path),
+        bestPath: best?.path,
+        confidence: comparisonConfidence,
+        items,
+      });
+    }
+
+    return {
+      eventMode,
+      genre,
+      keep: aggregate.keep,
+      reject: aggregate.reject,
+      uncertain: aggregate.uncertain,
+      unanalysed: aggregate.unanalysed,
+      groups: proposalGroups,
+      reasons,
+      automaticDeletion: false,
+    };
+  } finally {
+    configureReviewProfile(previousMode);
+    configureCullingGenre(previousGenre);
   }
 }

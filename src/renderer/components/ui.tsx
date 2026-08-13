@@ -29,7 +29,7 @@ export function IconButton({
   className = '',
   ...props
 }: IconButtonProps) {
-  const sizeClass = size === 'xs' ? 'h-6 w-6' : 'h-7 w-7';
+  const sizeClass = size === 'xs' ? 'h-7 w-7' : 'h-8 w-8';
   const iconClass = size === 'xs' ? 'h-3.5 w-3.5' : 'h-4 w-4';
   return (
     <button
@@ -56,7 +56,7 @@ export function ActionButton({ tone = 'neutral', icon: Icon, className = '', chi
   return (
     <button
       type="button"
-      className={`inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1 text-[10px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${toneClasses[tone]} ${className}`}
+      className={`inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[11px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${toneClasses[tone]} ${className}`}
       {...props}
     >
       {Icon && <Icon className="h-3.5 w-3.5" aria-hidden="true" />}
