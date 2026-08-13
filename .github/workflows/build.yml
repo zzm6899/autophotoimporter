@@ -179,6 +179,7 @@ jobs:
           PACKAGE_SMOKE_LAUNCH: ${{ startsWith(matrix.os, 'macos') && steps.mac-signing.outputs.enabled != 'true' && '0' || '1' }}
 
       - name: Upload build artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.label }}-build

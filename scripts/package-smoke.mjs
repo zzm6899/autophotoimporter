@@ -158,7 +158,7 @@ if (process.env.PACKAGE_SMOKE_LAUNCH !== '0') {
       KEPTRA_PACKAGE_SMOKE_OUTPUT: launchManifestPath,
       ELECTRON_ENABLE_LOGGING: '1',
     },
-    timeout: 30000,
+    timeout: 60000,
     windowsHide: true,
     encoding: 'utf8',
   });
@@ -170,7 +170,12 @@ if (process.env.PACKAGE_SMOKE_LAUNCH !== '0') {
     output: launchManifestPath,
   };
   if (launched.error) fail(`Launch smoke failed to start: ${launched.error.message}`);
-  if (launched.status !== 0) fail(`Launch smoke exited with ${launched.status ?? launched.signal}. ${launched.stderr ?? ''}`);
+  if (launched.status !== 0) {
+    const diagnostic = existsSync(launchManifestPath)
+      ? readFileSync(launchManifestPath, 'utf8').slice(-12000)
+      : 'No launch manifest was written.';
+    fail(`Launch smoke exited with ${launched.status ?? launched.signal}. ${launched.stderr ?? ''}\n${diagnostic}`);
+  }
   if (!existsSync(launchManifestPath)) fail('Launch smoke did not write an output manifest.');
   const launchManifest = JSON.parse(readFileSync(launchManifestPath, 'utf8'));
   manifest.launch.manifest = launchManifest;

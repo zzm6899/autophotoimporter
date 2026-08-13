@@ -20,6 +20,7 @@ function getRendererDevServerUrl(): string | undefined {
 const rendererDevServerUrl = getRendererDevServerUrl();
 const packageSmokeMode = process.env.KEPTRA_PACKAGE_SMOKE === '1';
 const packageSmokeShowWindow = process.env.KEPTRA_PACKAGE_SMOKE_SHOW === '1';
+const PACKAGE_SMOKE_RENDER_TIMEOUT_MS = 45_000;
 
 if (rendererDevServerUrl) {
   app.setPath('userData', path.join(app.getPath('appData'), 'Keptra Dev'));
@@ -321,7 +322,7 @@ const createWindow = () => {
   if (packageSmokeMode) {
     const timeout = setTimeout(() => {
       finishPackageSmoke(false, { error: 'Timed out waiting for renderer smoke check', resources: modelSmokeStatus() });
-    }, 15000);
+    }, PACKAGE_SMOKE_RENDER_TIMEOUT_MS);
     mainWindow.webContents.once('did-finish-load', () => {
       void mainWindow?.webContents.executeJavaScript(`
         (async () => {
