@@ -96,7 +96,7 @@ const FAST_RAW_METADATA_EXPORT: MetadataExportFlags = {
   pickLabel: false,
   stripGps: false,
 };
-const MAX_FACE_CONCURRENCY = 24;
+const MAX_FACE_CONCURRENCY = 16;
 type DeviceTier = 'low' | 'balanced' | 'high';
 
 export function clampFaceConcurrencyForSettings(concurrency: number) {
@@ -111,11 +111,11 @@ export function recommendFaceConcurrencyTarget(options: {
 }) {
   const rawTarget = options.dmlActive
     ? options.avgDmlMs !== undefined && options.avgDmlMs < 8
-      ? 24
+      ? 12
       : options.avgDmlMs !== undefined && options.avgDmlMs < 16
-        ? 16
+        ? 10
         : options.avgDmlMs !== undefined && options.avgDmlMs < 45
-          ? 12
+          ? 8
           : Math.min(8, Math.max(4, Math.floor(options.cpuCores / 2)))
     : options.tier === 'high'
       ? Math.min(8, Math.max(3, Math.floor(options.cpuCores / 4)))
@@ -199,7 +199,6 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     selectionSets,
     licenseStatus,
     gpuFaceAcceleration,
-    gpuDeviceId = -1,
     rawPreviewCache,
     cpuOptimization,
     rawPreviewQuality,
@@ -208,6 +207,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     reviewPersonDetection,
     reviewVisualDuplicates,
     autoSpeedMode,
+    superSpeedMode,
     aiReviewEnabled,
     perfTier,
     fastKeeperMode,
@@ -538,12 +538,6 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
     }
     void window.electronAPI.setSettings(patch);
   };
-  const handleGpuDevice = async (deviceId: number) => {
-    const next = Number.isFinite(deviceId) ? Math.max(-1, Math.round(deviceId)) : -1;
-    dispatch({ type: 'SET_GPU_DEVICE_ID', deviceId: next });
-    await window.electronAPI.setSettings({ gpuDeviceId: next });
-    setDiagResult(next >= 0 ? `DirectML will use GPU adapter ${next} after the face engine reloads.` : 'DirectML will use the Windows default GPU after reload.');
-  };
   const handleWhiteBalance = (temperature: number, tint: number) => {
     dispatch({ type: 'SET_WHITE_BALANCE', temperature, tint });
     window.electronAPI.setSettings({ whiteBalanceTemperature: temperature, whiteBalanceTint: tint });
@@ -596,6 +590,10 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const handleAutoSpeedMode = (enabled: boolean) => {
     dispatch({ type: 'SET_AUTO_SPEED_MODE', enabled });
     void window.electronAPI.setSettings({ autoSpeedMode: enabled });
+  };
+  const handleSuperSpeedMode = (enabled: boolean) => {
+    dispatch({ type: 'SET_SUPER_SPEED_MODE', enabled });
+    void window.electronAPI.setSettings({ superSpeedMode: enabled });
   };
   const handleCullConfidence = (confidence: CullConfidence) => {
     dispatch({ type: 'SET_CULL_CONFIDENCE', confidence });
@@ -754,6 +752,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
       dispatch({ type: 'SET_FAST_KEEPER_MODE', enabled: fastKeeperTarget });
       dispatch({ type: 'SET_PERFORMANCE_OPTION', key: 'cpuOptimization', value: cpuOptimizationTarget });
       dispatch({ type: 'SET_PERFORMANCE_OPTION', key: 'gpuFaceAcceleration', value: dmlActive || !!diag?.gpuAvailable });
+      dispatch({ type: 'SET_GPU_DEVICE_ID', deviceId: -1 });
       dispatch({ type: 'SET_REVIEW_PERFORMANCE_OPTION', key: 'reviewFaceAnalysis', value: reviewFaceAnalysisTarget });
       dispatch({ type: 'SET_REVIEW_PERFORMANCE_OPTION', key: 'reviewFaceMatching', value: reviewFaceMatchingTarget });
       dispatch({ type: 'SET_REVIEW_PERFORMANCE_OPTION', key: 'reviewPersonDetection', value: reviewPersonDetectionTarget });
@@ -768,6 +767,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
         fastKeeperMode: fastKeeperTarget,
         cpuOptimization: cpuOptimizationTarget,
         gpuFaceAcceleration: dmlActive || !!diag?.gpuAvailable,
+        gpuDeviceId: -1,
         reviewFaceAnalysis: reviewFaceAnalysisTarget,
         reviewFaceMatching: reviewFaceMatchingTarget,
         reviewPersonDetection: reviewPersonDetectionTarget,
@@ -2688,6 +2688,19 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
             <label className="flex items-center gap-2 cursor-pointer mb-2">
               <input
                 type="checkbox"
+                checked={superSpeedMode}
+                onChange={(e) => handleSuperSpeedMode(e.target.checked)}
+              />
+              <span className="text-xs font-medium text-text">Super Speed AI</span>
+            </label>
+            <p className="text-[10px] text-text-muted mb-2 ml-5">
+              Scores every frame cheaply, then runs face, person, eye-detail, identity, and pose models on
+              repeats, people-heavy shoots, selected photos, and uncertain comparisons. Standalone photos remain manual.
+            </p>
+
+            <label className="flex items-center gap-2 cursor-pointer mb-2">
+              <input
+                type="checkbox"
                 checked={fastKeeperMode}
                 onChange={(e) => handleFastKeeperMode(e.target.checked)}
               />
@@ -2708,7 +2721,8 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
               <span className="text-xs text-text">Auto speed fallback</span>
             </label>
             <p className="text-[10px] text-text-muted mb-2 ml-5">
-              If face scanning is too slow on a large card, Keptra switches to low-end review settings automatically.
+              If review is too slow, Keptra enables Super Speed automatically. It no longer silently turns off face,
+              person, or duplicate evidence.
             </p>
 
             <div className="mb-2 rounded border border-border bg-surface-alt px-2 py-2">
@@ -2841,25 +2855,16 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
             )}
             <div className="mb-2 ml-5">
               <div className="mb-1 flex items-center justify-between gap-2">
-                <span className="text-[10px] text-text-secondary">DirectML GPU adapter</span>
-                <span className="text-[10px] font-mono text-text-muted">{gpuDeviceId >= 0 ? `#${gpuDeviceId}` : 'Auto'}</span>
+                <span className="text-[10px] text-text-secondary">DirectML GPU selection</span>
+                <span className="text-[10px] font-mono text-emerald-400">Auto</span>
               </div>
-              <select
-                value={gpuDeviceId}
-                onChange={(e) => { void handleGpuDevice(Number(e.target.value)); }}
-                disabled={!gpuFaceAcceleration}
-                className="w-full rounded border border-border bg-surface-raised px-2 py-1 text-[11px] text-text focus:border-text focus:outline-none disabled:opacity-50"
-                title="DirectML adapter index. Auto uses Windows/driver default."
-              >
-                <option value={-1}>Auto - Windows default GPU</option>
-                {gpus.map((gpu) => (
-                  <option key={gpu.id} value={gpu.id}>
-                    #{gpu.id} {gpu.name}{gpu.videoMemoryMB ? ` (${Math.round(gpu.videoMemoryMB / 1024)}GB)` : ''}
-                  </option>
-                ))}
-              </select>
+              {gpus.length > 0 && (
+                <p className="text-[10px] text-text-muted">
+                  Detected: {gpus.map((gpu) => `${gpu.name}${gpu.videoMemoryMB ? ` (${Math.round(gpu.videoMemoryMB / 1024)}GB)` : ''}`).join(' · ')}
+                </p>
+              )}
               <p className="mt-1 text-[10px] text-text-muted">
-                On dual-GPU laptops, pick the discrete GPU, then run Diagnose GPU. Adapter numbering follows Windows display order.
+                Keptra uses the Windows driver-selected DirectML adapter, then benchmarks it against CPU. Display adapter numbers are intentionally not used because Windows display order does not reliably match DirectML device order.
               </p>
             </div>
 
@@ -3013,7 +3018,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                 className="w-full h-1 bg-surface-raised rounded appearance-none cursor-pointer accent-accent"
               />
               <div className="mt-1 flex gap-1">
-                {[1, 2, 4, 8, 16, 24].map((value) => (
+                {[1, 2, 4, 8, 12, 16].map((value) => (
                   <button
                     key={value}
                     type="button"
@@ -3026,7 +3031,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                 ))}
               </div>
               <p className="text-[10px] text-text-muted mt-0.5">
-                Higher can push GPUs harder on large batches. Fast DirectML devices can use 12-24 after Optimize settings; use 2-5 if the app restarts during face scans.
+                Whole-photo jobs include CPU decode and person checks. Optimize settings targets 8-12 on fast DirectML systems; more than 16 usually adds contention instead of speed.
               </p>
             </div>
 
@@ -3053,7 +3058,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
             <div className="mt-2 rounded border border-border bg-surface-alt px-2 py-2">
               <p className="text-[10px] font-semibold uppercase tracking-wider text-text-secondary">Performance help</p>
               <p className="mt-1 text-[10px] text-text-muted">
-                Use Optimize settings first. RTX-class GPUs usually prefer 12-24 face scans when DirectML benchmarks cleanly; laptops or older CPUs should stay at 1-4 or enable Fast Keeper Mode for huge imports.
+                Use Optimize settings first. RTX-class GPUs usually prefer 8-12 whole-photo jobs; the person detector is independently CPU-limited to prevent oversubscription.
               </p>
             </div>
             </div>

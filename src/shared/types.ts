@@ -224,6 +224,25 @@ export interface MediaFile {
   reviewReasons?: string[];
   /** Optional local scene/geometry metrics for genre-aware keeper proposals. */
   sceneAnalysis?: SceneAnalysis;
+  /** Furthest native review stage completed for this frame. */
+  reviewAnalysisStage?: 'screened' | 'subjects' | 'full';
+  /** Exact optional native features completed. A stage can omit features that
+   * were disabled when it ran, so the stage label alone is not a capability. */
+  reviewAnalysisFeatures?: {
+    faceDetection: boolean;
+    personDetection: boolean;
+    faceMatching: boolean;
+    poseAnalysis: boolean;
+  };
+  /** Native analysis exhausted bounded retries. The frame stays manual/uncertain. */
+  reviewAnalysisUnavailable?: boolean;
+  /** Optional full-analysis stages that exhausted bounded retries. Core
+   * detections remain usable, but these features are not retried until an
+   * explicit AI re-scan clears the marker. */
+  reviewAnalysisUnavailableFeatures?: {
+    faceMatching?: boolean;
+    poseAnalysis?: boolean;
+  };
   /** True after the operator has explicitly approved this file in second-pass review. */
   reviewApproved?: boolean;
 }
@@ -1216,7 +1235,7 @@ export interface AppSettings {
   reviewPersonDetection?: boolean;
   /** Generate visual hashes and near-duplicate stacks during review. */
   reviewVisualDuplicates?: boolean;
-  /** DirectML adapter index. Undefined/-1 = system default GPU. */
+  /** Reserved DirectML adapter selector. Current builds normalize to -1 (driver-selected Auto). */
   gpuDeviceId?: number;
   /** Number of parallel detector/embedder streams used by the diagnostic GPU load test. */
   gpuStressStreams?: number;
@@ -1242,6 +1261,8 @@ export interface AppSettings {
   aiReviewEnabled?: boolean;
   /** Automatically switches to low-end review settings if live AI throughput is too slow. */
   autoSpeedMode?: boolean;
+  /** Cascaded AI: screen every frame cheaply, then deepen only likely/uncertain comparisons. */
+  superSpeedMode?: boolean;
   /** Renderer concurrency hint from device-tier (runtime only, not persisted) */
   previewConcurrency?: number;
   faceConcurrency?: number;

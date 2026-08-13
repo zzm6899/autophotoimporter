@@ -2,11 +2,11 @@ import { useMemo, useEffect, useCallback, useRef, useState, useDeferredValue } f
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { AlertTriangle, ClipboardCheck, Copy, Download, Eye, Gauge, ListChecks, MoreHorizontal, Pause, Play, RefreshCw, ShieldCheck, Sparkles, Trash2, Users, Wand2 } from 'lucide-react';
 // Main grid / single / split view orchestrator.
-import { queueBestPaths, useAppState, useAppDispatch, useMergedFiles } from '../context/ImportContext';
+import { queueBestPaths, useAppState, useAppDispatch, useMergedFiles, useReviewScoreOverlay } from '../context/ImportContext';
 import type { FilterMode } from '../context/ImportContext';
 import { useFileScanner } from '../hooks/useFileScanner';
 import { useImport } from '../hooks/useImport';
-import type { CatalogFaceSearchResult, EventMode, MediaFile, SceneAnalysisKind, WhiteBalanceAdjustment } from '../../shared/types';
+import { isSportsEventMode, type CatalogFaceSearchResult, type EventMode, type MediaFile, type SceneAnalysisKind, type WhiteBalanceAdjustment } from '../../shared/types';
 import { ThumbnailCard } from './ThumbnailCard';
 import { SingleView } from './SingleView';
 import { CompareView } from './CompareView';
@@ -23,6 +23,7 @@ import { buildAutoCullProposal, cosineSimilarity, deserializeEmbedding, FACE_GRO
 import { needsSecondPass } from '../../shared/review-lane';
 import { useFaceIdentityWorker } from '../hooks/useFaceIdentityWorker';
 import { analyzeSceneFromImage } from '../utils/sceneAnalysis';
+import { needsReviewCanvasAnalysis, selectSuperSpeedProfile, type ReviewAnalysisProfile } from '../utils/reviewSuperSpeed';
 import { useBulkAiPreview, type BulkAiDecisionItem } from '../context/BulkAiPreviewContext';
 
 const SIMPLE_FILTERS = new Set<string>([
@@ -2049,11 +2050,12 @@ async function visualHash(src: string): Promise<string> {
 }
 
 export function ThumbnailGrid() {
-  const { phase, importRunning, selectedSource, scanError, focusedIndex, focusedPath, viewMode, filter, gridSortOrder, thumbnailSize, importFailedPaths, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, exposureAdjustmentStep, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused, fastKeeperMode, aiReviewEnabled, autoSpeedMode, faceConcurrency, gpuFaceAcceleration, reviewFaceAnalysis, reviewFaceMatching, reviewPersonDetection, reviewVisualDuplicates, keybinds, metadataKeywords, whiteBalanceTemperature, whiteBalanceTint, destination, activeScanId, skipDuplicates, licenseStatus, ftpDestEnabled, ftpDestConfig, experienceMode, eventMode, cullConfidence, groupPhotoEveryoneGood, keeperQuota } = useAppState();
+  const { phase, importRunning, selectedSource, scanError, focusedIndex, focusedPath, viewMode, filter, gridSortOrder, thumbnailSize, importFailedPaths, cullMode, collapsedBursts, exposureAnchorPath, exposureMaxStops, exposureAdjustmentStep, saveFormat, burstGrouping, normalizeExposure, selectedPaths, queuedPaths, selectionSets, scanPaused, fastKeeperMode, aiReviewEnabled, autoSpeedMode, superSpeedMode, faceConcurrency, gpuFaceAcceleration, reviewFaceAnalysis, reviewFaceMatching, reviewPersonDetection, reviewVisualDuplicates, keybinds, metadataKeywords, whiteBalanceTemperature, whiteBalanceTint, destination, activeScanId, skipDuplicates, licenseStatus, ftpDestEnabled, ftpDestConfig, experienceMode, eventMode, cullConfidence, groupPhotoEveryoneGood, keeperQuota } = useAppState();
   const isPro = experienceMode === 'pro';
   // useMergedFiles() overlays face/review scores without re-running the full
   // reducer map — O(n) only when scores.size > 0, otherwise returns the same array.
   const files = useMergedFiles();
+  const reviewScoreOverlay = useReviewScoreOverlay();
   const { startScan } = useFileScanner();
   const { startImport } = useImport();
   const dispatch = useAppDispatch();
@@ -2121,8 +2123,15 @@ export function ThumbnailGrid() {
   const lastExposureTapRef = useRef(0);
   const sharpnessInFlightRef = useRef(false);
   const faceAnalysisFailureCountRef = useRef<Map<string, number>>(new Map());
+  const optionalFeatureFailureCountRef = useRef<Map<string, { faceMatching: number; poseAnalysis: number }>>(new Map());
   const reviewBatchCounterRef = useRef(0);
   const reviewGenerationRef = useRef(0);
+  // Read the mutable overlay directly between intentionally infrequent UI
+  // flushes so million-photo jobs advance without duplicating all patch data.
+  const liveReviewFile = useCallback((file: MediaFile): MediaFile => {
+    const patch = reviewScoreOverlay.get(file.path);
+    return patch ? { ...file, ...patch } : file;
+  }, [reviewScoreOverlay]);
   const faceScanEtaRef = useRef<{ source: string | null; total: number; startedAt: number; startedScanned: number } | null>(null);
   const lastCatalogFacePersistRef = useRef('');
   const lastCatalogFaceFileFingerprintsRef = useRef<Map<string, string>>(new Map());
@@ -2148,6 +2157,7 @@ export function ThumbnailGrid() {
   const reviewWaitingRef = useRef(false);
   const fastKeeperModeRef = useRef(fastKeeperMode);
   const aiReviewEnabledRef = useRef(aiReviewEnabled);
+  const superSpeedModeRef = useRef(superSpeedMode);
   // Timestamp of the user's last focus/navigation event. The review loop
   // stays quiet for a short window after navigation so ONNX + canvas scoring
   // never competes with preview loading while the user is actively culling.
@@ -2708,7 +2718,13 @@ export function ThumbnailGrid() {
     }
   }, [dispatch, filter, multiClickSelect, phase, viewMode]);
   useEffect(() => {
-    if (phase === 'importing') {
+    if (phase === 'scanning') {
+      reviewGenerationRef.current++;
+      faceAnalysisFailureCountRef.current.clear();
+      optionalFeatureFailureCountRef.current.clear();
+      sharpnessInFlightRef.current = false;
+      void window.electronAPI.cancelFaceAnalysis?.().catch(() => undefined);
+    } else if (phase === 'importing') {
       importPausedReviewRef.current = true;
       reviewGenerationRef.current++;
       sharpnessInFlightRef.current = false;
@@ -2728,6 +2744,7 @@ export function ThumbnailGrid() {
   useEffect(() => { reviewWaitingRef.current = reviewWaitingForThumbnails; }, [reviewWaitingForThumbnails]);
   useEffect(() => { fastKeeperModeRef.current = fastKeeperMode; }, [fastKeeperMode]);
   useEffect(() => { aiReviewEnabledRef.current = aiReviewEnabled; }, [aiReviewEnabled]);
+  useEffect(() => { superSpeedModeRef.current = superSpeedMode; }, [superSpeedMode]);
   useEffect(() => { faceConcurrencyRef.current = faceConcurrency; }, [faceConcurrency]);
   useEffect(() => { gpuFaceAccelerationRef.current = gpuFaceAcceleration; }, [gpuFaceAcceleration]);
   useEffect(() => { reviewFaceAnalysisRef.current = reviewFaceAnalysis; }, [reviewFaceAnalysis]);
@@ -2735,6 +2752,9 @@ export function ThumbnailGrid() {
   useEffect(() => { reviewPersonDetectionRef.current = reviewPersonDetection; }, [reviewPersonDetection]);
   useEffect(() => { reviewVisualDuplicatesRef.current = reviewVisualDuplicates; }, [reviewVisualDuplicates]);
   useEffect(() => { eventModeRef.current = eventMode; }, [eventMode]);
+  useEffect(() => {
+    if (!sharpnessInFlightRef.current) setReviewLoopTick((value) => value + 1);
+  }, [aiReviewEnabled, eventMode, fastKeeperMode, reviewFaceAnalysis, reviewFaceMatching, reviewPersonDetection, reviewVisualDuplicates, superSpeedMode]);
   useEffect(() => {
     const stopBackgroundReview = () => {
       reviewGenerationRef.current++;
@@ -2762,6 +2782,7 @@ export function ThumbnailGrid() {
     reviewGenerationRef.current++;
     sharpnessInFlightRef.current = false;
     faceAnalysisFailureCountRef.current.clear();
+    optionalFeatureFailureCountRef.current.clear();
     setSelectedFaceGroupIds(new Set());
     setManualFaceGroups([]);
     setManualFaceSplitPaths(new Set());
@@ -2770,6 +2791,7 @@ export function ThumbnailGrid() {
     setFaceThresholdOverrides({});
     lastCatalogFacePersistRef.current = '';
     lastCatalogFaceFileFingerprintsRef.current.clear();
+    reviewScanCursorRef.current = 0;
     mediaDateSortCache.clear();
     mediaSearchTextCache.clear();
   }, [selectedSource]);
@@ -2877,10 +2899,15 @@ export function ThumbnailGrid() {
     const currentReviewFaceAnalysis = reviewFaceAnalysisRef.current && !currentFastKeeperMode;
     const currentReviewFaceMatching = reviewFaceMatchingRef.current && currentReviewFaceAnalysis;
     const currentReviewVisualDuplicates = reviewVisualDuplicatesRef.current;
+    const currentSuperSpeedMode = superSpeedModeRef.current;
     const selectedPathSet = selectedPathSetRef.current;
     const queuedPathSet = queuedPathSetRef.current;
     const reviewGeneration = reviewGenerationRef.current;
     const adaptive = reviewAdaptiveRef.current;
+    const withWorkingReview = (file: MediaFile): MediaFile => {
+      const patch = reviewScoreOverlay.get(file.path);
+      return patch ? { ...file, ...patch } : file;
+    };
     // With the streaming per-file IPC approach, batchSize controls how many
     // files are queued into the main-process semaphore at once. Larger = more
     // pipelining (canvas work overlaps with ONNX), but also more memory for
@@ -2919,6 +2946,23 @@ export function ThumbnailGrid() {
         rankedCandidatePaths.add(file.path);
       }
     };
+    const requestedProfileFor = (f: MediaFile): ReviewAnalysisProfile | null => {
+      if (!currentReviewFaceAnalysis) return null;
+      if (currentSuperSpeedMode) {
+        return selectSuperSpeedProfile(f, {
+          eventMode: eventModeRef.current,
+          faceMatching: currentReviewFaceMatching,
+          personDetection: reviewPersonDetectionRef.current,
+          poseAnalysis: isSportsEventMode(eventModeRef.current),
+          priority: selectedPathSet.has(f.path) || queuedPathSet.has(f.path),
+        });
+      }
+      return shouldRunOnnxForReview(f, {
+        reviewFaceAnalysis: currentReviewFaceAnalysis,
+        reviewFaceMatching: currentReviewFaceMatching,
+        reviewPersonDetection: reviewPersonDetectionRef.current,
+      }) ? 'full' : null;
+    };
     const offerIfNeeded = (f: MediaFile) => {
       if (f.type !== 'photo') return;
       // ONNX face/person analysis decodes from the file PATH in the main process,
@@ -2928,59 +2972,53 @@ export function ThumbnailGrid() {
       // thumbnails would exhaust renderer memory), but the GPU can churn every
       // file by path. Canvas-derived signals (sharpness, hash, subject) still
       // require the thumbnail.
-      const needsOnnx = currentReviewFaceAnalysis && shouldRunOnnxForReview(f, {
-        reviewFaceAnalysis: currentReviewFaceAnalysis,
-        reviewFaceMatching: currentReviewFaceMatching,
-        reviewPersonDetection: reviewPersonDetectionRef.current,
+      const needsOnnx = requestedProfileFor(f) !== null;
+      const needsCanvas = needsReviewCanvasAnalysis(f, {
+        fastKeeperMode: currentFastKeeperMode,
+        faceAnalysis: currentReviewFaceAnalysis,
+        visualDuplicates: currentReviewVisualDuplicates,
+        superSpeedMode: currentSuperSpeedMode,
       });
-      const needsCanvas = !!f.thumbnail && !(
-        typeof f.sharpnessScore === 'number' &&
-        (!currentReviewVisualDuplicates || f.visualHash) &&
-        (currentFastKeeperMode || !currentReviewFaceAnalysis || typeof f.subjectSharpnessScore === 'number') &&
-        f.sceneAnalysis !== undefined &&
-        (
-          ((f.faceBoxes?.length ?? 0) === 0 && (f.personBoxes?.length ?? 0) === 0) ||
-          typeof f.sceneAnalysis.subjectFocusConfidence === 'number'
-        )
-      );
       if (!needsOnnx && !needsCanvas) return;
       offerCandidate(f);
     };
-    const visibleCandidates = currentSortedFiles.slice(0, 240);
+    const visibleCandidates = currentSortedFiles.slice(0, 240).map(withWorkingReview);
     for (const f of visibleCandidates) offerIfNeeded(f);
     const scanCount = currentFiles.length;
     const scanLimit = Math.min(scanCount, Math.max(batchSize * 32, batchSize + visibleCandidates.length));
     let inspected = 0;
-    while (inspected < scanLimit && scanCount > 0) {
+    // Normally inspect only a bounded window. If that window is already fully
+    // analysed, keep walking the stable cursor until we find one candidate or
+    // prove the entire catalogue complete. This avoids both the old million-file
+    // stall and hundreds of React re-renders just to advance an empty cursor.
+    while (inspected < scanCount && scanCount > 0 && (inspected < scanLimit || rankedCandidates.length === 0)) {
       const index = reviewScanCursorRef.current % scanCount;
-      offerIfNeeded(currentFiles[index]);
+      offerIfNeeded(withWorkingReview(currentFiles[index]));
       reviewScanCursorRef.current = (index + 1) % scanCount;
       inspected++;
     }
     const candidates = rankedCandidates
       .sort((a, b) => a.rank - b.rank)
       .map((entry) => entry.file);
-    if (candidates.length === 0) return;
+    if (candidates.length === 0) {
+      dispatch({ type: 'COMMIT_REVIEW_SCORES' });
+      return;
+    }
     const run = () => {
       // Mark in-flight NOW, inside the scheduler callback, so that if the
       // effect cleanup fires before this runs (e.g. a tick bump while the
       // idle is pending) the cleanup can safely reset the ref to false and
       // the stuck-forever deadlock is avoided.
       sharpnessInFlightRef.current = true;
-      // ── Per-file pipeline ──────────────────────────────────────────────────
-      // Send ONE IPC call per file instead of batching all N into one call.
-      // Previously: renderer awaited ONE IPC call with N paths → main process ran
-      // them sequentially (semaphore=1) → renderer blocked until all N were done.
-      // Now: N IPC calls fire concurrently → main process still serialises through
-      // the semaphore (only 1 ONNX inference at a time) but results stream back
-      // one at a time → renderer dispatches each result immediately → UI updates
-      // incrementally and the loop sees progress in real time.
-      //
-      // Canvas work (sharpness, hash, analyzeSubject) runs in the renderer
-      // concurrently with the IPC round-trip, overlapping CPU work efficiently.
+      // ── Staged, batched pipeline ───────────────────────────────────────────────
+      // Group paths by the minimum analysis depth they need and send short IPC
+      // batches. The main process still streams work through its bounded native
+      // gates, while the renderer avoids one invoke/result envelope per photo.
+      // Short batches preserve responsive visible-result updates and overlap the
+      // independent canvas pass with decode/inference.
       const runStartedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
       void (async () => {
-      const reviewPipelineConcurrency = currentFastKeeperMode ? 1 : Math.min(24, Math.max(4, adaptive.pipelineLimit, currentFaceConcurrency));
+      const reviewPipelineConcurrency = currentFastKeeperMode ? 1 : Math.min(16, Math.max(4, adaptive.pipelineLimit, currentFaceConcurrency));
       const canvasConcurrency = currentFastKeeperMode ? 1 : Math.min(4, Math.max(2, adaptive.canvasLimit));
       const withCanvasSlot = async <T,>(task: () => Promise<T>): Promise<T> => {
         const gate = canvasReviewGateRef.current;
@@ -2995,6 +3033,53 @@ export function ThumbnailGrid() {
           gate.queue.shift()?.();
         }
       };
+      type NativeAnalysisBatch = Awaited<ReturnType<typeof window.electronAPI.analyzeFaces>>;
+      const profileByPath = new Map<string, ReviewAnalysisProfile>();
+      const candidateByPath = new Map(candidates.map((file) => [file.path, file]));
+      const pathsByProfile = new Map<ReviewAnalysisProfile, string[]>([
+        ['detect', []],
+        ['subjects', []],
+        ['full', []],
+      ]);
+      for (const file of candidates) {
+        const profile = requestedProfileFor(file);
+        if (!profile) continue;
+        profileByPath.set(file.path, profile);
+        pathsByProfile.get(profile)?.push(file.path);
+      }
+      const nativeAnalysisByPath = new Map<string, Promise<NativeAnalysisBatch>>();
+      const nativeIpcBatchSize = 16;
+      for (const [profile, profilePaths] of pathsByProfile) {
+        for (let offset = 0; offset < profilePaths.length; offset += nativeIpcBatchSize) {
+          const chunk = profilePaths.slice(offset, offset + nativeIpcBatchSize);
+          const orientations = chunk.map((filePath) => candidateByPath.get(filePath)?.orientation);
+          const hasCompleteOrientations = orientations.every((value) =>
+            Number.isInteger(value) && Number(value) >= 1 && Number(value) <= 8);
+          const request: Promise<NativeAnalysisBatch> = window.electronAPI
+            .analyzeFaces(chunk, {
+              profile,
+              ...(hasCompleteOrientations
+                ? { orientations: orientations as Array<1 | 2 | 3 | 4 | 5 | 6 | 7 | 8> }
+                : {}),
+            })
+            .catch((error: unknown) => chunk.map((filePath) => ({
+              path: filePath,
+              boxes: [],
+              personBoxes: [],
+              embeddings: [],
+              embeddingBoxes: [],
+              faceCount: 0,
+              personCount: 0,
+              error: error instanceof Error ? error.message : String(error),
+            })));
+          chunk.forEach((filePath, index) => {
+            nativeAnalysisByPath.set(filePath, request.then((results) => {
+              const result = results[index] ?? results.find((item) => item.path === filePath);
+              return result ? [result] : [];
+            }));
+          });
+        }
+      }
       const entries = await mapWithConcurrency(candidates, reviewPipelineConcurrency, async (f): Promise<[string, Partial<MediaFile>]> => {
         if (reviewGeneration !== reviewGenerationRef.current) return [f.path, {}];
         const thumbnail = f.thumbnail as string;
@@ -3007,26 +3092,27 @@ export function ThumbnailGrid() {
           // later pass once the thumbnail lands.
           const needsSharpness = hasThumbnail && typeof f.sharpnessScore !== 'number';
           const needsVisualHash = hasThumbnail && currentReviewVisualDuplicates && !f.visualHash;
-          const needsSubject = hasThumbnail && currentReviewFaceAnalysis && !(typeof f.subjectSharpnessScore === 'number' && f.faceBoxes !== undefined);
+          const needsSubject = hasThumbnail && currentReviewFaceAnalysis && !currentSuperSpeedMode && !(typeof f.subjectSharpnessScore === 'number' && f.faceBoxes !== undefined);
           const hasStoredSubjectBoxes = (f.faceBoxes?.length ?? 0) > 0 || (f.personBoxes?.length ?? 0) > 0;
           const needsScene = hasThumbnail && (
             f.sceneAnalysis === undefined ||
             (hasStoredSubjectBoxes && typeof f.sceneAnalysis.subjectFocusConfidence !== 'number')
           );
-          const needsOnnx = shouldRunOnnxForReview(f, {
-            reviewFaceAnalysis: currentReviewFaceAnalysis,
-            reviewFaceMatching: currentReviewFaceMatching,
-            reviewPersonDetection: reviewPersonDetectionRef.current,
-          });
+          const requestedProfile = profileByPath.get(f.path) ?? null;
+          const needsOnnx = requestedProfile !== null;
           // Kick off ONNX IPC and one shared thumbnail canvas pass in parallel.
-          // ONNX is serialised in the main process via the semaphore — concurrent
-          // IPC calls queue there and return one at a time, but we overlap the
-          // renderer-side canvas work with whatever is ahead in the queue.
+          // Native work is bounded by stage-aware main-process gates; renderer
+          // canvas work proceeds independently while its short batch completes.
           let onnxInvocationError: string | undefined;
           const [onnxArr, thumbnailSignals] = await Promise.all([
             !needsOnnx
               ? Promise.resolve([] as Awaited<ReturnType<typeof window.electronAPI.analyzeFaces>>)
-              : window.electronAPI.analyzeFaces(f.path).catch((error: unknown) => {
+              : (nativeAnalysisByPath.get(f.path) ?? window.electronAPI.analyzeFaces(f.path, {
+                  profile: requestedProfile ?? 'full',
+                  ...(Number.isInteger(f.orientation) && Number(f.orientation) >= 1 && Number(f.orientation) <= 8
+                    ? { orientation: f.orientation as 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 }
+                    : {}),
+                })).catch((error: unknown) => {
                   onnxInvocationError = error instanceof Error ? error.message : String(error);
                   return [] as Awaited<ReturnType<typeof window.electronAPI.analyzeFaces>>;
                 }),
@@ -3068,7 +3154,7 @@ export function ThumbnailGrid() {
                 subjectReasons: f.subjectReasons ?? [],
               };
 
-          const onnx = onnxArr[0]; // single-path call always returns 1 result
+          const onnx = onnxArr[0];
           // onnx.error covers: models not downloaded yet (new device first run),
           // a stale/cancelled job from a source switch, a decode failure, or an
           // inference timeout. None of these mean "this photo has zero faces" —
@@ -3110,6 +3196,52 @@ export function ThumbnailGrid() {
           // the patch sparsely: review-score overlays are merged with object
           // spread, so undefined fields would erase existing metadata.
           const patch: Partial<MediaFile> = {};
+          if (onnxOk && requestedProfile) {
+            patch.reviewAnalysisStage = requestedProfile === 'detect'
+              ? 'screened'
+              : requestedProfile === 'subjects'
+                ? 'subjects'
+                : 'full';
+            patch.reviewAnalysisFeatures = {
+              faceDetection: onnx.features?.faceDetection ?? true,
+              personDetection: onnx.features?.personDetection ?? false,
+              faceMatching: onnx.features?.faceMatching ?? false,
+              poseAnalysis: onnx.features?.poseAnalysis ?? false,
+            };
+
+            if (requestedProfile === 'full') {
+              const previousOptionalFailures = optionalFeatureFailureCountRef.current.get(f.path) ?? {
+                faceMatching: 0,
+                poseAnalysis: 0,
+              };
+              const matchingRequested = currentReviewFaceMatching && onnxFaceBoxes.length > 0;
+              const poseRequested = isSportsEventMode(eventModeRef.current) && onnxPersonBoxes.length > 0;
+              const matchingIncomplete = matchingRequested && !(onnx.features?.faceMatching ?? false);
+              const poseIncomplete = poseRequested && !(onnx.features?.poseAnalysis ?? false);
+              const nextOptionalFailures = {
+                faceMatching: matchingIncomplete ? previousOptionalFailures.faceMatching + 1 : 0,
+                poseAnalysis: poseIncomplete ? previousOptionalFailures.poseAnalysis + 1 : 0,
+              };
+              if (matchingIncomplete || poseIncomplete) {
+                optionalFeatureFailureCountRef.current.set(f.path, nextOptionalFailures);
+              } else {
+                optionalFeatureFailureCountRef.current.delete(f.path);
+              }
+              const unavailableFeatures = {
+                ...f.reviewAnalysisUnavailableFeatures,
+                ...(matchingIncomplete && shouldFinalizeFaceAnalysisFailure(nextOptionalFailures.faceMatching)
+                  ? { faceMatching: true }
+                  : {}),
+                ...(poseIncomplete && (
+                  onnx.features?.poseAnalysisAvailable === false ||
+                  shouldFinalizeFaceAnalysisFailure(nextOptionalFailures.poseAnalysis)
+                ) ? { poseAnalysis: true } : {}),
+              };
+              if (unavailableFeatures.faceMatching || unavailableFeatures.poseAnalysis) {
+                patch.reviewAnalysisUnavailableFeatures = unavailableFeatures;
+              }
+            }
+          }
           if (hash !== undefined) patch.visualHash = hash;
           if (sharpnessScore !== undefined) patch.sharpnessScore = sharpnessScore;
           if (sceneAnalysis !== undefined) {
@@ -3141,25 +3273,28 @@ export function ThumbnailGrid() {
               patch.personCount = f.personCount ?? 0;
               patch.personBoxes = f.personBoxes ?? [];
             }
+            patch.reviewAnalysisUnavailable = true;
           }
           if (onnxFaceBoxes.length > 0) patch.faceDetection = 'native';
           else if (!onnxOk && subject.faceDetection !== undefined) patch.faceDetection = subject.faceDetection;
-          if (onnxOk && onnx?.embeddings?.[0]) patch.faceEmbedding = onnx.embeddings[0];
-          if (onnxOk && onnx?.embeddings?.length) patch.faceEmbeddings = onnx.embeddings;
-          if (onnxEmbeddingBoxes.length > 0) patch.faceEmbeddingBoxes = onnxEmbeddingBoxes;
-          if (onnxOk) {
+          if (onnxOk && requestedProfile === 'full' && onnx?.embeddings?.[0]) patch.faceEmbedding = onnx.embeddings[0];
+          if (onnxOk && requestedProfile === 'full' && onnx?.embeddings?.length) patch.faceEmbeddings = onnx.embeddings;
+          if (requestedProfile === 'full' && onnxEmbeddingBoxes.length > 0) patch.faceEmbeddingBoxes = onnxEmbeddingBoxes;
+          if (onnxOk && requestedProfile !== 'detect') {
             patch.personCount = onnxPersonBoxes.length;
             patch.personBoxes = onnxPersonBoxes;
           } else {
             if (f.personCount !== undefined) patch.personCount = f.personCount;
             if (f.personBoxes !== undefined) patch.personBoxes = f.personBoxes;
           }
-          if (onnxOk && onnx?.poses?.length) patch.poses = onnx.poses;
+          if (onnxOk && requestedProfile === 'full' && onnx?.poses?.length) patch.poses = onnx.poses;
           else if (f.poses !== undefined) patch.poses = f.poses;
           patch.subjectReasons = [...new Set([
             ...mergedReasons,
             ...(sceneAnalysis?.subjectReasons ?? []),
             ...(terminalOnnxFailure ? ['face analysis unavailable'] : []),
+            ...(patch.reviewAnalysisUnavailableFeatures?.faceMatching ? ['face matching unavailable'] : []),
+            ...(patch.reviewAnalysisUnavailableFeatures?.poseAnalysis ? ['pose analysis unavailable'] : []),
           ])];
           if (reviewGeneration === reviewGenerationRef.current) {
             dispatch({ type: 'SET_REVIEW_SCORES', scores: { [f.path]: patch } });
@@ -3170,6 +3305,7 @@ export function ThumbnailGrid() {
           // On failure dispatch what we have so the file exits the candidate pool.
           // Re-scan AI clears face data explicitly, so it can still retry later.
           const patch: Partial<MediaFile> = {
+            reviewAnalysisUnavailable: true,
             sharpnessScore: f.sharpnessScore ?? 0,
             subjectSharpnessScore: f.subjectSharpnessScore ?? 0,
             visualHash: f.visualHash ?? failureTag,
@@ -3204,21 +3340,29 @@ export function ThumbnailGrid() {
             adaptive.pipelineLimit = Math.max(4, Math.floor(adaptive.pipelineLimit * 0.75));
             adaptive.canvasLimit = Math.max(1, adaptive.canvasLimit - 1);
           } else if (nextAvg < 220) {
-            adaptive.pipelineLimit = Math.min(24, Math.max(adaptive.pipelineLimit + 2, currentFaceConcurrency));
+            adaptive.pipelineLimit = Math.min(16, Math.max(adaptive.pipelineLimit + 2, currentFaceConcurrency));
             adaptive.canvasLimit = Math.min(4, adaptive.canvasLimit + 1);
           }
         }
         const now = Date.now();
-        const largeReview = currentFiles.length >= 5000;
-        const regroupIntervalMs = largeReview ? 15000 : 6000;
+        const regroupIntervalMs = currentFiles.length >= 250_000
+          ? 10 * 60_000
+          : currentFiles.length >= 50_000
+            ? 2 * 60_000
+            : currentFiles.length >= 5_000
+              ? 15_000
+              : 6_000;
         const finalBatch = entries.length < batchSize;
         const shouldRefreshGroups = finalBatch || now - lastReviewRegroupAtRef.current >= regroupIntervalMs;
-        if (shouldRefreshGroups && phaseRef.current !== 'importing') {
+        if (shouldRefreshGroups && phaseRef.current !== 'importing' && phaseRef.current !== 'scanning') {
           lastReviewRegroupAtRef.current = now;
           const regroup = () => {
             if (reviewGeneration !== reviewGenerationRef.current || phaseRef.current === 'importing') return;
             if (reviewFaceMatchingRef.current) dispatch({ type: 'GROUP_FACE_SIMILAR', threshold: 10, embeddingThreshold: faceGroupEmbeddingThresholdRef.current });
             if (reviewVisualDuplicatesRef.current) dispatch({ type: 'GROUP_VISUAL_DUPLICATES', threshold: 8 });
+            // Grouping can turn a canvas-only standalone frame into a native
+            // comparison candidate. Wake the cascade after reducer state lands.
+            window.setTimeout(() => setReviewLoopTick((value) => value + 1), 0);
           };
           if (typeof window.requestIdleCallback === 'function') {
             window.requestIdleCallback(regroup, { timeout: 1200 });
@@ -3271,7 +3415,11 @@ export function ThumbnailGrid() {
   }, []);
 
   const rerunFaceScan = useCallback(() => {
+    reviewGenerationRef.current++;
     faceAnalysisFailureCountRef.current.clear();
+    optionalFeatureFailureCountRef.current.clear();
+    sharpnessInFlightRef.current = false;
+    void window.electronAPI.cancelFaceAnalysis?.().catch(() => undefined);
     dispatch({ type: 'CLEAR_FACE_DATA' });
     resumeAiReview();
   }, [dispatch, resumeAiReview]);
@@ -5069,8 +5217,15 @@ export function ThumbnailGrid() {
     return () => window.clearInterval(timer);
   }, [faceScanEtaActive]);
   const applyLowEndSpeed = useCallback((autoTriggered = false) => {
+    if (autoTriggered) {
+      // Preserve analysis reliability: a slow device now enables the cascaded
+      // route instead of silently disabling face/person/duplicate evidence.
+      dispatch({ type: 'SET_SUPER_SPEED_MODE', enabled: true });
+      dispatch({ type: 'SET_AUTO_SPEED_MODE', enabled: false });
+      void window.electronAPI.setSettings({ superSpeedMode: true, autoSpeedMode: false });
+      return;
+    }
     dispatch({ type: 'SET_PERF_TIER', tier: 'low' });
-    if (autoTriggered) dispatch({ type: 'SET_AUTO_SPEED_MODE', enabled: false });
     void window.electronAPI.setSettings({
       perfTier: 'low',
       fastKeeperMode: true,
@@ -5081,7 +5236,7 @@ export function ThumbnailGrid() {
       reviewFaceMatching: false,
       reviewPersonDetection: false,
       reviewVisualDuplicates: false,
-      autoSpeedMode: autoTriggered ? false : autoSpeedMode,
+      autoSpeedMode,
     });
     void window.electronAPI.setFaceAnalysisConcurrency?.(1);
   }, [autoSpeedMode, dispatch]);
@@ -5101,6 +5256,11 @@ export function ThumbnailGrid() {
     dispatch({ type: 'SET_AUTO_SPEED_MODE', enabled: next });
     void window.electronAPI.setSettings({ autoSpeedMode: next });
   }, [autoSpeedMode, dispatch]);
+  const handleSuperSpeedToggle = useCallback(() => {
+    const next = !superSpeedMode;
+    dispatch({ type: 'SET_SUPER_SPEED_MODE', enabled: next });
+    void window.electronAPI.setSettings({ superSpeedMode: next });
+  }, [dispatch, superSpeedMode]);
   const sprintRemaining = useMemo(() => {
     let count = 0;
     for (const file of sortedFiles) {
@@ -5848,6 +6008,22 @@ export function ThumbnailGrid() {
         {isPro && aiReviewEnabled && totalPhotoCount > 0 && (
           <button
             type="button"
+            onClick={handleSuperSpeedToggle}
+            className={`shrink-0 rounded border px-2 py-1 text-[10px] transition-colors ${
+              superSpeedMode
+                ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
+                : 'border-border bg-surface-raised text-text-muted hover:border-emerald-500/35 hover:text-emerald-300'
+            }`}
+            title={superSpeedMode
+              ? 'Cascaded review is active: cheap screening first, deep subject analysis only where it changes a decision.'
+              : 'Run full configured AI depth on every frame.'}
+          >
+            Super Speed {superSpeedMode ? 'On' : 'Off'}
+          </button>
+        )}
+        {isPro && aiReviewEnabled && totalPhotoCount > 0 && (
+          <button
+            type="button"
             onClick={() => setShowAiReviewStrip((value) => !value)}
             className={`shrink-0 rounded border px-2 py-1 text-[10px] transition-colors ${
               showAiReviewStrip
@@ -5869,8 +6045,8 @@ export function ThumbnailGrid() {
                 : 'border-border bg-surface-raised text-text-muted hover:border-yellow-500/35 hover:text-yellow-300'
             }`}
             title={autoSpeedMode
-              ? 'Auto speed is watching face-scan throughput and will switch to Low-end speed if this card is too slow.'
-              : 'Watch face-scan speed and automatically switch to Low-end speed on slow devices.'}
+              ? 'Auto speed is watching throughput and will enable cascaded Super Speed if this card is too slow.'
+              : 'Watch throughput and enable cascaded Super Speed automatically without turning off review evidence.'}
           >
             Auto speed {autoSpeedMode ? 'On' : 'Off'}
           </button>
@@ -6511,7 +6687,7 @@ export function ThumbnailGrid() {
         {viewMode === 'compare' ? (
           <div className="h-full relative">
             <CompareView
-              files={compareDisplayFiles}
+              files={compareDisplayFiles.map(liveReviewFile)}
               previewStopsByPath={comparePreviewStopsByPath}
               previewWhiteBalanceByPath={comparePreviewWhiteBalanceByPath}
               selectionCount={compareFiles.length >= 2 ? selectedPaths.length : 0}
@@ -6526,7 +6702,7 @@ export function ThumbnailGrid() {
         ) : viewMode === 'single' && focusedFile ? (
           <div className="h-full relative">
             <SingleView
-              file={focusedFile}
+              file={liveReviewFile(focusedFile)}
               files={files}
               index={focusedIndex}
               total={sortedFiles.length}
@@ -6544,8 +6720,9 @@ export function ThumbnailGrid() {
               >
                 {splitVirtualizer.getVirtualItems().map((virtualItem) => {
                   const i = virtualItem.index;
-                  const file = sortedFiles[i];
-                  if (!file) return null;
+                  const baseFile = sortedFiles[i];
+                  if (!baseFile) return null;
+                  const file = liveReviewFile(baseFile);
                   return (
                     <div
                       key={virtualItem.key}
@@ -6580,7 +6757,7 @@ export function ThumbnailGrid() {
             <div className="flex-1 min-w-0 relative">
               {focusedFile ? (
                 <SingleView
-                  file={focusedFile}
+                  file={liveReviewFile(focusedFile)}
                   files={files}
                   index={focusedIndex}
                   total={sortedFiles.length}
@@ -6709,19 +6886,20 @@ export function ThumbnailGrid() {
                         <div className="thumbnail-grid grid" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${thumbnailSize}px, 1fr))`, gap: '12px' }}>
                           {folderFiles.map((file) => {
                             const i = pathToSortedIndex.get(file.path) ?? -1;
+                            const liveFile = liveReviewFile(file);
                             return (
                               <ThumbnailCard
                                 key={file.path}
                                 index={i}
-                                file={file}
+                                file={liveFile}
                                 focused={i === focusedIndex}
                                 selected={selectedIndices.has(i)}
-                                queued={queuedSet.has(file.path)}
-                                forceLoad={forceVisibleThumbnails(i, file.path)}
-                                exposurePreviewStops={getThumbnailExposureStops(file)}
-                                whiteBalancePreview={getThumbnailWhiteBalance(file)}
+                                queued={queuedSet.has(liveFile.path)}
+                                forceLoad={forceVisibleThumbnails(i, liveFile.path)}
+                                exposurePreviewStops={getThumbnailExposureStops(liveFile)}
+                                whiteBalancePreview={getThumbnailWhiteBalance(liveFile)}
                                 isBurstBest={false}
-                                burstCollapsed={!!file.burstId && collapsedSet.has(file.burstId)}
+                                burstCollapsed={!!liveFile.burstId && collapsedSet.has(liveFile.burstId)}
                                 onBurstToggle={handleBurstToggle}
                                 onFaceGroupClick={handleFaceGroupFilter}
                                 onClickCard={handleCardClick}
@@ -6757,19 +6935,20 @@ export function ThumbnailGrid() {
                       >
                         {rowFiles.map((file, offset) => {
                           const i = startIndex + offset;
+                          const liveFile = liveReviewFile(file);
                           return (
                             <ThumbnailCard
                               key={file.path}
                               index={i}
-                              file={file}
+                              file={liveFile}
                               focused={i === focusedIndex}
                               selected={selectedIndices.has(i)}
-                              queued={queuedSet.has(file.path)}
-                              forceLoad={forceVisibleThumbnails(i, file.path)}
-                              exposurePreviewStops={getThumbnailExposureStops(file)}
-                              whiteBalancePreview={getThumbnailWhiteBalance(file)}
+                              queued={queuedSet.has(liveFile.path)}
+                              forceLoad={forceVisibleThumbnails(i, liveFile.path)}
+                              exposurePreviewStops={getThumbnailExposureStops(liveFile)}
+                              whiteBalancePreview={getThumbnailWhiteBalance(liveFile)}
                               isBurstBest={false}
-                              burstCollapsed={!!file.burstId && collapsedSet.has(file.burstId)}
+                              burstCollapsed={!!liveFile.burstId && collapsedSet.has(liveFile.burstId)}
                               onBurstToggle={handleBurstToggle}
                               onFaceGroupClick={handleFaceGroupFilter}
                               onClickCard={handleCardClick}
@@ -6788,25 +6967,26 @@ export function ThumbnailGrid() {
                   className="thumbnail-grid grid"
                   style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${thumbnailSize}px, 1fr))`, gap: '12px' }}
                 >
-                  {sortedFiles.map((file, i) => (
-                    <ThumbnailCard
+                  {sortedFiles.map((file, i) => {
+                    const liveFile = liveReviewFile(file);
+                    return <ThumbnailCard
                       key={file.path}
                       index={i}
-                      file={file}
+                      file={liveFile}
                       focused={i === focusedIndex}
                       selected={selectedIndices.has(i)}
-                      queued={queuedSet.has(file.path)}
-                      forceLoad={forceVisibleThumbnails(i, file.path)}
-                      exposurePreviewStops={getThumbnailExposureStops(file)}
-                      whiteBalancePreview={getThumbnailWhiteBalance(file)}
+                      queued={queuedSet.has(liveFile.path)}
+                      forceLoad={forceVisibleThumbnails(i, liveFile.path)}
+                      exposurePreviewStops={getThumbnailExposureStops(liveFile)}
+                      whiteBalancePreview={getThumbnailWhiteBalance(liveFile)}
                       isBurstBest={false}
-                      burstCollapsed={!!file.burstId && collapsedSet.has(file.burstId)}
+                      burstCollapsed={!!liveFile.burstId && collapsedSet.has(liveFile.burstId)}
                       onBurstToggle={handleBurstToggle}
                       onFaceGroupClick={handleFaceGroupFilter}
                       onClickCard={handleCardClick}
                       onDoubleClickCard={handleGridDoubleClick}
-                    />
-                  ))}
+                    />;
+                  })}
                 </div>
               )}
             </div>

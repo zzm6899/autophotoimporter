@@ -123,6 +123,20 @@ export interface FaceAnalysisResult {
   };
 }
 
+/**
+ * Per-request analysis depth. This lets the review pipeline cascade from a
+ * very cheap screen into richer subject analysis without changing the user's
+ * global feature settings or reloading ONNX sessions between requests.
+ */
+export type FaceAnalysisProfile = 'detect' | 'subjects' | 'full';
+
+export interface FaceAnalysisOptions {
+  /** Defaults to `full` for backwards compatibility. */
+  profile?: FaceAnalysisProfile;
+  /** Optional scan-time EXIF orientation hint (1-8), avoiding a second metadata read. */
+  orientation?: ExifOrientation;
+}
+
 // ---------------------------------------------------------------------------
 // Model resolution
 // ---------------------------------------------------------------------------
@@ -296,12 +310,16 @@ export function configureFaceFeatureOptions(options: { faceMatching?: boolean; p
   if (changed && sessionLoadPromise) void disposeFaceEngine().catch(() => undefined);
 }
 
-export function getFaceFeatureOptions(): { faceMatching: boolean; personDetection: boolean; poseAnalysis: boolean; embeddingLimit: number } {
+export function getFaceFeatureOptions(
+  profile: FaceAnalysisProfile = 'full',
+): { faceMatching: boolean; personDetection: boolean; poseAnalysis: boolean; embeddingLimit: number } {
+  const includeSubjects = profile !== 'detect';
+  const includeFullAnalysis = profile === 'full';
   return {
-    faceMatching: faceMatchingEnabled,
-    personDetection: personDetectionEnabled,
-    poseAnalysis: isPoseAnalysisEnabled(),
-    embeddingLimit: faceEmbeddingLimit,
+    faceMatching: includeFullAnalysis && faceMatchingEnabled,
+    personDetection: includeSubjects && personDetectionEnabled,
+    poseAnalysis: includeFullAnalysis && isPoseAnalysisEnabled(),
+    embeddingLimit: includeFullAnalysis && faceMatchingEnabled ? faceEmbeddingLimit : 0,
   };
 }
 
@@ -584,7 +602,7 @@ export function getFaceProviderDiagnostics(): FaceProviderDiagnostic[] {
 // nativeImage is only available in the main process.
 import { nativeImage } from 'electron';
 import exifr from 'exifr';
-import { extractLargestEmbeddedJpeg, readExifOrientation } from './exif-parser';
+import { extractLargestEmbeddedJpeg, getDetectionPixels, getThumbnailPayload, peekPreviewFile, readExifOrientation } from './exif-parser';
 
 /**
  * Load a nativeImage from a path, with RAW fallback via exifr.thumbnail().
@@ -596,25 +614,85 @@ import { extractLargestEmbeddedJpeg, readExifOrientation } from './exif-parser';
 const imageDecodeCache = new Map<string, Electron.NativeImage>();
 const MAX_DECODE_CACHE = 8;
 
+function imageDecodeCacheKey(imagePath: string, profile: FaceAnalysisProfile): string {
+  return `${profile}:${imagePath}`;
+}
+
 /** Clear the in-process image decode cache. Call when the scan source changes. */
 export function clearImageDecodeCache(): void {
   imageDecodeCache.clear();
 }
 
-async function loadNativeImageCached(imagePath: string): Promise<Electron.NativeImage> {
-  const cached = imageDecodeCache.get(imagePath);
+async function loadNativeImageCached(
+  imagePath: string,
+  profile: FaceAnalysisProfile,
+): Promise<Electron.NativeImage> {
+  const cacheKey = imageDecodeCacheKey(imagePath, profile);
+  const cached = imageDecodeCache.get(cacheKey);
   if (cached) return cached;
-  const img = await loadNativeImage(imagePath);
+  const img = await loadNativeImage(imagePath, profile);
   if (imageDecodeCache.size >= MAX_DECODE_CACHE) {
     // Evict oldest entry
     const firstKey = imageDecodeCache.keys().next().value;
     if (firstKey !== undefined) imageDecodeCache.delete(firstKey);
   }
-  imageDecodeCache.set(imagePath, img);
+  imageDecodeCache.set(cacheKey, img);
   return img;
 }
 
-async function loadNativeImage(imagePath: string): Promise<Electron.NativeImage> {
+export function isUsableDetectionPreviewSize(width: number, height: number): boolean {
+  const shortSide = Math.min(width, height);
+  const longSide = Math.max(width, height);
+  return Number.isFinite(width) && Number.isFinite(height) && shortSide >= 120 && longSide >= 240;
+}
+
+function usableDetectionPreview(image: Electron.NativeImage): boolean {
+  if (image.isEmpty()) return false;
+  const size = image.getSize();
+  return isUsableDetectionPreviewSize(size.width, size.height);
+}
+
+async function loadDetectionThumbnail(imagePath: string): Promise<Electron.NativeImage | null> {
+  const payload = await getThumbnailPayload(imagePath).catch(() => undefined);
+  if (!payload) return null;
+  try {
+    const image = payload.kind === 'file'
+      ? nativeImage.createFromPath(payload.diskPath)
+      : nativeImage.createFromBuffer(payload.buffer);
+    return usableDetectionPreview(image) ? image : null;
+  } catch {
+    return null;
+  }
+}
+
+async function loadNativeImage(
+  imagePath: string,
+  profile: FaceAnalysisProfile = 'full',
+): Promise<Electron.NativeImage> {
+  // Detector-only screening does not need eye/identity detail. Reuse the
+  // scan/grid's existing ~320px thumbnail (or its embedded RAW thumbnail)
+  // rather than decoding a megapixel source. Reject undersized/corrupt
+  // thumbnails and fall through to the normal 1920px/original path.
+  if (profile === 'detect') {
+    const detectionThumbnail = await loadDetectionThumbnail(imagePath);
+    if (detectionThumbnail) return detectionThumbnail;
+  }
+
+  // The scanner normally creates a 1920px preview before AI review starts.
+  // Reuse that already-decoded artifact when present instead of decoding the
+  // original JPEG/RAW for a second time. peekPreviewFile never generates a
+  // preview, so this cannot recurse back into the preview pipeline.
+  const previewPath = await peekPreviewFile(imagePath, 'preview').catch(() => undefined);
+  if (previewPath) {
+    try {
+      const preview = nativeImage.createFromPath(previewPath);
+      if (!preview.isEmpty()) return preview;
+    } catch {
+      // A stale/corrupt preview is only a cache miss; fall through to the
+      // verified original/embedded-preview decode paths below.
+    }
+  }
+
   try {
     const thumbnail = await nativeImage.createThumbnailFromPath(imagePath, { width: 1600, height: 1600 });
     if (!thumbnail.isEmpty()) return thumbnail;
@@ -853,6 +931,65 @@ function pixelsToHWCUint8(
   return tensor;
 }
 
+/**
+ * Build the fixed detector tensor directly from stored-orientation pixels.
+ * The source has already been resized to the detector's stored-axis shape, so
+ * this is an exact rotate/mirror + colour conversion with no intermediate
+ * upright bitmap allocation. It produces the same upright coordinate system
+ * used by the normal path and resultInStoredOrientation maps boxes back later.
+ */
+function pixelsToOrientedDetectorCHW(
+  pixels: Buffer,
+  sourceWidth: number,
+  sourceHeight: number,
+  orientation: ExifOrientation,
+  pixelLayout: 'native' | 'rgb' = 'native',
+): Float32Array {
+  const channelSize = DETECTOR_W * DETECTOR_H;
+  const tensor = new Float32Array(channelSize * 3);
+  const pixelStride = pixelLayout === 'rgb' ? 3 : 4;
+  const rOff = pixelLayout === 'rgb' ? 0 : IS_BGRA_PLATFORM ? 2 : 0;
+  const bOff = pixelLayout === 'rgb' ? 2 : IS_BGRA_PLATFORM ? 0 : 2;
+  const ch1 = channelSize;
+  const ch2 = channelSize * 2;
+
+  // Orientation 1 is overwhelmingly common for camera JPEGs. Keep this hot
+  // path branch-free; the prior per-pixel switch cost almost as much as the
+  // DirectML detector kernel on a 640x480 input.
+  if (orientation === 1) {
+    for (let target = 0, source = 0; target < channelSize; target++, source += pixelStride) {
+      tensor[target] = (pixels[source + rOff] - 127) / 128;
+      tensor[ch1 + target] = (pixels[source + 1] - 127) / 128;
+      tensor[ch2 + target] = (pixels[source + bOff] - 127) / 128;
+    }
+    return tensor;
+  }
+
+  for (let y = 0; y < DETECTOR_H; y++) {
+    for (let x = 0; x < DETECTOR_W; x++) {
+      let sourceX = x;
+      let sourceY = y;
+      switch (orientation) {
+        case 2: sourceX = sourceWidth - 1 - x; break;
+        case 3: sourceX = sourceWidth - 1 - x; sourceY = sourceHeight - 1 - y; break;
+        case 4: sourceY = sourceHeight - 1 - y; break;
+        case 5: sourceX = y; sourceY = x; break;
+        case 6: sourceX = y; sourceY = sourceHeight - 1 - x; break;
+        case 7: sourceX = sourceWidth - 1 - y; sourceY = sourceHeight - 1 - x; break;
+        case 8: sourceX = sourceWidth - 1 - y; sourceY = x; break;
+        default: break;
+      }
+      const source = (sourceY * sourceWidth + sourceX) * pixelStride;
+      const target = y * DETECTOR_W + x;
+      // UltraFace constants simplify exactly to (byte - 127) / 128.
+      tensor[target] = (pixels[source + rOff] - 127) / 128;
+      tensor[ch1 + target] = (pixels[source + 1] - 127) / 128;
+      tensor[ch2 + target] = (pixels[source + bOff] - 127) / 128;
+    }
+  }
+  return tensor;
+}
+
 // ---------------------------------------------------------------------------
 // UltraFace detection
 // ---------------------------------------------------------------------------
@@ -1054,49 +1191,95 @@ async function annotateEyeDetail(img: Electron.NativeImage, boxes: FaceBox[]): P
   return annotated;
 }
 
+function faceBoxesFromDetectorResult(result: Record<string, any>): FaceBox[] {
+  // Output names vary by export — try common variants.
+  const scoresKey = Object.keys(result).find((k) => k.includes('score') || k.includes('conf')) ?? Object.keys(result)[0];
+  const boxesKey = Object.keys(result).find((k) => k.includes('box') || k.includes('loc')) ?? Object.keys(result)[1];
+  const scores = result[scoresKey].data as Float32Array;
+  const boxes = result[boxesKey].data as Float32Array;
+  const raw: RawBox[] = [];
+  const numBoxes = boxes.length / 4;
+  for (let i = 0; i < numBoxes; i++) {
+    const faceProb = scores[i * 2 + 1];
+    if (faceProb < CONF_THRESHOLD) continue;
+    const normalized = normalizeRawBox({
+      x1: boxes[i * 4],
+      y1: boxes[i * 4 + 1],
+      x2: boxes[i * 4 + 2],
+      y2: boxes[i * 4 + 3],
+      score: faceProb,
+    }, 0.0015);
+    if (normalized) raw.push(normalized);
+  }
+  return nms(raw).map((box) => ({
+    x: box.x1,
+    y: box.y1,
+    width: box.x2 - box.x1,
+    height: box.y2 - box.y1,
+    score: box.score,
+  }));
+}
+
+async function runFaceDetectorTensor(floats: Float32Array): Promise<FaceBox[]> {
+  const tensor = new (getOrt().Tensor)('float32', floats, [1, 3, DETECTOR_H, DETECTOR_W]);
+  const result = await detectorSession.run({ [detectorInputName]: tensor }) as Record<string, any>;
+  return faceBoxesFromDetectorResult(result);
+}
+
 async function detectFaces(imagePath: string, cachedImg?: Electron.NativeImage): Promise<FaceBox[]> {
   if (!detectorSession) throw new Error('Face engine not loaded');
 
   const img = cachedImg ?? await loadNativeImage(imagePath);
   const { data, width, height } = resizeToPixels(img, DETECTOR_W, DETECTOR_H);
   const floats = pixelsToCHW(data, width, height, DET_MEAN, DET_STD);
-  const tensor = new (getOrt().Tensor)('float32', floats, [1, 3, height, width]);
+  return runFaceDetectorTensor(floats);
+}
 
-  // UltraFace outputs: scores [1, N, 2], boxes [1, N, 4]
-  const feeds: Record<string, any> = { [detectorInputName]: tensor };
-  const result = await detectorSession.run(feeds);
+async function prepareFaceDetectorTensor(
+  imagePath: string,
+  orientation: ExifOrientation,
+): Promise<Float32Array> {
+  const swapsAxes = orientation >= 5;
+  const storedWidth = swapsAxes ? DETECTOR_H : DETECTOR_W;
+  const storedHeight = swapsAxes ? DETECTOR_W : DETECTOR_H;
 
-  // Output names vary by export — try common variants
-  const scoresKey = Object.keys(result).find((k) => k.includes('score') || k.includes('conf')) ?? Object.keys(result)[0];
-  const boxesKey  = Object.keys(result).find((k) => k.includes('box')   || k.includes('loc'))  ?? Object.keys(result)[1];
-
-  const scores = result[scoresKey].data as Float32Array;
-  const boxes  = result[boxesKey].data  as Float32Array;
-
-  const raw: RawBox[] = [];
-  const numBoxes = boxes.length / 4;
-
-  for (let i = 0; i < numBoxes; i++) {
-    // scores layout: [bg_prob, face_prob] per anchor
-    const faceProb = scores[i * 2 + 1];
-    if (faceProb < CONF_THRESHOLD) continue;
-
-    // boxes are [x1, y1, x2, y2] normalised 0..1
-    const x1 = boxes[i * 4];
-    const y1 = boxes[i * 4 + 1];
-    const x2 = boxes[i * 4 + 2];
-    const y2 = boxes[i * 4 + 3];
-    const normalized = normalizeRawBox({ x1, y1, x2, y2, score: faceProb }, 0.0015);
-    if (normalized) raw.push(normalized);
+  // The scanner has normally decoded and persisted this thumbnail already.
+  // Let sharp/libvips resize it on a worker thread, then hand its compact RGB
+  // buffer directly to tensor packing. This removes nativeImage's synchronous
+  // decode/resize/toBitmap sequence from the main-process hot path.
+  const accelerated = await getDetectionPixels(imagePath, storedWidth, storedHeight)
+    .catch(() => undefined);
+  if (accelerated
+    && isUsableDetectionPreviewSize(accelerated.sourceWidth, accelerated.sourceHeight)) {
+    return pixelsToOrientedDetectorCHW(
+      accelerated.data,
+      accelerated.width,
+      accelerated.height,
+      orientation,
+      'rgb',
+    );
   }
 
-  return nms(raw).map((b) => ({
-    x: b.x1,
-    y: b.y1,
-    width:  b.x2 - b.x1,
-    height: b.y2 - b.y1,
-    score: b.score,
-  }));
+  const img = await loadNativeImageCached(imagePath, 'detect');
+  const resized = img.resize({
+    width: storedWidth,
+    height: storedHeight,
+  });
+  const size = resized.getSize();
+  if (size.width !== storedWidth || size.height !== storedHeight) {
+    // Extremely defensive fallback for a platform decoder that refuses the
+    // requested dimensions; the established upright path remains reliable.
+    const oriented = await orientImageForAnalysis(img, orientation);
+    const { data, width, height } = resizeToPixels(oriented.image, DETECTOR_W, DETECTOR_H);
+    return pixelsToCHW(data, width, height, DET_MEAN, DET_STD);
+  }
+  const bitmap = (resized.toBitmap?.() ?? resized.getBitmap()) as unknown as Buffer;
+  return pixelsToOrientedDetectorCHW(
+    bitmap,
+    size.width,
+    size.height,
+    orientation,
+  );
 }
 
 interface PersonDetectionPass {
@@ -1169,7 +1352,8 @@ async function detectPersons(
   const bitmap = (img.toBitmap?.() ?? img.getBitmap()) as unknown as Buffer;
   const input = pixelsToHWCUint8(bitmap, targetW, targetH);
   const tensor = new (getOrt().Tensor)('uint8', input, [1, targetH, targetW, 3]);
-  const result = await personSession.run({ [personInputName]: tensor });
+  const result = await withPersonInferenceSlot<Record<string, any>>(() =>
+    personSession.run({ [personInputName]: tensor }));
 
   const countKey = Object.keys(result).find((k) => k.includes('num_detections')) ?? Object.keys(result)[0];
   const boxesKey = Object.keys(result).find((k) => k.includes('detection_boxes')) ?? Object.keys(result)[1];
@@ -1303,6 +1487,31 @@ let _personRefinementCount = 0;
 // potentially hung execution provider.
 const ANALYZE_TIMEOUT_MS = 30_000;
 
+// The SSD MobileNet person model deliberately runs on CPU because DirectML is
+// slower for this graph on the supported Windows stack. A single native ORT
+// session already fans out across CPU threads, so allowing every whole-photo
+// job to call it at once oversubscribes the processor (for example, 8 jobs x 6
+// ORT threads on a 16-thread CPU). Keep preprocessing parallel but serialize
+// the native person inference stage; measured throughput stays near its
+// single-session ceiling while latency and main-process contention fall.
+let personInferenceActive = false;
+const personInferenceQueue: Array<() => void> = [];
+
+async function withPersonInferenceSlot<T>(task: () => Promise<T>): Promise<T> {
+  if (personInferenceActive) {
+    await new Promise<void>((resolve) => personInferenceQueue.push(resolve));
+  } else {
+    personInferenceActive = true;
+  }
+  try {
+    return await task();
+  } finally {
+    const next = personInferenceQueue.shift();
+    if (next) next();
+    else personInferenceActive = false;
+  }
+}
+
 function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
@@ -1328,27 +1537,39 @@ function withTimeout<T>(
 const analysisInFlight = new Map<string, Promise<FaceAnalysisResult>>();
 let timedOutNativeOperation: { operation: Promise<FaceAnalysisResult>; label: string } | null = null;
 
-function analysisSingleflightKey(imagePath: string): string {
+function analysisSingleflightKey(
+  imagePath: string,
+  profile: FaceAnalysisProfile,
+  orientation?: ExifOrientation,
+): string {
+  const features = getFaceFeatureOptions(profile);
   return JSON.stringify([
     imagePath,
     FACE_PIPELINE_FINGERPRINT,
-    faceMatchingEnabled ? 'match' : 'no-match',
-    personDetectionEnabled ? 'person' : 'no-person',
-    isPoseAnalysisEnabled() ? 'pose' : 'no-pose',
-    `embed:${faceEmbeddingLimit}`,
+    profile,
+    `orientation:${orientation ?? 'read'}`,
+    features.faceMatching ? 'match' : 'no-match',
+    features.personDetection ? 'person' : 'no-person',
+    features.poseAnalysis ? 'pose' : 'no-pose',
+    `embed:${features.embeddingLimit}`,
   ]);
 }
 
-export function analyzeFaces(imagePath: string): Promise<FaceAnalysisResult> {
+export function analyzeFaces(
+  imagePath: string,
+  options: FaceAnalysisOptions = {},
+): Promise<FaceAnalysisResult> {
   if (timedOutNativeOperation) {
     return Promise.reject(new Error(
       `face-engine temporarily unavailable: timed-out analysis is still running (${timedOutNativeOperation.label})`,
     ));
   }
-  const key = analysisSingleflightKey(imagePath);
+  const profile = options.profile ?? 'full';
+  const orientation = options.orientation;
+  const key = analysisSingleflightKey(imagePath, profile, orientation);
   let operation = analysisInFlight.get(key);
   if (!operation) {
-    operation = _analyzeFacesInner(imagePath);
+    operation = _analyzeFacesInner(imagePath, profile, orientation);
     analysisInFlight.set(key, operation);
     const cleanup = () => {
       if (analysisInFlight.get(key) === operation) analysisInFlight.delete(key);
@@ -1391,7 +1612,11 @@ function resultInStoredOrientation(
   };
 }
 
-async function _analyzeFacesInner(imagePath: string): Promise<FaceAnalysisResult> {
+async function _analyzeFacesInner(
+  imagePath: string,
+  profile: FaceAnalysisProfile,
+  orientationHint?: ExifOrientation,
+): Promise<FaceAnalysisResult> {
   await loadSessions();
   const t0 = Date.now();
   let decodeMs = 0;
@@ -1414,42 +1639,59 @@ async function _analyzeFacesInner(imagePath: string): Promise<FaceAnalysisResult
   };
 
   try {
-    // Decode and EXIF parsing overlap. All model stages see an upright bitmap;
-    // results are mapped back before IPC so existing renderers remain compatible.
+    // Decode and EXIF parsing overlap for the detail profiles. Detector-only
+    // screening prepares a compact tensor from the scanner thumbnail on a
+    // worker thread and never needs a megapixel NativeImage in the common path.
     const decodeStart = Date.now();
-    const [storedImage, orientationValue] = await runRequiredStage('decode', () => Promise.all([
-      loadNativeImageCached(imagePath),
-      readExifOrientation(imagePath),
-    ]));
-    const oriented = await runRequiredStage('orientation', () =>
-      orientImageForAnalysis(storedImage, orientationValue));
-    const img = oriented.image;
-    const orientation = oriented.orientation;
+    const orientationPromise = orientationHint !== undefined
+      ? Promise.resolve(orientationHint)
+      : readExifOrientation(imagePath);
+    let img: Electron.NativeImage | undefined;
+    let detectorFloats: Float32Array | undefined;
+    let orientationValue: number;
+    if (profile === 'detect') {
+      orientationValue = await runRequiredStage('orientation metadata', () => orientationPromise);
+      detectorFloats = await runRequiredStage('detector preparation', () =>
+        prepareFaceDetectorTensor(imagePath, safeExifOrientation(orientationValue)));
+    } else {
+      const [storedImage, resolvedOrientation] = await runRequiredStage('decode', () => Promise.all([
+        loadNativeImageCached(imagePath, profile),
+        orientationPromise,
+      ]));
+      orientationValue = resolvedOrientation;
+      img = (await runRequiredStage('orientation', () =>
+        orientImageForAnalysis(storedImage, safeExifOrientation(resolvedOrientation)))).image;
+    }
+    const orientation = safeExifOrientation(orientationValue);
     decodeMs = Date.now() - decodeStart;
     await yieldToEventLoop();
 
     let boxes: FaceBox[] = [];
     let fastPersons: PersonDetectionPass = { boxes: [], candidateCount: 0 };
     const detectStart = Date.now();
-    const shouldRunPerson = personDetectionEnabled;
-    const poseRequested = isPoseAnalysisEnabled();
+    const requestedFeatures = getFaceFeatureOptions(profile);
+    const shouldRunPerson = requestedFeatures.personDetection;
+    const poseRequested = requestedFeatures.poseAnalysis;
     const canOverlapDetectors = shouldRunPerson &&
       providerDiagnostics.detector.provider === 'dml' &&
       providerDiagnostics.person.provider === 'cpu';
-    if (canOverlapDetectors) {
+    if (profile === 'detect') {
+      boxes = await runRequiredStage('face detection', () =>
+        runFaceDetectorTensor(detectorFloats!));
+    } else if (canOverlapDetectors) {
       [boxes, fastPersons] = await runRequiredStage('detection', () => Promise.all([
-        detectFaces(imagePath, img),
-        detectPersons(imagePath, img, 320),
+        detectFaces(imagePath, img!),
+        detectPersons(imagePath, img!, 320),
       ]));
     } else {
-      boxes = await runRequiredStage('face detection', () => detectFaces(imagePath, img));
+      boxes = await runRequiredStage('face detection', () => detectFaces(imagePath, img!));
       if (shouldRunPerson) {
-        fastPersons = await runRequiredStage('person detection', () => detectPersons(imagePath, img, 320));
+        fastPersons = await runRequiredStage('person detection', () => detectPersons(imagePath, img!, 320));
       }
     }
 
     let personBoxes = fastPersons.boxes;
-    const imageSize = img.getSize();
+    const imageSize = img?.getSize() ?? { width: 0, height: 0 };
     if (shouldRunPerson && shouldRefinePersonDetection({
       width: imageSize.width,
       height: imageSize.height,
@@ -1459,7 +1701,7 @@ async function _analyzeFacesInner(imagePath: string): Promise<FaceAnalysisResult
       sportsMode: poseRequested,
     })) {
       try {
-        const refined = await detectPersons(imagePath, img, 640);
+        const refined = await detectPersons(imagePath, img!, 640);
         personBoxes = mergePersonBoxes(fastPersons.boxes, refined.boxes);
         _personRefinementCount++;
       } catch (error) {
@@ -1469,14 +1711,14 @@ async function _analyzeFacesInner(imagePath: string): Promise<FaceAnalysisResult
           error instanceof Error ? error.message : String(error));
       }
     }
-    boxes = await annotateEyeDetail(img, boxes);
+    if (profile !== 'detect') boxes = await annotateEyeDetail(img!, boxes);
     await yieldToEventLoop();
     detectMs = Date.now() - detectStart;
 
     let poses: PoseKeypoints[] = [];
     let poseAnalysisComplete = !poseRequested || personBoxes.length === 0;
     if (poseRequested && personBoxes.length > 0) {
-      const estimated = await estimatePoses(img, personBoxes).catch((error) => {
+      const estimated = await estimatePoses(img!, personBoxes).catch((error) => {
         log.warn('[face-engine] optional pose stage failed:',
           error instanceof Error ? error.message : String(error));
         return [] as PoseKeypoints[];
@@ -1491,10 +1733,11 @@ async function _analyzeFacesInner(imagePath: string): Promise<FaceAnalysisResult
 
     let embeddings: Float32Array[] = [];
     let embeddingBoxes: FaceBox[] = [];
-    let faceMatchingComplete = faceMatchingEnabled && boxes.length === 0;
-    let completedEmbeddingLimit = faceMatchingEnabled ? faceEmbeddingLimit : 0;
+    const shouldRunFaceMatching = requestedFeatures.faceMatching;
+    let faceMatchingComplete = shouldRunFaceMatching && boxes.length === 0;
+    let completedEmbeddingLimit = shouldRunFaceMatching ? requestedFeatures.embeddingLimit : 0;
 
-    if (faceMatchingEnabled && boxes.length > 0) {
+    if (shouldRunFaceMatching && boxes.length > 0) {
       // Embed only the strongest useful faces in crowds. This cap limits crop
       // and dispatch cost without changing face/person detections.
       const rankedFaces = rankFacesForEmbedding(boxes);
@@ -1502,7 +1745,7 @@ async function _analyzeFacesInner(imagePath: string): Promise<FaceAnalysisResult
       const crowdAdaptiveLimit = boxes.length >= 12 ? 4
         : boxes.length >= 8 ? 6
         : faceEmbeddingLimit;
-      const effectiveEmbeddingLimit = Math.min(faceEmbeddingLimit, crowdAdaptiveLimit);
+      const effectiveEmbeddingLimit = Math.min(requestedFeatures.embeddingLimit, crowdAdaptiveLimit);
       const facesToEmbed = (reliableFaces.length > 0 ? reliableFaces : rankedFaces.slice(0, 1))
         .slice(0, effectiveEmbeddingLimit);
       const embedStart = Date.now();
@@ -1515,7 +1758,7 @@ async function _analyzeFacesInner(imagePath: string): Promise<FaceAnalysisResult
         while (nextFaceIndex < facesToEmbed.length) {
           const index = nextFaceIndex++;
           const box = facesToEmbed[index];
-          const embedding = await embedFace(imagePath, box, img).catch(() => null);
+          const embedding = await embedFace(imagePath, box, img!).catch(() => null);
           if (embedding) embeddedByIndex[index] = { box, embedding };
           await yieldToEventLoop();
         }
@@ -1526,7 +1769,7 @@ async function _analyzeFacesInner(imagePath: string): Promise<FaceAnalysisResult
       embeddings = embeddedFaces.map((entry) => entry.embedding);
       embeddingBoxes = embeddedFaces.map((entry) => entry.box);
       faceMatchingComplete = embeddedFaces.length === facesToEmbed.length;
-      completedEmbeddingLimit = faceMatchingComplete ? faceEmbeddingLimit : embeddedFaces.length;
+      completedEmbeddingLimit = faceMatchingComplete ? requestedFeatures.embeddingLimit : embeddedFaces.length;
       embedMs = Date.now() - embedStart;
     }
 
@@ -1539,7 +1782,10 @@ async function _analyzeFacesInner(imagePath: string): Promise<FaceAnalysisResult
       features: {
         faceMatching: faceMatchingComplete,
         personDetection: shouldRunPerson,
-        poseAnalysis: poseAnalysisComplete,
+        // A disabled/unrequested pose stage is not evidence that pose analysis
+        // completed; keeping this false prevents a later sports/full request
+        // from accepting a cache entry that contains no pose inference.
+        poseAnalysis: poseRequested && poseAnalysisComplete,
         embeddingLimit: completedEmbeddingLimit,
       },
     }, orientation);
@@ -1547,7 +1793,7 @@ async function _analyzeFacesInner(imagePath: string): Promise<FaceAnalysisResult
     return result;
   } finally {
     // Always release decoded image memory, including required-stage failures.
-    imageDecodeCache.delete(imagePath);
+    imageDecodeCache.delete(imageDecodeCacheKey(imagePath, profile));
   }
 }
 

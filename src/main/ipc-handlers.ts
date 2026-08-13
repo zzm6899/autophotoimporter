@@ -4,7 +4,7 @@ import { execFile, spawn } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 import path from 'node:path';
 import { DEFAULT_VIEW_OVERLAY_PREFERENCES, IPC, PHOTO_EXTENSIONS, PREVIEW_PROTOCOL_SCHEME, isSportsEventMode } from '../shared/types';
-import { configurePoseAnalysis } from './services/pose-engine';
+import { configurePoseAnalysis, poseModelAvailable } from './services/pose-engine';
 import type { ImportConfig, ImportResult, ImportBenchmarkQuery, ImportBenchmarkResult, AppSettings, MediaFile, FtpConfig, FtpSyncStatus, Volume, UpdateState, ImportLedger, ImportHealthSummary, MacFirstRunDoctor, AppDiagnosticsSnapshot, UpdateRepairResult, AppSession, WatchFolder, CatalogBrowserQuery, CatalogFaceSearchQuery, ScanDiagnostics } from '../shared/types';
 import { listVolumes, startWatching, stopWatching } from './services/volume-watcher';
 import { scanFiles, cancelScan, pauseScan, resumeScan, type FileScanDiagnostics } from './services/file-scanner';
@@ -17,7 +17,8 @@ import { checkForUpdate, fetchUpdateHistory, readLastKnownGoodUpdateMetadata } f
 import { probeFtp, mirrorFtp } from './services/ftp-source';
 import { activateLicenseInput, checkHostedLicenseStatus, validateLicenseKey } from './services/license';
 import { analyzeFaces, faceModelsAvailable, serializeEmbedding, isGpuAvailable, getActualExecutionProvider, getFaceFeatureOptions, getFaceProviderDiagnostics, configureGpuAcceleration, configureGpuDevice, configureCpuOptimization, configureFaceFeatureOptions, configureFaceThroughput, clearImageDecodeCache, diagnoseFaceEngine, runFaceGpuStressTest } from './services/face-engine';
-import { getCachedFaceResult, setCachedFaceResult, clearFaceCache } from './services/face-cache';
+import type { FaceAnalysisProfile } from './services/face-engine';
+import { getCachedFaceResult, setCachedFaceResult, clearFaceCache, closeFaceCache } from './services/face-cache';
 import { detectDeviceTier } from './services/device-tier';
 import { getRawPreviewCacheDiagnostics, setRawPreviewCache, setRawPreviewQuality } from './services/exif-parser';
 import { openCatalog, type CatalogService } from './services/catalog';
@@ -167,6 +168,26 @@ function isFaceAnalysisInput(value: unknown): value is string | string[] {
     && paths.every(isFaceAnalysisPath);
 }
 
+function isFaceAnalysisProfile(value: unknown): value is FaceAnalysisProfile {
+  return value === 'detect' || value === 'subjects' || value === 'full';
+}
+
+function isExifOrientation(value: unknown): value is number {
+  return isNumber(value) && Number.isInteger(value) && value >= 1 && value <= 8;
+}
+
+function isFaceAnalysisOptions(value: unknown): value is {
+  profile?: FaceAnalysisProfile;
+  orientation?: number;
+  orientations?: number[];
+} {
+  return value == null || (isRecord(value)
+    && (value.profile == null || isFaceAnalysisProfile(value.profile))
+    && (value.orientation == null || isExifOrientation(value.orientation))
+    && (value.orientations == null || (Array.isArray(value.orientations)
+      && value.orientations.every(isExifOrientation))));
+}
+
 function isOptionalBoundedNumber(value: unknown, min: number, max: number): boolean {
   return value == null || (isNumber(value) && value >= min && value <= max);
 }
@@ -180,6 +201,7 @@ function isSettingsPatch(value: unknown): value is Partial<AppSettings> {
   if (value.experienceMode != null && !['simple', 'pro'].includes(String(value.experienceMode))) return false;
   if (value.firstRunWizardSeen != null && typeof value.firstRunWizardSeen !== 'boolean') return false;
   if (value.aiReviewEnabled != null && typeof value.aiReviewEnabled !== 'boolean') return false;
+  if (value.superSpeedMode != null && typeof value.superSpeedMode !== 'boolean') return false;
   if (value.sourceProfile != null && !['auto', 'ssd', 'usb', 'nas'].includes(String(value.sourceProfile))) return false;
   if (value.defaultConflictPolicy != null && !['skip', 'rename', 'overwrite', 'conflicts-folder'].includes(String(value.defaultConflictPolicy))) return false;
   if (value.conflictFolderName != null && typeof value.conflictFolderName !== 'string') return false;
@@ -188,6 +210,7 @@ function isSettingsPatch(value: unknown): value is Partial<AppSettings> {
   if (value.faceConcurrency != null && !isNumber(value.faceConcurrency)) return false;
   if (value.rawPreviewQuality != null && !isNumber(value.rawPreviewQuality)) return false;
   if (value.gpuStressStreams != null && !isNumber(value.gpuStressStreams)) return false;
+  if (value.gpuDeviceId != null && !isNumber(value.gpuDeviceId)) return false;
   return true;
 }
 
@@ -368,6 +391,7 @@ async function closePersistentServices(): Promise<void> {
   const closeTasks: Array<Promise<void>> = [];
   if (catalogService) closeTasks.push(catalogService.then((service) => service.close()));
   if (sessionStoreService) closeTasks.push(sessionStoreService.then((service) => service.close()));
+  closeTasks.push(closeFaceCache());
   await Promise.allSettled(closeTasks);
   catalogService = null;
   sessionStoreService = null;
@@ -1017,6 +1041,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   performancePromptSeenVersion: '',
   fastKeeperMode: false,
   autoSpeedMode: false,
+  superSpeedMode: true,
   aiReviewEnabled: true,
   previewConcurrency: 3,
   faceConcurrency: 2,
@@ -1029,7 +1054,9 @@ const DEFAULT_SETTINGS: AppSettings = {
 let faceSemaphoreSlots = 1;
 let faceSemaphoreQueue: Array<() => void> = [];
 let faceActiveCount = 0;
-const FACE_CONCURRENCY_HARD_MAX = 24;
+// Beyond 16 whole-photo jobs the CPU decode/person stages are oversubscribed
+// and measured throughput falls even on a fast DirectML GPU.
+const FACE_CONCURRENCY_HARD_MAX = 16;
 
 // Incremented on every SCAN_START so in-flight semaphore waiters from the
 // previous source can detect they've been superseded and bail out early.
@@ -1133,9 +1160,19 @@ function clampRawPreviewQuality(n: unknown, fallback = DEFAULT_SETTINGS.rawPrevi
   return Math.max(30, Math.min(100, Math.round(requested)));
 }
 
+/**
+ * Win32_VideoController/WMI enumeration order is not the DirectML/DXGI device
+ * order. Until the runtime exposes a stable LUID mapping, a persisted display
+ * index must never be forwarded as an ONNX DirectML deviceId. The driver's
+ * default adapter is both safe and benchmarked by the face engine at startup.
+ */
+function safeGpuDeviceId(): -1 {
+  return -1;
+}
+
 function applyRuntimeSettings(settings: AppSettings): void {
   configureGpuAcceleration(settings.gpuFaceAcceleration ?? true);
-  configureGpuDevice(settings.gpuDeviceId);
+  configureGpuDevice(undefined);
   configureCpuOptimization(settings.cpuOptimization ?? false);
   configureFaceFeatureOptions({
     faceMatching: settings.reviewFaceMatching ?? true,
@@ -1335,6 +1372,9 @@ async function loadSettings(): Promise<AppSettings> {
 
     const resolvedSettings = {
       ...merged,
+      // Migrate legacy WMI display indices to DirectML Auto. WMI index N does
+      // not identify DirectML adapter N and could silently bind an iGPU.
+      gpuDeviceId: safeGpuDeviceId(),
       cpuOptimization: manualPerformanceOverrides.cpuOptimization ?? profile.cpuOptimization,
       rawPreviewQuality: manualPerformanceOverrides.rawPreviewQuality ?? profile.rawPreviewQuality,
       previewConcurrency: resolvedPreviewConcurrency,
@@ -1349,6 +1389,7 @@ async function loadSettings(): Promise<AppSettings> {
     const resolvedFaceConcurrency = resolveFaceConcurrency({ ...DEFAULT_SETTINGS, faceConcurrency: undefined }, profile);
     const resolvedSettings = {
       ...DEFAULT_SETTINGS,
+      gpuDeviceId: safeGpuDeviceId(),
       cpuOptimization: profile.cpuOptimization,
       rawPreviewQuality: profile.rawPreviewQuality,
       previewConcurrency: resolvedPreviewConcurrency,
@@ -1406,6 +1447,7 @@ async function saveSettings(settings: Partial<AppSettings>): Promise<void> {
       };
   const normalized: AppSettings = {
     ...merged,
+    gpuDeviceId: safeGpuDeviceId(),
     cpuOptimization: tierPerformanceDefaults.cpuOptimization,
     rawPreviewQuality: tierPerformanceDefaults.rawPreviewQuality,
     previewConcurrency: resolvePreviewConcurrency(previewSettings, profile),
@@ -3202,14 +3244,24 @@ export function registerIpcHandlers(): void {
    */
   // Semaphore is now module-level (see top of file) so loadSettings can init it.
 
-  handleIpc(IPC.FACE_ANALYZE, (_event, input: string | string[]) => {
+  handleIpc(IPC.FACE_ANALYZE, (
+    _event,
+    input: string | string[],
+    options?: { profile?: FaceAnalysisProfile; orientation?: number; orientations?: number[] },
+  ) => {
     const paths = Array.isArray(input) ? input : [input];
+    const profile = options?.profile ?? 'full';
+    const orientationsByPath = new Map(paths.map((filePath, index) => [
+      filePath,
+      (paths.length === 1 ? options?.orientation : options?.orientations?.[index]) as
+        1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | undefined,
+    ]));
 
     const task = async (): Promise<object[]> => {
       // ── Phase 1: parallel cache lookup (no semaphore — pure disk reads) ──
-      const faceOptions = getFaceFeatureOptions();
+      const faceOptions = getFaceFeatureOptions(profile);
       const cacheResults = await Promise.all(paths.map(async (filePath) => {
-        const cached = await getCachedFaceResult(filePath, faceOptions).catch(() => null);
+        const cached = await getCachedFaceResult(filePath, { ...faceOptions, analysisDepth: profile }).catch(() => null);
         return { filePath, cached };
       }));
 
@@ -3217,18 +3269,25 @@ export function registerIpcHandlers(): void {
       const misses: string[] = [];
       for (const { filePath, cached } of cacheResults) {
         if (cached) {
-          const personBoxes = faceOptions.personDetection ? cached.result.personBoxes : [];
-          const embeddings = faceOptions.faceMatching ? cached.hexEmbeddings : [];
-          const embeddingBoxes = faceOptions.faceMatching ? cached.result.embeddingBoxes ?? [] : [];
+          const personBoxes = profile !== 'detect' && faceOptions.personDetection ? cached.result.personBoxes : [];
+          const embeddings = profile === 'full' && faceOptions.faceMatching ? cached.hexEmbeddings : [];
+          const embeddingBoxes = profile === 'full' && faceOptions.faceMatching ? cached.result.embeddingBoxes ?? [] : [];
           hits.push({
             path: filePath,
             boxes: cached.result.boxes,
             personBoxes,
             embeddings,
             embeddingBoxes,
-            poses: cached.result.poses ?? [],
+            poses: profile === 'full' && faceOptions.poseAnalysis ? cached.result.poses ?? [] : [],
             faceCount: cached.result.boxes.length,
             personCount: personBoxes.length,
+            features: {
+              faceDetection: true,
+              personDetection: cached.result.features?.personDetection ?? false,
+              faceMatching: cached.result.features?.faceMatching ?? false,
+              poseAnalysis: cached.result.features?.poseAnalysis ?? false,
+              poseAnalysisAvailable: poseModelAvailable(),
+            },
           });
         } else {
           misses.push(filePath);
@@ -3254,12 +3313,13 @@ export function registerIpcHandlers(): void {
           throw err;
         }
         try {
-          const { boxes, personBoxes, embeddings, embeddingBoxes, poses, features } = await analyzeFaces(filePath);
+          const orientation = orientationsByPath.get(filePath);
+          const { boxes, personBoxes, embeddings, embeddingBoxes, poses, features } = await analyzeFaces(filePath, { profile, orientation });
           if (capturedGen !== faceQueueGeneration) {
             return { path: filePath, boxes: [], personBoxes: [], embeddings: [], embeddingBoxes: [], poses: [], faceCount: 0, personCount: 0, error: STALE_FACE_JOB };
           }
           const hexEmbeddings = embeddings.map(serializeEmbedding);
-          await setCachedFaceResult(filePath, { boxes, personBoxes, embeddings, embeddingBoxes, poses, features }, hexEmbeddings).catch(() => undefined);
+          await setCachedFaceResult(filePath, { boxes, personBoxes, embeddings, embeddingBoxes, poses, features }, hexEmbeddings, profile).catch(() => undefined);
           await new Promise<void>((resolve) => setImmediate(resolve));
           return {
             path: filePath,
@@ -3270,6 +3330,13 @@ export function registerIpcHandlers(): void {
             poses: poses ?? [],
             faceCount: boxes.length,
             personCount: personBoxes.length,
+            features: {
+              faceDetection: true,
+              personDetection: features?.personDetection ?? false,
+              faceMatching: features?.faceMatching ?? false,
+              poseAnalysis: features?.poseAnalysis ?? false,
+              poseAnalysisAvailable: poseModelAvailable(),
+            },
           };
         } catch (err: unknown) {
           return {
@@ -3299,12 +3366,17 @@ export function registerIpcHandlers(): void {
     };
 
     return task();
-  }, ([input]) => isFaceAnalysisInput(input) ? null : ipcError('VALIDATION_ERROR', 'Invalid face analysis payload.'));
+  }, ([input, options]) => isFaceAnalysisInput(input) && isFaceAnalysisOptions(options)
+    && !(Array.isArray(input) && input.length > 1 && isRecord(options) && options.orientation != null)
+    && !(isRecord(options) && options.orientations != null
+      && (!Array.isArray(input) || options.orientations.length !== input.length))
+    ? null
+    : ipcError('VALIDATION_ERROR', 'Invalid face analysis payload.'));
 
   // Allow renderer to update face concurrency at runtime
   handleIpc('face:set-concurrency', (_event, n: number) => {
     setFaceConcurrency(n);
-  }, ([n]) => isNumber(n) && n >= 1 && n <= 32 ? null : ipcError('VALIDATION_ERROR', 'Invalid face concurrency payload.'));
+  }, ([n]) => isNumber(n) && n >= 1 && n <= FACE_CONCURRENCY_HARD_MAX ? null : ipcError('VALIDATION_ERROR', 'Invalid face concurrency payload.'));
 
   // Clear the on-disk thumbnail/preview cache (temp folder).
   handleIpc(IPC.CACHE_CLEAR, async () => {

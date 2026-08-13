@@ -6,6 +6,7 @@
  * Run once before building or developing:
  *
  *   npm run models
+ *   npm run models -- --experimental-detectors  # evaluation only
  *
  * Models are cached in ./models/ and skipped if already present.
  * They are listed in .gitignore (large binary files, not source).
@@ -18,7 +19,7 @@
  *  - ssd_mobilenet_v1_12.onnx ~28 MB   - person/body detection for culling
  */
 
-import { createReadStream, createWriteStream, existsSync } from 'node:fs';
+import { createReadStream, createWriteStream, existsSync, readFileSync } from 'node:fs';
 import { mkdir, rename, unlink } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,7 +29,17 @@ import { pipeline } from 'node:stream/promises';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MODELS_DIR = join(__dirname, '..', 'models');
+const EXPERIMENTAL_MODELS_DIR = join(MODELS_DIR, 'experimental');
 const DEPRECATED_MODELS = ['w600k_mbf.onnx'];
+const includeExperimentalDetectors = process.argv.includes('--experimental-detectors');
+const detectorManifestPath = join(
+  __dirname,
+  '..',
+  'src',
+  'main',
+  'services',
+  'detector-model-manifest.json',
+);
 
 // ---------------------------------------------------------------------------
 // Model registry
@@ -64,6 +75,30 @@ const MODELS = [
     optional: true,
   },
 ];
+
+function loadExperimentalDetectorModels() {
+  if (!includeExperimentalDetectors) return [];
+  const manifest = JSON.parse(readFileSync(detectorManifestPath, 'utf8'));
+  if (manifest.schemaVersion !== 1 || manifest.status !== 'evaluation-only' ||
+      manifest.goldenCorpusRequired !== true || !Array.isArray(manifest.models)) {
+    throw new Error('Invalid detector candidate manifest');
+  }
+  return manifest.models.map((model) => {
+    if (model.bundledByDefault !== false || model.redistribution !== 'candidate-approved' ||
+        !/^[a-f0-9]{64}$/.test(model.sha256) || !model.sourceUrl.includes(model.sourceRevision)) {
+      throw new Error(`Detector candidate failed release-policy validation: ${model.id}`);
+    }
+    return {
+      name: model.fileName,
+      url: model.sourceUrl,
+      sha256: model.sha256,
+      destinationDir: EXPERIMENTAL_MODELS_DIR,
+      experimentalId: model.id,
+    };
+  });
+}
+
+const SELECTED_MODELS = [...MODELS, ...loadExperimentalDetectorModels()];
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -126,13 +161,14 @@ async function sha256File(filePath) {
 // Main
 // ---------------------------------------------------------------------------
 await mkdir(MODELS_DIR, { recursive: true });
+if (includeExperimentalDetectors) await mkdir(EXPERIMENTAL_MODELS_DIR, { recursive: true });
 for (const deprecated of DEPRECATED_MODELS) {
   await unlink(join(MODELS_DIR, deprecated)).catch(() => undefined);
 }
 
 let allOk = true;
-for (const model of MODELS) {
-  const dest = join(MODELS_DIR, model.name);
+for (const model of SELECTED_MODELS) {
+  const dest = join(model.destinationDir ?? MODELS_DIR, model.name);
 
   if (existsSync(dest)) {
     if (model.sha256) {
@@ -148,7 +184,7 @@ for (const model of MODELS) {
     }
   }
 
-  console.log(`[dl]   ${model.name}`);
+  console.log(`[dl]   ${model.name}${model.experimentalId ? ` (evaluation-only: ${model.experimentalId})` : ''}`);
   console.log(`       ${model.url}`);
   try {
     await download(model.url, dest);
@@ -180,4 +216,6 @@ if (!allOk) {
   process.exit(1);
 }
 
-console.log('\nAll models ready in ./models/');
+console.log(includeExperimentalDetectors
+  ? '\nAll selected models ready; detector candidates are isolated under ./models/experimental/.'
+  : '\nAll models ready in ./models/.');

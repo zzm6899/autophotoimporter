@@ -2206,6 +2206,14 @@ export interface AutoCullProposal {
 }
 
 export function hasCullingAnalysis(file: MediaFile): boolean {
+  if (file.reviewAnalysisUnavailable) return false;
+  if (file.reviewAnalysisStage === 'screened') {
+    // A face-only pass cannot rule out a turned-away person. Treat every
+    // screened record as provisional: grouping can be derived later from its
+    // visual hash, before burst/visualGroup metadata has reached the file.
+    // The subjects/body pass promotes it to a cullable analysis depth.
+    return false;
+  }
   const hasSubjectBoxes = (file.faceBoxes?.length ?? 0) > 0 || (file.personBoxes?.length ?? 0) > 0;
   // ONNX boxes arrive before the renderer's follow-up ROI pass. Treat that
   // interval as genuinely unanalysed so a bulk proposal cannot race ahead of
@@ -2219,6 +2227,14 @@ export function hasCullingAnalysis(file: MediaFile): boolean {
     (file.faceBoxes?.length ?? 0) > 0 ||
     (file.personBoxes?.length ?? 0) > 0 ||
     (file.poses?.length ?? 0) > 0;
+}
+
+function hasProposalCullingAnalysis(file: MediaFile, _eventMode: EventMode): boolean {
+  if (file.reviewAnalysisUnavailable) return false;
+  // A face-only screen cannot establish that a comparison frame contains no
+  // person. Scene groups become eligible after the subjects/body pass; until
+  // then hasCullingAnalysis intentionally keeps screened repeats manual.
+  return hasCullingAnalysis(file);
 }
 
 function stableGroupEntries(files: MediaFile[], visualHashDistance: number): Array<{
@@ -2289,6 +2305,12 @@ export function buildAutoCullProposal(
     const proposalGroups: AutoCullProposalGroup[] = [];
 
     for (const group of groups) {
+      const analysedByPath = new Map(group.files.map((file) => [
+        file.path,
+        hasProposalCullingAnalysis(file, eventMode),
+      ]));
+      const groupAnalysisComplete = group.files.length === 1 ||
+        group.files.every((file) => analysedByPath.get(file.path));
       const ranked = rankBestShots(group.files);
       const decision = group.files.length > 1
         ? autoCullGroup(group.files, options)
@@ -2315,9 +2337,15 @@ export function buildAutoCullProposal(
         } else if (isMandatoryKeeper(file)) {
           disposition = 'keep';
           itemReasons.push('manual/protected keeper');
-        } else if (!hasCullingAnalysis(file)) {
+        } else if (!analysedByPath.get(file.path)) {
           disposition = 'unanalysed';
           itemReasons.push('quality analysis not available');
+        } else if (!groupAnalysisComplete) {
+          // Never reject a completed frame against an incompletely analysed
+          // neighbour. The missing evidence could still change which member is
+          // best, so completed members remain visible but unchanged.
+          disposition = 'uncertain';
+          itemReasons.push('comparison group is still being analysed');
         } else if (hasDetectedSubject(file) && (subjectFocusConfidence(file) ?? 0) < 0.2) {
           disposition = 'uncertain';
           itemReasons.push('subject focus confidence too low for an automatic decision');

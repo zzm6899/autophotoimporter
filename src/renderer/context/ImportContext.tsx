@@ -10,16 +10,20 @@ export type AppPhase = 'idle' | 'scanning' | 'ready' | 'importing' | 'complete';
 export type ViewMode = 'grid' | 'single' | 'split' | 'compare' | 'settings';
 
 export type FilterMode = 'all' | 'protected' | 'picked' | 'rejected' | 'unrated' | 'duplicates' | 'catalog-duplicates' | 'outside-source' | 'unmarked' | 'queue' | 'best' | 'faces' | 'face-groups' | 'face-gallery' | 'group-photos' | 'blur-risk' | 'near-duplicates' | 'review-needed' | 'needs-exposure' | 'normalized' | 'adjusted' | 'photos' | 'videos' | 'jpeg' | 'raw' | 'import-failures' | 'color-red' | 'color-yellow' | 'color-green' | 'color-blue' | 'color-purple' | RatingFilter | `camera:${string}` | `lens:${string}` | `date:${string}` | `ext:${string}` | `scene:${string}` | `burst:${string}` | `face:${string}`;
-const MAX_FACE_CONCURRENCY = 24;
+const MAX_FACE_CONCURRENCY = 16;
 const REVIEW_OVERLAY_SMALL_DELAY_MS = 80;
 const REVIEW_OVERLAY_MEDIUM_DELAY_MS = 140;
 const REVIEW_OVERLAY_LARGE_DELAY_MS = 240;
+const REVIEW_OVERLAY_HUGE_DELAY_MS = 5_000;
+const REVIEW_OVERLAY_MILLION_DELAY_MS = 60_000;
 
 function isExpensiveImportFilter(filter: FilterMode): boolean {
   return filter === 'face-gallery' || filter === 'face-groups' || filter.startsWith('face:');
 }
 
 function reviewOverlayDelayMs(fileCount: number): number {
+  if (fileCount >= 250_000) return REVIEW_OVERLAY_MILLION_DELAY_MS;
+  if (fileCount >= 50_000) return REVIEW_OVERLAY_HUGE_DELAY_MS;
   if (fileCount >= 2500) return REVIEW_OVERLAY_LARGE_DELAY_MS;
   if (fileCount >= 800) return REVIEW_OVERLAY_MEDIUM_DELAY_MS;
   return REVIEW_OVERLAY_SMALL_DELAY_MS;
@@ -163,6 +167,7 @@ interface State {
   reviewPersonDetection: boolean;
   reviewVisualDuplicates: boolean;
   autoSpeedMode: boolean;
+  superSpeedMode: boolean;
   perfTier: 'auto' | 'low' | 'balanced' | 'high';
   fastKeeperMode: boolean;
   aiReviewEnabled: boolean;
@@ -274,6 +279,8 @@ export type Action =
   | { type: 'CULL_TO_TARGET'; target: number; perGroupCap?: number }
   | { type: 'SET_SHARPNESS_BATCH'; scores: Record<string, number> }
   | { type: 'SET_REVIEW_SCORES'; scores: Record<string, Partial<MediaFile>> }
+  | { type: 'COMMIT_REVIEW_SCORES' }
+  | { type: 'APPLY_REVIEW_SNAPSHOT'; files: MediaFile[] }
   | { type: 'RESOLVE_SECOND_PASS'; filePaths: string[]; pick: 'selected' | 'rejected' }
   | { type: 'GROUP_VISUAL_DUPLICATES'; threshold?: number; files?: MediaFile[] }
   | { type: 'GROUP_FACE_SIMILAR'; threshold?: number; embeddingThreshold?: number; files?: MediaFile[] }
@@ -311,6 +318,7 @@ export type Action =
   | { type: 'SET_FAST_KEEPER_MODE'; enabled: boolean }
   | { type: 'SET_AI_REVIEW_ENABLED'; enabled: boolean }
   | { type: 'SET_AUTO_SPEED_MODE'; enabled: boolean }
+  | { type: 'SET_SUPER_SPEED_MODE'; enabled: boolean }
   | { type: 'SET_PREVIEW_CONCURRENCY'; concurrency: number }
   | { type: 'SET_FACE_CONCURRENCY'; concurrency: number }
   | { type: 'SET_KEYBIND'; action: keyof KeybindMap; key: string }
@@ -450,6 +458,7 @@ const initialState: State = {
   reviewPersonDetection: true,
   reviewVisualDuplicates: true,
   autoSpeedMode: false,
+  superSpeedMode: true,
   perfTier: 'auto',
   fastKeeperMode: false,
   aiReviewEnabled: true,
@@ -1145,6 +1154,15 @@ export function reducer(state: State, action: Action): State {
       });
       return changed ? { ...state, files } : state;
     }
+    case 'COMMIT_REVIEW_SCORES':
+      // ImportProvider intercepts this marker and materializes its renderer-held
+      // overlay in one O(n) pass. Keeping the reducer branch a no-op makes the
+      // action safe in isolated reducer tests.
+      return state;
+    case 'APPLY_REVIEW_SNAPSHOT':
+      // A completed review sweep becomes durable session state without adding a
+      // million-photo array to undo history.
+      return action.files === state.files ? state : { ...state, files: action.files };
     case 'RESOLVE_SECOND_PASS': {
       if (action.filePaths.length === 0) return state;
       const pathSet = new Set(action.filePaths);
@@ -1173,6 +1191,10 @@ export function reducer(state: State, action: Action): State {
             faceGroupSize: undefined,
             personCount: undefined,
             personBoxes: undefined,
+            reviewAnalysisStage: undefined,
+            reviewAnalysisFeatures: undefined,
+            reviewAnalysisUnavailable: undefined,
+            reviewAnalysisUnavailableFeatures: undefined,
             subjectSharpnessScore: undefined,
             subjectReasons: undefined,
             sceneAnalysis: invalidateSceneSubjectAnalysis(f.sceneAnalysis),
@@ -1454,6 +1476,8 @@ export function reducer(state: State, action: Action): State {
       return { ...state, aiReviewEnabled: action.enabled };
     case 'SET_AUTO_SPEED_MODE':
       return { ...state, autoSpeedMode: action.enabled };
+    case 'SET_SUPER_SPEED_MODE':
+      return { ...state, superSpeedMode: action.enabled };
     case 'SET_REVIEW_PERFORMANCE_OPTION':
       return { ...state, [action.key]: action.value };
     case 'SET_PREVIEW_CONCURRENCY':
@@ -1527,6 +1551,7 @@ const DispatchContext = createContext<Dispatch<Action>>(() => {});
 export type ReviewPatch = Partial<MediaFile> & { reviewScore?: number; blurRisk?: MediaFile['blurRisk']; reviewReasons?: string[] };
 const ReviewScoresContext = createContext<Map<string, ReviewPatch>>(new Map());
 const ReviewScoresVersionContext = createContext<number>(0);
+const MergedFilesContext = createContext<MediaFile[]>(initialState.files);
 const mergedReviewFileCache = new WeakMap<MediaFile, WeakMap<ReviewPatch, MediaFile>>();
 
 function mergeReviewPatch(file: MediaFile, patch: ReviewPatch): MediaFile {
@@ -1614,8 +1639,24 @@ export function ImportProvider({ children }: { children: ReactNode }) {
     configureReviewProfile(state.eventMode);
   }, [state.eventMode]);
 
+  // Compute the O(n) overlay merge once per flush and share the same array with
+  // every consumer. Previously Grid, Destination, Help and bulk preview each
+  // remapped the complete catalogue independently on every AI tick.
+  const mergedFiles = useMemo(
+    () => mergeReviewScoreOverlay(state.files, reviewScoresRef.current),
+    [state.files, reviewVersion],
+  );
+
   // Intercept SET_REVIEW_SCORES before it hits the reducer.
   const dispatch = useCallback<Dispatch<Action>>((action) => {
+    if (action.type === 'COMMIT_REVIEW_SCORES') {
+      if (reviewScoresRef.current.size === 0) return;
+      const mergedFiles = mergeReviewScoreOverlay(stateRef.current.files, reviewScoresRef.current);
+      reviewScoresRef.current.clear();
+      rawDispatch({ type: 'APPLY_REVIEW_SNAPSHOT', files: mergedFiles });
+      bumpReviewVersionNow();
+      return;
+    }
     if (action.type === 'SET_REVIEW_SCORES') {
       const scores = action.scores;
       if (Object.keys(scores).length === 0) return;
@@ -1696,7 +1737,9 @@ export function ImportProvider({ children }: { children: ReactNode }) {
       <DispatchContext.Provider value={dispatch}>
         <ReviewScoresContext.Provider value={reviewScoresRef.current}>
           <ReviewScoresVersionContext.Provider value={reviewVersion}>
-            {children}
+            <MergedFilesContext.Provider value={mergedFiles}>
+              {children}
+            </MergedFilesContext.Provider>
           </ReviewScoresVersionContext.Provider>
         </ReviewScoresContext.Provider>
       </DispatchContext.Provider>
@@ -1717,19 +1760,17 @@ export function useReviewScoresVersion(): number {
   return useContext(ReviewScoresVersionContext);
 }
 
+/** Mutable, renderer-local AI evidence used by the background scheduler between
+ * batched UI flushes. Consumers must dispatch SET_REVIEW_SCORES to mutate it. */
+export function useReviewScoreOverlay(): Map<string, ReviewPatch> {
+  return useContext(ReviewScoresContext);
+}
+
 /**
- * Returns state.files with review score overlays merged in.
- * Re-renders when either the files array or review scores change.
- * Use this instead of useAppState().files anywhere face scores are needed.
+ * Returns the provider's single shared state.files + review overlay snapshot.
+ * The O(n) merge runs once per batched version rather than once per consumer.
+ * Use this instead of useAppState().files anywhere AI evidence is needed.
  */
 export function useMergedFiles(): MediaFile[] {
-  const { files } = useContext(StateContext);
-  const scores = useContext(ReviewScoresContext);
-  const version = useContext(ReviewScoresVersionContext);
-
-  return useMemo(() => {
-    if (scores.size === 0) return files;
-    return mergeReviewScoreOverlay(files, scores);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [files, version]);
+  return useContext(MergedFilesContext);
 }

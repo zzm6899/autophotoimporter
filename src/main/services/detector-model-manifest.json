@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "status": "evaluation-only",
+  "goldenCorpusRequired": true,
+  "models": [
+    {
+      "id": "yunet-2023mar-fp32",
+      "displayName": "OpenCV YuNet 2023mar FP32",
+      "fileName": "face_detection_yunet_2023mar.onnx",
+      "role": "face",
+      "capabilities": ["face-boxes", "face-landmarks-5"],
+      "format": "onnx",
+      "precision": "fp32",
+      "input": {
+        "type": "float32",
+        "layout": "nchw",
+        "dimensions": [1, 3, 640, 640],
+        "colourOrder": "bgr",
+        "resize": "letterbox"
+      },
+      "decoder": "yunet-v1",
+      "sha256": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+      "bytes": 232589,
+      "sourceRevision": "f12e12798e8314f7c074a6656816c048dcc95b7a",
+      "sourceUrl": "https://media.githubusercontent.com/media/opencv/opencv_zoo/f12e12798e8314f7c074a6656816c048dcc95b7a/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
+      "projectUrl": "https://github.com/opencv/opencv_zoo/tree/f12e12798e8314f7c074a6656816c048dcc95b7a/models/face_detection_yunet",
+      "license": "MIT",
+      "licenseUrl": "https://raw.githubusercontent.com/opencv/opencv_zoo/f12e12798e8314f7c074a6656816c048dcc95b7a/models/face_detection_yunet/LICENSE",
+      "redistribution": "candidate-approved",
+      "bundledByDefault": false
+    },
+    {
+      "id": "nanodet-2022nov-fp32",
+      "displayName": "OpenCV NanoDet Plus 2022nov FP32",
+      "fileName": "object_detection_nanodet_2022nov.onnx",
+      "role": "object",
+      "capabilities": ["person-boxes", "coco-80-boxes"],
+      "format": "onnx",
+      "precision": "fp32",
+      "input": {
+        "type": "float32",
+        "layout": "nchw",
+        "dimensions": [1, 3, 416, 416],
+        "colourOrder": "rgb",
+        "resize": "letterbox"
+      },
+      "decoder": "nanodet-plus-gfl-v1",
+      "personClassId": 0,
+      "sha256": "4b82da9944b88577175ee23a459dce2e26e6e4be573def65b1055dc2d9720186",
+      "bytes": 3800954,
+      "sourceRevision": "510899a2a0adb8c25957915fd030d66dbd553919",
+      "sourceUrl": "https://media.githubusercontent.com/media/opencv/opencv_zoo/510899a2a0adb8c25957915fd030d66dbd553919/models/object_detection_nanodet/object_detection_nanodet_2022nov.onnx",
+      "projectUrl": "https://github.com/opencv/opencv_zoo/tree/510899a2a0adb8c25957915fd030d66dbd553919/models/object_detection_nanodet",
+      "license": "Apache-2.0",
+      "licenseUrl": "https://raw.githubusercontent.com/opencv/opencv_zoo/510899a2a0adb8c25957915fd030d66dbd553919/models/object_detection_nanodet/LICENSE",
+      "redistribution": "candidate-approved",
+      "bundledByDefault": false
+    },
+    {
+      "id": "yolox-s-2022nov-fp32",
+      "displayName": "OpenCV YOLOX-S 2022nov FP32",
+      "fileName": "object_detection_yolox_2022nov.onnx",
+      "role": "object",
+      "capabilities": ["person-boxes", "coco-80-boxes"],
+      "format": "onnx",
+      "precision": "fp32",
+      "input": {
+        "type": "float32",
+        "layout": "nchw",
+        "dimensions": [1, 3, 640, 640],
+        "colourOrder": "rgb",
+        "resize": "letterbox-top-left"
+      },
+      "decoder": "yolox-v1",
+      "personClassId": 0,
+      "sha256": "c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063",
+      "bytes": 35858002,
+      "sourceRevision": "0b263e423d012606b83d1f81238d11c177da2b9c",
+      "sourceUrl": "https://media.githubusercontent.com/media/opencv/opencv_zoo/0b263e423d012606b83d1f81238d11c177da2b9c/models/object_detection_yolox/object_detection_yolox_2022nov.onnx",
+      "projectUrl": "https://github.com/opencv/opencv_zoo/tree/0b263e423d012606b83d1f81238d11c177da2b9c/models/object_detection_yolox",
+      "license": "Apache-2.0",
+      "licenseUrl": "https://raw.githubusercontent.com/opencv/opencv_zoo/0b263e423d012606b83d1f81238d11c177da2b9c/models/object_detection_yolox/LICENSE",
+      "redistribution": "candidate-approved",
+      "bundledByDefault": false
+    }
+  ]
+}

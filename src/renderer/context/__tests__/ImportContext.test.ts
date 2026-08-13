@@ -135,6 +135,7 @@ function makeState(overrides: Record<string, unknown> = {}) {
     reviewPersonDetection: true,
     reviewVisualDuplicates: true,
     autoSpeedMode: false,
+    superSpeedMode: true,
     perfTier: 'auto' as const,
     fastKeeperMode: false,
     aiReviewEnabled: true,
@@ -788,6 +789,19 @@ describe('ImportContext reducer', () => {
       expect(merged.sceneAnalysis?.subjectFocusConfidence).toBe(0.86);
       expect(merged.reviewScore).toBeUndefined();
       expect(merged.blurRisk).toBeUndefined();
+    });
+
+    it('applies a committed review snapshot without growing undo history', () => {
+      const files = [makeFile({ path: '/photo.jpg' })];
+      const reviewed = [{ ...files[0], reviewAnalysisStage: 'screened' as const, faceBoxes: [], faceCount: 0 }];
+      const next = reducer(makeState({ files }), {
+        type: 'APPLY_REVIEW_SNAPSHOT',
+        files: reviewed,
+      });
+
+      expect(next.files).toBe(reviewed);
+      expect(next.files[0].reviewAnalysisStage).toBe('screened');
+      expect(next.fileHistory).toEqual([]);
     });
 
     it('removes every subject ROI field without discarding scene metrics', () => {

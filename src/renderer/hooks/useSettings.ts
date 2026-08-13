@@ -221,6 +221,9 @@ export function useSettings() {
       if (typeof settings.autoSpeedMode === 'boolean') {
         dispatch({ type: 'SET_AUTO_SPEED_MODE', enabled: settings.autoSpeedMode });
       }
+      if (typeof settings.superSpeedMode === 'boolean') {
+        dispatch({ type: 'SET_SUPER_SPEED_MODE', enabled: settings.superSpeedMode });
+      }
       const fixedPerfTier = settings.perfTier && settings.perfTier !== 'auto';
       if (typeof settings.previewConcurrency === 'number' && settings.previewConcurrency > 0) {
         dispatch({ type: 'SET_PREVIEW_CONCURRENCY', concurrency: settings.previewConcurrency });

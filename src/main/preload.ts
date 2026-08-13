@@ -248,7 +248,15 @@ const api = {
    * Returns one result object per input path:
    *   { path, boxes, embeddings (hex strings), embeddingBoxes, faceCount, error? }
    */
-  analyzeFaces: (paths: string | string[]): Promise<Array<{
+  analyzeFaces: (
+    paths: string | string[],
+    options?: {
+      profile?: 'detect' | 'subjects' | 'full';
+      orientation?: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+      /** Batch-aligned scan-time EXIF orientations; length must match paths. */
+      orientations?: Array<1 | 2 | 3 | 4 | 5 | 6 | 7 | 8>;
+    },
+  ): Promise<Array<{
     path: string;
     boxes: FaceBox[];
     personBoxes: FaceBox[];
@@ -257,9 +265,17 @@ const api = {
     poses?: PoseKeypoints[];
     faceCount: number;
     personCount: number;
+    features?: {
+      faceDetection: boolean;
+      personDetection: boolean;
+      faceMatching: boolean;
+      poseAnalysis: boolean;
+      /** False when the optional pose model is not installed. */
+      poseAnalysisAvailable?: boolean;
+    };
     error?: string;
   }>> =>
-    ipcRenderer.invoke(IPC.FACE_ANALYZE, paths),
+    ipcRenderer.invoke(IPC.FACE_ANALYZE, paths, options),
 
   /** Cancel queued background face-analysis work. In-flight ONNX calls finish, but stale renderer batches are ignored. */
   cancelFaceAnalysis: (): Promise<{ ok: boolean }> =>
@@ -269,11 +285,11 @@ const api = {
   clearCache: (): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke(IPC.CACHE_CLEAR),
 
-  /** Update how many face analyses run in parallel (1-32). */
+  /** Update how many whole-photo analyses run in parallel (1-16). */
   setFaceAnalysisConcurrency: (n: number): Promise<void> =>
     ipcRenderer.invoke('face:set-concurrency', n),
 
-  /** Enumerate Windows display adapters so DirectML can target a specific GPU. */
+  /** Enumerate Windows display adapters for diagnostics (not DirectML device IDs). */
   listGpus: (): Promise<Array<{ id: number; name: string; adapterCompatibility?: string; videoMemoryMB?: number }>> =>
     ipcRenderer.invoke(IPC.GPU_LIST),
 

@@ -629,6 +629,13 @@ describe('IPC Handlers', () => {
       expect(settings.theme).toBe('light');
     });
 
+    it('migrates legacy display-adapter indices to safe DirectML Auto', async () => {
+      mockReadFile.mockResolvedValue(JSON.stringify({ gpuDeviceId: 1 }) as any);
+      const settings = await getHandler('settings:get')({}) as any;
+
+      expect(settings.gpuDeviceId).toBe(-1);
+    });
+
     it('clamps saved face concurrency to a device-safe maximum', async () => {
       mockReadFile.mockResolvedValue(JSON.stringify({ perfTier: 'high', faceConcurrency: 24 }) as any);
       const handler = getHandler('settings:get');
@@ -716,6 +723,15 @@ describe('IPC Handlers', () => {
       const written = JSON.parse(String(mockWriteFile.mock.calls[0][1]));
 
       expect(written.previewConcurrency).toBe(12);
+    });
+
+    it('never persists a WMI display index as a DirectML device id', async () => {
+      mockReadFile.mockResolvedValue(JSON.stringify({ gpuDeviceId: -1 }) as any);
+
+      await getHandler('settings:set')({}, { gpuDeviceId: 2 });
+      const written = JSON.parse(String(mockWriteFile.mock.calls[0][1]));
+
+      expect(written.gpuDeviceId).toBe(-1);
     });
 
     it('applies tier preview defaults when tier changes without an explicit preview override', async () => {
@@ -981,6 +997,35 @@ describe('IPC Handlers', () => {
       const handler = getHandler('face:analyze');
       const result = await handler({}, ['C:\\Users\\test\\photo.jpg', 'C:\\Windows\\System32\\calc.exe']) as any;
       expect(result).toEqual({
+        ok: false,
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid face analysis payload.',
+      });
+    });
+
+    it('rejects unknown face analysis profiles', async () => {
+      const handler = getHandler('face:analyze');
+      const result = await handler({}, 'C:\\Users\\test\\photo.jpg', { profile: 'turbo' }) as any;
+      expect(result).toEqual({
+        ok: false,
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid face analysis payload.',
+      });
+    });
+
+    it('rejects invalid or ambiguous orientation hints', async () => {
+      const handler = getHandler('face:analyze');
+      await expect(handler({}, 'C:\\Users\\test\\photo.jpg', { profile: 'detect', orientation: 9 })).resolves.toEqual({
+        ok: false,
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid face analysis payload.',
+      });
+      await expect(handler({}, ['C:\\Users\\test\\a.jpg', 'C:\\Users\\test\\b.jpg'], { orientation: 6 })).resolves.toEqual({
+        ok: false,
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid face analysis payload.',
+      });
+      await expect(handler({}, ['C:\\Users\\test\\a.jpg', 'C:\\Users\\test\\b.jpg'], { orientations: [6] })).resolves.toEqual({
         ok: false,
         code: 'VALIDATION_ERROR',
         message: 'Invalid face analysis payload.',

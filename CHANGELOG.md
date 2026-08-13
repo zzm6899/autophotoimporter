@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Performance
+- Added default Super Speed AI routing: cheap focus/hash/scene evidence runs on every frame, while detector, subject/person, and full face/pose stages run only for meaningful comparisons, people-heavy genres, priority photos, and uncertainty.
+- Reused scanner thumbnails for detector-only analysis, batched renderer-to-main analysis calls, separated the CPU person inference gate, and capped whole-photo concurrency to avoid CPU oversubscription.
+- Replaced the 50,000-file JSON cache with a batched SQLite WAL cache sized for million-photo libraries, compact binary embeddings, monotonic analysis-depth validation, corruption recovery, and graceful shutdown.
+- Forced DirectML adapter selection to Auto until a stable DXGI/DML identity mapping is available; WMI display indices can no longer select the wrong adapter.
+
+### AI evaluation
+- Added hash-pinned, opt-in YuNet, NanoDet, and YOLOX-S evaluation manifests, provenance notices, verified downloads, and package guards. Production promotion remains blocked on a labelled photography accuracy corpus.
+
+### Safety
+- Incomplete detector-only comparisons remain unanalysed instead of becoming automatic rejects, and completed review evidence is committed to durable session state without expanding undo history.
+
 ## 1.5.12 - 2026-08-13
 
 - Replaced the non-commercial WebFace600K recognition weight with the Apache-2.0 OpenCV SFace model, pinned by immutable source revision and SHA-256, and packaged its license/provenance notices.

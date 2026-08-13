@@ -124,8 +124,34 @@ for (const entry of readdirSync(modelDir, { withFileTypes: true })) {
     fail(`Non-commercial legacy face model digest was packaged as: ${entry.name}`);
   }
 }
+const detectorManifestPath = path.join(root, 'src', 'main', 'services', 'detector-model-manifest.json');
+if (!existsSync(detectorManifestPath)) fail('Missing detector candidate manifest.');
+const detectorManifest = JSON.parse(readFileSync(detectorManifestPath, 'utf8'));
+if (detectorManifest.schemaVersion !== 1 || detectorManifest.status !== 'evaluation-only' ||
+    detectorManifest.goldenCorpusRequired !== true || !Array.isArray(detectorManifest.models)) {
+  fail('Invalid detector candidate manifest.');
+}
+const experimentalModelDir = path.join(modelDir, 'experimental');
+const packagedExperimentalDetectors = [];
+if (existsSync(experimentalModelDir)) {
+  const knownFiles = new Set(detectorManifest.models.map((candidate) => candidate.fileName));
+  for (const entry of readdirSync(experimentalModelDir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith('.onnx')) continue;
+    if (!knownFiles.has(entry.name)) fail(`Unknown experimental detector was packaged: ${entry.name}`);
+    const candidate = detectorManifest.models.find((model) => model.fileName === entry.name);
+    const filePath = path.join(experimentalModelDir, entry.name);
+    const digest = createHash('sha256').update(readFileSync(filePath)).digest('hex');
+    if (statSync(filePath).size !== candidate.bytes || digest !== candidate.sha256) {
+      fail(`Experimental detector failed manifest verification: ${entry.name}`);
+    }
+    packagedExperimentalDetectors.push({ id: candidate.id, name: entry.name, bytes: statSync(filePath).size });
+  }
+}
+if (packagedExperimentalDetectors.length > 0 && process.env.KEPTRA_PACKAGE_EXPERIMENTAL_DETECTORS !== '1') {
+  fail('Evaluation-only detector weights were packaged without KEPTRA_PACKAGE_EXPERIMENTAL_DETECTORS=1.');
+}
 const thirdPartyDir = path.join(resourcesDir, 'third_party');
-for (const notice of ['NOTICES.md', 'SFace-Apache-2.0.txt']) {
+for (const notice of ['NOTICES.md', 'SFace-Apache-2.0.txt', 'YuNet-MIT.txt']) {
   if (!existsSync(path.join(thirdPartyDir, notice))) fail(`Missing packaged third-party notice: ${notice}`);
 }
 
@@ -136,6 +162,7 @@ const manifest = {
   appDir,
   resourcesDir,
   models: models.map((model) => ({ name: model, bytes: statSync(path.join(modelDir, model)).size })),
+  experimentalDetectors: packagedExperimentalDetectors,
   onnxRuntime: {
     retainedArchitectures,
     nativeFiles: listFiles(targetPlatformDir),

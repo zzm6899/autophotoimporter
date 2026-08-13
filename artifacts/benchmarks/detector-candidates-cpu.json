@@ -1,0 +1,392 @@
+{
+  "schemaVersion": 1,
+  "suite": "keptra-detector-candidates",
+  "generatedAt": "2026-08-13T01:50:26.059Z",
+  "runtime": {
+    "provider": "cpu",
+    "node": "v24.14.0",
+    "platform": "win32",
+    "arch": "x64",
+    "cpu": "AMD Ryzen 7 7800X3D 8-Core Processor           "
+  },
+  "results": [
+    {
+      "status": "passed",
+      "key": "current-ultraface",
+      "file": "version-RFB-640.onnx",
+      "sha256": "8f4c659275977e7a3bfbfa339a9c769ad793df50f9c0baa8c14b11baa1646430",
+      "sizeBytes": 1588012,
+      "provider": "cpu",
+      "input": {
+        "name": "input",
+        "type": "float32",
+        "dims": [
+          1,
+          3,
+          480,
+          640
+        ]
+      },
+      "outputs": {
+        "scores": [
+          1,
+          17640,
+          2
+        ],
+        "boxes": [
+          1,
+          17640,
+          4
+        ]
+      },
+      "loadMs": 49.707,
+      "samples": 100,
+      "minMs": 12.598,
+      "p50Ms": 15.899,
+      "p95Ms": 19.177,
+      "maxMs": 26.528,
+      "meanMs": 16.004
+    },
+    {
+      "status": "passed",
+      "key": "current-ssd-mobilenet-v1",
+      "file": "ssd_mobilenet_v1_12.onnx",
+      "sha256": "b8fba5e404077d4048d27fcd1667e85e27e192eb9bf51e696c46a3acd7d21058",
+      "sizeBytes": 29461455,
+      "provider": "cpu",
+      "input": {
+        "name": "inputs",
+        "type": "uint8",
+        "dims": [
+          1,
+          320,
+          320,
+          3
+        ]
+      },
+      "outputs": {
+        "detection_boxes": [
+          1,
+          100,
+          4
+        ],
+        "detection_classes": [
+          1,
+          100
+        ],
+        "detection_scores": [
+          1,
+          100
+        ],
+        "num_detections": [
+          1
+        ]
+      },
+      "loadMs": 4292.943,
+      "samples": 100,
+      "minMs": 13.764,
+      "p50Ms": 15.706,
+      "p95Ms": 25.011,
+      "maxMs": 32.065,
+      "meanMs": 16.957
+    },
+    {
+      "status": "passed",
+      "key": "yunet-fp32",
+      "file": "yunet-fp32.onnx",
+      "sha256": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+      "sizeBytes": 232589,
+      "provider": "cpu",
+      "input": {
+        "name": "input",
+        "type": "float32",
+        "dims": [
+          1,
+          3,
+          640,
+          640
+        ]
+      },
+      "outputs": {
+        "cls_8": [
+          1,
+          6400,
+          1
+        ],
+        "cls_16": [
+          1,
+          1600,
+          1
+        ],
+        "cls_32": [
+          1,
+          400,
+          1
+        ],
+        "obj_8": [
+          1,
+          6400,
+          1
+        ],
+        "obj_16": [
+          1,
+          1600,
+          1
+        ],
+        "obj_32": [
+          1,
+          400,
+          1
+        ],
+        "bbox_8": [
+          1,
+          6400,
+          4
+        ],
+        "bbox_16": [
+          1,
+          1600,
+          4
+        ],
+        "bbox_32": [
+          1,
+          400,
+          4
+        ],
+        "kps_8": [
+          1,
+          6400,
+          10
+        ],
+        "kps_16": [
+          1,
+          1600,
+          10
+        ],
+        "kps_32": [
+          1,
+          400,
+          10
+        ]
+      },
+      "loadMs": 12.492,
+      "samples": 100,
+      "minMs": 2.221,
+      "p50Ms": 2.861,
+      "p95Ms": 3.151,
+      "maxMs": 3.616,
+      "meanMs": 2.881
+    },
+    {
+      "status": "failed",
+      "key": "yunet-int8bq",
+      "file": "yunet-int8bq.onnx",
+      "provider": "cpu",
+      "error": "Non-zero status code returned while running DequantizeLinear node. Name:'backbone.model2.conv2.conv1.bias_quantized_node' Status Message: D:\\a\\_work\\1\\s\\onnxruntime\\core\\providers\\cpu\\quantization\\quantize_linear.cc:80 onnxruntime::PrepareForQDQ quant_block_size == 0 was false. block_size must be 0 for per-tensor quantization.\n"
+    },
+    {
+      "status": "passed",
+      "key": "nanodet-fp32",
+      "file": "nanodet-fp32.onnx",
+      "sha256": "4b82da9944b88577175ee23a459dce2e26e6e4be573def65b1055dc2d9720186",
+      "sizeBytes": 3800954,
+      "provider": "cpu",
+      "input": {
+        "name": "input.1",
+        "type": "float32",
+        "dims": [
+          1,
+          3,
+          416,
+          416
+        ]
+      },
+      "outputs": {
+        "792": [
+          1,
+          2704,
+          80
+        ],
+        "795": [
+          1,
+          2704,
+          32
+        ],
+        "814": [
+          1,
+          676,
+          80
+        ],
+        "817": [
+          1,
+          676,
+          32
+        ],
+        "836": [
+          1,
+          169,
+          80
+        ],
+        "839": [
+          1,
+          169,
+          32
+        ]
+      },
+      "loadMs": 20.53,
+      "samples": 100,
+      "minMs": 11.387,
+      "p50Ms": 13.054,
+      "p95Ms": 13.967,
+      "maxMs": 15.068,
+      "meanMs": 13.138
+    },
+    {
+      "status": "passed",
+      "key": "nanodet-int8",
+      "file": "nanodet-int8.onnx",
+      "sha256": "8dd32b85f2d273e9047f1d6b59e0b2fd008b1076338107bb547ac28942cdf90b",
+      "sizeBytes": 1031424,
+      "provider": "cpu",
+      "input": {
+        "name": "input.1",
+        "type": "float32",
+        "dims": [
+          1,
+          3,
+          416,
+          416
+        ]
+      },
+      "outputs": {
+        "792": [
+          1,
+          2704,
+          80
+        ],
+        "795": [
+          1,
+          2704,
+          32
+        ],
+        "814": [
+          1,
+          676,
+          80
+        ],
+        "817": [
+          1,
+          676,
+          32
+        ],
+        "836": [
+          1,
+          169,
+          80
+        ],
+        "839": [
+          1,
+          169,
+          32
+        ]
+      },
+      "loadMs": 31.389,
+      "samples": 100,
+      "minMs": 44.787,
+      "p50Ms": 48.589,
+      "p95Ms": 51.919,
+      "maxMs": 67.672,
+      "meanMs": 48.915
+    },
+    {
+      "status": "failed",
+      "key": "nanodet-int8bq",
+      "file": "nanodet-int8bq.onnx",
+      "provider": "cpu",
+      "error": "Load model from <temp>\\nanodet-int8bq.onnx failed:Node (Resize_222) Op (Resize) [ShapeInferenceError] Either `sizes` or `scales` must be provided, but not both of them"
+    },
+    {
+      "status": "passed",
+      "key": "yolox-s-fp32",
+      "file": "yolox-fp32.onnx",
+      "sha256": "c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063",
+      "sizeBytes": 35858002,
+      "provider": "cpu",
+      "input": {
+        "name": "images",
+        "type": "float32",
+        "dims": [
+          1,
+          3,
+          640,
+          640
+        ]
+      },
+      "outputs": {
+        "output": [
+          1,
+          8400,
+          85
+        ]
+      },
+      "loadMs": 72.869,
+      "samples": 100,
+      "minMs": 68.73,
+      "p50Ms": 74.289,
+      "p95Ms": 110.912,
+      "maxMs": 134.668,
+      "meanMs": 79.823
+    },
+    {
+      "status": "failed",
+      "key": "yolox-s-int8bq",
+      "file": "yolox-int8bq.onnx",
+      "provider": "cpu",
+      "error": "Non-zero status code returned while running DequantizeLinear node. Name:'882_quantized_node' Status Message: D:\\a\\_work\\1\\s\\onnxruntime\\core\\providers\\cpu\\quantization\\quantize_linear.cc:80 onnxruntime::PrepareForQDQ quant_block_size == 0 was false. block_size must be 0 for per-tensor quantization.\n"
+    },
+    {
+      "status": "passed",
+      "key": "mediapipe-person-fp32",
+      "file": "mediapipe-person-fp32.onnx",
+      "sha256": "47fd5599d6fa17608f03e0eb0ae230baa6e597d7e8a2c8199fe00abea55a701f",
+      "sizeBytes": 11990159,
+      "provider": "cpu",
+      "input": {
+        "name": "input_1:0",
+        "type": "float32",
+        "dims": [
+          1,
+          3,
+          224,
+          224
+        ]
+      },
+      "outputs": {
+        "Identity_1:0": [
+          1,
+          2254,
+          1
+        ],
+        "Identity:0": [
+          1,
+          2254,
+          12
+        ]
+      },
+      "loadMs": 30.396,
+      "samples": 100,
+      "minMs": 2.891,
+      "p50Ms": 3.538,
+      "p95Ms": 3.992,
+      "maxMs": 4.294,
+      "meanMs": 3.526
+    },
+    {
+      "status": "failed",
+      "key": "mediapipe-person-int8bq",
+      "file": "mediapipe-person-int8bq.onnx",
+      "provider": "cpu",
+      "error": "Non-zero status code returned while running DequantizeLinear node. Name:'Add_2/y_quantized_node' Status Message: D:\\a\\_work\\1\\s\\onnxruntime\\core\\providers\\cpu\\quantization\\quantize_linear.cc:80 onnxruntime::PrepareForQDQ quant_block_size == 0 was false. block_size must be 0 for per-tensor quantization.\n"
+    }
+  ]
+}

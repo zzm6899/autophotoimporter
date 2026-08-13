@@ -95,6 +95,7 @@ const SPEED_PROFILES: Array<{
       metadataExport: FAST_RAW_METADATA_EXPORT,
       fastKeeperMode: true,
       autoSpeedMode: true,
+      superSpeedMode: false,
       perfTier: 'low',
       cpuOptimization: true,
       previewConcurrency: 1,
@@ -120,6 +121,7 @@ const SPEED_PROFILES: Array<{
       metadataExport: DEFAULT_METADATA_EXPORT,
       fastKeeperMode: false,
       autoSpeedMode: true,
+      superSpeedMode: true,
       perfTier: 'balanced',
       cpuOptimization: true,
       previewConcurrency: 2,
@@ -145,6 +147,7 @@ const SPEED_PROFILES: Array<{
       metadataExport: DEFAULT_METADATA_EXPORT,
       fastKeeperMode: false,
       autoSpeedMode: false,
+      superSpeedMode: false,
       perfTier: 'high',
       cpuOptimization: false,
       previewConcurrency: 4,
@@ -171,7 +174,7 @@ export function DestinationPanel() {
     sourceProfile, conflictPolicy, conflictFolderName,
     previewConcurrency, faceConcurrency, rawPreviewQuality,
     reviewFaceAnalysis, reviewFaceMatching, reviewPersonDetection, reviewVisualDuplicates,
-    fastKeeperMode, autoSpeedMode,
+    fastKeeperMode, autoSpeedMode, superSpeedMode,
     licenseStatus,
     experienceMode,
   } = useAppState();
@@ -313,6 +316,7 @@ export function DestinationPanel() {
     if (settings.metadataExport) dispatch({ type: 'SET_METADATA_EXPORT', flags: settings.metadataExport });
     if (typeof settings.fastKeeperMode === 'boolean') dispatch({ type: 'SET_FAST_KEEPER_MODE', enabled: settings.fastKeeperMode });
     if (typeof settings.autoSpeedMode === 'boolean') dispatch({ type: 'SET_AUTO_SPEED_MODE', enabled: settings.autoSpeedMode });
+    if (typeof settings.superSpeedMode === 'boolean') dispatch({ type: 'SET_SUPER_SPEED_MODE', enabled: settings.superSpeedMode });
     if (typeof settings.cpuOptimization === 'boolean') dispatch({ type: 'SET_PERFORMANCE_OPTION', key: 'cpuOptimization', value: settings.cpuOptimization });
     if (typeof settings.previewConcurrency === 'number') dispatch({ type: 'SET_PREVIEW_CONCURRENCY', concurrency: settings.previewConcurrency });
     if (typeof settings.faceConcurrency === 'number') dispatch({ type: 'SET_FACE_CONCURRENCY', concurrency: settings.faceConcurrency });
@@ -650,6 +654,7 @@ export function DestinationPanel() {
     reviewVisualDuplicates ? 'dupes on' : 'dupes off',
     fastKeeperMode ? 'fast keeper' : 'AI keeper',
     autoSpeedMode ? 'auto speed' : 'fixed speed',
+    superSpeedMode ? 'Super Speed' : 'full-depth scan',
   ].join(' · ');
   const measuredBenchmarkRatio = realBenchmark?.ok && realBenchmark.rawCopyEtaSeconds > 0 && importBenchmark.keptraSeconds > 0
     ? importBenchmark.keptraSeconds / realBenchmark.rawCopyEtaSeconds

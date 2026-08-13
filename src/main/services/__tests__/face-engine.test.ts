@@ -26,6 +26,8 @@ vi.mock('exifr', () => ({
 import {
   choosePreferredProvider,
   estimateEyeDetailFromPixels,
+  getFaceFeatureOptions,
+  isUsableDetectionPreviewSize,
   mapBoxToStoredOrientation,
   orientBitmapForExif,
   pixelsToSFaceCHW,
@@ -83,6 +85,37 @@ describe('face-engine provider planning', () => {
       dmlError: 'DML provider unavailable',
     });
     expect(choice).toEqual({ provider: 'cpu', fallbackReason: 'DML provider unavailable' });
+  });
+});
+
+describe('face-engine request profiles', () => {
+  it('makes detect mode detector-only without mutating global settings', () => {
+    expect(getFaceFeatureOptions('detect')).toEqual({
+      faceMatching: false,
+      personDetection: false,
+      poseAnalysis: false,
+      embeddingLimit: 0,
+    });
+    expect(getFaceFeatureOptions()).toEqual(expect.objectContaining({
+      faceMatching: true,
+      personDetection: true,
+    }));
+  });
+
+  it('keeps subject detection but omits identity and pose work in subjects mode', () => {
+    expect(getFaceFeatureOptions('subjects')).toEqual({
+      faceMatching: false,
+      personDetection: true,
+      poseAnalysis: false,
+      embeddingLimit: 0,
+    });
+  });
+
+  it('accepts scanner-sized previews but rejects tiny thumbnails for screening', () => {
+    expect(isUsableDetectionPreviewSize(320, 213)).toBe(true);
+    expect(isUsableDetectionPreviewSize(240, 120)).toBe(true);
+    expect(isUsableDetectionPreviewSize(160, 120)).toBe(false);
+    expect(isUsableDetectionPreviewSize(0, 320)).toBe(false);
   });
 });
 

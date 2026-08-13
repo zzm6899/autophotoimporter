@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import type { AppSession, MediaFile } from '../../shared/types';
-import { useAppState } from '../context/ImportContext';
+import { useAppState, useMergedFiles } from '../context/ImportContext';
 
 function sourceSessionId(source: string): string {
   let sum = 0;
@@ -35,7 +35,6 @@ export function useSessionPersistence() {
   const {
     selectedSource,
     destination,
-    files,
     selectedPaths,
     queuedPaths,
     filter,
@@ -44,6 +43,10 @@ export function useSessionPersistence() {
     phase,
     importResult,
   } = useAppState();
+  // Persist the batched AI overlay as well as reducer-owned metadata. On very
+  // large reviews the provider flushes at a bounded interval, so a crash loses
+  // at most that interval of canvas evidence; native inference remains cached.
+  const files = useMergedFiles();
   const sessionIdRef = useRef('');
   const sessionSourceRef = useRef<string | null>(null);
   const sessionSaveTimerRef = useRef<number | null>(null);
@@ -83,7 +86,7 @@ export function useSessionPersistence() {
       sessionSourceRef.current = selectedSource;
       sessionIdRef.current = sourceSessionId(selectedSource);
     }
-    const delay = files.length >= 2500 ? 2600 : files.length >= 800 ? 1800 : 1200;
+    const delay = files.length >= 250_000 ? 15_000 : files.length >= 50_000 ? 6_000 : files.length >= 2500 ? 2600 : files.length >= 800 ? 1800 : 1200;
     sessionSaveTimerRef.current = window.setTimeout(() => {
       sessionSaveTimerRef.current = null;
       const snapshot = sessionSnapshotRef.current;
