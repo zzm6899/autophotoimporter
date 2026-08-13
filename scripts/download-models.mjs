@@ -50,7 +50,7 @@ const detectorManifestPath = join(
 const MODELS = [
   {
     name: 'version-RFB-640.onnx',
-    url: 'https://huggingface.co/onnxmodelzoo/version-RFB-640/resolve/main/version-RFB-640.onnx?download=true',
+    url: 'https://huggingface.co/onnxmodelzoo/version-RFB-640/resolve/c39647011b1d0eb48037ce3051438e51b19e2b11/version-RFB-640.onnx?download=true',
     sha256: '8f4c659275977e7a3bfbfa339a9c769ad793df50f9c0baa8c14b11baa1646430',
   },
   {
@@ -61,7 +61,7 @@ const MODELS = [
   },
   {
     name: 'ssd_mobilenet_v1_12.onnx',
-    url: 'https://huggingface.co/onnxmodelzoo/ssd_mobilenet_v1_12/resolve/main/ssd_mobilenet_v1_12.onnx?download=true',
+    url: 'https://huggingface.co/onnxmodelzoo/ssd_mobilenet_v1_12/resolve/019281f3fcb151a90e491f3b2f0273f9f31bd6be/ssd_mobilenet_v1_12.onnx?download=true',
     sha256: 'b8fba5e404077d4048d27fcd1667e85e27e192eb9bf51e696c46a3acd7d21058',
   },
   {

@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import process from 'node:process';
+import { extractFile, listPackage } from '@electron/asar';
 
 const root = process.cwd();
 const outDir = path.join(root, 'out');
@@ -69,10 +70,47 @@ const required = [
   resourcesDir,
   path.join(resourcesDir, 'models'),
   path.join(resourcesDir, 'onnxruntime-node', 'dist', 'index.js'),
+  path.join(resourcesDir, 'sharp-runtime', 'node_modules', 'sharp', 'dist', 'index.cjs'),
+  path.join(resourcesDir, 'image-preprocess-worker.js'),
 ];
 
 for (const target of required) {
   if (!existsSync(target)) fail(`Missing packaged runtime asset: ${target}`);
+}
+
+const asarPath = path.join(resourcesDir, 'app.asar');
+if (!existsSync(asarPath)) fail(`Missing packaged app.asar: ${asarPath}`);
+const asarEntries = listPackage(asarPath);
+if (!asarEntries.some((entry) => entry.replaceAll('\\', '/').endsWith('/.vite/build/image-preprocess-worker.js'))) {
+  fail('Packaged app.asar is missing .vite/build/image-preprocess-worker.js');
+}
+const looseWorkerPath = path.join(resourcesDir, 'image-preprocess-worker.js');
+// @electron/asar expects the host platform's path separator when extracting
+// (listPackage itself returns platform-shaped entries as well).
+const protectedWorkerEntry = path.join('.vite', 'build', 'image-preprocess-worker.js');
+const asarWorker = extractFile(asarPath, protectedWorkerEntry);
+const looseWorker = readFileSync(looseWorkerPath);
+const asarWorkerDigest = createHash('sha256').update(asarWorker).digest('hex');
+const looseWorkerDigest = createHash('sha256').update(looseWorker).digest('hex');
+if (asarWorkerDigest !== looseWorkerDigest) {
+  fail(`Loose preprocess worker differs from integrity-protected ASAR worker: ${looseWorkerDigest} != ${asarWorkerDigest}`);
+}
+const sharpRuntimeDir = path.join(resourcesDir, 'sharp-runtime', 'node_modules');
+const sharpProbe = spawnSync(process.execPath, ['-e', `
+  const path = require('node:path');
+  const runtime = ${JSON.stringify(sharpRuntimeDir)};
+  for (const dependency of ['@img/colour', 'detect-libc', 'semver']) {
+    const resolved = require.resolve(dependency, { paths: [path.join(runtime, 'sharp')] });
+    if (!resolved.startsWith(runtime + path.sep)) {
+      throw new Error(dependency + ' escaped packaged sharp-runtime: ' + resolved);
+    }
+  }
+  const sharp = require(path.join(runtime, 'sharp'));
+  sharp({ create: { width: 2, height: 2, channels: 3, background: '#336699' } })
+    .raw().toBuffer().then((b) => { if (b.length !== 12) process.exit(2); });
+`], { encoding: 'utf8', timeout: 15000 });
+if (sharpProbe.status !== 0 || sharpProbe.error) {
+  fail(`Packaged Sharp runtime is not resolvable: ${sharpProbe.error?.message ?? sharpProbe.stderr}`);
 }
 
 const ortNativeRoot = path.join(resourcesDir, 'onnxruntime-node', 'bin', 'napi-v3');
@@ -109,10 +147,20 @@ for (const retainedArch of retainedArchitectures) {
 
 const modelDir = path.join(resourcesDir, 'models');
 const models = ['version-RFB-640.onnx', 'face_recognition_sface_2021dec.onnx', 'ssd_mobilenet_v1_12.onnx', 'movenet_thunder.onnx'];
+const expectedModelDigests = {
+  'version-RFB-640.onnx': '8f4c659275977e7a3bfbfa339a9c769ad793df50f9c0baa8c14b11baa1646430',
+  'face_recognition_sface_2021dec.onnx': '0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79',
+  'ssd_mobilenet_v1_12.onnx': 'b8fba5e404077d4048d27fcd1667e85e27e192eb9bf51e696c46a3acd7d21058',
+  'movenet_thunder.onnx': '3dca9f6e5f8a64dc9935a5be06fd8bf81bf01e696c9c05c6f2a650e0a401b763',
+};
+const packagedModelDigests = {};
 for (const model of models) {
   const modelPath = path.join(modelDir, model);
   if (!existsSync(modelPath)) fail(`Missing packaged model: ${model}`);
   if (statSync(modelPath).size <= 0) fail(`Packaged model is empty: ${model}`);
+  const digest = createHash('sha256').update(readFileSync(modelPath)).digest('hex');
+  packagedModelDigests[model] = digest;
+  if (digest !== expectedModelDigests[model]) fail(`Packaged model digest mismatch: ${model} (${digest})`);
 }
 const deprecatedModel = path.join(modelDir, 'w600k_mbf.onnx');
 if (existsSync(deprecatedModel)) fail('Non-commercial legacy face model was packaged: w600k_mbf.onnx');
@@ -151,8 +199,32 @@ if (packagedExperimentalDetectors.length > 0 && process.env.KEPTRA_PACKAGE_EXPER
   fail('Evaluation-only detector weights were packaged without KEPTRA_PACKAGE_EXPERIMENTAL_DETECTORS=1.');
 }
 const thirdPartyDir = path.join(resourcesDir, 'third_party');
-for (const notice of ['NOTICES.md', 'SFace-Apache-2.0.txt', 'YuNet-MIT.txt']) {
+for (const notice of ['NOTICES.md', 'ONNX-Model-Zoo-MIT.txt', 'SFace-Apache-2.0.txt', 'UltraFace-MIT.txt', 'YuNet-MIT.txt']) {
   if (!existsSync(path.join(thirdPartyDir, notice))) fail(`Missing packaged third-party notice: ${notice}`);
+}
+const notices = readFileSync(path.join(thirdPartyDir, 'NOTICES.md'), 'utf8');
+for (const requiredNoticeToken of [
+  'c39647011b1d0eb48037ce3051438e51b19e2b11',
+  'cc497be475371d891d5795e46fc80ebaddf683c5',
+  '019281f3fcb151a90e491f3b2f0273f9f31bd6be',
+  '91849267da7c576503f0f87a941b3139b64b7781',
+  '38296077a99667cdad67af5096ce7eeb9b327453',
+  '3364a833d9b3b5ff16af08beb04b1832cb012033',
+  'ONNX-Model-Zoo-MIT.txt',
+  'UltraFace-MIT.txt',
+]) {
+  if (!notices.includes(requiredNoticeToken)) fail(`Third-party notices omit pinned provenance: ${requiredNoticeToken}`);
+}
+if (notices.includes('929618539097dbeb779c13aed75dfe346d016d48')) {
+  fail('Third-party notices retain the invalid historical SSD revision.');
+}
+for (const licenseCheck of [
+  ['ONNX-Model-Zoo-MIT.txt', 'Copyright (c) ONNX Project Contributors'],
+  ['UltraFace-MIT.txt', 'Copyright (c) 2019 linzai'],
+  ['SFace-Apache-2.0.txt', 'Apache License'],
+]) {
+  const licenseText = readFileSync(path.join(thirdPartyDir, licenseCheck[0]), 'utf8');
+  if (!licenseText.includes(licenseCheck[1])) fail(`Third-party license text is incomplete: ${licenseCheck[0]}`);
 }
 
 const manifest = {
@@ -162,6 +234,8 @@ const manifest = {
   appDir,
   resourcesDir,
   models: models.map((model) => ({ name: model, bytes: statSync(path.join(modelDir, model)).size })),
+  modelDigests: packagedModelDigests,
+  preprocessWorkerDigest: looseWorkerDigest,
   experimentalDetectors: packagedExperimentalDetectors,
   onnxRuntime: {
     retainedArchitectures,

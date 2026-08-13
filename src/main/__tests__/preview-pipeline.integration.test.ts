@@ -3,7 +3,7 @@
 // mocked. Exercises: scan -> embedded RAW thumbnail extraction -> protocol
 // URL emission -> keptra-preview protocol handler -> JPEG bytes.
 import { describe, it, expect, vi, beforeAll } from 'vitest';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, statSync, utimesSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -73,7 +73,13 @@ vi.mock('../services/face-engine', () => ({
   serializeEmbedding: vi.fn(),
   isGpuAvailable: vi.fn(async () => false),
   getActualExecutionProvider: vi.fn(() => null),
-  getFaceFeatureOptions: vi.fn(() => ({})),
+  getFaceFeatureOptions: vi.fn((profile: string) => ({
+    faceDetection: true,
+    personDetection: profile !== 'detect',
+    faceMatching: false,
+    poseAnalysis: false,
+    embeddingLimit: 0,
+  })),
   getFaceProviderDiagnostics: vi.fn(() => ({})),
   configureGpuAcceleration: vi.fn(),
   configureGpuDevice: vi.fn(),
@@ -83,8 +89,14 @@ vi.mock('../services/face-engine', () => ({
   clearImageDecodeCache: vi.fn(),
   diagnoseFaceEngine: vi.fn(),
   runFaceGpuStressTest: vi.fn(),
+  isNanoDetSportsFallbackActive: vi.fn(async () => false),
+  cancelActiveFacePreprocessing: vi.fn(),
+  disposeFaceEngine: vi.fn(async () => undefined),
 }));
-vi.mock('../services/pose-engine', () => ({ configurePoseAnalysis: vi.fn() }));
+vi.mock('../services/pose-engine', () => ({
+  configurePoseAnalysis: vi.fn(),
+  poseModelAvailable: vi.fn(() => false),
+}));
 vi.mock('../services/catalog', () => ({
   openCatalog: vi.fn(async () => ({
     upsertMediaFiles: vi.fn(async () => ({ upserted: 0, duplicateCandidates: [] })),
@@ -93,13 +105,20 @@ vi.mock('../services/catalog', () => ({
   })),
 }));
 vi.mock('../services/face-cache', () => ({
-  getCachedFaceResult: vi.fn(),
-  setCachedFaceResult: vi.fn(),
+  getCachedFaceResult: vi.fn(async () => null),
+  getBestCachedFaceResult: vi.fn(async () => null),
+  setCachedFaceResult: vi.fn(async () => undefined),
   clearFaceCache: vi.fn(),
+  closeFaceCache: vi.fn(),
 }));
 
 import sharp from 'sharp';
 import { registerIpcHandlers } from '../ipc-handlers';
+import { analyzeFaces } from '../services/face-engine';
+import { setCachedFaceResult } from '../services/face-cache';
+
+const mockAnalyzeFaces = vi.mocked(analyzeFaces);
+const mockSetCachedFaceResult = vi.mocked(setCachedFaceResult);
 
 function getHandler(channel: string): (...args: unknown[]) => Promise<unknown> {
   const handler = ipcHandlers.get(channel);
@@ -208,6 +227,39 @@ describe('preview pipeline integration (real scanner + exifr + sharp)', () => {
     expect(body[1]).toBe(0xd8);
   });
 
+  it('does not return or cache AI evidence when source bytes change while queued analysis runs', async () => {
+    let analysisStarted!: () => void;
+    const started = new Promise<void>((resolve) => { analysisStarted = resolve; });
+    let finishAnalysis!: () => void;
+    const finish = new Promise<void>((resolve) => { finishAnalysis = resolve; });
+    mockSetCachedFaceResult.mockClear();
+    mockAnalyzeFaces.mockImplementationOnce(async () => {
+      analysisStarted();
+      await finish;
+      return {
+        boxes: [{ x: 0.2, y: 0.2, width: 0.2, height: 0.2, score: 0.9 }],
+        personBoxes: [], embeddings: [], embeddingBoxes: [], poses: [],
+        features: {
+          faceMatching: false, personDetection: false, poseAnalysis: false,
+          embeddingLimit: 0, eyeDetail: false,
+        },
+      };
+    });
+
+    const pending = getHandler('face:analyze')({}, jpegPath, {
+      profile: 'detect', orientation: 1,
+    }) as Promise<Array<{ errorCode?: string; faceCount: number }>>;
+    await started;
+    const before = statSync(jpegPath);
+    utimesSync(jpegPath, before.atime, new Date(before.mtimeMs + 2_000));
+    finishAnalysis();
+
+    await expect(pending).resolves.toEqual([
+      expect.objectContaining({ errorCode: 'SOURCE_CHANGED', faceCount: 0 }),
+    ]);
+    expect(mockSetCachedFaceResult).not.toHaveBeenCalled();
+  });
+
   it('serves thumbnails after a session restore re-registers files (app-restart case)', async () => {
     // Simulate an app restart: a fresh source the main process has never
     // scanned. Without registration, the guard must reject; after
@@ -224,14 +276,42 @@ describe('preview pipeline integration (real scanner + exifr + sharp)', () => {
     const rejected = await protocolHandler({ url: guardedUrl });
     expect(rejected.status).toBe(404);
 
-    const registration = await getHandler('session:register-files')({}, [{
+    const restoredFile = {
       path: restoredNef,
       name: 'IMG_0100.NEF',
       size: s.size,
       sourceModifiedAtMs: s.mtimeMs,
       type: 'photo',
       extension: '.nef',
-    }]) as { registered: number };
+    } as const;
+    const restoreSession = {
+      id: 'preview-restore-session',
+      updatedAt: '2026-08-13T00:00:00.000Z',
+      sourcePath: restoredDir,
+      destRoot: null,
+      files: [restoredFile],
+      selectedPaths: [],
+      queuedPaths: [],
+      filter: 'all',
+      focusedPath: restoredNef,
+      stats: { totalFiles: 1, picked: 0, rejected: 0, queued: 0, reviewed: 0 },
+    };
+    // Persist only after the main process has discovered the source. Then scan
+    // an empty source to simulate a restarted process with no active allow-list.
+    await getHandler('scan:start')({}, restoredDir, undefined, 'it-restore-source');
+    await getHandler('session:save')({}, restoreSession);
+    const emptyDir = path.join(tmpRoot, 'empty-after-restore');
+    mkdirSync(emptyDir, { recursive: true });
+    await getHandler('scan:start')({}, emptyDir, undefined, 'it-empty-source');
+    await getHandler('session:latest')({});
+    const register = getHandler('session:register-files');
+    await register({}, {
+      action: 'begin', generation: 'preview-restore', restoreSessionId: restoreSession.id, totalFiles: 1,
+    });
+    await register({}, { action: 'append', generation: 'preview-restore', offset: 0, files: [restoredFile] });
+    const registration = await register({}, {
+      action: 'finalize', generation: 'preview-restore',
+    }) as { registered: number };
     expect(registration.registered).toBe(1);
 
     // Renderer hydration path: SCAN_PREVIEW with variant=thumb returns a URL...
@@ -250,14 +330,32 @@ describe('preview pipeline integration (real scanner + exifr + sharp)', () => {
     // scanned files (registration is a wholesale swap by design, mirroring
     // how a session restore replaces the renderer's working set).
     const { statSync } = await import('node:fs');
-    await getHandler('session:register-files')({}, [nefPath, jpegPath].map((filePath) => ({
+    const files = [nefPath, jpegPath].map((filePath) => ({
       path: filePath,
       name: path.basename(filePath),
       size: statSync(filePath).size,
       sourceModifiedAtMs: statSync(filePath).mtimeMs,
-      type: 'photo',
+      type: 'photo' as const,
       extension: path.extname(filePath).toLowerCase(),
-    })));
+    }));
+    const restoreSession = {
+      id: 'preview-loupe-session', updatedAt: '2026-08-13T00:01:00.000Z',
+      sourcePath: sourceDir, destRoot: null, files, selectedPaths: [], queuedPaths: [],
+      filter: 'all', focusedPath: nefPath,
+      stats: { totalFiles: files.length, picked: 0, rejected: 0, queued: 0, reviewed: 0 },
+    };
+    await getHandler('scan:start')({}, sourceDir, undefined, 'it-loupe-source');
+    await getHandler('session:save')({}, restoreSession);
+    const emptyDir = path.join(tmpRoot, 'empty-before-loupe-restore');
+    mkdirSync(emptyDir, { recursive: true });
+    await getHandler('scan:start')({}, emptyDir, undefined, 'it-loupe-empty');
+    await getHandler('session:latest')({});
+    const register = getHandler('session:register-files');
+    await register({}, {
+      action: 'begin', generation: 'preview-loupe', restoreSessionId: restoreSession.id, totalFiles: files.length,
+    });
+    await register({}, { action: 'append', generation: 'preview-loupe', offset: 0, files });
+    await register({}, { action: 'finalize', generation: 'preview-loupe' });
     const result = await getHandler('scan:preview')({}, nefPath, 'preview') as { src: string } | undefined;
     expect(result?.src.startsWith('keptra-preview://')).toBe(true);
     const response = await protocolHandlers.get('keptra-preview')!({ url: result!.src });

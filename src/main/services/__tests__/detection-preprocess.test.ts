@@ -41,9 +41,9 @@ describe('detector thumbnail preprocessing', () => {
       width: 640,
       height: 480,
       channels: 3,
-      sourceWidth: 320,
+      sourceWidth: 1200,
     });
-    expect(result?.sourceHeight).toBeGreaterThanOrEqual(200);
+    expect(result?.sourceHeight).toBe(800);
     expect(result?.data).toHaveLength(640 * 480 * 3);
   });
 

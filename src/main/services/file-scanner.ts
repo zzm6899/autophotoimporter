@@ -47,6 +47,7 @@ export interface FileScanOptions {
 
 let currentJob: JobController | null = null;
 let backgroundThumbnailAbort: AbortController | null = null;
+let backgroundThumbnailTask: Promise<void> | null = null;
 let paused = false;
 const pauseWaiters: Array<() => void> = [];
 
@@ -146,6 +147,10 @@ export async function scanFiles(
   // onThumbnail callbacks don't pollute the new scan's state.
   backgroundThumbnailAbort?.abort();
   backgroundThumbnailAbort = null;
+  if (backgroundThumbnailTask) {
+    await backgroundThumbnailTask.catch(() => undefined);
+    backgroundThumbnailTask = null;
+  }
   while (pauseWaiters.length) pauseWaiters.shift()?.();
   const job = new JobController('file-scan');
   currentJob = job;
@@ -189,7 +194,12 @@ export async function scanFiles(
   if (options?.generateThumbnails !== false) {
     const bgAbort = new AbortController();
     backgroundThumbnailAbort = bgAbort;
-    generateThumbnailsInBackground(allFiles, onThumbnail, bgAbort.signal);
+    const task = generateThumbnailsInBackground(allFiles, onThumbnail, bgAbort.signal);
+    backgroundThumbnailTask = task;
+    void task.finally(() => {
+      if (backgroundThumbnailTask === task) backgroundThumbnailTask = null;
+      if (backgroundThumbnailAbort === bgAbort) backgroundThumbnailAbort = null;
+    });
   }
 
   job.complete({ current: allFiles.length, total: allFiles.length, percent: 100 });
@@ -245,7 +255,7 @@ function generateThumbnailsInBackground(
   allFiles: MediaFile[],
   onThumbnail: (filePath: string) => void,
   signal: AbortSignal,
-): void {
+): Promise<void> {
   const run = async () => {
     // Phase 2A: Fast thumbnails — extract embedded JPEG from EXIF (exifr-supported formats)
     const photos = allFiles.filter((f) => f.type === 'photo');
@@ -340,9 +350,18 @@ function generateThumbnailsInBackground(
     }
   };
 
-  run().catch((err) => {
+  return run().catch((err) => {
     if (!signal.aborted) console.error('[thumbnails] Background error:', err);
   });
+}
+
+/** Drain already-aborted background thumbnail work before app shutdown/tests. */
+export async function drainFileScannerBackground(): Promise<void> {
+  backgroundThumbnailAbort?.abort();
+  const task = backgroundThumbnailTask;
+  if (task) await task.catch(() => undefined);
+  if (backgroundThumbnailTask === task) backgroundThumbnailTask = null;
+  backgroundThumbnailAbort = null;
 }
 
 export function cancelScan(): void {

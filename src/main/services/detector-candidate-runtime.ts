@@ -8,8 +8,9 @@
  * exercises this exact implementation with real image pixels.
  */
 import { createHash } from 'node:crypto';
-import { createReadStream, statSync } from 'node:fs';
+import { createReadStream, existsSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import path from 'node:path';
 import type { DetectorCandidateModel } from './detector-model-manifest';
 
 type OrtTensorData = Float32Array | Uint8Array | Int32Array | BigInt64Array;
@@ -39,7 +40,15 @@ interface OrtModule {
 type SharpFactory = (typeof import('sharp'))['default'];
 type ImageInput = string | Buffer;
 
-const requireFromHere = createRequire(import.meta.url);
+// `import.meta.url` is preserved by the production Vite ESM build but may be
+// absent when this evaluation runtime is bundled into a CommonJS benchmark.
+// Anchor the fallback to the workspace package instead of crashing at module
+// initialisation before an opt-in candidate is even requested.
+const requireFromHere = createRequire(
+  typeof import.meta.url === 'string' && import.meta.url
+    ? import.meta.url
+    : path.join(process.cwd(), 'package.json'),
+);
 
 export type CandidateDetectorProvider = 'cpu' | 'dml';
 
@@ -157,7 +166,14 @@ function getSharp(): SharpFactory {
 
 function getOrt(): OrtModule {
   if (ortModule) return ortModule;
-  ortModule = requireFromHere('onnxruntime-node') as OrtModule;
+  const resourcesPath = (process as typeof process & { resourcesPath?: string }).resourcesPath;
+  const packagedModulePath = resourcesPath
+    ? requireFromHere('node:path').join(resourcesPath, 'onnxruntime-node', 'dist', 'index.js')
+    : '';
+  const modulePath = packagedModulePath && existsSync(packagedModulePath)
+    ? packagedModulePath
+    : 'onnxruntime-node';
+  ortModule = requireFromHere(modulePath) as OrtModule;
   return ortModule;
 }
 
@@ -689,3 +705,5 @@ export class DetectorCandidateRuntime {
     await this.session.release?.();
   }
 }
+
+export type ProductionDetectorRuntime = DetectorCandidateRuntime;

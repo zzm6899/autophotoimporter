@@ -1,4 +1,4 @@
-import exifr from 'exifr';
+import exifr, { Exifr } from 'exifr';
 import { stat, readFile, mkdir, open as fsOpen, writeFile, unlink } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import { execFile } from 'node:child_process';
@@ -21,6 +21,60 @@ export { isSharpAvailable } from './sharp-loader';
 
 function getSharp() {
   return getSharpModule();
+}
+
+type ExifrOptions = Exclude<Parameters<typeof exifr.parse>[1], unknown[] | boolean>;
+type ExifrReader = {
+  close?: () => void | Promise<void>;
+};
+type ManagedExifr = Exifr & {
+  // Exifr exposes the reader at runtime but omits it from its public typings.
+  // Keeping access scoped to this helper lets us close its chunked FsReader
+  // without changing the dependency or reading an entire multi-gigabyte RAW.
+  file?: ExifrReader;
+};
+
+/**
+ * Run a path-based Exifr operation and deterministically close its chunked
+ * FsReader. Exifr 7 calls `file.close()` without awaiting it and skips that
+ * call on several early-return/error paths (notably a missing IFD1 thumbnail),
+ * which otherwise leaves FileHandles for the GC to close (Node DEP0137).
+ *
+ * The close wrapper memoizes the first close promise. This means Exifr's own
+ * fire-and-forget close and this finally block share the same promise, so the
+ * caller does not complete until the descriptor is actually released.
+ */
+async function withManagedExifr<T>(
+  filePath: string,
+  options: ExifrOptions,
+  operation: (parser: Exifr) => Promise<T>,
+): Promise<T> {
+  const parser = new Exifr(options) as ManagedExifr;
+  try {
+    await parser.read(filePath);
+    const reader = parser.file;
+    if (reader?.close) {
+      const closeReader = reader.close.bind(reader);
+      let closePromise: Promise<void> | undefined;
+      reader.close = () => {
+        closePromise ??= Promise.resolve(closeReader()).catch(() => undefined);
+        return closePromise;
+      };
+    }
+    return await operation(parser);
+  } finally {
+    // A parser/read failure must retain its original outcome; close is cleanup.
+    // Awaiting it here still prevents unhandled rejections and descriptor GC.
+    await parser.file?.close?.();
+  }
+}
+
+function parseExifFile(filePath: string, options: ExifrOptions): Promise<any> {
+  return withManagedExifr(filePath, options, (parser) => parser.parse());
+}
+
+function extractExifThumbnail(filePath: string): Promise<Uint8Array | undefined> {
+  return withManagedExifr(filePath, undefined, (parser) => parser.extractThumbnail());
 }
 
 // IMPORTANT: no .rotate() here — the renderer ignores embedded EXIF orientation
@@ -248,7 +302,7 @@ export function normalizeExifOrientation(value: unknown): number | undefined {
  */
 export async function readExifOrientation(filePath: string): Promise<number> {
   try {
-    const metadata = await exifr.parse(filePath, {
+    const metadata = await parseExifFile(filePath, {
       pick: ['Orientation'],
       reviveValues: true,
     });
@@ -318,7 +372,7 @@ export async function parseExifDate(
 
   if (file.type === 'photo' && EXIFR_SUPPORTED.has(file.extension)) {
     try {
-      const exif = await exifr.parse(file.path, {
+      const exif = await parseExifFile(file.path, {
         pick: [
           'DateTimeOriginal', 'CreateDate', 'ModifyDate', 'Orientation',
           'ISO', 'FNumber', 'ExposureTime', 'FocalLength',
@@ -406,7 +460,7 @@ async function extractEmbeddedThumbnailBuffer(
       }
     }
 
-    const thumbData = await exifr.thumbnail(filePath);
+    const thumbData = await extractExifThumbnail(filePath);
     if (!thumbData || thumbData.byteLength === 0) return undefined;
     const buffer = Buffer.isBuffer(thumbData) ? thumbData : Buffer.from(thumbData);
     let result: Buffer | undefined;
@@ -702,7 +756,7 @@ async function embeddedFallbackBuffer(
   }
 
   try {
-    const thumbData = await exifr.thumbnail(filePath);
+    const thumbData = await extractExifThumbnail(filePath);
     if (!thumbData || thumbData.byteLength === 0) return undefined;
     const buffer = Buffer.from(thumbData);
     if (persistPath) {
@@ -738,7 +792,7 @@ async function embeddedFallbackForThumbnail(
 
   // Fast path: exifr parses the IFD1 thumbnail without reading the whole file.
   try {
-    const thumbData = await exifr.thumbnail(filePath);
+    const thumbData = await extractExifThumbnail(filePath);
     if (thumbData && thumbData.byteLength > 0) {
       const buffer = Buffer.isBuffer(thumbData) ? thumbData : Buffer.from(thumbData);
       let result: Buffer | undefined;
@@ -1115,6 +1169,29 @@ export async function getThumbnailPayload(filePath: string): Promise<PreviewPayl
 }
 
 /**
+ * Read-only scanner-to-AI handoff. Unlike getThumbnailPayload(), this never
+ * decodes, resizes, invokes Sharp/nativeImage, or spawns a platform converter.
+ * It is therefore safe to use before dispatching RAW work to the supervised
+ * preprocessing utility process.
+ */
+export async function peekThumbnailPayload(filePath: string): Promise<PreviewPayload | undefined> {
+  const resolved = resolvedThumbnailPayloads.get(filePath);
+  if (resolved) {
+    rememberResolvedThumbnail(filePath, resolved);
+    return resolved;
+  }
+  try {
+    const dir = await getThumbDir();
+    const key = await cacheKeyFor(filePath);
+    const outPath = path.join(dir, `${key}.jpg`);
+    await stat(outPath);
+    return { kind: 'file', diskPath: outPath };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Raw RGB pixels prepared from the scanner's existing thumbnail. Sharp/libvips
  * performs JPEG decode and resize off the Electron main thread, avoiding the
  * synchronous nativeImage resize/toBitmap pair in high-volume detector-only
@@ -1171,10 +1248,35 @@ export async function getDetectionPixels(
 
   const sharp = getSharp();
   if (!sharp) return undefined;
-  const payload = await getThumbnailPayload(filePath);
-  if (!payload) return undefined;
 
   try {
+    const directJpeg = new Set(['.jpg', '.jpeg', '.jpe']).has(path.extname(filePath).toLowerCase());
+    if (directJpeg) {
+      // A detector cache miss must not enter generateThumbnailBuffer(), whose
+      // final fallback can launch a platform resizer. libjpeg can decode JPEGs
+      // directly at a reduced DCT scale (shrink-on-load), avoiding both the
+      // 320px intermediate encode and synchronous nativeImage work.
+      const pipeline = sharp(filePath, {
+        failOn: 'error', sequentialRead: true, limitInputPixels: 180_000_000,
+      });
+      const metadata = await pipeline.metadata();
+      const sourceWidth = metadata.width ?? 0;
+      const sourceHeight = metadata.height ?? 0;
+      if (sourceWidth <= 0 || sourceHeight <= 0) return undefined;
+      const { data, info } = await sharp(filePath, {
+        failOn: 'error', sequentialRead: true, limitInputPixels: 180_000_000,
+      })
+        .resize({ width: targetWidth, height: targetHeight, fit: 'fill' })
+        .toColourspace('srgb')
+        .removeAlpha()
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+      if (info.width !== targetWidth || info.height !== targetHeight || info.channels !== 3) return undefined;
+      return { data, width: info.width, height: info.height, channels: 3, sourceWidth, sourceHeight };
+    }
+
+    const payload = await getThumbnailPayload(filePath);
+    if (!payload) return undefined;
     // Scanner thumbnails are deliberately bounded. Read a disk payload once
     // and share that buffer between header validation and libvips instead of
     // making separate header and decoder reads from removable storage.

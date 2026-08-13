@@ -4,6 +4,57 @@ Keptra includes third-party machine-learning model files. Those files remain
 subject to their own license terms; Keptra's application license does not
 replace those terms.
 
+## UltraFace RFB 640
+
+- File: `version-RFB-640.onnx`
+- Purpose: local face detection
+- Upstream model: ONNX Model Zoo `version-RFB-640`
+- Pinned model revision: `c39647011b1d0eb48037ce3051438e51b19e2b11`
+- Original model-file revision: `cc497be475371d891d5795e46fc80ebaddf683c5`
+- SHA-256: `8f4c659275977e7a3bfbfa339a9c769ad793df50f9c0baa8c14b11baa1646430`
+- License: MIT; see `UltraFace-MIT.txt`. The Hugging Face front matter says Apache-2.0, while its card body and the original ONNX/project license identify MIT; Keptra conservatively includes and attributes the original MIT terms.
+- Model: https://huggingface.co/onnxmodelzoo/version-RFB-640/tree/c39647011b1d0eb48037ce3051438e51b19e2b11
+- Exact original model file: https://github.com/Linzaer/Ultra-Light-Fast-Generic-Face-Detector-1MB/blob/cc497be475371d891d5795e46fc80ebaddf683c5/models/onnx/version-RFB-640.onnx
+
+The model card identifies WIDER FACE-derived training data. Dataset terms are
+separate from the software/model notice and should be reviewed when changing or
+retraining this detector.
+
+## SSD MobileNet V1
+
+- File: `ssd_mobilenet_v1_12.onnx`
+- Purpose: local person/body detection
+- Upstream: ONNX Model Zoo, `ssd_mobilenet_v1_12`
+- Pinned revision: `019281f3fcb151a90e491f3b2f0273f9f31bd6be`
+- SHA-256: `b8fba5e404077d4048d27fcd1667e85e27e192eb9bf51e696c46a3acd7d21058`
+- Model Zoo license/SPDX: MIT; see `ONNX-Model-Zoo-MIT.txt`
+- TensorFlow source/tooling lineage: Apache License 2.0; full text in `SFace-Apache-2.0.txt`
+- Model: https://huggingface.co/onnxmodelzoo/ssd_mobilenet_v1_12/tree/019281f3fcb151a90e491f3b2f0273f9f31bd6be
+- Original ONNX model introduction: https://github.com/onnx/models/tree/91849267da7c576503f0f87a941b3139b64b7781/vision/object_detection_segmentation/ssd-mobilenetv1
+
+The upstream model card documents TensorFlow SSD MobileNet conversion and COCO
+evaluation/training lineage. Keptra redistributes the pinned ONNX bytes
+unchanged.
+
+## MoveNet SinglePose Thunder
+
+- File: `movenet_thunder.onnx`
+- Purpose: optional local pose estimation for shortlisted sports photographs
+- Upstream conversion: Xenova MoveNet SinglePose Thunder ONNX
+- Pinned revision: `38296077a99667cdad67af5096ce7eeb9b327453`
+- SHA-256: `3dca9f6e5f8a64dc9935a5be06fd8bf81bf01e696c9c05c6f2a650e0a401b763`
+- License metadata: Apache License 2.0; full text in `SFace-Apache-2.0.txt`
+- Model: https://huggingface.co/Xenova/movenet-singlepose-thunder/tree/38296077a99667cdad67af5096ce7eeb9b327453
+- Official Google model card: https://github.com/tensorflow/tfhub.dev/blob/3364a833d9b3b5ff16af08beb04b1832cb012033/assets/docs/google/models/movenet/singlepose/thunder/4.md
+
+The conversion repository declares Apache-2.0 metadata. The packaged
+`onnx/model.onnx` is renamed byte-for-byte to `movenet_thunder.onnx`; graph
+metadata names `tf2onnx 1.16.1` and `movenet_singlepose_thunder_4`, supporting
+the v4 lineage. Its short model card still does not provide a reproducible
+conversion recipe; retain this pinned identity and provenance caveat until a
+first-party, reproducibly converted model replaces it. Keptra verifies this
+exact digest before loading and during package smoke.
+
 ## OpenCV SFace
 
 - File: `face_recognition_sface_2021dec.onnx`

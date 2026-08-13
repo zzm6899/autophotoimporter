@@ -5,9 +5,11 @@ import { performance } from 'node:perf_hooks';
 import path from 'node:path';
 import { DEFAULT_VIEW_OVERLAY_PREFERENCES, IPC, PHOTO_EXTENSIONS, PREVIEW_PROTOCOL_SCHEME, isSportsEventMode } from '../shared/types';
 import { configurePoseAnalysis, poseModelAvailable } from './services/pose-engine';
-import type { ImportConfig, ImportResult, ImportBenchmarkQuery, ImportBenchmarkResult, AppSettings, MediaFile, FtpConfig, FtpSyncStatus, Volume, UpdateState, ImportLedger, ImportHealthSummary, MacFirstRunDoctor, AppDiagnosticsSnapshot, UpdateRepairResult, AppSession, WatchFolder, CatalogBrowserQuery, CatalogFaceSearchQuery, ScanDiagnostics } from '../shared/types';
+import type { ImportConfig, ImportResult, ImportBenchmarkQuery, ImportBenchmarkResult, AppSettings, MediaFile, FtpConfig, FtpSyncStatus, Volume, UpdateState, ImportLedger, ImportHealthSummary, MacFirstRunDoctor, AppDiagnosticsSnapshot, UpdateRepairResult, AppSession, AppSessionSummary, WatchFolder, CatalogBrowserQuery, CatalogFaceSearchQuery, ScanDiagnostics, SessionFileRegistrationRequest, SessionFileRegistrationResult, SessionRestoreAbortRequest, SessionRestoreAbortResult, SessionRestorePage, SessionRestorePageRequest } from '../shared/types';
+import { getSessionDeltaDescriptor, hasSessionDeltaField, MAX_SESSION_FILE_COUNT } from '../shared/session-delta';
+import { stripLocalFaceAndSubjectData } from '../shared/face-data';
 import { listVolumes, startWatching, stopWatching } from './services/volume-watcher';
-import { scanFiles, cancelScan, pauseScan, resumeScan, type FileScanDiagnostics } from './services/file-scanner';
+import { scanFiles, cancelScan, drainFileScannerBackground, pauseScan, resumeScan, type FileScanDiagnostics } from './services/file-scanner';
 import { importFiles, cancelImport, planImportFiles } from './services/import-engine';
 import { writeLightroomHandoff } from './services/lightroom-handoff';
 import { ImportLedgerWriter, readLatestImportLedger as readLatestImportLedgerFile } from './services/import-ledger';
@@ -16,9 +18,11 @@ import { generatePreview, generatePreviewPayload, getThumbnailPayload, peekPrevi
 import { checkForUpdate, fetchUpdateHistory, readLastKnownGoodUpdateMetadata } from './services/update-checker';
 import { probeFtp, mirrorFtp } from './services/ftp-source';
 import { activateLicenseInput, checkHostedLicenseStatus, validateLicenseKey } from './services/license';
-import { analyzeFaces, faceModelsAvailable, serializeEmbedding, isGpuAvailable, getActualExecutionProvider, getFaceFeatureOptions, getFaceProviderDiagnostics, configureGpuAcceleration, configureGpuDevice, configureCpuOptimization, configureFaceFeatureOptions, configureFaceThroughput, clearImageDecodeCache, diagnoseFaceEngine, runFaceGpuStressTest } from './services/face-engine';
-import type { FaceAnalysisProfile } from './services/face-engine';
-import { getCachedFaceResult, setCachedFaceResult, clearFaceCache, closeFaceCache } from './services/face-cache';
+import { analyzeFaces, cancelActiveFacePreprocessing, disposeFaceEngine, faceModelsAvailable, serializeEmbedding, isGpuAvailable, getActualExecutionProvider, getFaceFeatureOptions, getFaceProviderDiagnostics, configureGpuAcceleration, configureGpuDevice, configureCpuOptimization, configureFaceFeatureOptions, configureFaceThroughput, clearImageDecodeCache, diagnoseFaceEngine, runFaceGpuStressTest, isNanoDetSportsFallbackActive } from './services/face-engine';
+import type { ExifOrientation, FaceAnalysisProfile } from './services/face-engine';
+import { getBestCachedFaceResult, getCachedFaceResult, setCachedFaceResult, clearFaceCache, closeFaceCache } from './services/face-cache';
+import type { FaceCacheIdentityHint } from './services/face-cache';
+import { FaceJobScheduler } from './services/face-job-scheduler';
 import { detectDeviceTier } from './services/device-tier';
 import { getRawPreviewCacheDiagnostics, setRawPreviewCache, setRawPreviewQuality } from './services/exif-parser';
 import { openCatalog, type CatalogService } from './services/catalog';
@@ -176,16 +180,46 @@ function isExifOrientation(value: unknown): value is number {
   return isNumber(value) && Number.isInteger(value) && value >= 1 && value <= 8;
 }
 
+/**
+ * Renderer orientation is only a scheduling hint and must never define cached
+ * detector coordinates. The main-owned scan/restore record is the authority;
+ * when it has no valid orientation the face engine reads EXIF itself.
+ */
+export function resolveTrustedFaceOrientation(
+  registeredFile: Pick<MediaFile, 'orientation'> | undefined,
+  _rendererHint?: number,
+): ExifOrientation | undefined {
+  return isExifOrientation(registeredFile?.orientation)
+    ? registeredFile.orientation as ExifOrientation
+    : undefined;
+}
+
+function isFaceCacheIdentityHint(value: unknown): value is FaceCacheIdentityHint {
+  return isRecord(value)
+    && isNumber(value.size)
+    && Number.isSafeInteger(value.size)
+    && value.size >= 0
+    && isNumber(value.mtimeMs)
+    && value.mtimeMs >= 0;
+}
+
 function isFaceAnalysisOptions(value: unknown): value is {
   profile?: FaceAnalysisProfile;
   orientation?: number;
   orientations?: number[];
+  identity?: FaceCacheIdentityHint;
+  identities?: FaceCacheIdentityHint[];
+  sportsMode?: boolean;
 } {
   return value == null || (isRecord(value)
     && (value.profile == null || isFaceAnalysisProfile(value.profile))
     && (value.orientation == null || isExifOrientation(value.orientation))
     && (value.orientations == null || (Array.isArray(value.orientations)
-      && value.orientations.every(isExifOrientation))));
+      && value.orientations.every(isExifOrientation)))
+    && (value.identity == null || isFaceCacheIdentityHint(value.identity))
+    && (value.identities == null || (Array.isArray(value.identities)
+      && value.identities.every(isFaceCacheIdentityHint)))
+    && (value.sportsMode == null || isBoolean(value.sportsMode)));
 }
 
 function isOptionalBoundedNumber(value: unknown, min: number, max: number): boolean {
@@ -214,28 +248,171 @@ function isSettingsPatch(value: unknown): value is Partial<AppSettings> {
   return true;
 }
 
-function isAppSession(value: unknown): value is AppSession {
+const MAX_SESSION_STRING_LENGTH = 32_768;
+const MAX_SESSION_NAME_LENGTH = 4_096;
+const MAX_SESSION_FILTER_LENGTH = 512;
+const MAX_SESSION_REGISTRATION_CHUNK = 10_000;
+const MAX_SESSION_RESTORE_PAGE = 5_000;
+const MAX_SESSION_GENERATION_LENGTH = 128;
+export const SESSION_RESTORE_LEASE_MS = 30_000;
+
+function isBoundedString(value: unknown, maxLength: number, allowEmpty = false): value is string {
+  return typeof value === 'string'
+    && value.length <= maxLength
+    && (allowEmpty || value.trim().length > 0);
+}
+
+function isPersistedPoseArray(value: unknown): boolean {
+  if (value == null) return true;
+  if (!Array.isArray(value) || value.length > 256) return false;
+  return value.every((pose) => {
+    if (!isRecord(pose) || !Array.isArray(pose.keypoints)) return false;
+    if (pose.keypoints.length !== 0 && pose.keypoints.length !== 17) return false;
+    if (pose.score != null && !isNumber(pose.score)) return false;
+    return pose.keypoints.every((point) => isRecord(point) &&
+      isNumber(point.x) && Number(point.x) >= 0 && Number(point.x) <= 1 &&
+      isNumber(point.y) && Number(point.y) >= 0 && Number(point.y) <= 1 &&
+      isNumber(point.score) && Number(point.score) >= 0 && Number(point.score) <= 1);
+  });
+}
+
+function isMediaFileBasic(value: unknown): value is MediaFile {
   if (!isRecord(value)) return false;
-  return typeof value.id === 'string'
-    && typeof value.updatedAt === 'string'
-    && (value.sourcePath === null || typeof value.sourcePath === 'string')
-    && (value.destRoot === null || typeof value.destRoot === 'string')
-    && Array.isArray(value.files)
-    && Array.isArray(value.selectedPaths)
-    && Array.isArray(value.queuedPaths)
-    && typeof value.filter === 'string'
-    && isRecord(value.stats);
+  return isBoundedString(value.path, MAX_SESSION_STRING_LENGTH)
+    && isBoundedString(value.name, MAX_SESSION_NAME_LENGTH)
+    && Number.isSafeInteger(value.size)
+    && Number(value.size) >= 0
+    && (value.type === 'photo' || value.type === 'video')
+    && isBoundedString(value.extension, 64, true)
+    && isPersistedPoseArray(value.poses)
+    && (value.sourceModifiedAtMs == null || (isNumber(value.sourceModifiedAtMs) && value.sourceModifiedAtMs >= 0));
+}
+
+function isUniqueBoundedStringArray(value: unknown, maxItems: number): value is string[] {
+  if (!Array.isArray(value) || value.length > maxItems) return false;
+  const unique = new Set<string>();
+  for (const item of value) {
+    if (!isBoundedString(item, MAX_SESSION_STRING_LENGTH) || unique.has(item)) return false;
+    unique.add(item);
+  }
+  return true;
+}
+
+function isSaneSessionStats(value: unknown, totalFiles: number): value is AppSession['stats'] {
+  if (!isRecord(value)) return false;
+  const counters = [value.totalFiles, value.picked, value.rejected, value.queued, value.reviewed];
+  if (!counters.every((counter) => Number.isSafeInteger(counter) && Number(counter) >= 0 && Number(counter) <= totalFiles)) return false;
+  return value.totalFiles === totalFiles
+    && Number(value.picked) + Number(value.rejected) <= totalFiles
+    && Number(value.reviewed) >= Number(value.picked) + Number(value.rejected);
+}
+
+function isAppSession(value: unknown): value is AppSession {
+  if (!isRecord(value)
+    || !isBoundedString(value.id, 256)
+    || !/^[A-Za-z0-9._-]+$/.test(value.id)
+    || !isBoundedString(value.updatedAt, 128)
+    || !Number.isFinite(Date.parse(value.updatedAt))
+    || !(value.sourcePath === null || isBoundedString(value.sourcePath, MAX_SESSION_STRING_LENGTH))
+    || !(value.destRoot === null || isBoundedString(value.destRoot, MAX_SESSION_STRING_LENGTH))
+    || !Array.isArray(value.files)
+    || value.files.length > MAX_SESSION_FILE_COUNT
+    || !value.files.every(isMediaFileBasic)
+    || !isUniqueBoundedStringArray(value.selectedPaths, MAX_SESSION_FILE_COUNT)
+    || !isUniqueBoundedStringArray(value.queuedPaths, MAX_SESSION_FILE_COUNT)
+    || !isBoundedString(value.filter, MAX_SESSION_FILTER_LENGTH, true)
+    || !(value.focusedPath == null || isBoundedString(value.focusedPath, MAX_SESSION_STRING_LENGTH))
+    || !(value.importLedgerId == null || isBoundedString(value.importLedgerId, 512))) return false;
+
+  const session = value as unknown as AppSession;
+  const delta = getSessionDeltaDescriptor(session);
+  if (hasSessionDeltaField(session) && !delta) return false;
+  const totalFiles = delta?.totalFileCount ?? session.files.length;
+  if (session.selectedPaths.length > totalFiles || session.queuedPaths.length > totalFiles) return false;
+  if (!isSaneSessionStats(session.stats, totalFiles)) return false;
+  if (session.stats.queued !== session.queuedPaths.length && (!delta || delta.queuedPathsChanged)) return false;
+
+  const filePaths = new Set<string>();
+  for (const file of session.files) {
+    if (filePaths.has(file.path)) return false;
+    filePaths.add(file.path);
+  }
+  if (!delta) {
+    if (!session.selectedPaths.every((filePath) => filePaths.has(filePath))) return false;
+    if (!session.queuedPaths.every((filePath) => filePaths.has(filePath))) return false;
+    if (session.focusedPath && !filePaths.has(session.focusedPath)) return false;
+  }
+  return true;
+}
+
+function mediaPathBelongsToSessionSource(filePath: string, sourcePath: string | null, totalFiles: number): boolean {
+  const sourceRoot = sourcePath ? path.resolve(sourcePath) : null;
+  if (!sourceRoot || !path.isAbsolute(filePath)) return totalFiles === 0;
+  const relative = path.relative(sourceRoot, path.resolve(filePath));
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function sessionUsesRegisteredMedia(session: AppSession): boolean {
+  const delta = getSessionDeltaDescriptor(session);
+  const totalFiles = delta?.totalFileCount ?? session.files.length;
+  if (totalFiles !== scannedFilesByPath.size) return false;
+  if (totalFiles > 0 && !session.sourcePath) return false;
+  for (const file of session.files) {
+    if (!scannedFilesByPath.has(file.path)
+      || !mediaPathBelongsToSessionSource(file.path, session.sourcePath, totalFiles)) return false;
+  }
+  for (const filePath of session.selectedPaths) {
+    if (!scannedFilesByPath.has(filePath)) return false;
+  }
+  for (const filePath of session.queuedPaths) {
+    if (!scannedFilesByPath.has(filePath)) return false;
+  }
+  return !session.focusedPath || scannedFilesByPath.has(session.focusedPath);
 }
 
 function isMediaFileArray(value: unknown): value is MediaFile[] {
-  return Array.isArray(value) && value.every((file) =>
-    isRecord(file)
-    && isNonEmptyString(file.path)
-    && isNonEmptyString(file.name)
-    && isNumber(file.size)
-    && (file.type === 'photo' || file.type === 'video')
-    && typeof file.extension === 'string'
-  );
+  return Array.isArray(value) && value.every(isMediaFileBasic);
+}
+
+function isSessionFileRegistrationRequest(value: unknown): value is SessionFileRegistrationRequest {
+  if (!isRecord(value)
+    || !isBoundedString(value.generation, MAX_SESSION_GENERATION_LENGTH)
+    || !['begin', 'append', 'finalize'].includes(String(value.action))) return false;
+  if (value.action === 'begin') {
+    return Number.isSafeInteger(value.totalFiles)
+      && Number(value.totalFiles) >= 0
+      && Number(value.totalFiles) <= MAX_SESSION_FILE_COUNT
+      && (value.restoreSessionId == null || isBoundedString(value.restoreSessionId, 256));
+  }
+  if (value.action === 'append') {
+    return Number.isSafeInteger(value.offset)
+      && Number(value.offset) >= 0
+      && Array.isArray(value.files)
+      && value.files.length > 0
+      && value.files.length <= MAX_SESSION_REGISTRATION_CHUNK
+      && value.files.every(isMediaFileBasic);
+  }
+  return true;
+}
+
+function isSessionRestorePageRequest(value: unknown): value is SessionRestorePageRequest {
+  return isRecord(value)
+    && isBoundedString(value.sessionId, 256)
+    && /^[A-Za-z0-9._-]+$/.test(value.sessionId)
+    && isBoundedString(value.generation, MAX_SESSION_GENERATION_LENGTH)
+    && Number.isSafeInteger(value.offset)
+    && Number(value.offset) >= 0
+    && Number(value.offset) <= MAX_SESSION_FILE_COUNT
+    && Number.isSafeInteger(value.limit)
+    && Number(value.limit) >= 1
+    && Number(value.limit) <= MAX_SESSION_RESTORE_PAGE;
+}
+
+function isSessionRestoreAbortRequest(value: unknown): value is SessionRestoreAbortRequest {
+  return isRecord(value)
+    && isBoundedString(value.sessionId, 256)
+    && /^[A-Za-z0-9._-]+$/.test(value.sessionId)
+    && isBoundedString(value.generation, MAX_SESSION_GENERATION_LENGTH);
 }
 
 function isCatalogBrowserQuery(value: unknown): value is CatalogBrowserQuery {
@@ -353,6 +530,129 @@ function execFileAsync(
 
 let scannedFiles: MediaFile[] = [];
 let scannedFilesByPath = new Map<string, MediaFile>();
+let latestRestorableSession: {
+  id: string;
+  sourcePath: string | null;
+  files: MediaFile[];
+  filesByPath: Map<string, MediaFile>;
+} | null = null;
+let latestRestorableSummary: AppSessionSummary | null = null;
+let pendingSessionRegistration: {
+  generation: string;
+  totalFiles: number;
+  nextOffset: number;
+  restoreSessionId: string;
+} | null = null;
+interface PendingSessionRestore {
+  generation: string;
+  sessionId: string;
+  updatedAt: string;
+  totalFiles: number;
+  nextOffset: number;
+  files: MediaFile[];
+  filesByPath: Map<string, MediaFile>;
+  ownerWebContents: Electron.WebContents;
+  ownerWebContentsId: number;
+  ownerDestroyedListener: () => void;
+  inFlight: boolean;
+  leaseExpiresAt: number;
+  leaseTimer: NodeJS.Timeout | null;
+}
+let pendingSessionRestore: PendingSessionRestore | null = null;
+
+function clearPendingSessionRestore(
+  expected?: PendingSessionRestore,
+  preserveCatalogue = false,
+): boolean {
+  const pending = pendingSessionRestore;
+  if (!pending || (expected && pending !== expected)) return false;
+  pendingSessionRestore = null;
+  if (pending.leaseTimer) {
+    clearTimeout(pending.leaseTimer);
+    pending.leaseTimer = null;
+  }
+  pending.ownerWebContents.removeListener('destroyed', pending.ownerDestroyedListener);
+  if (!preserveCatalogue) {
+    pending.files.length = 0;
+    pending.filesByPath.clear();
+  }
+  return true;
+}
+
+function refreshPendingSessionRestoreLease(pending: PendingSessionRestore): boolean {
+  if (pendingSessionRestore !== pending || pending.inFlight) return false;
+  if (pending.leaseTimer) clearTimeout(pending.leaseTimer);
+  pending.leaseExpiresAt = Date.now() + SESSION_RESTORE_LEASE_MS;
+  pending.leaseTimer = setTimeout(() => {
+    if (pendingSessionRestore === pending && Date.now() >= pending.leaseExpiresAt) {
+      clearPendingSessionRestore(pending);
+    }
+  }, SESSION_RESTORE_LEASE_MS);
+  pending.leaseTimer.unref?.();
+  return true;
+}
+
+function currentPendingSessionRestore(): PendingSessionRestore | null {
+  const pending = pendingSessionRestore;
+  if (pending && !pending.inFlight && Date.now() >= pending.leaseExpiresAt) {
+    clearPendingSessionRestore(pending);
+    return null;
+  }
+  return pending;
+}
+
+function beginPendingSessionRestoreRead(pending: PendingSessionRestore): boolean {
+  if (pendingSessionRestore !== pending || pending.inFlight) return false;
+  pending.inFlight = true;
+  pending.leaseExpiresAt = Number.POSITIVE_INFINITY;
+  if (pending.leaseTimer) {
+    clearTimeout(pending.leaseTimer);
+    pending.leaseTimer = null;
+  }
+  return true;
+}
+
+function beginPendingSessionRestore(
+  sender: Electron.WebContents,
+  request: SessionRestorePageRequest,
+  authority: AppSessionSummary,
+): PendingSessionRestore {
+  const pending: PendingSessionRestore = {
+    generation: request.generation,
+    sessionId: request.sessionId,
+    updatedAt: authority.updatedAt,
+    totalFiles: authority.stats.totalFiles,
+    nextOffset: 0,
+    files: [],
+    filesByPath: new Map<string, MediaFile>(),
+    ownerWebContents: sender,
+    ownerWebContentsId: sender.id,
+    ownerDestroyedListener: () => undefined,
+    inFlight: false,
+    leaseExpiresAt: 0,
+    leaseTimer: null,
+  };
+  pending.ownerDestroyedListener = () => {
+    clearPendingSessionRestore(pending);
+  };
+  pendingSessionRestore = pending;
+  sender.once('destroyed', pending.ownerDestroyedListener);
+  refreshPendingSessionRestoreLease(pending);
+  return pending;
+}
+
+function sessionRestoreSender(event: Electron.IpcMainInvokeEvent): Electron.WebContents | null {
+  const sender = event.sender;
+  return Number.isSafeInteger(sender?.id) && !sender.isDestroyed() ? sender : null;
+}
+export interface RendererSessionFlushResult {
+  acknowledged: boolean;
+  success: boolean;
+  message?: string;
+}
+
+const pendingSessionFlushAcks = new Map<string, (result: RendererSessionFlushResult) => void>();
+let sessionFlushSequence = 0;
 let scanEventGeneration = 0;
 let knownVolumePaths = new Set<string>();
 type QueuedAutoImport = {
@@ -382,16 +682,42 @@ let lastFtpSyncStatus: FtpSyncStatus = {
 let watchFolderManager: WatchFolderManager | null = null;
 let catalogService: Promise<CatalogService> | null = null;
 let sessionStoreService: Promise<SessionStoreService> | null = null;
+let catalogFaceMetadataWriteChain: Promise<unknown> = Promise.resolve();
+// A user-requested privacy purge is a durable boundary, not just a one-shot
+// delete. Renderer work that was already debounced or structured-cloned can
+// arrive after the purge completes, so keep subject/face persistence closed
+// until the user explicitly starts a new scan or a valid face-analysis request
+// recreates that data.
+let localFaceDataPersistenceBlocked = false;
+let localFaceDataPurgeBarrier: Promise<void> | null = null;
+
+async function reopenLocalFaceDataPersistence(): Promise<void> {
+  // More than one Clear request may be serialized. Follow the live barrier,
+  // not just the one observed on entry, so a scan/analysis cannot reopen in
+  // the gap between two consecutive purge transactions.
+  while (localFaceDataPurgeBarrier) {
+    await localFaceDataPurgeBarrier;
+  }
+  localFaceDataPersistenceBlocked = false;
+}
 let previewCacheLifecycle: CacheLifecycleReport | null = null;
 let persistentServicesClosed = false;
+let persistentShutdownInProgress = false;
+
+export function isPersistentShutdownInProgress(): boolean {
+  return persistentShutdownInProgress;
+}
 
 async function closePersistentServices(): Promise<void> {
   if (persistentServicesClosed) return;
   persistentServicesClosed = true;
+  clearPendingSessionRestore();
   const closeTasks: Array<Promise<void>> = [];
   if (catalogService) closeTasks.push(catalogService.then((service) => service.close()));
   if (sessionStoreService) closeTasks.push(sessionStoreService.then((service) => service.close()));
   closeTasks.push(closeFaceCache());
+  closeTasks.push(disposeFaceEngine());
+  closeTasks.push(drainFileScannerBackground());
   await Promise.allSettled(closeTasks);
   catalogService = null;
   sessionStoreService = null;
@@ -923,7 +1249,34 @@ async function persistAppSession(session: AppSession): Promise<AppSession> {
 
 async function readLatestAppSession(): Promise<AppSession | null> {
   const store = await getSessionStoreService();
-  return store.readLatest();
+  const session = await store.readLatest();
+  latestRestorableSummary = session ? {
+    id: session.id,
+    updatedAt: session.updatedAt,
+    sourcePath: session.sourcePath,
+    destRoot: session.destRoot,
+    filter: session.filter,
+    focusedPath: session.focusedPath,
+    importLedgerId: session.importLedgerId,
+    stats: session.stats,
+  } : null;
+  latestRestorableSession = session ? {
+    id: session.id,
+    sourcePath: session.sourcePath,
+    files: session.files,
+    filesByPath: new Map(session.files.map((file) => [file.path, file])),
+  } : null;
+  return session;
+}
+
+async function readLatestAppSessionSummary(): Promise<AppSessionSummary | null> {
+  const summary = await (await getSessionStoreService()).readLatestSummary();
+  if (!summary || latestRestorableSummary?.id !== summary.id || latestRestorableSummary.updatedAt !== summary.updatedAt) {
+    latestRestorableSession = null;
+    clearPendingSessionRestore();
+  }
+  latestRestorableSummary = summary;
+  return summary;
 }
 
 async function readSettingsData(): Promise<string> {
@@ -1052,8 +1405,7 @@ const DEFAULT_SETTINGS: AppSettings = {
 // Face analysis semaphore — module-level so loadSettings can initialise it
 // ---------------------------------------------------------------------------
 let faceSemaphoreSlots = 1;
-let faceSemaphoreQueue: Array<() => void> = [];
-let faceActiveCount = 0;
+const faceJobScheduler = new FaceJobScheduler(faceSemaphoreSlots);
 // Beyond 16 whole-photo jobs the CPU decode/person stages are oversubscribed
 // and measured throughput falls even on a fast DirectML GPU.
 const FACE_CONCURRENCY_HARD_MAX = 16;
@@ -1065,11 +1417,16 @@ let faceQueueGeneration = 0;
 /** Call on SCAN_START to immediately drain all queued (not yet running) face jobs. */
 function cancelPendingFaceJobs(): void {
   faceQueueGeneration++;
-  // Drain the queue — each resolve() unblocks the awaiting acquireFaceSemaphore()
-  // call; the generation check inside will then throw STALE_FACE_JOB.
-  const drained = faceSemaphoreQueue.splice(0);
-  faceActiveCount += drained.length;
-  for (const resolve of drained) resolve();
+  faceJobScheduler.cancelQueuedBeforeGeneration(faceQueueGeneration, STALE_FACE_JOB);
+  cancelActiveFacePreprocessing();
+  // Active jobs may already be inside ORT after leaving the killable decode
+  // worker. Resetting the engine rejects their generation-scoped circuits
+  // immediately, releases scheduler leases in their `finally`, and prevents an
+  // old-source native failure from poisoning the new source's session. Native
+  // release itself is bounded and stale loaders are generation-guarded.
+  void disposeFaceEngine().catch((error) => {
+    log.warn('[face-analysis] active generation reset failed', error);
+  });
 }
 
 const STALE_FACE_JOB = 'stale-face-job';
@@ -1094,46 +1451,18 @@ function resolveFaceConcurrency(settings: Pick<AppSettings, 'perfTier' | 'faceCo
 
 function setFaceConcurrency(n: number): void {
   faceSemaphoreSlots = clampFaceConcurrency(n);
+  faceJobScheduler.setSlots(faceSemaphoreSlots);
   configureFaceThroughput(faceSemaphoreSlots);
-  while (faceActiveCount < faceSemaphoreSlots && faceSemaphoreQueue.length > 0) {
-    faceActiveCount++;
-    faceSemaphoreQueue.shift()?.();
-  }
 }
 
-async function acquireFaceSemaphore(gen: number): Promise<void> {
-  // Check generation before acquiring any slot — stale jobs should never
-  // consume a semaphore slot, so check first and throw without incrementing.
+async function acquireFaceSemaphore(gen: number, profile: FaceAnalysisProfile): Promise<() => void> {
   if (gen !== faceQueueGeneration) throw new Error(STALE_FACE_JOB);
-  if (faceActiveCount < faceSemaphoreSlots) {
-    faceActiveCount++;
-    return;
-  }
-  // Wait to be woken by releaseFaceSemaphore. The release already increments
-  // faceActiveCount on our behalf before calling resolve() — do NOT increment
-  // again here, or the count leaks above slots and the queue deadlocks.
-  await new Promise<void>((resolve) => faceSemaphoreQueue.push(resolve));
-  // Check generation AFTER waking. If a new scan started while we waited,
-  // release the slot that was pre-claimed for us and throw so the caller bails.
+  const release = await faceJobScheduler.acquire(profile, gen);
   if (gen !== faceQueueGeneration) {
-    faceActiveCount--;
-    // Wake the next waiter if one is queued (we're giving the slot back).
-    if (faceSemaphoreQueue.length > 0 && faceActiveCount < faceSemaphoreSlots) {
-      faceActiveCount++;
-      faceSemaphoreQueue.shift()?.();
-    }
+    release();
     throw new Error(STALE_FACE_JOB);
   }
-}
-
-function releaseFaceSemaphore(): void {
-  faceActiveCount--;
-  if (faceSemaphoreQueue.length > 0 && faceActiveCount < faceSemaphoreSlots) {
-    // Pre-claim the slot for the next waiter before waking it, so the waiter
-    // does not need to increment faceActiveCount itself.
-    faceActiveCount++;
-    faceSemaphoreQueue.shift()?.();
-  }
+  return release;
 }
 
 // Preview generation can read RAW files and return large base64 strings over
@@ -1741,8 +2070,8 @@ async function buildDiagnosticsSnapshot(): Promise<AppDiagnosticsSnapshot> {
     performance: {
       provider: getActualExecutionProvider(),
       faceQueue: {
-        active: faceActiveCount,
-        queued: faceSemaphoreQueue.length,
+        active: faceJobScheduler.activeCount,
+        queued: faceJobScheduler.queuedCount,
         slots: faceSemaphoreSlots,
       },
       previewQueue: getPreviewQueueDiagnostics(),
@@ -1910,6 +2239,38 @@ function sendToRenderer(channel: string, ...args: unknown[]): void {
   for (const win of windows) {
     win.webContents.send(channel, ...args);
   }
+}
+
+/** Ask one renderer to start and acknowledge its final durable session save. */
+export function requestRendererSessionFlush(
+  win: BrowserWindow,
+  timeoutMs = 10_000,
+): Promise<RendererSessionFlushResult> {
+  if (win.isDestroyed() || win.webContents.isDestroyed()) {
+    return Promise.resolve({ acknowledged: false, success: false, message: 'Renderer is unavailable.' });
+  }
+  const token = `flush-${Date.now().toString(36)}-${(++sessionFlushSequence).toString(36)}`;
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result: RendererSessionFlushResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      pendingSessionFlushAcks.delete(token);
+      resolve(result);
+    };
+    const timeout = setTimeout(() => finish({
+      acknowledged: false,
+      success: false,
+      message: 'Timed out waiting for the final session save.',
+    }), Math.max(250, Math.min(timeoutMs, 10_000)));
+    pendingSessionFlushAcks.set(token, finish);
+    try {
+      win.webContents.send(IPC.SESSION_FLUSH_REQUEST, token);
+    } catch {
+      finish({ acknowledged: false, success: false, message: 'Could not request the final session save.' });
+    }
+  });
 }
 
 function sanitizeDownloadName(value: string) {
@@ -2240,7 +2601,6 @@ export function registerIpcHandlers(): void {
     }
   }).catch(() => undefined);
 
-  let shutdownInProgress = false;
   app.on('before-quit', (event) => {
     cancelPendingFaceJobs();
     clearImageDecodeCache();
@@ -2248,16 +2608,31 @@ export function registerIpcHandlers(): void {
     watchFolderManager?.stop();
     clearFtpSyncTimer();
     ftpSyncAbort?.abort();
-    if (!persistentServicesClosed && !shutdownInProgress) {
+    if (!persistentServicesClosed && !persistentShutdownInProgress) {
       event.preventDefault();
-      shutdownInProgress = true;
-      void closePersistentServices().finally(() => app.quit());
+      persistentShutdownInProgress = true;
+      const windows = BrowserWindow.getAllWindows();
+      void Promise.allSettled(windows.map((win) => requestRendererSessionFlush(win)))
+        .then((results) => {
+          for (const result of results) {
+            if (result.status === 'fulfilled' && !result.value.success) {
+              log.warn('[session] final renderer flush was not durable', result.value);
+            }
+          }
+        })
+        .then(() => closePersistentServices())
+        .finally(() => app.quit());
     }
   });
 
   // Scanning
   handleIpc(IPC.SCAN_START, async (_event, sourcePath: string, folderPattern?: string, requestScanId?: string) => {
+    await reopenLocalFaceDataPersistence();
     console.log(`[scan] Starting scan of: ${sourcePath}`);
+    pendingSessionRegistration = null;
+    clearPendingSessionRestore();
+    latestRestorableSession = null;
+    latestRestorableSummary = null;
     scannedFiles = [];
     scannedFilesByPath = new Map();
     const scanGeneration = ++scanEventGeneration;
@@ -2477,12 +2852,22 @@ export function registerIpcHandlers(): void {
 
   handleIpc(IPC.CATALOG_UPSERT_FACE_METADATA, async (_event, files: MediaFile[], sessionId?: string) => {
     const faceFiles = files.filter((file) => !!file.faceEmbedding || (file.faceEmbeddings?.length ?? 0) > 0);
-    const result = await (await getCatalogService()).upsertMediaFiles(faceFiles, sessionId);
-    return {
-      upserted: result.upserted,
-      faceFiles: faceFiles.length,
-      embeddings: faceFiles.reduce((sum, file) => sum + (file.faceEmbeddings?.length ?? (file.faceEmbedding ? 1 : 0)), 0),
-    };
+    const blockedWhenRequested = localFaceDataPersistenceBlocked;
+    const operation = catalogFaceMetadataWriteChain.then(async () => {
+      // Check both the state captured when IPC arrived and the state at commit.
+      // This closes both sides of a purge racing an already-queued write.
+      if (blockedWhenRequested || localFaceDataPersistenceBlocked) {
+        return { upserted: 0, faceFiles: 0, embeddings: 0 };
+      }
+      const result = await (await getCatalogService()).upsertMediaFiles(faceFiles, sessionId);
+      return {
+        upserted: result.upserted,
+        faceFiles: faceFiles.length,
+        embeddings: faceFiles.reduce((sum, file) => sum + (file.faceEmbeddings?.length ?? (file.faceEmbedding ? 1 : 0)), 0),
+      };
+    });
+    catalogFaceMetadataWriteChain = operation.catch(() => undefined);
+    return operation;
   }, ([files, sessionId]) => isFaceMetadataWritePayload(files, sessionId) ? null : ipcError('VALIDATION_ERROR', 'Invalid face metadata payload.'));
 
   handleIpc(IPC.CATALOG_VERIFY_MISSING, async () => {
@@ -2512,27 +2897,287 @@ export function registerIpcHandlers(): void {
   });
 
   handleIpc(IPC.SESSION_SAVE, async (_event, session: AppSession) => {
-    return persistAppSession(session);
+    // A renderer may persist review metadata only for media that the main
+    // process already discovered or restored. Otherwise a crafted session
+    // could bootstrap arbitrary local paths into preview/biometric APIs.
+    if (!sessionUsesRegisteredMedia(session)) {
+      return ipcError('REGISTRATION_CONFLICT', 'Session contains media outside the active main-owned source set.');
+    }
+    const durableSession = localFaceDataPersistenceBlocked
+      ? {
+          ...session,
+          files: session.files.map(stripLocalFaceAndSubjectData),
+          // `reviewed` includes AI reviewScore rows. The durable purge resets
+          // that evidence to the remaining manual picks/rejects, so a delayed
+          // delta must use the same aggregate or SQLite will (correctly)
+          // reject it as inconsistent with the scrubbed baseline.
+          stats: {
+            ...session.stats,
+            reviewed: session.stats.picked + session.stats.rejected,
+          },
+        }
+      : session;
+    return persistAppSession(durableSession);
   }, ([session]) => isAppSession(session) ? null : ipcError('VALIDATION_ERROR', 'Invalid session payload.'));
 
   handleIpc(IPC.SESSION_LATEST, async () => {
     return readLatestAppSession();
   });
 
+  handleIpc(IPC.SESSION_LATEST_SUMMARY, async () => {
+    return readLatestAppSessionSummary();
+  });
+
+  handleIpc(IPC.SESSION_RESTORE_PAGE, async (
+    event,
+    request: SessionRestorePageRequest,
+  ): Promise<SessionRestorePage | IpcErrorResponse> => {
+    const sender = sessionRestoreSender(event);
+    if (!sender) {
+      return ipcError('REGISTRATION_CONFLICT', 'Session restore sender is unavailable.');
+    }
+    const authority = latestRestorableSummary;
+    if (!authority || authority.id !== request.sessionId) {
+      return ipcError('REGISTRATION_CONFLICT', 'Session restore token is stale or missing.');
+    }
+
+    let pending = currentPendingSessionRestore();
+    if (request.offset === 0) {
+      if (pending) {
+        if (pending.ownerWebContentsId !== sender.id) {
+          return ipcError('REGISTRATION_CONFLICT', 'Session restore is owned by another renderer.');
+        }
+        if (pending.generation === request.generation && pending.sessionId === request.sessionId) {
+          return ipcError('REGISTRATION_CONFLICT', 'Session restore page is stale or out of order.');
+        }
+        // The owning renderer may replace its own abandoned generation. Other
+        // renderers must wait for abort, destruction, or lease expiry.
+        clearPendingSessionRestore(pending);
+      }
+      pending = beginPendingSessionRestore(sender, request, authority);
+    } else if (!pending
+      || pending.ownerWebContentsId !== sender.id
+      || pending.generation !== request.generation
+      || pending.sessionId !== request.sessionId
+      || pending.nextOffset !== request.offset
+      || pending.inFlight) {
+      return ipcError('REGISTRATION_CONFLICT', 'Session restore page is stale, foreign, expired, or out of order.');
+    }
+    if (!beginPendingSessionRestoreRead(pending)) {
+      return ipcError('REGISTRATION_CONFLICT', 'A session restore page is already in progress.');
+    }
+
+    let page: Awaited<ReturnType<SessionStoreService['readRestorePage']>>;
+    try {
+      page = await (await getSessionStoreService()).readRestorePage(
+        request.sessionId,
+        request.offset,
+        request.limit,
+      );
+    } catch (error) {
+      clearPendingSessionRestore(pending);
+      throw error;
+    }
+    // Abort, owner destruction, lease expiry, or a same-owner replacement can
+    // all happen while storage is reading. Never append into a superseded
+    // transaction or clear the replacement that superseded it.
+    if (pendingSessionRestore !== pending) {
+      return ipcError('REGISTRATION_CONFLICT', 'Session restore expired or was aborted while reading a page.');
+    }
+    pending.inFlight = false;
+    if (!page || page.summary.id !== request.sessionId || page.summary.updatedAt !== pending.updatedAt) {
+      clearPendingSessionRestore(pending);
+      return ipcError('REGISTRATION_CONFLICT', 'The durable session changed while it was being restored.');
+    }
+    const totalFiles = page.summary.stats.totalFiles;
+    const expectedRows = Math.min(request.limit, Math.max(0, totalFiles - request.offset));
+    if (!Number.isSafeInteger(totalFiles)
+      || totalFiles < 0
+      || totalFiles > MAX_SESSION_FILE_COUNT
+      || !isSaneSessionStats(page.summary.stats, totalFiles)
+      || page.offset !== request.offset
+      || page.files.length !== expectedRows
+      || !page.files.every(isMediaFileBasic)
+      || !isUniqueBoundedStringArray(page.selectedPaths, request.limit)
+      || !isUniqueBoundedStringArray(page.queuedPaths, request.limit)) {
+      clearPendingSessionRestore(pending);
+      return ipcError('SESSION_INTEGRITY', 'Durable session page failed integrity validation.');
+    }
+
+    if (request.offset === 0) {
+      pending.totalFiles = totalFiles;
+      latestRestorableSummary = page.summary;
+    }
+    if (pending.nextOffset !== request.offset || pending.totalFiles !== totalFiles) {
+      clearPendingSessionRestore(pending);
+      return ipcError('REGISTRATION_CONFLICT', 'Session restore page no longer matches its main-owned generation.');
+    }
+    for (const file of page.files) {
+      if (pending.filesByPath.has(file.path)
+        || !mediaPathBelongsToSessionSource(file.path, page.summary.sourcePath, totalFiles)) {
+        clearPendingSessionRestore(pending);
+        return ipcError('SESSION_INTEGRITY', 'Durable session contains duplicate or out-of-source media.');
+      }
+      pending.files.push(file);
+      pending.filesByPath.set(file.path, file);
+    }
+    pending.nextOffset += page.files.length;
+    const complete = pending.nextOffset === totalFiles;
+    if (page.complete !== complete) {
+      clearPendingSessionRestore(pending);
+      return ipcError('SESSION_INTEGRITY', 'Durable session page completion marker is inconsistent.');
+    }
+    if (complete) {
+      scanEventGeneration++;
+      cancelScan();
+      pendingSessionRegistration = null;
+      scannedFiles = pending.files;
+      scannedFilesByPath = pending.filesByPath;
+      latestRestorableSession = {
+        id: page.summary.id,
+        sourcePath: page.summary.sourcePath,
+        files: pending.files,
+        filesByPath: pending.filesByPath,
+      };
+      // The completed arrays/Map are now the active main-owned preview
+      // authority, so detach lease resources without clearing that catalogue.
+      clearPendingSessionRestore(pending, true);
+    } else {
+      refreshPendingSessionRestoreLease(pending);
+    }
+    return { ...page, generation: request.generation, complete };
+  }, ([request]) => isSessionRestorePageRequest(request)
+    ? null
+    : ipcError('VALIDATION_ERROR', 'Invalid session restore page request.'));
+
+  handleIpc(IPC.SESSION_RESTORE_ABORT, async (
+    event,
+    request: SessionRestoreAbortRequest,
+  ): Promise<SessionRestoreAbortResult | IpcErrorResponse> => {
+    const sender = sessionRestoreSender(event);
+    if (!sender) {
+      return ipcError('REGISTRATION_CONFLICT', 'Session restore sender is unavailable.');
+    }
+    const pending = currentPendingSessionRestore();
+    if (!pending) return { generation: request.generation, aborted: false };
+    if (pending.ownerWebContentsId !== sender.id) {
+      return ipcError('REGISTRATION_CONFLICT', 'Session restore is owned by another renderer.');
+    }
+    if (pending.generation !== request.generation || pending.sessionId !== request.sessionId) {
+      return ipcError('REGISTRATION_CONFLICT', 'Session restore abort token is stale.');
+    }
+    return {
+      generation: request.generation,
+      aborted: clearPendingSessionRestore(pending),
+    };
+  }, ([request]) => isSessionRestoreAbortRequest(request)
+    ? null
+    : ipcError('VALIDATION_ERROR', 'Invalid session restore abort request.'));
+
+  handleIpc(IPC.SESSION_FLUSH_ACK, async (_event, token: string, success: boolean, message?: string) => {
+    pendingSessionFlushAcks.get(token)?.({ acknowledged: true, success, message });
+  }, ([token, success, message]) => isBoundedString(token, 128)
+      && typeof success === 'boolean'
+      && (message == null || isBoundedString(message, 2_048, true))
+    ? null
+    : ipcError('VALIDATION_ERROR', 'Invalid session flush acknowledgement.'));
+
   // Re-arms the main process after a renderer session restore. The preview
   // protocol and SCAN_PREVIEW only serve paths in the active scan set; after
   // an app restart that set is empty, which left restored review sessions
   // with blank thumbnails and previews (every request 404'd the path guard).
-  handleIpc(IPC.SESSION_REGISTER_FILES, async (_event, files: MediaFile[]) => {
+  handleIpc(IPC.SESSION_REGISTER_FILES, async (
+    _event,
+    request: SessionFileRegistrationRequest | MediaFile[],
+  ): Promise<SessionFileRegistrationResult | IpcErrorResponse> => {
+    // Backward-compatible, deliberately bounded path for older renderers and
+    // integration tests. It may only replay the exact latest session that the
+    // main process read; renderer-provided paths never establish authority.
+    if (Array.isArray(request)) {
+      const requestPaths = new Set(request.map((file) => file.path));
+      if (requestPaths.size !== request.length) {
+        return ipcError('VALIDATION_ERROR', 'Session registration contains duplicate paths.');
+      }
+      if (!latestRestorableSession || request.length !== latestRestorableSession.filesByPath.size ||
+        request.some((file) => !latestRestorableSession?.filesByPath.has(file.path))) {
+        return ipcError('REGISTRATION_CONFLICT', 'Session registration is not the latest main-owned restore set.');
+      }
+      scanEventGeneration++;
+      cancelScan();
+      pendingSessionRegistration = null;
+      scannedFiles = latestRestorableSession.files;
+      scannedFilesByPath = latestRestorableSession.filesByPath;
+      return { generation: 'legacy', registered: request.length, complete: true };
+    }
+
+    if (request.action === 'begin') {
+      const restore = latestRestorableSession;
+      if (!request.restoreSessionId || !restore || request.restoreSessionId !== restore.id ||
+        request.totalFiles !== restore.filesByPath.size) {
+        return ipcError('REGISTRATION_CONFLICT', 'Session restore token is stale or missing.');
+      }
+      pendingSessionRegistration = {
+        generation: request.generation,
+        totalFiles: request.totalFiles,
+        nextOffset: 0,
+        restoreSessionId: request.restoreSessionId,
+      };
+      return { generation: request.generation, registered: 0, complete: false };
+    }
+
+    const pending = pendingSessionRegistration;
+    if (!pending || pending.generation !== request.generation) {
+      return ipcError('REGISTRATION_CONFLICT', 'Session registration generation is stale or missing.');
+    }
+    if (request.action === 'append') {
+      if (request.offset !== pending.nextOffset
+        || pending.nextOffset + request.files.length > pending.totalFiles) {
+        return ipcError('REGISTRATION_CONFLICT', 'Session registration chunk is out of order or exceeds its declared size.');
+      }
+      const restorable = latestRestorableSession;
+      const restore = restorable?.id === pending.restoreSessionId
+        ? restorable
+        : null;
+      if (!restore) {
+        return ipcError('REGISTRATION_CONFLICT', 'Session restore token changed before registration completed.');
+      }
+      for (let index = 0; index < request.files.length; index++) {
+        const expected = restore.files[request.offset + index];
+        if (!expected || request.files[index].path !== expected.path) {
+          return ipcError('REGISTRATION_CONFLICT', 'Session registration order/path differs from the main-owned restore snapshot.');
+        }
+      }
+      pending.nextOffset += request.files.length;
+      return {
+        generation: request.generation,
+        registered: pending.nextOffset,
+        complete: false,
+      };
+    }
+
+    if (pending.nextOffset !== pending.totalFiles) {
+      return ipcError('REGISTRATION_INCOMPLETE', 'Session registration cannot finalize before every declared file arrives.');
+    }
+    const restore = latestRestorableSession?.id === pending.restoreSessionId
+      ? latestRestorableSession
+      : null;
+    if (!restore || restore.files.length !== pending.totalFiles) {
+      return ipcError('REGISTRATION_CONFLICT', 'Session restore token changed before registration finalized.');
+    }
     scanEventGeneration++;
-    cancelScan(); // drop any stale background thumbnail work from an old source
-    scannedFiles = files;
-    scannedFilesByPath = new Map(files.map((file) => [file.path, file]));
-    return { registered: files.length };
-  }, ([files]) =>
-    Array.isArray(files) && files.length <= 500000 && files.every((file) => isRecord(file) && isNonEmptyString(file.path))
+    cancelScan(); // drop stale thumbnail work only once the replacement is complete
+    scannedFiles = restore.files;
+    scannedFilesByPath = restore.filesByPath;
+    pendingSessionRegistration = null;
+    return { generation: request.generation, registered: scannedFiles.length, complete: true };
+  }, ([request]) => {
+    const legacyValid = Array.isArray(request)
+      && request.length <= MAX_SESSION_REGISTRATION_CHUNK
+      && request.every(isMediaFileBasic);
+    return legacyValid || isSessionFileRegistrationRequest(request)
       ? null
-      : ipcError('VALIDATION_ERROR', 'Invalid session file registration payload.'));
+      : ipcError('VALIDATION_ERROR', 'Invalid session file registration payload.');
+  });
 
   handleIpc(IPC.IMPORT_START, async (_event, config: ImportConfig) => {
     try {
@@ -2752,16 +3397,16 @@ export function registerIpcHandlers(): void {
       performance: {
         provider: provider.ep,
         faceQueue: {
-          active: faceActiveCount,
-          queued: faceSemaphoreQueue.length,
+          active: faceJobScheduler.activeCount,
+          queued: faceJobScheduler.queuedCount,
           slots: faceSemaphoreSlots,
         },
         previewQueue: getPreviewQueueDiagnostics(),
         rawPreviewCache: getRawPreviewCacheDiagnostics(),
       },
       faceQueue: {
-        active: faceActiveCount,
-        queued: faceSemaphoreQueue.length,
+        active: faceJobScheduler.activeCount,
+        queued: faceJobScheduler.queuedCount,
         slots: faceSemaphoreSlots,
       },
       previewQueue: getPreviewQueueDiagnostics(),
@@ -3244,11 +3889,22 @@ export function registerIpcHandlers(): void {
    */
   // Semaphore is now module-level (see top of file) so loadSettings can init it.
 
-  handleIpc(IPC.FACE_ANALYZE, (
+  handleIpc(IPC.FACE_ANALYZE, async (
     _event,
     input: string | string[],
-    options?: { profile?: FaceAnalysisProfile; orientation?: number; orientations?: number[] },
+    options?: {
+      profile?: FaceAnalysisProfile;
+      orientation?: number;
+      orientations?: number[];
+      identity?: FaceCacheIdentityHint;
+      identities?: FaceCacheIdentityHint[];
+      sportsMode?: boolean;
+    },
   ) => {
+    // Validation (including main-owned path registration) runs before this
+    // callback. Entering it is therefore an explicit, bounded recreation of
+    // local face/subject data after a privacy purge.
+    await reopenLocalFaceDataPersistence();
     const paths = Array.isArray(input) ? input : [input];
     const profile = options?.profile ?? 'full';
     const orientationsByPath = new Map(paths.map((filePath, index) => [
@@ -3256,14 +3912,59 @@ export function registerIpcHandlers(): void {
       (paths.length === 1 ? options?.orientation : options?.orientations?.[index]) as
         1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | undefined,
     ]));
+    const identitiesByPath = new Map(paths.map((filePath, index) => [
+      filePath,
+      paths.length === 1 ? options?.identity : options?.identities?.[index],
+    ]));
+    // Capture before any cache/model availability awaits. A source switch
+    // during those reads must not let an old request inherit the new
+    // generation and enter native preprocessing as if it were current.
+    const requestGeneration = faceQueueGeneration;
 
     const task = async (): Promise<object[]> => {
       // ── Phase 1: parallel cache lookup (no semaphore — pure disk reads) ──
       const faceOptions = getFaceFeatureOptions(profile);
+      const sportsFallbackActive = options?.sportsMode === true && faceOptions.personDetection
+        ? await isNanoDetSportsFallbackActive()
+        : false;
       const cacheResults = await Promise.all(paths.map(async (filePath) => {
-        const cached = await getCachedFaceResult(filePath, { ...faceOptions, analysisDepth: profile }).catch(() => null);
-        return { filePath, cached };
+        const registeredFile = scannedFilesByPath.get(filePath);
+        if (!registeredFile) return { filePath, cached: null, identity: undefined };
+        // Renderer hints are never cache authority. Re-stat once here, then
+        // reuse the verified identity for cache get/set so a modified source
+        // cannot receive a stale result and an untrusted renderer cannot spoof
+        // another file version.
+        const currentStat = await stat(filePath).catch(() => null);
+        const identity = currentStat
+          ? { size: currentStat.size, mtimeMs: currentStat.mtimeMs }
+          : undefined;
+        const suppliedIdentity = identitiesByPath.get(filePath);
+        if (suppliedIdentity && identity && (
+          suppliedIdentity.size !== identity.size || suppliedIdentity.mtimeMs !== identity.mtimeMs
+        )) {
+          log.warn(`[face-analysis] ignored stale renderer identity for registered path: ${filePath}`);
+        }
+        let cached = await getCachedFaceResult(filePath, {
+          ...faceOptions,
+          eyeDetail: profile !== 'detect',
+          sportsSafeguards: options?.sportsMode === true && faceOptions.personDetection,
+          analysisDepth: profile,
+          identity,
+        }).catch(() => null);
+        // Installing and explicitly enabling the evaluated sports fallback is
+        // a feature upgrade only for the disagreement cohort. Preserve normal
+        // person-positive hits, but enrich face-positive/body-zero cache rows.
+        if (
+          sportsFallbackActive && cached &&
+          cached.result.personBoxes.length === 0 &&
+          cached.result.features?.personFallback !== true
+        ) {
+          cached = null;
+        }
+        return { filePath, cached, identity };
       }));
+
+      const verifiedIdentitiesByPath = new Map(cacheResults.map(({ filePath, identity }) => [filePath, identity]));
 
       const hits: object[] = [];
       const misses: string[] = [];
@@ -3287,21 +3988,37 @@ export function registerIpcHandlers(): void {
               faceMatching: cached.result.features?.faceMatching ?? false,
               poseAnalysis: cached.result.features?.poseAnalysis ?? false,
               poseAnalysisAvailable: poseModelAvailable(),
+              personFallback: cached.result.features?.personFallback ?? false,
+              eyeDetail: cached.result.features?.eyeDetail ?? false,
+              sportsSafeguards: cached.result.features?.sportsSafeguards ?? false,
             },
           });
         } else {
           misses.push(filePath);
         }
       }
+      if (requestGeneration !== faceQueueGeneration) {
+        return paths.map((filePath) => ({
+          path: filePath,
+          boxes: [],
+          personBoxes: [],
+          embeddings: [],
+          embeddingBoxes: [],
+          faceCount: 0,
+          personCount: 0,
+          error: STALE_FACE_JOB,
+        }));
+      }
       if (misses.length === 0) return hits;
 
       // ── Phase 2: ONNX inference for cache misses (semaphore-limited) ──
       // Capture generation before any awaits so stale jobs from a previous
       // source can be detected and dropped without running ONNX inference.
-      const capturedGen = faceQueueGeneration;
+      const capturedGen = requestGeneration;
       const onnxResults = await Promise.all(misses.map(async (filePath) => {
+        let releaseFaceSlot: (() => void) | undefined;
         try {
-          await acquireFaceSemaphore(capturedGen);
+          releaseFaceSlot = await acquireFaceSemaphore(capturedGen, profile);
         } catch (err: unknown) {
           // Stale job (scan source changed) — the file was never actually analysed.
           // Mark it with `error` (not a bare empty result) so callers don't confuse
@@ -3313,13 +4030,60 @@ export function registerIpcHandlers(): void {
           throw err;
         }
         try {
-          const orientation = orientationsByPath.get(filePath);
-          const { boxes, personBoxes, embeddings, embeddingBoxes, poses, features } = await analyzeFaces(filePath, { profile, orientation });
+          const orientation = resolveTrustedFaceOrientation(
+            scannedFilesByPath.get(filePath),
+            orientationsByPath.get(filePath),
+          );
+          // A cache miss can mean “richer features required”, not “no prior
+          // analysis”. Seed enrichment from the best shallower record so a
+          // subjects→full transition does not decode and detect everything a
+          // second time.
+          const seed = profile === 'detect'
+            ? undefined
+            : (await getBestCachedFaceResult(filePath, verifiedIdentitiesByPath.get(filePath)).catch(() => null))?.result;
+          const { boxes, personBoxes, embeddings, embeddingBoxes, poses, features } = await analyzeFaces(filePath, {
+            profile,
+            orientation,
+            seed,
+            sportsMode: options?.sportsMode === true,
+          });
           if (capturedGen !== faceQueueGeneration) {
             return { path: filePath, boxes: [], personBoxes: [], embeddings: [], embeddingBoxes: [], poses: [], faceCount: 0, personCount: 0, error: STALE_FACE_JOB };
           }
+          // Cache identity is established before the job enters the scheduler,
+          // but a large queue leaves ample time for removable media or a live
+          // source file to be replaced. Re-stat after inference and refuse both
+          // the result and cache write unless the bytes still have the exact
+          // identity that was analysed. Renderer hints are deliberately not
+          // involved in this decision.
+          const expectedIdentity = verifiedIdentitiesByPath.get(filePath);
+          const completedStat = await stat(filePath).catch(() => null);
+          if (
+            !expectedIdentity || !completedStat ||
+            completedStat.size !== expectedIdentity.size ||
+            completedStat.mtimeMs !== expectedIdentity.mtimeMs
+          ) {
+            return {
+              path: filePath,
+              boxes: [],
+              personBoxes: [],
+              embeddings: [],
+              embeddingBoxes: [],
+              poses: [],
+              faceCount: 0,
+              personCount: 0,
+              error: 'Source changed while AI analysis was running; retrying with the current file.',
+              errorCode: 'SOURCE_CHANGED',
+            };
+          }
           const hexEmbeddings = embeddings.map(serializeEmbedding);
-          await setCachedFaceResult(filePath, { boxes, personBoxes, embeddings, embeddingBoxes, poses, features }, hexEmbeddings, profile).catch(() => undefined);
+          await setCachedFaceResult(
+            filePath,
+            { boxes, personBoxes, embeddings, embeddingBoxes, poses, features },
+            hexEmbeddings,
+            profile,
+            expectedIdentity,
+          ).catch(() => undefined);
           await new Promise<void>((resolve) => setImmediate(resolve));
           return {
             path: filePath,
@@ -3336,9 +4100,13 @@ export function registerIpcHandlers(): void {
               faceMatching: features?.faceMatching ?? false,
               poseAnalysis: features?.poseAnalysis ?? false,
               poseAnalysisAvailable: poseModelAvailable(),
+              personFallback: features?.personFallback ?? false,
+              eyeDetail: features?.eyeDetail ?? false,
+              sportsSafeguards: features?.sportsSafeguards ?? false,
             },
           };
         } catch (err: unknown) {
+          const errorCode = isRecord(err) && typeof err.code === 'string' ? err.code : undefined;
           return {
             path: filePath,
             boxes: [] as object[],
@@ -3348,9 +4116,10 @@ export function registerIpcHandlers(): void {
             faceCount: 0,
             personCount: 0,
             error: (err as Error).message,
+            ...(errorCode ? { errorCode } : {}),
           };
         } finally {
-          releaseFaceSemaphore();
+          releaseFaceSlot?.();
         }
       }));
 
@@ -3367,9 +4136,13 @@ export function registerIpcHandlers(): void {
 
     return task();
   }, ([input, options]) => isFaceAnalysisInput(input) && isFaceAnalysisOptions(options)
+    && (Array.isArray(input) ? input : [input]).every((filePath) => scannedFilesByPath.has(filePath))
     && !(Array.isArray(input) && input.length > 1 && isRecord(options) && options.orientation != null)
+    && !(Array.isArray(input) && input.length > 1 && isRecord(options) && options.identity != null)
     && !(isRecord(options) && options.orientations != null
       && (!Array.isArray(input) || options.orientations.length !== input.length))
+    && !(isRecord(options) && options.identities != null
+      && (!Array.isArray(input) || options.identities.length !== input.length))
     ? null
     : ipcError('VALIDATION_ERROR', 'Invalid face analysis payload.'));
 
@@ -3393,13 +4166,59 @@ export function registerIpcHandlers(): void {
 
   void runPreviewCacheMaintenance().catch((error) => log.warn('[cache] startup maintenance failed', error));
 
-  // Clear the persistent face-analysis result cache
+  // One privacy boundary: clear reconstructible inference cache and remove
+  // face/body regions, pose keypoints, embeddings, and derived review evidence
+  // from every durable session and catalog row. Photos/import history remain.
   handleIpc(IPC.FACE_CACHE_CLEAR, async () => {
+    // Set the barrier before the first await so later stale renderer saves or
+    // catalog batches cannot recreate the data after this purge transaction.
+    localFaceDataPersistenceBlocked = true;
+    if (localFaceDataPurgeBarrier) await localFaceDataPurgeBarrier;
+    // A second concurrent clear may have completed while we waited; start a
+    // fresh barrier and reassert the block before touching any store.
+    localFaceDataPersistenceBlocked = true;
+    let releaseBarrier: (() => void) | undefined;
+    const purgeBarrier = new Promise<void>((resolve) => { releaseBarrier = resolve; });
+    localFaceDataPurgeBarrier = purgeBarrier;
     try {
-      await clearFaceCache();
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
+      cancelPendingFaceJobs();
+      clearPendingSessionRestore();
+      clearImageDecodeCache();
+      scannedFiles = scannedFiles.map(stripLocalFaceAndSubjectData);
+      scannedFilesByPath = new Map(scannedFiles.map((file) => [file.path, file]));
+      if (latestRestorableSession) {
+        const files = latestRestorableSession.files.map(stripLocalFaceAndSubjectData);
+        latestRestorableSession = {
+          ...latestRestorableSession,
+          files,
+          filesByPath: new Map(files.map((file) => [file.path, file])),
+        };
+      }
+      // Renderer IPC is ordered. Drain every earlier catalog embedding write
+      // before the purge so a slow JSON commit cannot resurrect stale data.
+      await catalogFaceMetadataWriteChain.catch(() => undefined);
+      const [cacheResult, sessionResult, catalogResult] = await Promise.allSettled([
+        clearFaceCache(),
+        getSessionStoreService().then((store) => store.purgeFaceData()),
+        getCatalogService().then((catalog) => catalog.purgeFaceData()),
+      ]);
+      if (sessionResult.status === 'fulfilled') {
+        latestRestorableSession = null;
+        latestRestorableSummary = null;
+      }
+      const failures = [cacheResult, sessionResult, catalogResult]
+        .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+        .map((result) => result.reason instanceof Error ? result.reason.message : String(result.reason));
+      return {
+        success: failures.length === 0,
+        cacheCleared: cacheResult.status === 'fulfilled',
+        sessionFilesPurged: sessionResult.status === 'fulfilled' ? sessionResult.value.sessionFilesPurged : 0,
+        catalogFilesPurged: catalogResult.status === 'fulfilled' ? catalogResult.value.catalogFilesPurged : 0,
+        ...(failures.length > 0 ? { error: failures.join('; ') } : {}),
+      };
+    } finally {
+      releaseBarrier?.();
+      if (localFaceDataPurgeBarrier === purgeBarrier) localFaceDataPurgeBarrier = null;
     }
   });
 
@@ -3497,6 +4316,10 @@ async function runAutoImport(volume: Volume, options: Omit<QueuedAutoImport, 'vo
   });
 
   try {
+    latestRestorableSession = null;
+    latestRestorableSummary = null;
+    pendingSessionRegistration = null;
+    clearPendingSessionRestore();
     scannedFiles = [];
     scannedFilesByPath = new Map();
     const scanGeneration = ++scanEventGeneration;

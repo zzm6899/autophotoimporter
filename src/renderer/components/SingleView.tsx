@@ -45,27 +45,11 @@ const WB_PRESETS = [
   { label: 'Warm', kelvin: 6500, tint: 5 },
 ] as const;
 
-type MediaFaceBox = NonNullable<MediaFile['faceBoxes']>[number];
-
-function normalizeFaceEngineBoxes(boxes: Array<{ x: number; y: number; width: number; height: number; score?: number; eyeScore?: number; eyeSharpness?: number }> | undefined): MediaFaceBox[] {
-  return (boxes ?? [])
-    .filter((box) => box.width > 0 && box.height > 0)
-    .map((box) => ({
-      x: box.x,
-      y: box.y,
-      width: box.width,
-      height: box.height,
-      score: box.score,
-      eyeScore: box.eyeScore,
-      eyeSharpness: box.eyeSharpness,
-    }));
-}
-
 function isRawPhoto(file: MediaFile) {
   return file.type === 'photo' && RAW_EXT_RE.test(file.name || file.extension);
 }
 
-export function SingleView({ file, files, index, total, aiPaused = false }: SingleViewProps) {
+export function SingleView({ file, files, index, total }: SingleViewProps) {
   const [preview, setPreview] = useState<string | undefined>(undefined);
   const [detailPreview, setDetailPreview] = useState<string | undefined>(undefined);
   const [loading, setLoading] = useState(false);
@@ -80,8 +64,6 @@ export function SingleView({ file, files, index, total, aiPaused = false }: Sing
     whiteBalanceTemperature,
     whiteBalanceTint,
     viewOverlayPreferences,
-    fastKeeperMode,
-    reviewFaceAnalysis,
     selectedSource,
   } = useAppState();
   const dispatch = useAppDispatch();
@@ -256,113 +238,6 @@ export function SingleView({ file, files, index, total, aiPaused = false }: Sing
     if (!file.thumbnail) return;
     void decodeImage(file.thumbnail).catch(() => undefined);
   }, [file.thumbnail]);
-
-  useEffect(() => {
-    if (aiPaused) return;
-    if (fastKeeperMode || !reviewFaceAnalysis) return;
-    if (file.type !== 'photo') return;
-
-    let cancelled = false;
-
-    // Build scan list: this photo (if unscanned) + any unscanned burst mates.
-    // Defer 300ms so the image renders before handing the main process to ONNX.
-    const timer = setTimeout(async () => {
-      // Collect burst mates that haven't been analyzed yet.
-      const burstMates = file.burstId
-        ? files.filter(
-            (f) =>
-              f.burstId === file.burstId &&
-              f.type === 'photo' &&
-              f.path !== file.path &&
-              (f.faceBoxes === undefined || f.personBoxes === undefined),
-          )
-        : [];
-
-      // Scan this photo first (highest priority).
-      if (file.faceBoxes === undefined || file.personBoxes === undefined) {
-        try {
-          const results = await window.electronAPI.analyzeFaces(file.path);
-          if (cancelled) return;
-          const result = results[0];
-          // An `error` result (models not ready, stale job, decode/timeout failure)
-          // means this photo was never actually analysed — don't dispatch it as a
-          // confirmed "no faces" result, or it will never be retried.
-          if (result?.error) {
-            console.warn(`[single-view] face analysis failed for ${file.path}: ${result.error}`);
-          } else if (result && result.path === file.path) {
-            const faceBoxes = normalizeFaceEngineBoxes(result.boxes);
-            const embeddingBoxes = normalizeFaceEngineBoxes(result.embeddingBoxes);
-            const personBoxes = normalizeFaceEngineBoxes(result.personBoxes);
-            dispatch({
-              type: 'SET_REVIEW_SCORES',
-              scores: {
-                [file.path]: {
-                  faceCount: result.boxes.length,
-                  faceBoxes,
-                  faceDetection: result.boxes.length > 0 ? 'native' : undefined,
-                  faceEmbedding: result.embeddings?.[0] || file.faceEmbedding,
-                  faceEmbeddings: result.embeddings?.length ? result.embeddings : file.faceEmbeddings,
-                  faceEmbeddingBoxes: embeddingBoxes.length > 0 ? embeddingBoxes : file.faceEmbeddingBoxes,
-                  personCount: result.personBoxes.length,
-                  personBoxes,
-                  poses: result.poses?.length ? result.poses : file.poses,
-                  subjectReasons: [
-                    ...(file.subjectReasons ?? []),
-                    ...(result.boxes.length > 0 ? ['single-photo face scan'] : []),
-                    ...(result.personBoxes.length > 0 ? ['single-photo person scan'] : []),
-                  ],
-                },
-              },
-            });
-          }
-        } catch { /* ignore */ }
-      }
-
-      // Then scan unscanned burst mates sequentially in the background.
-      for (const mate of burstMates) {
-        if (cancelled) break;
-        try {
-          const results = await window.electronAPI.analyzeFaces(mate.path);
-          if (cancelled) break;
-          const result = results[0];
-          if (result?.error) {
-            console.warn(`[single-view] face analysis failed for ${mate.path}: ${result.error}`);
-          } else if (result && result.path === mate.path) {
-            const faceBoxes = normalizeFaceEngineBoxes(result.boxes);
-            const embeddingBoxes = normalizeFaceEngineBoxes(result.embeddingBoxes);
-            const personBoxes = normalizeFaceEngineBoxes(result.personBoxes);
-            dispatch({
-              type: 'SET_REVIEW_SCORES',
-              scores: {
-                [mate.path]: {
-                  faceCount: result.boxes.length,
-                  faceBoxes,
-                  faceDetection: result.boxes.length > 0 ? 'native' : undefined,
-                  faceEmbedding: result.embeddings?.[0] || mate.faceEmbedding,
-                  faceEmbeddings: result.embeddings?.length ? result.embeddings : mate.faceEmbeddings,
-                  faceEmbeddingBoxes: embeddingBoxes.length > 0 ? embeddingBoxes : mate.faceEmbeddingBoxes,
-                  personCount: result.personBoxes.length,
-                  personBoxes,
-                  poses: result.poses?.length ? result.poses : mate.poses,
-                  subjectReasons: [
-                    ...(mate.subjectReasons ?? []),
-                    ...(result.boxes.length > 0 ? ['burst face scan'] : []),
-                    ...(result.personBoxes.length > 0 ? ['burst person scan'] : []),
-                  ],
-                },
-              },
-            });
-          }
-        } catch { /* ignore */ }
-      }
-    }, 300);
-
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [aiPaused, fastKeeperMode, file.path, file.type, reviewFaceAnalysis]);
 
   /*
     Keep the thumbnail visible while the full preview is being generated and

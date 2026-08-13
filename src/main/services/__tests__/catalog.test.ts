@@ -249,6 +249,40 @@ describe('CatalogService JSON fallback', () => {
     await catalog.close();
   });
 
+  it('purges face and subject evidence while preserving JSON catalog and import history', async () => {
+    const userDataPath = await tempCatalogDir();
+    const embedding = embeddingHex([1, 0, 0, 0]);
+    const catalog = await openCatalog(userDataPath, { preferJson: true });
+    await catalog.upsertMediaFiles([makeFile({
+      rating: 5,
+      faceCount: 1,
+      faceBoxes: [{ x: 0.2, y: 0.2, width: 0.2, height: 0.2 }],
+      faceEmbeddings: [embedding],
+      faceEmbeddingBoxes: [{ x: 0.2, y: 0.2, width: 0.2, height: 0.2 }],
+      faceGroupId: 'face-1',
+      personBoxes: [{ x: 0.1, y: 0.05, width: 0.4, height: 0.8 }],
+      poses: [{ keypoints: [{ x: 0.3, y: 0.4, score: 0.8 }] }],
+      reviewScore: 94,
+      reviewReasons: ['sharp face'],
+    })], 'session-a');
+    await catalog.recordImportLedgerItems('ledger-a', [makeLedgerItem()], { sessionId: 'session-a' });
+
+    await expect(catalog.purgeFaceData()).resolves.toEqual({ catalogFilesPurged: 1 });
+    await expect(catalog.searchFaces({ embedding, threshold: 0.5 })).resolves.toEqual(expect.objectContaining({
+      totalCandidates: 0,
+      matches: [],
+    }));
+    await expect(catalog.getStats()).resolves.toEqual(expect.objectContaining({ totalFiles: 1, importOutcomes: 1 }));
+    const raw = await readFile(catalog.catalogPath, 'utf8');
+    expect(raw).not.toContain(embedding);
+    expect(raw).not.toContain('"faceBoxes"');
+    expect(raw).not.toContain('"poses"');
+    expect(raw).not.toContain('"reviewScore"');
+    expect(raw).toContain('"rating": 5');
+    expect(raw).toContain('"importOutcomes"');
+    await catalog.close();
+  });
+
   it('browses catalog records by camera, lens, hash, destination, and imported state', async () => {
     const userDataPath = await tempCatalogDir();
     const catalog = await openCatalog(userDataPath, { preferJson: true });
@@ -343,6 +377,30 @@ describe('CatalogService default storage', () => {
     expect(['sqlite', 'json']).toContain(catalog.storageKind);
     expect(stats.totalFiles).toBe(1);
     expect(stats.catalogPath).toBe(catalog.catalogPath);
+    await catalog.close();
+  });
+
+  it('exports no face evidence after purge while retaining non-face catalog rows', async () => {
+    const userDataPath = await tempCatalogDir();
+    const backupPath = path.join(userDataPath, 'purged-backup.json');
+    const embedding = embeddingHex([1, 0, 0, 0]);
+    const catalog = await openCatalog(userDataPath);
+    await catalog.upsertMediaFiles([makeFile({
+      cameraModel: 'R5', rating: 4, faceCount: 1, faceEmbeddings: [embedding],
+      faceBoxes: [{ x: 0.2, y: 0.2, width: 0.2, height: 0.2 }],
+      poses: [{ keypoints: [{ x: 0.3, y: 0.4, score: 0.8 }] }],
+    })]);
+    await catalog.recordImportLedgerItems('ledger-a', [makeLedgerItem()]);
+
+    await catalog.purgeFaceData();
+    const backup = await catalog.exportBackup(backupPath);
+    const raw = await readFile(backup.path, 'utf8');
+    expect(raw).not.toContain(embedding);
+    expect(raw).not.toContain('"faceBoxes"');
+    expect(raw).not.toContain('"poses"');
+    expect(raw).toContain('"cameraModel": "R5"');
+    expect(raw).toContain('"rating": 4');
+    expect(backup).toEqual(expect.objectContaining({ mediaFiles: 1, importOutcomes: 1 }));
     await catalog.close();
   });
 });

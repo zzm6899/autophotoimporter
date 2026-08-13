@@ -4,6 +4,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+const previewMocks = vi.hoisted(() => ({
+  peek: vi.fn(async (filePath: string) =>
+    filePath.endsWith('.raw') ? '/cache/generated-preview.jpg' : undefined),
+  thumbnailPeek: vi.fn<() => Promise<
+    | { kind: 'file'; diskPath: string }
+    | { kind: 'buffer'; buffer: Buffer; persisted: boolean }
+    | undefined
+  >>(async () => undefined),
+}));
+
 vi.mock('electron', () => ({
   app: {
     isPackaged: false,
@@ -16,6 +26,15 @@ vi.mock('electron', () => ({
   },
 }));
 
+vi.mock('../exif-parser', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../exif-parser')>();
+  return {
+    ...original,
+    peekPreviewFile: previewMocks.peek,
+    peekThumbnailPayload: previewMocks.thumbnailPeek,
+  };
+});
+
 vi.mock('exifr', () => ({
   default: {
     parse: vi.fn().mockResolvedValue(null),
@@ -24,14 +43,20 @@ vi.mock('exifr', () => ({
 }));
 
 import {
+  annotateEyeDetail,
   choosePreferredProvider,
   estimateEyeDetailFromPixels,
   getFaceFeatureOptions,
+  getFaceAnalysisResumePlan,
+  getAnalysisSurfaceCacheDiagnostics,
+  resolvePreprocessSource,
   isUsableDetectionPreviewSize,
   mapBoxToStoredOrientation,
   orientBitmapForExif,
   pixelsToSFaceCHW,
   shouldRefinePersonDetection,
+  shouldResumePersonFallback,
+  shouldResumeSportsSafeguards,
   verifyModelFileDigest,
 } from '../face-engine';
 
@@ -111,11 +136,63 @@ describe('face-engine request profiles', () => {
     });
   });
 
+  it('turns a completed subjects result into enrichment-only full work', () => {
+    const seed = {
+      boxes: [{ x: 0.2, y: 0.2, width: 0.1, height: 0.2, score: 0.9, eyeScore: 2 }],
+      personBoxes: [{ x: 0.1, y: 0.1, width: 0.3, height: 0.8, score: 0.9 }],
+      embeddings: [],
+      features: {
+        faceMatching: false,
+        personDetection: true,
+        poseAnalysis: false,
+        embeddingLimit: 0,
+        eyeDetail: true,
+      },
+    };
+    expect(getFaceAnalysisResumePlan('full', seed)).toEqual({
+      faceDetection: false,
+      personDetection: false,
+      eyeDetail: false,
+      faceMatching: true,
+      // Depends on the global pose setting; it is disabled in this fixture.
+      poseAnalysis: false,
+    });
+    expect(seed.boxes[0].eyeScore).toBe(2);
+  });
+
+  it('resumes only the missing sports person fallback without repeating SSD', () => {
+    const seed = {
+      boxes: [{ x: 0.4, y: 0.2, width: 0.12, height: 0.18, score: 0.95 }],
+      personBoxes: [],
+      embeddings: [],
+      features: {
+        faceMatching: false, personDetection: true, poseAnalysis: false,
+        embeddingLimit: 0, eyeDetail: true,
+      },
+    };
+    expect(shouldResumePersonFallback(seed, true, true)).toBe(true);
+    expect(getFaceAnalysisResumePlan('subjects', seed).personDetection).toBe(false);
+    expect(shouldResumePersonFallback({
+      ...seed, features: { ...seed.features, personFallback: true },
+    }, true, true)).toBe(false);
+    expect(shouldResumeSportsSafeguards(seed, true)).toBe(true);
+    expect(shouldResumeSportsSafeguards({
+      ...seed, features: { ...seed.features, sportsSafeguards: true },
+    }, true)).toBe(false);
+  });
+
   it('accepts scanner-sized previews but rejects tiny thumbnails for screening', () => {
     expect(isUsableDetectionPreviewSize(320, 213)).toBe(true);
     expect(isUsableDetectionPreviewSize(240, 120)).toBe(true);
     expect(isUsableDetectionPreviewSize(160, 120)).toBe(false);
     expect(isUsableDetectionPreviewSize(0, 320)).toBe(false);
+  });
+
+  it('exposes a bounded reusable analysis-surface budget', () => {
+    const diagnostics = getAnalysisSurfaceCacheDiagnostics();
+    expect(diagnostics.maxEntries).toBe(64);
+    expect(diagnostics.maxBytes).toBe(256 * 1024 * 1024);
+    expect(diagnostics.bytes).toBeLessThanOrEqual(diagnostics.maxBytes);
   });
 });
 
@@ -163,6 +240,41 @@ describe('face-engine eye detail', () => {
     expect(estimateEyeDetailFromPixels(new Uint8Array(12 * 12 * 4), 12, 12, false)).toEqual({
       eyeScore: 0,
       eyeSharpness: 0,
+    });
+  });
+
+  it('keeps eye detail incomplete when any eligible crop fails', async () => {
+    const boxes = [
+      { x: 0.1, y: 0.1, width: 0.25, height: 0.3, score: 0.95 },
+      { x: 0.55, y: 0.1, width: 0.25, height: 0.3, score: 0.94 },
+    ];
+    let cropCount = 0;
+    const bitmap = Buffer.alloc(96 * 96 * 4, 128);
+    const image = {
+      getSize: () => ({ width: 400, height: 300 }),
+      crop: () => {
+        cropCount++;
+        if (cropCount === 2) throw new Error('native crop failed');
+        return {
+          resize: () => ({ toBitmap: () => bitmap }),
+        };
+      },
+    } as unknown as Electron.NativeImage;
+
+    const result = await annotateEyeDetail(image, boxes);
+    expect(result).toMatchObject({ complete: false, eligibleCount: 2, completedCount: 1 });
+    expect(result.boxes).toHaveLength(2);
+    expect(result.boxes[0].eyeScore).toBeDefined();
+    expect(result.boxes[1].eyeScore).toBeUndefined();
+  });
+
+  it('marks eye detail complete when no face is eligible for sampling', async () => {
+    const tiny = [{ x: 0.1, y: 0.1, width: 0.02, height: 0.02, score: 0.9 }];
+    const image = {
+      getSize: () => ({ width: 400, height: 300 }),
+    } as unknown as Electron.NativeImage;
+    await expect(annotateEyeDetail(image, tiny)).resolves.toMatchObject({
+      complete: true, eligibleCount: 0, completedCount: 0,
     });
   });
 });
@@ -231,6 +343,44 @@ describe('face-engine EXIF orientation', () => {
     expect(mapped.height).toBeCloseTo(0.1);
     expect(mapped.eyeScore).toBe(2);
   });
+
+  it.each([6, 8] as const)('retains orientation %i for direct source preprocessing', async (orientation) => {
+    await expect(resolvePreprocessSource('/photos/frame.jpg', orientation)).resolves.toEqual({
+      sourcePath: '/photos/frame.jpg',
+      orientation,
+      sourceKind: 'original',
+    });
+  });
+
+  it.each([6, 8] as const)('retains orientation %i for a stored-pixel RAW preview', async (orientation) => {
+    await expect(resolvePreprocessSource('/photos/frame.raw', orientation)).resolves.toEqual({
+      sourcePath: '/cache/generated-preview.jpg',
+      orientation,
+      useSourceOrientation: true,
+      sourceKind: 'preview-file',
+    });
+  });
+
+  it.each([6, 8] as const)('delegates unseen RAW extraction and orientation resolution at O%i', async (orientation) => {
+    const source = await resolvePreprocessSource('/photos/not-ready.nef', orientation);
+    expect(source).toMatchObject({
+      sourcePath: '/photos/not-ready.nef',
+      orientation,
+      sourceKind: 'original',
+      extractEmbeddedJpeg: true,
+      useSourceOrientation: true,
+    });
+  });
+
+  it('uses a scanner thumbnail for detector-only RAW independently of persistent preview cache', async () => {
+    previewMocks.thumbnailPeek.mockResolvedValueOnce({
+      kind: 'buffer', buffer: Buffer.from([1, 2, 3]), persisted: false,
+    });
+    const source = await resolvePreprocessSource('/photos/unseen.cr3', 1, true);
+    expect(source.sourceKind).toBe('thumbnail-buffer');
+    expect(Array.from(source.inputBuffer ?? [])).toEqual([1, 2, 3]);
+    expect(source.useSourceOrientation).toBe(true);
+  });
 });
 
 describe('face-engine adaptive person pass', () => {
@@ -258,7 +408,7 @@ describe('face-engine adaptive person pass', () => {
     })).toBe(true);
   });
 
-  it('does not spend a second sports pass on an empty frame', () => {
+  it('spends one bounded sports safeguard pass on a zero-evidence frame', () => {
     expect(shouldRefinePersonDetection({
       width: 2400,
       height: 800,
@@ -266,7 +416,62 @@ describe('face-engine adaptive person pass', () => {
       fastBoxes: [],
       candidateCount: 0,
       sportsMode: true,
+    })).toBe(true);
+  });
+
+  it('refines a sports face/body disagreement even when SSD found zero people', () => {
+    expect(shouldRefinePersonDetection({
+      width: 1200,
+      height: 800,
+      faceBoxes: [{ x: 0.42, y: 0.18, width: 0.12, height: 0.18, score: 0.94 }],
+      fastBoxes: [],
+      candidateCount: 0,
+      sportsMode: true,
+    })).toBe(true);
+  });
+
+  it('does not refine a sports frame for one weak extra proposal after a body was accepted', () => {
+    expect(shouldRefinePersonDetection({
+      width: 1600,
+      height: 1000,
+      faceBoxes: [{ x: 0.42, y: 0.18, width: 0.12, height: 0.18, score: 0.94 }],
+      fastBoxes: [box],
+      candidateCount: 2,
+      sportsMode: true,
     })).toBe(false);
+  });
+
+  it('refines a sports frame when the fast pass has only a weak body proposal', () => {
+    expect(shouldRefinePersonDetection({
+      width: 1600,
+      height: 1000,
+      faceBoxes: [],
+      fastBoxes: [],
+      candidateCount: 1,
+      sportsMode: true,
+    })).toBe(true);
+  });
+
+  it('refines a crowded sports frame when multiple extra proposals remain unresolved', () => {
+    expect(shouldRefinePersonDetection({
+      width: 1600,
+      height: 1000,
+      faceBoxes: [box],
+      fastBoxes: [box],
+      candidateCount: 3,
+      sportsMode: true,
+    })).toBe(true);
+  });
+
+  it('refines zero-evidence sports scenery once regardless of aspect ratio', () => {
+    expect(shouldRefinePersonDetection({
+      width: 3000,
+      height: 800,
+      faceBoxes: [],
+      fastBoxes: [],
+      candidateCount: 0,
+      sportsMode: true,
+    })).toBe(true);
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { alignBestOfBatchOffset, getReviewStartTarget, getSelectedReviewStartTarget, isJpegFamilyPhoto, isRawFilterPhoto, shouldFinalizeFaceAnalysisFailure, shouldOpenBestOfSelectionPanel, shouldQueueVisibleImportablePaths, shouldRunOnnxForReview, sliceBestOfBatchPathPage, summarizeBestOfBatchPage, summarizeReviewFlowHealth, summarizeReviewFlowNextStep } from '../ThumbnailGrid';
+import { alignBestOfBatchOffset, bestOfAutomaticDecision, getReviewStartTarget, getSelectedReviewStartTarget, isJpegFamilyPhoto, isRawFilterPhoto, nextOptionalReviewFeatureFailure, reconcileOptionalReviewFeatureAvailability, shouldFinalizeFaceAnalysisFailure, shouldOpenBestOfSelectionPanel, shouldQueueVisibleImportablePaths, shouldRunOnnxForReview, sliceBestOfBatchPathPage, summarizeBestOfBatchPage, summarizeReviewFlowHealth, summarizeReviewFlowNextStep } from '../ThumbnailGrid';
 import type { MediaFile } from '../../../shared/types';
 
 describe('summarizeReviewFlowNextStep', () => {
@@ -280,11 +280,99 @@ describe('shouldRunOnnxForReview', () => {
     }), fullOptions)).toBe(true);
   });
 
+  it('retries native eye detail until the optional feature is completed or unavailable', () => {
+    const analysed = photo({
+      faceDetection: 'native',
+      faceCount: 1,
+      faceBoxes: [{ x: 0.2, y: 0.2, width: 0.2, height: 0.2 }],
+      personBoxes: [],
+      reviewAnalysisFeatures: {
+        faceDetection: true,
+        personDetection: true,
+        faceMatching: false,
+        poseAnalysis: false,
+        eyeDetail: false,
+      },
+    });
+
+    expect(shouldRunOnnxForReview(analysed, {
+      ...fullOptions,
+      reviewFaceMatching: false,
+    })).toBe(true);
+    expect(shouldRunOnnxForReview({
+      ...analysed,
+      reviewAnalysisFeatures: { ...analysed.reviewAnalysisFeatures!, eyeDetail: true },
+    }, {
+      ...fullOptions,
+      reviewFaceMatching: false,
+    })).toBe(false);
+    expect(shouldRunOnnxForReview({
+      ...analysed,
+      reviewAnalysisUnavailableFeatures: { eyeDetail: true },
+    }, {
+      ...fullOptions,
+      reviewFaceMatching: false,
+    })).toBe(false);
+    expect(shouldRunOnnxForReview({
+      ...analysed,
+      reviewAnalysisUnavailable: true,
+    }, {
+      ...fullOptions,
+      reviewFaceMatching: false,
+    })).toBe(false);
+  });
+
   it('respects disabled face analysis', () => {
     expect(shouldRunOnnxForReview(photo(), {
       ...fullOptions,
       reviewFaceAnalysis: false,
     })).toBe(false);
+  });
+
+  it('does not retry sports safeguards when person detection is disabled', () => {
+    expect(shouldRunOnnxForReview(photo({
+      faceBoxes: [],
+      personBoxes: [],
+      reviewAnalysisFeatures: {
+        faceDetection: true,
+        personDetection: false,
+        faceMatching: false,
+        poseAnalysis: false,
+        eyeDetail: true,
+        sportsSafeguards: false,
+      },
+    }), {
+      reviewFaceAnalysis: true,
+      reviewFaceMatching: false,
+      reviewPersonDetection: false,
+      reviewSportsSafeguards: true,
+    })).toBe(false);
+  });
+
+  it('stops matching retries after the feature completes or becomes unavailable', () => {
+    const analysed = photo({
+      faceDetection: 'native',
+      faceCount: 1,
+      faceBoxes: [{ x: 0.2, y: 0.2, width: 0.2, height: 0.2 }],
+      personBoxes: [],
+      reviewAnalysisFeatures: {
+        faceDetection: true,
+        personDetection: true,
+        faceMatching: false,
+        poseAnalysis: false,
+        eyeDetail: true,
+      },
+    });
+
+    expect(shouldRunOnnxForReview(analysed, fullOptions)).toBe(true);
+    expect(shouldRunOnnxForReview({
+      ...analysed,
+      reviewAnalysisFeatures: { ...analysed.reviewAnalysisFeatures!, faceMatching: true },
+    }, fullOptions)).toBe(false);
+    expect(shouldRunOnnxForReview({
+      ...analysed,
+      reviewAnalysisUnavailableFeatures: { faceMatching: true },
+    }, fullOptions)).toBe(false);
   });
 });
 
@@ -293,5 +381,47 @@ describe('shouldFinalizeFaceAnalysisFailure', () => {
     expect(shouldFinalizeFaceAnalysisFailure(1)).toBe(false);
     expect(shouldFinalizeFaceAnalysisFailure(2)).toBe(false);
     expect(shouldFinalizeFaceAnalysisFailure(3)).toBe(true);
+  });
+
+  it('clears an unavailable marker when a later optional-stage retry succeeds', () => {
+    expect(reconcileOptionalReviewFeatureAvailability(
+      { eyeDetail: true, poseAnalysis: true },
+      { eyeDetail: true },
+      {},
+    )).toEqual({ poseAnalysis: true });
+  });
+
+  it('marks an incomplete optional eye stage unavailable on the third attempt and resets after success', () => {
+    const first = nextOptionalReviewFeatureFailure(0, true);
+    const second = nextOptionalReviewFeatureFailure(first.attempts, true);
+    const third = nextOptionalReviewFeatureFailure(second.attempts, true);
+
+    expect(first).toEqual({ attempts: 1, unavailable: false });
+    expect(second).toEqual({ attempts: 2, unavailable: false });
+    expect(third).toEqual({ attempts: 3, unavailable: true });
+    expect(nextOptionalReviewFeatureFailure(third.attempts, false)).toEqual({
+      attempts: 0,
+      unavailable: false,
+    });
+  });
+});
+
+describe('bestOfAutomaticDecision', () => {
+  it('does not let a higher coarse-score HYROX detector miss reject an analysed athlete', () => {
+    const unsafe: MediaFile = {
+      path: '/unsafe.jpg', name: 'unsafe.jpg', size: 1, type: 'photo', extension: '.jpg',
+      reviewScore: 99, sharpnessScore: 200, reviewAnalysisStage: 'subjects',
+      faceBoxes: [], personBoxes: [],
+    };
+    const eligible: MediaFile = {
+      path: '/athlete.jpg', name: 'athlete.jpg', size: 1, type: 'photo', extension: '.jpg',
+      reviewScore: 80, sharpnessScore: 160,
+      faceDetection: 'native',
+      faceBoxes: [{ x: 0.4, y: 0.15, width: 0.12, height: 0.16, score: 0.92 }],
+      personBoxes: [{ x: 0.25, y: 0.08, width: 0.45, height: 0.84, score: 0.95 }],
+      sceneAnalysis: { kind: 'people', confidence: 0.9, subjectFocusConfidence: 0.8 },
+      reviewAnalysisStage: 'subjects',
+    };
+    expect(bestOfAutomaticDecision([unsafe, eligible], 'hyrox-endurance')?.path).toBe('/athlete.jpg');
   });
 });

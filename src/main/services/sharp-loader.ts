@@ -5,13 +5,21 @@
 // binaries), every caller falls back to the platform tools.
 export type SharpFn = (typeof import('sharp'))['default'];
 
+import path from 'node:path';
+import { existsSync } from 'node:fs';
+
 let sharpModule: SharpFn | null | undefined;
 
 export function getSharpModule(): SharpFn | null {
   if (sharpModule !== undefined) return sharpModule;
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const mod = require('sharp') as SharpFn | { default: SharpFn };
+    const resourcesPath = (process as typeof process & { resourcesPath?: string }).resourcesPath;
+    const packagedPath = resourcesPath
+      ? path.join(resourcesPath, 'sharp-runtime', 'node_modules', 'sharp')
+      : '';
+    const modulePath = packagedPath && existsSync(packagedPath) ? packagedPath : 'sharp';
+    const mod = require(modulePath) as SharpFn | { default: SharpFn };
     sharpModule = typeof mod === 'function' ? mod : mod.default;
   } catch {
     sharpModule = null;

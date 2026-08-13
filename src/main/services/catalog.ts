@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import type {
@@ -21,6 +21,7 @@ import type {
   MediaFile,
 } from '../../shared/types';
 import { cosineSimilarity, deserializeEmbedding } from '../../shared/review';
+import { stripLocalFaceAndSubjectData } from '../../shared/face-data';
 
 type SqliteRunResult = { changes: number; lastInsertRowid: number | bigint };
 type SqliteStatement = {
@@ -56,6 +57,10 @@ export interface CatalogRecordImportOptions {
 
 export interface CatalogRecordImportResult {
   recorded: number;
+}
+
+export interface CatalogFaceDataPurgeResult {
+  catalogFilesPurged: number;
 }
 
 export interface CatalogDuplicateCandidate {
@@ -801,6 +806,19 @@ class JsonCatalogStore {
     };
   }
 
+  async purgeFaceData(): Promise<CatalogFaceDataPurgeResult> {
+    let catalogFilesPurged = 0;
+    for (const record of Object.values(this.state.mediaFiles)) {
+      const purged = stripLocalFaceAndSubjectData(record.metadata as MediaFile);
+      if (purged === record.metadata) continue;
+      record.metadata = purged;
+      catalogFilesPurged++;
+    }
+    if (catalogFilesPurged > 0) await this.persist();
+    await unlink(`${this.catalogPath}.tmp`).catch(() => undefined);
+    return { catalogFilesPurged };
+  }
+
   async exportBackup(outputPath: string, storageKind: CatalogStorageKind): Promise<CatalogBackupResult> {
     await mkdir(path.dirname(outputPath), { recursive: true });
     const content = serializeCatalogBackup(
@@ -1137,6 +1155,36 @@ class SqliteCatalogStore {
     return { sourcePath, removedMediaFiles, removedImportOutcomes };
   }
 
+  async purgeFaceData(): Promise<CatalogFaceDataPurgeResult> {
+    const rows = this.db.prepare('SELECT source_path, metadata_json FROM media_files').all() as Record<string, unknown>[];
+    const updates: Array<{ sourcePath: string; metadataJson: string }> = [];
+    for (const row of rows) {
+      let file: MediaFile;
+      try {
+        file = JSON.parse(String(row.metadata_json)) as MediaFile;
+      } catch {
+        throw new Error('Cannot safely purge unreadable catalog metadata');
+      }
+      const purged = stripLocalFaceAndSubjectData(file);
+      if (purged !== file) updates.push({
+        sourcePath: String(row.source_path),
+        metadataJson: JSON.stringify(purged),
+      });
+    }
+
+    const update = this.db.prepare('UPDATE media_files SET metadata_json = ? WHERE source_path = ?');
+    this.db.exec('PRAGMA secure_delete = ON; BEGIN');
+    try {
+      for (const item of updates) update.run(item.metadataJson, item.sourcePath);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+    this.db.exec('PRAGMA wal_checkpoint(TRUNCATE); VACUUM; PRAGMA wal_checkpoint(TRUNCATE);');
+    return { catalogFilesPurged: updates.length };
+  }
+
   async exportBackup(outputPath: string, storageKind: CatalogStorageKind): Promise<CatalogBackupResult> {
     await mkdir(path.dirname(outputPath), { recursive: true });
     const mediaRecords = this.getAllMediaRecords();
@@ -1313,6 +1361,10 @@ export class CatalogService {
 
   async clearSource(sourcePath: string): Promise<CatalogClearSourceResult> {
     return this.store.clearSource(sourcePath);
+  }
+
+  async purgeFaceData(): Promise<CatalogFaceDataPurgeResult> {
+    return this.store.purgeFaceData();
   }
 
   async exportBackup(outputPath: string): Promise<CatalogBackupResult> {

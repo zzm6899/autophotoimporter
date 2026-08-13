@@ -731,6 +731,11 @@ describe('ImportContext reducer', () => {
           personBoxes: [{ x: 0.1, y: 0.05, width: 0.5, height: 0.85, score: 0.9 }],
           subjectSharpnessScore: 15,
           subjectReasons: ['face-area focus measured'],
+          reviewScore: 92,
+          reviewReasons: ['sharp face'],
+          blurRisk: 'low',
+          faceGroupId: 'face-1',
+          poses: [{ keypoints: [{ x: 0.2, y: 0.3, score: 0.9 }] }],
           sceneAnalysis: {
             kind: 'people',
             confidence: 1,
@@ -753,6 +758,11 @@ describe('ImportContext reducer', () => {
       expect(cleared.personBoxes).toBeUndefined();
       expect(cleared.subjectSharpnessScore).toBeUndefined();
       expect(cleared.subjectReasons).toBeUndefined();
+      expect(cleared.reviewScore).toBeUndefined();
+      expect(cleared.reviewReasons).toBeUndefined();
+      expect(cleared.blurRisk).toBeUndefined();
+      expect(cleared.faceGroupId).toBeUndefined();
+      expect(cleared.poses).toBeUndefined();
       expect(cleared.sceneAnalysis).toEqual({
         kind: 'people',
         confidence: 1,
@@ -1105,6 +1115,7 @@ describe('ImportContext reducer', () => {
           burstIndex: 1,
           faceCount: 1,
           faceBoxes: [{ x: 0.3, y: 0.2, width: 0.2, height: 0.22, eyeScore: 2, smileScore: 0.45, score: 0.94 }],
+          sceneAnalysis: { kind: 'people', confidence: 0.9, subjectFocusConfidence: 0.8, subjectSharpnessScore: 132 },
           subjectSharpnessScore: 132,
           sharpnessScore: 150,
           reviewScore: 82,
@@ -1116,6 +1127,7 @@ describe('ImportContext reducer', () => {
           burstIndex: 2,
           faceCount: 1,
           faceBoxes: [{ x: 0.3, y: 0.2, width: 0.2, height: 0.22, eyeScore: 2, smileScore: 1, score: 0.9 }],
+          sceneAnalysis: { kind: 'people', confidence: 0.9, subjectFocusConfidence: 0.8, subjectSharpnessScore: 92 },
           subjectSharpnessScore: 92,
           sharpnessScore: 110,
           reviewScore: 72,
@@ -1127,6 +1139,7 @@ describe('ImportContext reducer', () => {
           burstIndex: 3,
           faceCount: 1,
           faceBoxes: [{ x: 0.3, y: 0.2, width: 0.2, height: 0.22, eyeScore: 1, smileScore: 0.3, score: 0.86 }],
+          sceneAnalysis: { kind: 'people', confidence: 0.9, subjectFocusConfidence: 0.8, subjectSharpnessScore: 175 },
           subjectSharpnessScore: 175,
           sharpnessScore: 190,
           reviewScore: 68,

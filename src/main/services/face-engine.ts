@@ -28,13 +28,25 @@ import { createReadStream, existsSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { app } from 'electron';
 import { log } from '../logger';
-import { estimatePoses, isPoseAnalysisEnabled } from './pose-engine';
+import { disposePoseEngine, estimatePosesDetailed, isPoseAnalysisEnabled } from './pose-engine';
+import {
+  disposeImagePreprocessSupervisor,
+  clearImagePreprocessQuarantine,
+  getImagePreprocessSupervisor,
+  getImagePreprocessSupervisorDiagnostics,
+  ImagePreprocessError,
+  type PreparedImagePayload,
+  type PreparedPersonTensor,
+} from './image-preprocess-supervisor';
 import {
   FACE_MODEL_IDENTITIES,
   FACE_PIPELINE_FINGERPRINT,
   type FaceModelRole,
 } from './face-model-manifest';
 import type { PoseKeypoints } from '../../shared/types';
+import { DetectorCandidateRuntime, type PreparedDetectorInput } from './detector-candidate-runtime';
+import { getDetectorCandidate } from './detector-model-manifest';
+import { getExperimentalDetectorModelStatuses } from './model-downloader';
 
 // onnxruntime-node is a native addon — it must be outside the asar.
 // The forge config sets unpackDir for it. Require at runtime to avoid
@@ -120,6 +132,12 @@ export interface FaceAnalysisResult {
     personDetection: boolean;
     poseAnalysis: boolean;
     embeddingLimit: number;
+    /** Internal resume marker: subject-profile eye sampling has completed. */
+    eyeDetail?: boolean;
+    /** Opt-in sports disagreement fallback was available and evaluated. */
+    personFallback?: boolean;
+    /** Sports zero-evidence/disagreement safeguards were actually evaluated. */
+    sportsSafeguards?: boolean;
   };
 }
 
@@ -135,6 +153,58 @@ export interface FaceAnalysisOptions {
   profile?: FaceAnalysisProfile;
   /** Optional scan-time EXIF orientation hint (1-8), avoiding a second metadata read. */
   orientation?: ExifOrientation;
+  /**
+   * A completed shallower result for this exact file/version. Coordinates are
+   * in stored-image orientation, just like every public result. Full analysis
+   * reuses its detections/eye signals and performs only missing enrichment.
+   */
+  seed?: FaceAnalysisResult;
+  /** Enables sports disagreement safeguards in the subjects pass. */
+  sportsMode?: boolean;
+}
+
+export interface FaceAnalysisResumePlan {
+  faceDetection: boolean;
+  personDetection: boolean;
+  eyeDetail: boolean;
+  faceMatching: boolean;
+  poseAnalysis: boolean;
+}
+
+/** Pure resume planner used by the pipeline and regression tests. */
+export function getFaceAnalysisResumePlan(
+  profile: FaceAnalysisProfile,
+  seed?: FaceAnalysisResult,
+): FaceAnalysisResumePlan {
+  const requested = getFaceFeatureOptions(profile);
+  return {
+    faceDetection: !seed,
+    personDetection: requested.personDetection && seed?.features?.personDetection !== true,
+    eyeDetail: profile !== 'detect' && seed?.features?.eyeDetail !== true,
+    faceMatching: requested.faceMatching && !(
+      seed?.features?.faceMatching === true &&
+      (seed.features.embeddingLimit ?? 0) >= requested.embeddingLimit
+    ),
+    poseAnalysis: requested.poseAnalysis && seed?.features?.poseAnalysis !== true,
+  };
+}
+
+export function shouldResumePersonFallback(
+  seed: FaceAnalysisResult | undefined,
+  sportsMode: boolean,
+  fallbackActive: boolean,
+): boolean {
+  return fallbackActive && sportsMode && !!seed &&
+    seed.features?.personFallback !== true &&
+    seed.personBoxes.length === 0 && seed.boxes.some(isReliableFaceForEmbedding);
+}
+
+/** A general subjects cache is not sufficient evidence for a sports review. */
+export function shouldResumeSportsSafeguards(
+  seed: FaceAnalysisResult | undefined,
+  sportsMode: boolean,
+): boolean {
+  return sportsMode && !!seed && seed.features?.sportsSafeguards !== true;
 }
 
 // ---------------------------------------------------------------------------
@@ -249,8 +319,216 @@ let detectorInputName = 'input';
 let embedderInputName = 'input';
 let personInputName = 'image_tensor:0';
 let sessionLoadPromise: Promise<void> | null = null;
+let sessionLoadGeneration = 0;
 let gpuAvailable: boolean | null = null;
 let actualExecutionProvider: string | null = null; // legacy summary: mixed, dml, or cpu
+
+export type FaceInferenceStage = 'detector' | 'embedder' | 'person';
+export type FaceInferenceErrorCode =
+  | 'FACE_INFERENCE_TIMEOUT'
+  | 'FACE_INFERENCE_FAILED'
+  | 'FACE_INFERENCE_CIRCUIT_OPEN'
+  | 'FACE_INFERENCE_RESET';
+
+/** Machine-readable native inference failure. No failure is converted to zero detections. */
+export class FaceInferenceCircuitError extends Error {
+  constructor(
+    readonly code: FaceInferenceErrorCode,
+    readonly stage: FaceInferenceStage,
+    readonly detail: string,
+  ) {
+    super(`face-engine ${stage} inference ${code === 'FACE_INFERENCE_CIRCUIT_OPEN' ? 'unavailable' : 'failed'}: ${detail}`);
+    this.name = 'FaceInferenceCircuitError';
+  }
+}
+
+interface InferenceQueueEntry<T> {
+  work: () => Promise<T>;
+  timeoutMs: number;
+  resolve: (value: T) => void;
+  reject: (error: FaceInferenceCircuitError) => void;
+}
+
+interface ActiveInferenceRejector {
+  generation: number;
+  reject: (error: FaceInferenceCircuitError) => void;
+}
+
+/**
+ * Bounded circuit around a native ORT session.
+ *
+ * ORT JavaScript promises cannot cancel a native call. On timeout/failure we
+ * therefore reject every active/queued caller, open the circuit, and refuse
+ * later work until the owning session is explicitly disposed/reconfigured.
+ * This prevents a hung serialized person call from retaining its queue forever
+ * without pretending that inference returned an empty result.
+ */
+export class FaceInferenceCircuit {
+  private failure: FaceInferenceCircuitError | null = null;
+  private readonly queue: Array<InferenceQueueEntry<unknown>> = [];
+  private readonly activeRejectors = new Set<ActiveInferenceRejector>();
+  private active = 0;
+  private generation = 0;
+
+  constructor(
+    readonly stage: FaceInferenceStage,
+    private readonly maxConcurrent = Number.POSITIVE_INFINITY,
+  ) {}
+
+  run<T>(work: () => Promise<T>, timeoutMs: number): Promise<T> {
+    if (this.failure) return Promise.reject(this.openError());
+    const boundedTimeout = Math.max(1, Math.floor(timeoutMs));
+    return new Promise<T>((resolve, reject) => {
+      const entry: InferenceQueueEntry<T> = {
+        work,
+        timeoutMs: boundedTimeout,
+        resolve,
+        reject,
+      };
+      if (this.active < this.maxConcurrent) this.start(entry);
+      else this.queue.push(entry as InferenceQueueEntry<unknown>);
+    });
+  }
+
+  reset(detail = 'native session lifecycle reset'): void {
+    const resetError = new FaceInferenceCircuitError('FACE_INFERENCE_RESET', this.stage, detail);
+    const queued = this.queue.splice(0);
+    const active = [...this.activeRejectors];
+    this.generation++;
+    this.active = 0;
+    this.failure = null;
+    for (const entry of queued) entry.reject(resetError);
+    for (const entry of active) entry.reject(resetError);
+    this.activeRejectors.clear();
+  }
+
+  diagnostics() {
+    return {
+      stage: this.stage,
+      state: this.failure ? 'open' as const : 'closed' as const,
+      active: this.active,
+      queued: this.queue.length,
+      failureCode: this.failure?.code,
+      failure: this.failure?.detail,
+    };
+  }
+
+  private start<T>(entry: InferenceQueueEntry<T>): void {
+    if (this.failure) {
+      entry.reject(this.openError());
+      return;
+    }
+    const operationGeneration = this.generation;
+    this.active++;
+    let settled = false;
+    let timer: NodeJS.Timeout;
+
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      this.activeRejectors.delete(activeRejector);
+      if (operationGeneration === this.generation) {
+        this.active = Math.max(0, this.active - 1);
+      }
+      callback();
+      this.drain();
+    };
+    const rejectFromCircuit = (error: FaceInferenceCircuitError) => finish(() => entry.reject(error));
+    const activeRejector: ActiveInferenceRejector = {
+      generation: operationGeneration,
+      reject: rejectFromCircuit,
+    };
+    this.activeRejectors.add(activeRejector);
+    timer = setTimeout(() => this.trip(new FaceInferenceCircuitError(
+      'FACE_INFERENCE_TIMEOUT',
+      this.stage,
+      `native call exceeded ${entry.timeoutMs}ms; circuit opened until session reset`,
+    )), entry.timeoutMs);
+
+    Promise.resolve()
+      .then(entry.work)
+      .then(
+        (value) => finish(() => entry.resolve(value)),
+        (error) => {
+          if (settled) return;
+          const detail = error instanceof Error ? error.message : String(error);
+          this.trip(new FaceInferenceCircuitError(
+            'FACE_INFERENCE_FAILED', this.stage,
+            `${detail}; circuit opened until session reset`,
+          ));
+        },
+      );
+  }
+
+  private drain(): void {
+    if (this.failure) return;
+    while (this.active < this.maxConcurrent && this.queue.length > 0) {
+      this.start(this.queue.shift()!);
+    }
+  }
+
+  private trip(error: FaceInferenceCircuitError): void {
+    if (this.failure) return;
+    this.failure = error;
+    const queued = this.queue.splice(0);
+    const active = [...this.activeRejectors]
+      .filter((entry) => entry.generation === this.generation);
+    this.generation++;
+    this.active = 0;
+    for (const entry of queued) entry.reject(error);
+    for (const entry of active) entry.reject(error);
+  }
+
+  private openError(): FaceInferenceCircuitError {
+    const cause = this.failure;
+    return new FaceInferenceCircuitError(
+      'FACE_INFERENCE_CIRCUIT_OPEN',
+      this.stage,
+      cause
+        ? `previous ${cause.code.toLowerCase()}: ${cause.detail}`
+        : 'native session circuit is open',
+    );
+  }
+}
+
+const detectorInferenceCircuit = new FaceInferenceCircuit('detector');
+const embedderInferenceCircuit = new FaceInferenceCircuit('embedder');
+const personInferenceCircuit = new FaceInferenceCircuit('person', 1);
+const DETECTOR_INFERENCE_TIMEOUT_MS = 12_000;
+const PERSON_INFERENCE_TIMEOUT_MS = 12_000;
+const EMBEDDER_INFERENCE_TIMEOUT_MS = 8_000;
+const INFERENCE_RELEASE_TIMEOUT_MS = 2_000;
+
+function resetFaceInferenceCircuits(detail: string): void {
+  detectorInferenceCircuit.reset(detail);
+  embedderInferenceCircuit.reset(detail);
+  personInferenceCircuit.reset(detail);
+}
+
+async function bestEffortBoundedRelease(
+  label: string,
+  release: (() => Promise<unknown> | unknown) | undefined,
+): Promise<void> {
+  if (!release) return;
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      Promise.resolve().then(release),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(() => {
+          log.warn(`[face-engine] ${label} release exceeded ${INFERENCE_RELEASE_TIMEOUT_MS}ms; abandoning best-effort cleanup`);
+          resolve();
+        }, INFERENCE_RELEASE_TIMEOUT_MS);
+      }),
+    ]);
+  } catch (error) {
+    log.warn(`[face-engine] ${label} release failed:`,
+      error instanceof Error ? error.message : String(error));
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 export type FaceModelKey = 'detector' | 'embedder' | 'person';
 
@@ -385,9 +663,16 @@ async function warmBenchmarkSession(
   if (!inputName) throw new Error(`${model} session has no input name`);
   const tensor = makeWarmupTensor(runtime, model);
   const times: number[] = [];
+  const benchmarkCircuit = new FaceInferenceCircuit(model);
+  const timeoutMs = model === 'embedder'
+    ? EMBEDDER_INFERENCE_TIMEOUT_MS
+    : model === 'person' ? PERSON_INFERENCE_TIMEOUT_MS : DETECTOR_INFERENCE_TIMEOUT_MS;
   for (let i = 0; i < iterations; i++) {
     const t = performance.now();
-    await session.run({ [inputName]: tensor });
+    await benchmarkCircuit.run(
+      () => session.run({ [inputName]: tensor }),
+      timeoutMs,
+    );
     times.push(performance.now() - t);
   }
   const warm = times.slice(Math.min(2, Math.max(0, times.length - 1)));
@@ -422,9 +707,19 @@ async function createBenchmarkedSession(
   cpuCount: number,
 ): Promise<{ session: any; inputName: string; diagnostic: FaceProviderDiagnostic }> {
   const cpuStart = Date.now();
-  const cpuSession = await runtime.InferenceSession.create(modelFilePath, sessionOptions('cpu', cpuCount));
-  const cpuLoadMs = Date.now() - cpuStart;
-  const cpuAvgInferenceMs = await warmBenchmarkSession(runtime, model, cpuSession);
+  let cpuSession: any | null = null;
+  let cpuLoadMs: number;
+  let cpuAvgInferenceMs: number;
+  try {
+    cpuSession = await runtime.InferenceSession.create(modelFilePath, sessionOptions('cpu', cpuCount));
+    cpuLoadMs = Date.now() - cpuStart;
+    cpuAvgInferenceMs = await warmBenchmarkSession(runtime, model, cpuSession);
+  } catch (error) {
+    await bestEffortBoundedRelease(
+      `${model} CPU benchmark session`, cpuSession?.release ? () => cpuSession.release() : undefined,
+    );
+    throw error;
+  }
   const diagnostic: FaceProviderDiagnostic = {
     model,
     provider: 'cpu',
@@ -457,6 +752,10 @@ async function createBenchmarkedSession(
     dmlAvgInferenceMs = await warmBenchmarkSession(runtime, model, dmlSession);
   } catch (err) {
     dmlError = err instanceof Error ? err.message : 'DirectML benchmark failed';
+    await bestEffortBoundedRelease(
+      `${model} DirectML benchmark session`, dmlSession?.release ? () => dmlSession.release() : undefined,
+    );
+    dmlSession = null;
   }
 
   const choice = choosePreferredProvider({
@@ -500,7 +799,10 @@ async function createBenchmarkedSession(
 
 async function loadSessions(): Promise<void> {
   if (sessionLoadPromise) return sessionLoadPromise;
-  sessionLoadPromise = (async () => {
+  const loadGeneration = sessionLoadGeneration;
+  const matchingRequested = faceMatchingEnabled;
+  const personRequested = personDetectionEnabled;
+  const loading = (async () => {
     try {
       const runtime = getOrt();
       const cpuCount = Math.max(2, require('os').cpus().length);
@@ -510,8 +812,8 @@ async function loadSessions(): Promise<void> {
       // userData file must not shadow a valid bundled model.
       const [detPath, embPath, personPath] = await Promise.all([
         resolveVerifiedModelPath('detector'),
-        faceMatchingEnabled ? resolveVerifiedModelPath('embedder') : Promise.resolve(null),
-        personDetectionEnabled ? resolveVerifiedModelPath('person') : Promise.resolve(null),
+        matchingRequested ? resolveVerifiedModelPath('embedder') : Promise.resolve(null),
+        personRequested ? resolveVerifiedModelPath('person') : Promise.resolve(null),
       ]);
 
       log.info('[face-engine] Loading sessions (providers:', getExecutionProviders().join(','), 'threads:', Math.min(cpuCount, 6), ')');
@@ -519,11 +821,49 @@ async function loadSessions(): Promise<void> {
         log.info(`[face-engine] DirectML adapter override: deviceId=${dmlDeviceId}`);
       }
 
-      const [detector, embedder, person] = await Promise.all([
+      const settled = await Promise.allSettled([
         createBenchmarkedSession(runtime, 'detector', detPath, cpuCount),
-        faceMatchingEnabled && embPath ? createBenchmarkedSession(runtime, 'embedder', embPath, cpuCount) : Promise.resolve(null),
-        personDetectionEnabled && personPath ? createBenchmarkedSession(runtime, 'person', personPath, cpuCount) : Promise.resolve(null),
+        matchingRequested && embPath ? createBenchmarkedSession(runtime, 'embedder', embPath, cpuCount) : Promise.resolve(null),
+        personRequested && personPath ? createBenchmarkedSession(runtime, 'person', personPath, cpuCount) : Promise.resolve(null),
       ]);
+      const firstFailure = settled.find((entry): entry is PromiseRejectedResult => entry.status === 'rejected');
+      if (firstFailure) {
+        await Promise.all(settled.map((entry, index) => {
+          const loaded = entry.status === 'fulfilled' ? entry.value : null;
+          return loaded
+            ? bestEffortBoundedRelease(
+              `${(['detector', 'embedder', 'person'] as const)[index]} partial session`,
+              loaded.session?.release ? () => loaded.session.release() : undefined,
+            )
+            : Promise.resolve();
+        }));
+        throw firstFailure.reason;
+      }
+      const detectorSettled = settled[0];
+      const embedderSettled = settled[1];
+      const personSettled = settled[2];
+      if (
+        detectorSettled.status !== 'fulfilled' ||
+        embedderSettled.status !== 'fulfilled' ||
+        personSettled.status !== 'fulfilled' ||
+        !detectorSettled.value
+      ) {
+        throw new Error('Face model sessions did not settle to a complete load set');
+      }
+      const detector = detectorSettled.value;
+      const embedder = embedderSettled.value;
+      const person = personSettled.value;
+
+      if (loadGeneration !== sessionLoadGeneration) {
+        await Promise.all([
+          bestEffortBoundedRelease('superseded detector session', () => detector.session.release?.()),
+          bestEffortBoundedRelease('superseded embedder session', embedder?.session?.release ? () => embedder.session.release() : undefined),
+          bestEffortBoundedRelease('superseded person session', person?.session?.release ? () => person.session.release() : undefined),
+        ]);
+        throw new FaceInferenceCircuitError(
+          'FACE_INFERENCE_RESET', 'detector', 'model session load was superseded by reconfiguration',
+        );
+      }
 
       detectorSession = detector.session;
       detectorInputName = detector.inputName;
@@ -540,15 +880,23 @@ async function loadSessions(): Promise<void> {
       actualExecutionProvider = new Set(providers).size === 1 ? providers[0] : providers.join('+');
       log.info('[face-engine] Sessions loaded - EP:', actualExecutionProvider, JSON.stringify(providerDiagnostics));
     } catch (e) {
-      sessionLoadPromise = null;
+      if (loadGeneration === sessionLoadGeneration) sessionLoadPromise = null;
       throw e;
     }
   })();
-  return sessionLoadPromise;
+  sessionLoadPromise = loading;
+  return loading;
 }
 
 export async function disposeFaceEngine(): Promise<void> {
+  sessionLoadGeneration++;
+  disposeImagePreprocessSupervisor();
   const [d, e, p] = [detectorSession, embedderSession, personSession];
+  const nanoPromise = nanoDetFallbackPromise;
+  // Capture and clear the current pose session before any bounded await. A
+  // reconfigured analysis is allowed to start a new generation immediately;
+  // delayed cleanup of the old generation must never dispose that new session.
+  const poseDisposePromise = disposePoseEngine();
   detectorSession = null;
   embedderSession = null;
   personSession = null;
@@ -558,7 +906,28 @@ export async function disposeFaceEngine(): Promise<void> {
   sessionLoadPromise = null;
   gpuAvailable = null;
   actualExecutionProvider = null;
-  await Promise.allSettled([d?.release(), e?.release(), p?.release()]);
+  nanoDetFallbackPromise = null;
+  nanoDetFallbackAvailable = null;
+  // Reject active/queued native callers before awaiting session.release(); a
+  // release can itself wait on a stuck native invocation.
+  resetFaceInferenceCircuits('face engine disposed or reconfigured');
+  // Attach cleanup to the captured candidate promise even if the bounded
+  // shutdown wait below expires. A late model load must not leak its runtime.
+  const nanoCleanupPromise = nanoPromise
+    ?.then((runtime) => bestEffortBoundedRelease(
+      'NanoDet runtime', runtime?.close ? () => runtime.close() : undefined,
+    ))
+    .catch(() => undefined) ?? Promise.resolve();
+  await Promise.all([
+    bestEffortBoundedRelease('detector session', d?.release ? () => d.release() : undefined),
+    bestEffortBoundedRelease('embedder session', e?.release ? () => e.release() : undefined),
+    bestEffortBoundedRelease('person session', p?.release ? () => p.release() : undefined),
+    bestEffortBoundedRelease('pose engine', () => poseDisposePromise),
+    Promise.race([
+      nanoCleanupPromise,
+      new Promise<void>((resolve) => setTimeout(resolve, INFERENCE_RELEASE_TIMEOUT_MS)),
+    ]),
+  ]);
 }
 
 /**
@@ -602,7 +971,15 @@ export function getFaceProviderDiagnostics(): FaceProviderDiagnostic[] {
 // nativeImage is only available in the main process.
 import { nativeImage } from 'electron';
 import exifr from 'exifr';
-import { extractLargestEmbeddedJpeg, getDetectionPixels, getThumbnailPayload, peekPreviewFile, readExifOrientation } from './exif-parser';
+import {
+  extractLargestEmbeddedJpeg,
+  getDetectionPixels,
+  getThumbnailPayload,
+  peekPreviewFile,
+  peekThumbnailPayload,
+  readExifOrientation,
+  type PreviewPayload,
+} from './exif-parser';
 
 /**
  * Load a nativeImage from a path, with RAW fallback via exifr.thumbnail().
@@ -613,6 +990,31 @@ import { extractLargestEmbeddedJpeg, getDetectionPixels, getThumbnailPayload, pe
 // analyzeFaces() call chain. Max 8 entries; evict oldest when full.
 const imageDecodeCache = new Map<string, Electron.NativeImage>();
 const MAX_DECODE_CACHE = 8;
+type CachedAnalysisSurface = { image: Electron.NativeImage; bytes: number };
+const analysisSurfaceCache = new Map<string, CachedAnalysisSurface>();
+const MAX_ANALYSIS_SURFACES = 64;
+const MAX_ANALYSIS_SURFACE_BYTES = 256 * 1024 * 1024;
+let analysisSurfaceCacheBytes = 0;
+let analysisSurfaceCacheHits = 0;
+let analysisSurfaceCacheMisses = 0;
+
+function removeAnalysisSurface(key: string): void {
+  const entry = analysisSurfaceCache.get(key);
+  if (!entry) return;
+  analysisSurfaceCache.delete(key);
+  analysisSurfaceCacheBytes = Math.max(0, analysisSurfaceCacheBytes - entry.bytes);
+}
+
+export function getAnalysisSurfaceCacheDiagnostics() {
+  return {
+    entries: analysisSurfaceCache.size,
+    bytes: analysisSurfaceCacheBytes,
+    maxBytes: MAX_ANALYSIS_SURFACE_BYTES,
+    maxEntries: MAX_ANALYSIS_SURFACES,
+    hits: analysisSurfaceCacheHits,
+    misses: analysisSurfaceCacheMisses,
+  };
+}
 
 function imageDecodeCacheKey(imagePath: string, profile: FaceAnalysisProfile): string {
   return `${profile}:${imagePath}`;
@@ -621,6 +1023,21 @@ function imageDecodeCacheKey(imagePath: string, profile: FaceAnalysisProfile): s
 /** Clear the in-process image decode cache. Call when the scan source changes. */
 export function clearImageDecodeCache(): void {
   imageDecodeCache.clear();
+  analysisSurfaceCache.clear();
+  analysisSurfaceCacheBytes = 0;
+  analysisQuarantine.clear();
+  clearImagePreprocessQuarantine();
+}
+
+/**
+ * Terminate every active native decode/resize worker when the scan generation
+ * changes. Utility-process work is genuinely cancellable, unlike an in-process
+ * Promise timeout, so an old source cannot retain all preprocessing slots while
+ * a newly selected source waits behind it.
+ */
+export function cancelActiveFacePreprocessing(): void {
+  disposeImagePreprocessSupervisor();
+  clearImageDecodeCache();
 }
 
 async function loadNativeImageCached(
@@ -824,6 +1241,66 @@ function uprightPointToStored(
     case 8: return { x: 1 - y, y: x };
     default: return { x, y };
   }
+}
+
+function storedPointToUpright(
+  x: number,
+  y: number,
+  orientationValue: number,
+): { x: number; y: number } {
+  const orientation = safeExifOrientation(orientationValue);
+  switch (orientation) {
+    case 2: return { x: 1 - x, y };
+    case 3: return { x: 1 - x, y: 1 - y };
+    case 4: return { x, y: 1 - y };
+    case 5: return { x: y, y: x };
+    case 6: return { x: 1 - y, y: x };
+    case 7: return { x: 1 - y, y: 1 - x };
+    case 8: return { x: y, y: 1 - x };
+    default: return { x, y };
+  }
+}
+
+function mapBoxToUprightOrientation(box: FaceBox, orientationValue: number): FaceBox {
+  const orientation = safeExifOrientation(orientationValue);
+  if (orientation === 1) return box;
+  const corners = [
+    storedPointToUpright(box.x, box.y, orientation),
+    storedPointToUpright(box.x + box.width, box.y, orientation),
+    storedPointToUpright(box.x, box.y + box.height, orientation),
+    storedPointToUpright(box.x + box.width, box.y + box.height, orientation),
+  ];
+  const x1 = clamp01(Math.min(...corners.map((point) => point.x)));
+  const y1 = clamp01(Math.min(...corners.map((point) => point.y)));
+  const x2 = clamp01(Math.max(...corners.map((point) => point.x)));
+  const y2 = clamp01(Math.max(...corners.map((point) => point.y)));
+  return { ...box, x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
+}
+
+function mapPoseToUprightOrientation(pose: PoseKeypoints, orientationValue: number): PoseKeypoints {
+  const orientation = safeExifOrientation(orientationValue);
+  if (orientation === 1) return pose;
+  return {
+    ...pose,
+    keypoints: pose.keypoints.map((keypoint) => ({
+      ...keypoint,
+      ...storedPointToUpright(keypoint.x, keypoint.y, orientation),
+    })),
+  };
+}
+
+function resultInUprightOrientation(
+  result: FaceAnalysisResult,
+  orientation: ExifOrientation,
+): FaceAnalysisResult {
+  if (orientation === 1) return result;
+  return {
+    ...result,
+    boxes: result.boxes.map((box) => mapBoxToUprightOrientation(box, orientation)),
+    personBoxes: result.personBoxes.map((box) => mapBoxToUprightOrientation(box, orientation)),
+    embeddingBoxes: result.embeddingBoxes?.map((box) => mapBoxToUprightOrientation(box, orientation)),
+    poses: result.poses?.map((pose) => mapPoseToUprightOrientation(pose, orientation)),
+  };
 }
 
 /** Map an upright inference box back to stored-pixel coordinates for IPC/UI. */
@@ -1157,15 +1634,32 @@ export function estimateEyeDetailFromPixels(
   };
 }
 
-async function annotateEyeDetail(img: Electron.NativeImage, boxes: FaceBox[]): Promise<FaceBox[]> {
-  if (boxes.length === 0) return boxes;
+export interface EyeDetailAnnotationBatch {
+  boxes: FaceBox[];
+  /** True only when every eligible face crop was sampled successfully. */
+  complete: boolean;
+  eligibleCount: number;
+  completedCount: number;
+}
+
+export async function annotateEyeDetail(
+  img: Electron.NativeImage,
+  boxes: FaceBox[],
+): Promise<EyeDetailAnnotationBatch> {
+  if (boxes.length === 0) {
+    return { boxes, complete: true, eligibleCount: 0, completedCount: 0 };
+  }
   const { width: imgW, height: imgH } = img.getSize();
-  if (imgW <= 0 || imgH <= 0) return boxes;
+  if (imgW <= 0 || imgH <= 0) {
+    return { boxes, complete: false, eligibleCount: boxes.length, completedCount: 0 };
+  }
 
   // Eye-region sampling is inexpensive but still requires a crop/resize. Limit
   // it to the strongest review faces; all detector boxes remain visible.
   const candidates = new Set(rankFacesForEmbedding(boxes).slice(0, 12));
   const annotated: FaceBox[] = [];
+  let eligibleCount = 0;
+  let completedCount = 0;
   for (let index = 0; index < boxes.length; index++) {
     const box = boxes[index];
     const faceW = box.width * imgW;
@@ -1174,6 +1668,7 @@ async function annotateEyeDetail(img: Electron.NativeImage, boxes: FaceBox[]): P
       annotated.push(box);
       continue;
     }
+    eligibleCount++;
     try {
       const cropX = Math.max(0, Math.floor(box.x * imgW));
       const cropY = Math.max(0, Math.floor(box.y * imgH));
@@ -1183,12 +1678,18 @@ async function annotateEyeDetail(img: Electron.NativeImage, boxes: FaceBox[]): P
       const bitmap = (crop.toBitmap?.() ?? crop.getBitmap()) as unknown as Buffer;
       const detail = estimateEyeDetailFromPixels(bitmap, 96, 96);
       annotated.push({ ...box, ...detail });
+      completedCount++;
     } catch {
       annotated.push(box);
     }
     if (index % 4 === 3) await yieldToEventLoop();
   }
-  return annotated;
+  return {
+    boxes: annotated,
+    complete: completedCount === eligibleCount,
+    eligibleCount,
+    completedCount,
+  };
 }
 
 function faceBoxesFromDetectorResult(result: Record<string, any>): FaceBox[] {
@@ -1221,8 +1722,13 @@ function faceBoxesFromDetectorResult(result: Record<string, any>): FaceBox[] {
 }
 
 async function runFaceDetectorTensor(floats: Float32Array): Promise<FaceBox[]> {
+  const session = detectorSession;
+  if (!session) throw new Error('Face detector session is not loaded');
   const tensor = new (getOrt().Tensor)('float32', floats, [1, 3, DETECTOR_H, DETECTOR_W]);
-  const result = await detectorSession.run({ [detectorInputName]: tensor }) as Record<string, any>;
+  const result = await detectorInferenceCircuit.run(
+    () => session.run({ [detectorInputName]: tensor }) as Promise<Record<string, any>>,
+    DETECTOR_INFERENCE_TIMEOUT_MS,
+  );
   return faceBoxesFromDetectorResult(result);
 }
 
@@ -1282,10 +1788,201 @@ async function prepareFaceDetectorTensor(
   );
 }
 
+const WORKER_DIRECT_EXTENSIONS = new Set([
+  '.jpg', '.jpeg', '.jpe', '.png', '.webp', '.gif', '.avif',
+  '.tif', '.tiff', '.heic', '.heif', '.hif',
+]);
+
+/**
+ * Resolve a libvips-readable input without generating a new preview on the
+ * Electron thread. Camera RAW normally has a scanner preview by review time;
+ * if it does not, the worker gets the original and returns a structured decode
+ * error instead of risking a synchronous nativeImage fallback.
+ */
+export interface ResolvedPreprocessSource {
+  sourcePath: string;
+  orientation: ExifOrientation;
+  /** Encoded JPEG/preview bytes for transient/cache-off RAW sources. */
+  inputBuffer?: Uint8Array;
+  extractEmbeddedJpeg?: boolean;
+  useSourceOrientation?: boolean;
+  sourceKind?: 'original' | 'preview-file' | 'preview-buffer' | 'thumbnail-file' | 'thumbnail-buffer';
+}
+
+function resolvedPreviewSource(
+  imagePath: string,
+  payload: PreviewPayload,
+  originalOrientation: ExifOrientation,
+  kind: 'preview' | 'thumbnail',
+): ResolvedPreprocessSource {
+  // The worker reads the encoded JPEG's own metadata and only falls back to
+  // the RAW container orientation when that preview has no tag. Keeping this
+  // decision inside the killable process also avoids preflight native decode.
+  const orientation = originalOrientation;
+  if (payload.kind === 'file') {
+    return {
+      sourcePath: payload.diskPath,
+      orientation,
+      useSourceOrientation: true,
+      sourceKind: `${kind}-file`,
+    };
+  }
+  return {
+    // Keep the user's path as the worker request/quarantine identity. The
+    // utility process opens inputBuffer and never asks Sharp to decode RAW.
+    sourcePath: imagePath,
+    inputBuffer: payload.buffer,
+    orientation,
+    useSourceOrientation: true,
+    sourceKind: `${kind}-buffer`,
+  };
+}
+
+export async function resolvePreprocessSource(
+  imagePath: string,
+  originalOrientation: ExifOrientation,
+  preferScannerThumbnail = false,
+): Promise<ResolvedPreprocessSource> {
+  if (WORKER_DIRECT_EXTENSIONS.has(path.extname(imagePath).toLowerCase())) {
+    return { sourcePath: imagePath, orientation: originalOrientation, sourceKind: 'original' };
+  }
+  const previewPath = await peekPreviewFile(imagePath, 'preview').catch(() => undefined);
+  if (previewPath) {
+    return resolvedPreviewSource(
+      imagePath,
+      { kind: 'file', diskPath: previewPath },
+      originalOrientation,
+      'preview',
+    );
+  }
+
+  // Detector-only RAW uses the scanner's already-encoded thumbnail when one
+  // exists. The read-only peek never invokes Sharp/nativeImage/platform tools.
+  const thumbnail = preferScannerThumbnail
+    ? await peekThumbnailPayload(imagePath).catch(() => undefined)
+    : undefined;
+  if (thumbnail) {
+    return resolvedPreviewSource(imagePath, thumbnail, originalOrientation, 'thumbnail');
+  }
+
+  // Unseen/cache-off RAW extraction belongs to the supervised process too.
+  // It scans at most 12 MiB for the largest embedded JPEG; a corrupt or stuck
+  // file is terminated by the same per-file deadline as Sharp decode.
+  return {
+    sourcePath: imagePath,
+    orientation: originalOrientation,
+    extractEmbeddedJpeg: true,
+    useSourceOrientation: true,
+    sourceKind: 'original',
+  };
+}
+
+async function prepareImageOffMain(
+  imagePath: string,
+  orientation: ExifOrientation,
+  includeAnalysisSurface: boolean,
+  includeDetectorTensor: boolean,
+  includePersonTensors: boolean,
+  includeNanoDetTensor = false,
+): Promise<{ prepared: PreparedImagePayload; image?: Electron.NativeImage }> {
+  const surfaceKey = `${orientation}:${imagePath}`;
+  const cachedSurface = includeAnalysisSurface && !includePersonTensors && !includeDetectorTensor
+    ? analysisSurfaceCache.get(surfaceKey)
+    : undefined;
+  if (cachedSurface) {
+    // Refresh insertion order. This is the common subjects -> seeded full path:
+    // enrichment reuses the exact decoded frame and performs no second decode.
+    analysisSurfaceCache.delete(surfaceKey);
+    analysisSurfaceCache.set(surfaceKey, cachedSurface);
+    analysisSurfaceCacheHits++;
+    const size = cachedSurface.image.getSize();
+    return {
+      prepared: {
+        detectorCHW: new Float32Array(0),
+        sourceWidth: size.width,
+        sourceHeight: size.height,
+        nanoDet: includeNanoDetTensor ? nanoDetTensorFromSurface(cachedSurface.image) : undefined,
+      },
+      image: cachedSurface.image,
+    };
+  }
+  if (includeAnalysisSurface && !includePersonTensors) analysisSurfaceCacheMisses++;
+  const {
+    sourcePath,
+    orientation: sourceOrientation,
+    inputBuffer,
+    extractEmbeddedJpeg,
+    useSourceOrientation,
+  } = await resolvePreprocessSource(imagePath, orientation, !includeAnalysisSurface);
+  let prepared: PreparedImagePayload;
+  try {
+    prepared = await getImagePreprocessSupervisor().prepare({
+      imagePath,
+      sourcePath: sourcePath !== imagePath ? sourcePath : undefined,
+      inputBuffer,
+      extractEmbeddedJpeg,
+      useSourceOrientation,
+      orientation: sourceOrientation,
+      includeDetectorTensor,
+      includeAnalysisSurface,
+      includePersonTensors,
+      includeNanoDetTensor,
+      analysisMaxDimension: 1024,
+    });
+  } catch (error) {
+    throw error;
+  }
+  if (!includeAnalysisSurface) return { prepared };
+  if (!prepared.surfaceBitmap || !prepared.surfaceWidth || !prepared.surfaceHeight) {
+    throw new ImagePreprocessError(
+      'PREPROCESS_FAILED', imagePath, 'complete', 'worker omitted the requested analysis surface',
+    );
+  }
+  const bitmap = Buffer.from(
+    prepared.surfaceBitmap.buffer,
+    prepared.surfaceBitmap.byteOffset,
+    prepared.surfaceBitmap.byteLength,
+  );
+  const image = nativeImage.createFromBitmap(bitmap, {
+    width: prepared.surfaceWidth,
+    height: prepared.surfaceHeight,
+    scaleFactor: 1,
+  });
+  if (image.isEmpty()) {
+    throw new ImagePreprocessError(
+      'PREPROCESS_FAILED', imagePath, 'complete', 'failed to materialise the bounded analysis surface',
+    );
+  }
+  const surfaceBytes = prepared.surfaceWidth! * prepared.surfaceHeight! * 4;
+  removeAnalysisSurface(surfaceKey);
+  while (analysisSurfaceCache.size >= MAX_ANALYSIS_SURFACES ||
+    analysisSurfaceCacheBytes + surfaceBytes > MAX_ANALYSIS_SURFACE_BYTES) {
+    const oldest = analysisSurfaceCache.keys().next().value;
+    if (!oldest) break;
+    removeAnalysisSurface(oldest);
+  }
+  if (surfaceBytes <= MAX_ANALYSIS_SURFACE_BYTES) {
+    analysisSurfaceCache.set(surfaceKey, { image, bytes: surfaceBytes });
+    analysisSurfaceCacheBytes += surfaceBytes;
+  }
+  return { prepared, image };
+}
+
 interface PersonDetectionPass {
   boxes: FaceBox[];
   /** Plausible person outputs below/above the display threshold. */
   candidateCount: number;
+}
+
+function hasMeaningfulPersonCandidateGap(candidateCount: number, fastBoxCount: number): boolean {
+  if (candidateCount <= fastBoxCount) return false;
+  // With no accepted body, even one sub-threshold proposal is useful evidence
+  // that the cheap pass was uncertain. Once a body is already accepted, a
+  // single weak extra proposal is extremely common in busy event backgrounds
+  // and caused most HYROX frames to pay for an unnecessary second pass. Require
+  // two additional proposals; face/body disagreement and tiny-body safeguards
+  // below still independently trigger refinement.
+  return fastBoxCount === 0 || candidateCount >= fastBoxCount + 2;
 }
 
 export function shouldRefinePersonDetection(input: {
@@ -1300,21 +1997,123 @@ export function shouldRefinePersonDetection(input: {
   const shortSide = Math.max(1, Math.min(width, height));
   const longSide = Math.max(width, height);
   const aspect = longSide / shortSide;
-  const hasEvidence = faceBoxes.length > 0 || fastBoxes.length > 0 || candidateCount > 0;
-  if (!hasEvidence) return false;
+  const reliableFaces = faceBoxes.filter(isReliableFaceForEmbedding);
+  const hasEvidence = reliableFaces.length > 0 || fastBoxes.length > 0 || candidateCount > 0;
+  // In a sports batch, "every detector returned zero" is itself an important
+  // disagreement: the frame may contain a distant/back-facing athlete. Pay
+  // for one bounded 640 pass so zero evidence is never silently interpreted
+  // as a confirmed people-free frame. General/landscape batches stay cheap.
+  if (!hasEvidence) return sportsMode;
 
-  const missedBodies = faceBoxes.length >= 2 && fastBoxes.length < faceBoxes.length;
-  const weakCandidate = candidateCount > fastBoxes.length;
+  const missedBodies = reliableFaces.length > fastBoxes.length;
+  const weakCandidate = hasMeaningfulPersonCandidateGap(candidateCount, fastBoxes.length);
   const smallBody = fastBoxes.some((box) => box.width * box.height < 0.032);
   const groupEvidence = faceBoxes.length >= 2 || fastBoxes.length >= 3 || candidateCount >= 3;
-  const wideFrame = aspect >= 1.75;
 
-  // Pose-enabled review is the existing main-process signal for sports mode.
-  // Still require subject evidence so empty/scenery frames remain one-pass.
-  if (sportsMode) return missedBodies || weakCandidate || smallBody || wideFrame;
+  // Sports refinement is evidence-driven. A wide room is not itself a reason
+  // to double inference; reliable face/body disagreement is, including the
+  // important face-positive + zero-person case.
+  if (sportsMode) return missedBodies || weakCandidate || smallBody;
   return missedBodies ||
     (groupEvidence && (weakCandidate || smallBody || aspect >= 1.35)) ||
-    (wideFrame && (faceBoxes.length > 0 || fastBoxes.length >= 2));
+    (aspect >= 1.75 && (reliableFaces.length > 0 || fastBoxes.length >= 2));
+}
+
+function personRefinementReason(input: {
+  faceBoxes: FaceBox[];
+  fastBoxes: FaceBox[];
+  candidateCount: number;
+}): string {
+  const reliableFaceCount = input.faceBoxes.filter(isReliableFaceForEmbedding).length;
+  if (reliableFaceCount > input.fastBoxes.length) return 'face-body-disagreement';
+  if (hasMeaningfulPersonCandidateGap(input.candidateCount, input.fastBoxes.length)) {
+    return 'ambiguous-candidate';
+  }
+  if (input.fastBoxes.some((box) => box.width * box.height < 0.032)) return 'tiny-subject';
+  if (input.faceBoxes.length === 0 && input.fastBoxes.length === 0 && input.candidateCount === 0) {
+    return 'sports-zero-evidence';
+  }
+  return 'group-or-aspect-evidence';
+}
+
+let nanoDetFallbackPromise: Promise<DetectorCandidateRuntime | null> | null = null;
+let nanoDetFallbackAvailable: boolean | null = null;
+
+async function getNanoDetFallback(): Promise<DetectorCandidateRuntime | null> {
+  if (!nanoDetFallbackPromise) {
+    nanoDetFallbackPromise = (async () => {
+      if (process.env.KEPTRA_ENABLE_EXPERIMENTAL_NANODET_FALLBACK !== '1') {
+        nanoDetFallbackAvailable = false;
+        return null;
+      }
+      const status = (await getExperimentalDetectorModelStatuses())
+        .find((entry) => entry.id === 'nanodet-2022nov-fp32');
+      if (status?.state !== 'verified' || !status.modelPath) {
+        nanoDetFallbackAvailable = false;
+        return null;
+      }
+      try {
+        const runtime = await DetectorCandidateRuntime.create(
+          getDetectorCandidate('nanodet-2022nov-fp32'),
+          status.modelPath,
+          process.platform === 'win32' ? 'dml' : 'cpu',
+        );
+        nanoDetFallbackAvailable = true;
+        return runtime;
+      } catch (error) {
+        nanoDetFallbackAvailable = false;
+        log.warn('[face-engine] optional NanoDet sports fallback unavailable:',
+          error instanceof Error ? error.message : String(error));
+        return null;
+      }
+    })();
+  }
+  return nanoDetFallbackPromise;
+}
+
+async function isNanoDetFallbackInstalled(): Promise<boolean> {
+  if (process.env.KEPTRA_ENABLE_EXPERIMENTAL_NANODET_FALLBACK !== '1') {
+    nanoDetFallbackAvailable = false;
+    return false;
+  }
+  if (nanoDetFallbackAvailable !== null) return nanoDetFallbackAvailable;
+  const status = (await getExperimentalDetectorModelStatuses())
+    .find((entry) => entry.id === 'nanodet-2022nov-fp32');
+  nanoDetFallbackAvailable = status?.state === 'verified' && !!status.modelPath;
+  return nanoDetFallbackAvailable;
+}
+
+/** True only for an explicit evaluation opt-in backed by a verified weight. */
+export async function isNanoDetSportsFallbackActive(): Promise<boolean> {
+  return isNanoDetFallbackInstalled();
+}
+
+async function runNanoDetSportsFallback(prepared?: PreparedImagePayload['nanoDet']): Promise<FaceBox[]> {
+  if (!prepared) throw new Error('preprocess worker omitted requested NanoDet tensor');
+  const runtime = await getNanoDetFallback();
+  if (!runtime) throw new Error('verified NanoDet fallback runtime did not load');
+  nanoDetFallbackRuns++;
+  const input: PreparedDetectorInput = {
+    data: prepared.data,
+    dimensions: [1, 3, 416, 416],
+    transform: {
+      sourceWidth: prepared.sourceWidth,
+      sourceHeight: prepared.sourceHeight,
+      targetWidth: prepared.targetWidth,
+      targetHeight: prepared.targetHeight,
+      resizedWidth: prepared.resizedWidth,
+      resizedHeight: prepared.resizedHeight,
+      padLeft: prepared.padLeft,
+      padTop: prepared.padTop,
+    },
+  };
+  const result = await runtime.runPrepared(input);
+  const boxes = result.detections.map((detection) => ({
+    x: detection.x, y: detection.y, width: detection.width,
+    height: detection.height, score: detection.score,
+  }));
+  if (boxes.length > 0) nanoDetFallbackHits++;
+  return boxes;
 }
 
 function mergePersonBoxes(...groups: FaceBox[][]): FaceBox[] {
@@ -1351,9 +2150,20 @@ async function detectPersons(
 
   const bitmap = (img.toBitmap?.() ?? img.getBitmap()) as unknown as Buffer;
   const input = pixelsToHWCUint8(bitmap, targetW, targetH);
+  return detectPersonsFromPrepared({ data: input, width: targetW, height: targetH });
+}
+
+async function detectPersonsFromPrepared(
+  prepared: PreparedPersonTensor,
+): Promise<PersonDetectionPass> {
+  const session = personSession;
+  if (!session) throw new Error('Person detector not loaded');
+  const { data: input, width: targetW, height: targetH } = prepared;
   const tensor = new (getOrt().Tensor)('uint8', input, [1, targetH, targetW, 3]);
-  const result = await withPersonInferenceSlot<Record<string, any>>(() =>
-    personSession.run({ [personInputName]: tensor }));
+  const result = await personInferenceCircuit.run<Record<string, any>>(
+    () => session.run({ [personInputName]: tensor }),
+    PERSON_INFERENCE_TIMEOUT_MS,
+  );
 
   const countKey = Object.keys(result).find((k) => k.includes('num_detections')) ?? Object.keys(result)[0];
   const boxesKey = Object.keys(result).find((k) => k.includes('detection_boxes')) ?? Object.keys(result)[1];
@@ -1399,6 +2209,63 @@ async function detectPersons(
   };
 }
 
+function personTensorFromSurface(
+  image: Electron.NativeImage,
+  maxDimension: number,
+): PreparedPersonTensor {
+  const original = image.getSize();
+  const scale = Math.min(1, maxDimension / Math.max(original.width, original.height));
+  const width = Math.max(32, Math.round(original.width * scale));
+  const height = Math.max(32, Math.round(original.height * scale));
+  const resized = image.resize({ width, height });
+  const bitmap = (resized.toBitmap?.() ?? resized.getBitmap()) as unknown as Buffer;
+  return { data: pixelsToHWCUint8(bitmap, width, height), width, height };
+}
+
+function nanoDetTensorFromSurface(
+  image: Electron.NativeImage,
+): NonNullable<PreparedImagePayload['nanoDet']> {
+  const source = image.getSize();
+  const targetWidth = 416 as const;
+  const targetHeight = 416 as const;
+  const scale = Math.min(targetWidth / source.width, targetHeight / source.height);
+  const resizedWidth = Math.max(1, Math.round(source.width * scale));
+  const resizedHeight = Math.max(1, Math.round(source.height * scale));
+  const padLeft = Math.floor((targetWidth - resizedWidth) / 2);
+  const padTop = Math.floor((targetHeight - resizedHeight) / 2);
+  const resized = image.resize({ width: resizedWidth, height: resizedHeight });
+  const bitmap = (resized.toBitmap?.() ?? resized.getBitmap()) as unknown as Buffer;
+  const rgb = pixelsToHWCUint8(bitmap, resizedWidth, resizedHeight);
+  const plane = targetWidth * targetHeight;
+  const data = new Float32Array(plane * 3);
+  const means = [103.53, 116.28, 123.675] as const;
+  const deviations = [57.375, 57.12, 58.395] as const;
+  // Black letterbox values must be normalized too, not left as float zero.
+  for (let channel = 0; channel < 3; channel++) {
+    data.fill((0 - means[channel]) / deviations[channel], channel * plane, (channel + 1) * plane);
+  }
+  for (let y = 0; y < resizedHeight; y++) {
+    for (let x = 0; x < resizedWidth; x++) {
+      const sourceOffset = (y * resizedWidth + x) * 3;
+      const targetOffset = (y + padTop) * targetWidth + x + padLeft;
+      for (let channel = 0; channel < 3; channel++) {
+        data[channel * plane + targetOffset] = (rgb[sourceOffset + channel] - means[channel]) / deviations[channel];
+      }
+    }
+  }
+  return {
+    data,
+    sourceWidth: source.width,
+    sourceHeight: source.height,
+    targetWidth,
+    targetHeight,
+    resizedWidth,
+    resizedHeight,
+    padLeft,
+    padTop,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // OpenCV SFace embedding
 // ---------------------------------------------------------------------------
@@ -1420,7 +2287,8 @@ export function pixelsToSFaceCHW(
 }
 
 async function embedFace(imagePath: string, box: FaceBox, cachedImg?: Electron.NativeImage): Promise<Float32Array> {
-  if (!embedderSession) throw new Error('Face engine not loaded');
+  const session = embedderSession;
+  if (!session) throw new Error('Face engine not loaded');
 
   // Read full image, crop to face box, resize to 112×112
   let img = cachedImg ?? await loadNativeImage(imagePath);
@@ -1447,7 +2315,10 @@ async function embedFace(imagePath: string, box: FaceBox, cachedImg?: Electron.N
   const tensor = new (getOrt().Tensor)('float32', floats, [1, 3, EMBED_H, EMBED_W]);
 
   const feeds: Record<string, any> = { [embedderInputName]: tensor };
-  const result = await embedderSession.run(feeds);
+  const result = await embedderInferenceCircuit.run<Record<string, any>>(
+    () => session.run(feeds) as Promise<Record<string, any>>,
+    EMBEDDER_INFERENCE_TIMEOUT_MS,
+  );
 
   // First (and only) output is the embedding vector
   const embKey = Object.keys(result)[0];
@@ -1480,37 +2351,23 @@ let _decodeTotalMs = 0;
 let _detectTotalMs = 0;
 let _embedTotalMs = 0;
 let _personRefinementCount = 0;
+const personRefinementReasons = new Map<string, number>();
+let nanoDetFallbackRuns = 0;
+let nanoDetFallbackHits = 0;
 
-// Per-image inference timeout. Promise.race cannot cancel native ONNX work, so
-// a timed-out operation opens a circuit until that underlying work settles.
-// This prevents released IPC semaphore slots from stacking more calls onto a
-// potentially hung execution provider.
+// Per-image inference timeout. Preprocessing itself has a stronger hard limit:
+// its native worker process is destroyed and replaced. This outer deadline is
+// retained as defence in depth, but quarantines only the affected path. A bad
+// frame must never open a global circuit that prevents later files running.
 const ANALYZE_TIMEOUT_MS = 30_000;
 
 // The SSD MobileNet person model deliberately runs on CPU because DirectML is
 // slower for this graph on the supported Windows stack. A single native ORT
 // session already fans out across CPU threads, so allowing every whole-photo
 // job to call it at once oversubscribes the processor (for example, 8 jobs x 6
-// ORT threads on a 16-thread CPU). Keep preprocessing parallel but serialize
-// the native person inference stage; measured throughput stays near its
-// single-session ceiling while latency and main-process contention fall.
-let personInferenceActive = false;
-const personInferenceQueue: Array<() => void> = [];
-
-async function withPersonInferenceSlot<T>(task: () => Promise<T>): Promise<T> {
-  if (personInferenceActive) {
-    await new Promise<void>((resolve) => personInferenceQueue.push(resolve));
-  } else {
-    personInferenceActive = true;
-  }
-  try {
-    return await task();
-  } finally {
-    const next = personInferenceQueue.shift();
-    if (next) next();
-    else personInferenceActive = false;
-  }
-}
+// ORT threads on a 16-thread CPU). personInferenceCircuit keeps that stage at
+// one active run and, unlike the former semaphore, rejects the whole queue if
+// its native owner fails or exceeds its lease.
 
 function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
@@ -1535,12 +2392,14 @@ function withTimeout<T>(
 }
 
 const analysisInFlight = new Map<string, Promise<FaceAnalysisResult>>();
-let timedOutNativeOperation: { operation: Promise<FaceAnalysisResult>; label: string } | null = null;
+const analysisQuarantine = new Map<string, Error>();
 
 function analysisSingleflightKey(
   imagePath: string,
   profile: FaceAnalysisProfile,
   orientation?: ExifOrientation,
+  seed?: FaceAnalysisResult,
+  sportsMode = false,
 ): string {
   const features = getFaceFeatureOptions(profile);
   return JSON.stringify([
@@ -1552,6 +2411,8 @@ function analysisSingleflightKey(
     features.personDetection ? 'person' : 'no-person',
     features.poseAnalysis ? 'pose' : 'no-pose',
     `embed:${features.embeddingLimit}`,
+    seed ? `seed:${seed.boxes.length}:${seed.personBoxes.length}:${seed.features?.embeddingLimit ?? 0}` : 'no-seed',
+    sportsMode ? 'sports' : 'general',
   ]);
 }
 
@@ -1559,17 +2420,14 @@ export function analyzeFaces(
   imagePath: string,
   options: FaceAnalysisOptions = {},
 ): Promise<FaceAnalysisResult> {
-  if (timedOutNativeOperation) {
-    return Promise.reject(new Error(
-      `face-engine temporarily unavailable: timed-out analysis is still running (${timedOutNativeOperation.label})`,
-    ));
-  }
+  const quarantined = analysisQuarantine.get(imagePath);
+  if (quarantined) return Promise.reject(quarantined);
   const profile = options.profile ?? 'full';
   const orientation = options.orientation;
-  const key = analysisSingleflightKey(imagePath, profile, orientation);
+  const key = analysisSingleflightKey(imagePath, profile, orientation, options.seed, options.sportsMode);
   let operation = analysisInFlight.get(key);
   if (!operation) {
-    operation = _analyzeFacesInner(imagePath, profile, orientation);
+    operation = _analyzeFacesInner(imagePath, profile, orientation, options.seed, options.sportsMode);
     analysisInFlight.set(key, operation);
     const cleanup = () => {
       if (analysisInFlight.get(key) === operation) analysisInFlight.delete(key);
@@ -1580,12 +2438,9 @@ export function analyzeFaces(
     void operation.then(cleanup, cleanup);
   }
   return withTimeout(operation, ANALYZE_TIMEOUT_MS, imagePath, () => {
-    if (timedOutNativeOperation) return;
-    timedOutNativeOperation = { operation: operation!, label: imagePath };
-    const closeCircuit = () => {
-      if (timedOutNativeOperation?.operation === operation) timedOutNativeOperation = null;
-    };
-    void operation!.then(closeCircuit, closeCircuit);
+    analysisQuarantine.set(imagePath, new Error(
+      `face-engine timeout: ${imagePath}; this file was quarantined and later files will continue`,
+    ));
   });
 }
 
@@ -1593,6 +2448,7 @@ async function runRequiredStage<T>(stage: string, work: () => Promise<T>): Promi
   try {
     return await work();
   } catch (error) {
+    if (error instanceof ImagePreprocessError || error instanceof FaceInferenceCircuitError) throw error;
     const detail = error instanceof Error ? error.message : String(error);
     throw new Error(`face-engine ${stage} failed: ${detail}`);
   }
@@ -1612,10 +2468,38 @@ function resultInStoredOrientation(
   };
 }
 
+export function getFaceEngineRuntimeDiagnostics() {
+  return {
+    preprocessing: getImagePreprocessSupervisorDiagnostics(),
+    analysisSurfaces: getAnalysisSurfaceCacheDiagnostics(),
+    inferenceCircuits: {
+      detector: detectorInferenceCircuit.diagnostics(),
+      embedder: embedderInferenceCircuit.diagnostics(),
+      person: personInferenceCircuit.diagnostics(),
+    },
+    personRefinements: {
+      total: _personRefinementCount,
+      reasons: Object.fromEntries(personRefinementReasons),
+    },
+    nanoDetSportsFallback: {
+      explicitOptIn: process.env.KEPTRA_ENABLE_EXPERIMENTAL_NANODET_FALLBACK === '1',
+      installedAndLoaded: nanoDetFallbackAvailable === true,
+      checked: nanoDetFallbackAvailable !== null,
+      runs: nanoDetFallbackRuns,
+      hits: nanoDetFallbackHits,
+      cacheNote: nanoDetFallbackAvailable === true
+        ? 'Evaluation-only detections are telemetry and never merged into production person boxes.'
+        : undefined,
+    },
+  };
+}
+
 async function _analyzeFacesInner(
   imagePath: string,
   profile: FaceAnalysisProfile,
   orientationHint?: ExifOrientation,
+  seed?: FaceAnalysisResult,
+  sportsMode = false,
 ): Promise<FaceAnalysisResult> {
   await loadSessions();
   const t0 = Date.now();
@@ -1639,105 +2523,180 @@ async function _analyzeFacesInner(
   };
 
   try {
-    // Decode and EXIF parsing overlap for the detail profiles. Detector-only
-    // screening prepares a compact tensor from the scanner thumbnail on a
-    // worker thread and never needs a megapixel NativeImage in the common path.
+    const requestedFeatures = getFaceFeatureOptions(profile);
+    const resumePlan = getFaceAnalysisResumePlan(profile, seed);
+    // Resolve the tiny EXIF tag first, then send every native pixel operation
+    // to a supervised utility process. The returned 1024px bitmap is a single
+    // shared surface for eyes, identity crops, person boxes and pose.
     const decodeStart = Date.now();
-    const orientationPromise = orientationHint !== undefined
-      ? Promise.resolve(orientationHint)
-      : readExifOrientation(imagePath);
-    let img: Electron.NativeImage | undefined;
-    let detectorFloats: Float32Array | undefined;
-    let orientationValue: number;
-    if (profile === 'detect') {
-      orientationValue = await runRequiredStage('orientation metadata', () => orientationPromise);
-      detectorFloats = await runRequiredStage('detector preparation', () =>
-        prepareFaceDetectorTensor(imagePath, safeExifOrientation(orientationValue)));
-    } else {
-      const [storedImage, resolvedOrientation] = await runRequiredStage('decode', () => Promise.all([
-        loadNativeImageCached(imagePath, profile),
-        orientationPromise,
-      ]));
-      orientationValue = resolvedOrientation;
-      img = (await runRequiredStage('orientation', () =>
-        orientImageForAnalysis(storedImage, safeExifOrientation(resolvedOrientation)))).image;
-    }
+    const orientationValue = await runRequiredStage('orientation metadata', () =>
+      orientationHint !== undefined ? Promise.resolve(orientationHint) : readExifOrientation(imagePath));
     const orientation = safeExifOrientation(orientationValue);
+    const seedUpright = seed ? resultInUprightOrientation(seed, orientation) : undefined;
+    const seedHasPersonStage = seedUpright?.features?.personDetection === true;
+    const shouldRunPerson = resumePlan.personDetection;
+    const shouldRunFaceDetector = resumePlan.faceDetection;
+    const needsAnalysisSurface = profile !== 'detect';
+    const sportsSafeguards = sportsMode || requestedFeatures.poseAnalysis;
+    const nanoDetActive = sportsSafeguards && await isNanoDetFallbackInstalled();
+    const fallbackResumeNeeded = shouldResumePersonFallback(
+      seedUpright, sportsSafeguards, nanoDetActive,
+    );
+    const sportsSafeguardsResumeNeeded = shouldResumeSportsSafeguards(
+      seedUpright, sportsSafeguards,
+    );
+    const includeNanoDetTensor = nanoDetActive &&
+      (shouldRunPerson || fallbackResumeNeeded || sportsSafeguardsResumeNeeded);
+    const { prepared, image: img } = await runRequiredStage('supervised preprocessing', () =>
+      prepareImageOffMain(
+        imagePath,
+        orientation,
+        needsAnalysisSurface,
+        shouldRunFaceDetector,
+        shouldRunPerson,
+        includeNanoDetTensor,
+      ));
     decodeMs = Date.now() - decodeStart;
     await yieldToEventLoop();
 
-    let boxes: FaceBox[] = [];
-    let fastPersons: PersonDetectionPass = { boxes: [], candidateCount: 0 };
+    let boxes: FaceBox[] = seedUpright?.boxes ? [...seedUpright.boxes] : [];
+    let fastPersons: PersonDetectionPass = seedHasPersonStage
+      ? { boxes: [...(seedUpright?.personBoxes ?? [])], candidateCount: seedUpright?.personBoxes.length ?? 0 }
+      : { boxes: [], candidateCount: 0 };
     const detectStart = Date.now();
-    const requestedFeatures = getFaceFeatureOptions(profile);
-    const shouldRunPerson = requestedFeatures.personDetection;
     const poseRequested = requestedFeatures.poseAnalysis;
     const canOverlapDetectors = shouldRunPerson &&
       providerDiagnostics.detector.provider === 'dml' &&
       providerDiagnostics.person.provider === 'cpu';
-    if (profile === 'detect') {
+    if (!shouldRunFaceDetector && !shouldRunPerson) {
+      // A subjects/full seed makes detection a zero-cost feature enrichment.
+    } else if (profile === 'detect') {
       boxes = await runRequiredStage('face detection', () =>
-        runFaceDetectorTensor(detectorFloats!));
+        runFaceDetectorTensor(prepared.detectorCHW));
     } else if (canOverlapDetectors) {
       [boxes, fastPersons] = await runRequiredStage('detection', () => Promise.all([
-        detectFaces(imagePath, img!),
-        detectPersons(imagePath, img!, 320),
+        shouldRunFaceDetector ? runFaceDetectorTensor(prepared.detectorCHW) : Promise.resolve(boxes),
+        prepared.fastPerson
+          ? detectPersonsFromPrepared(prepared.fastPerson)
+          : Promise.reject(new Error('worker omitted fast person tensor')),
       ]));
     } else {
-      boxes = await runRequiredStage('face detection', () => detectFaces(imagePath, img!));
+      if (shouldRunFaceDetector) {
+        boxes = await runRequiredStage('face detection', () => runFaceDetectorTensor(prepared.detectorCHW));
+      }
       if (shouldRunPerson) {
-        fastPersons = await runRequiredStage('person detection', () => detectPersons(imagePath, img!, 320));
+        fastPersons = await runRequiredStage('person detection', () => prepared.fastPerson
+          ? detectPersonsFromPrepared(prepared.fastPerson)
+          : Promise.reject(new Error('worker omitted fast person tensor')));
       }
     }
 
     let personBoxes = fastPersons.boxes;
+    let personFallbackEvaluated = seedUpright?.features?.personFallback === true;
+    let sportsSafeguardsEvaluated = seedUpright?.features?.sportsSafeguards === true;
+    let sportsSafeguardsFailed = false;
     const imageSize = img?.getSize() ?? { width: 0, height: 0 };
-    if (shouldRunPerson && shouldRefinePersonDetection({
+    const personRefinementNeeded = (shouldRunPerson || sportsSafeguardsResumeNeeded) &&
+      shouldRefinePersonDetection({
       width: imageSize.width,
       height: imageSize.height,
       faceBoxes: boxes,
       fastBoxes: fastPersons.boxes,
       candidateCount: fastPersons.candidateCount,
-      sportsMode: poseRequested,
-    })) {
+      sportsMode: sportsSafeguards,
+    });
+    if (personRefinementNeeded) {
       try {
-        const refined = await detectPersons(imagePath, img!, 640);
+        const reason = personRefinementReason({
+          faceBoxes: boxes,
+          fastBoxes: fastPersons.boxes,
+          candidateCount: fastPersons.candidateCount,
+        });
+        // Only the evidence-triggered minority pays for the 640 tensor. It is
+        // derived from the retained 1024 surface, never another file decode.
+        const refined = await detectPersonsFromPrepared(personTensorFromSurface(img!, 640));
         personBoxes = mergePersonBoxes(fastPersons.boxes, refined.boxes);
         _personRefinementCount++;
+        personRefinementReasons.set(reason, (personRefinementReasons.get(reason) ?? 0) + 1);
+        if (_personRefinementCount % 25 === 0) {
+          log.info('[face-engine] person refinement reasons:',
+            JSON.stringify(Object.fromEntries(personRefinementReasons)));
+        }
       } catch (error) {
+        if (error instanceof FaceInferenceCircuitError) throw error;
         // The verified 320 pass is still a valid completed person stage. A
         // failed optional refinement must not erase those detections.
         log.warn('[face-engine] adaptive person refinement failed:',
           error instanceof Error ? error.message : String(error));
+        // A confirmed fast-pass person still establishes people presence; a
+        // failed optional high-resolution refinement must not make the sports
+        // safeguard marker retry forever. Zero-person disagreement remains
+        // incomplete because that refinement was the false-negative guard.
+        if (sportsSafeguards && personBoxes.length === 0) sportsSafeguardsFailed = true;
       }
     }
-    if (profile !== 'detect') boxes = await annotateEyeDetail(img!, boxes);
+    if (sportsSafeguards && (shouldRunPerson || sportsSafeguardsResumeNeeded)) {
+      // This marker records that the sports-specific decision/refinement path
+      // ran. It deliberately remains false after a failed required refinement
+      // so a persisted general cache cannot hide the failure forever.
+      sportsSafeguardsEvaluated = !sportsSafeguardsFailed;
+    }
+    if (sportsSafeguards && nanoDetActive && personBoxes.length === 0 &&
+      (shouldRunPerson || fallbackResumeNeeded || sportsSafeguardsResumeNeeded)) {
+      try {
+        const fallbackBoxes = await runNanoDetSportsFallback(prepared.nanoDet);
+        personFallbackEvaluated = nanoDetFallbackAvailable === true;
+        // NanoDet remains an evaluation-only candidate until a labelled
+        // sports corpus approves its recall and false-positive rate. Record
+        // disagreement telemetry, but never let an opt-in experimental model
+        // alter persisted production boxes or automatic culling decisions.
+        if (fallbackBoxes.length > 0) {
+          log.info(`[face-engine] evaluation NanoDet found ${fallbackBoxes.length} person candidate(s) missed by SSD`);
+        }
+      } catch (error) {
+        sportsSafeguardsEvaluated = false;
+        log.warn('[face-engine] optional NanoDet sports disagreement fallback failed:',
+          error instanceof Error ? error.message : String(error));
+      }
+    }
+    const seedHasEyeDetail = seedUpright?.features?.eyeDetail === true;
+    let eyeDetailComplete = seedHasEyeDetail || boxes.length === 0;
+    if (resumePlan.eyeDetail) {
+      const eyeDetail = await annotateEyeDetail(img!, boxes);
+      boxes = eyeDetail.boxes;
+      eyeDetailComplete = eyeDetail.complete;
+    }
     await yieldToEventLoop();
     detectMs = Date.now() - detectStart;
 
-    let poses: PoseKeypoints[] = [];
-    let poseAnalysisComplete = !poseRequested || personBoxes.length === 0;
-    if (poseRequested && personBoxes.length > 0) {
-      const estimated = await estimatePoses(img!, personBoxes).catch((error) => {
+    const seedHasPoseStage = seedUpright?.features?.poseAnalysis === true;
+    let poses: PoseKeypoints[] = seedHasPoseStage ? [...(seedUpright?.poses ?? [])] : [];
+    let poseAnalysisComplete = seedHasPoseStage || !poseRequested || personBoxes.length === 0;
+    if (resumePlan.poseAnalysis && personBoxes.length > 0) {
+      const estimated = await estimatePosesDetailed(img!, personBoxes).catch((error) => {
         log.warn('[face-engine] optional pose stage failed:',
           error instanceof Error ? error.message : String(error));
-        return [] as PoseKeypoints[];
+        return { poses: [] as PoseKeypoints[], selectedCount: 0, successfulSelectedCount: 0 };
       });
-      // estimatePoses can omit a failed middle crop; returning that shorter
-      // array would shift athlete-to-pose alignment. Discard partial output and
-      // mark the stage incomplete so the cache will not claim success.
-      poseAnalysisComplete = estimated.length === personBoxes.length;
-      poses = poseAnalysisComplete ? estimated : [];
+      // estimatePoses preserves alignment with score-zero placeholders for an
+      // individual failed/bounded crop. Successful athlete poses survive.
+      poseAnalysisComplete = estimated.selectedCount > 0 &&
+        estimated.successfulSelectedCount === estimated.selectedCount;
+      poses = estimated.poses;
       if (poses.length > 0) await yieldToEventLoop();
     }
 
-    let embeddings: Float32Array[] = [];
-    let embeddingBoxes: FaceBox[] = [];
+    let embeddings: Float32Array[] = [...(seedUpright?.embeddings ?? [])];
+    let embeddingBoxes: FaceBox[] = [...(seedUpright?.embeddingBoxes ?? [])];
     const shouldRunFaceMatching = requestedFeatures.faceMatching;
-    let faceMatchingComplete = shouldRunFaceMatching && boxes.length === 0;
-    let completedEmbeddingLimit = shouldRunFaceMatching ? requestedFeatures.embeddingLimit : 0;
+    const seedHasMatchingStage = seedUpright?.features?.faceMatching === true &&
+      (seedUpright.features.embeddingLimit ?? 0) >= requestedFeatures.embeddingLimit;
+    let faceMatchingComplete = seedHasMatchingStage || (shouldRunFaceMatching && boxes.length === 0);
+    let completedEmbeddingLimit = seedHasMatchingStage
+      ? seedUpright?.features?.embeddingLimit ?? requestedFeatures.embeddingLimit
+      : shouldRunFaceMatching ? requestedFeatures.embeddingLimit : seedUpright?.features?.embeddingLimit ?? 0;
 
-    if (shouldRunFaceMatching && boxes.length > 0) {
+    if (resumePlan.faceMatching && boxes.length > 0) {
       // Embed only the strongest useful faces in crowds. This cap limits crop
       // and dispatch cost without changing face/person detections.
       const rankedFaces = rankFacesForEmbedding(boxes);
@@ -1758,7 +2717,10 @@ async function _analyzeFacesInner(
         while (nextFaceIndex < facesToEmbed.length) {
           const index = nextFaceIndex++;
           const box = facesToEmbed[index];
-          const embedding = await embedFace(imagePath, box, img!).catch(() => null);
+          const embedding = await embedFace(imagePath, box, img!).catch((error) => {
+            if (error instanceof FaceInferenceCircuitError) throw error;
+            return null;
+          });
           if (embedding) embeddedByIndex[index] = { box, embedding };
           await yieldToEventLoop();
         }
@@ -1766,10 +2728,16 @@ async function _analyzeFacesInner(
       const embeddedFaces = embeddedByIndex.filter(
         (entry): entry is { box: FaceBox; embedding: Float32Array } => entry !== null,
       );
-      embeddings = embeddedFaces.map((entry) => entry.embedding);
-      embeddingBoxes = embeddedFaces.map((entry) => entry.box);
+      // Prefer freshly generated, requested-profile embeddings but retain any
+      // valid seed values when an optional crop fails during enrichment.
+      if (embeddedFaces.length > 0) {
+        embeddings = embeddedFaces.map((entry) => entry.embedding);
+        embeddingBoxes = embeddedFaces.map((entry) => entry.box);
+      }
       faceMatchingComplete = embeddedFaces.length === facesToEmbed.length;
-      completedEmbeddingLimit = faceMatchingComplete ? requestedFeatures.embeddingLimit : embeddedFaces.length;
+      completedEmbeddingLimit = faceMatchingComplete
+        ? requestedFeatures.embeddingLimit
+        : Math.max(seedUpright?.features?.embeddingLimit ?? 0, embeddings.length);
       embedMs = Date.now() - embedStart;
     }
 
@@ -1780,13 +2748,16 @@ async function _analyzeFacesInner(
       embeddingBoxes,
       poses,
       features: {
-        faceMatching: faceMatchingComplete,
-        personDetection: shouldRunPerson,
+        faceMatching: seedUpright?.features?.faceMatching === true || faceMatchingComplete,
+        personDetection: seedHasPersonStage || shouldRunPerson,
         // A disabled/unrequested pose stage is not evidence that pose analysis
         // completed; keeping this false prevents a later sports/full request
         // from accepting a cache entry that contains no pose inference.
-        poseAnalysis: poseRequested && poseAnalysisComplete,
+        poseAnalysis: seedHasPoseStage || (poseRequested && poseAnalysisComplete),
         embeddingLimit: completedEmbeddingLimit,
+        eyeDetail: seedHasEyeDetail || (profile !== 'detect' && eyeDetailComplete),
+        personFallback: seedUpright?.features?.personFallback === true || personFallbackEvaluated,
+        sportsSafeguards: seedUpright?.features?.sportsSafeguards === true || sportsSafeguardsEvaluated,
       },
     }, orientation);
     finishStats();
@@ -1822,7 +2793,12 @@ export async function diagnoseFaceEngine(): Promise<{
   const times: number[] = [];
   for (let i = 0; i < 5; i++) {
     const t = Date.now();
-    try { await detectorSession!.run({ [detectorInputName]: tensor }); } catch { /* ignore */ }
+    const session = detectorSession;
+    if (!session) throw new Error('Face detector session is not loaded');
+    await detectorInferenceCircuit.run(
+      () => session.run({ [detectorInputName]: tensor }),
+      DETECTOR_INFERENCE_TIMEOUT_MS,
+    );
     times.push(Date.now() - t);
   }
   const avgInferenceMs = times.reduce((a, b) => a + b, 0) / times.length;
@@ -1858,6 +2834,9 @@ export async function runFaceGpuStressTest(durationMs = 8000, streams = 8): Prom
   const runtime = getOrt();
   const detectorTensor = makeWarmupTensor(runtime, 'detector');
   const embedderTensor = makeWarmupTensor(runtime, 'embedder');
+  const detector = detectorSession;
+  const embedder = embedderSession;
+  if (!detector) throw new Error('Face detector session is not loaded');
   const boundedDurationMs = Math.max(2000, Math.min(30000, durationMs));
   const streamCount = Math.max(1, Math.min(32, Math.round(streams)));
   const startedAt = performance.now();
@@ -1876,11 +2855,17 @@ export async function runFaceGpuStressTest(durationMs = 8000, streams = 8): Prom
       while (performance.now() < targetEnd) {
         const t = performance.now();
         if (runDetector) {
-          await detectorSession!.run({ [detectorInputName]: detectorTensor });
+          await detectorInferenceCircuit.run(
+            () => detector.run({ [detectorInputName]: detectorTensor }),
+            DETECTOR_INFERENCE_TIMEOUT_MS,
+          );
           detectorMs += performance.now() - t;
           detectorRuns++;
-        } else if (embedderSession) {
-          await embedderSession.run({ [embedderInputName]: embedderTensor });
+        } else if (embedder) {
+          await embedderInferenceCircuit.run(
+            () => embedder.run({ [embedderInputName]: embedderTensor }),
+            EMBEDDER_INFERENCE_TIMEOUT_MS,
+          );
           embedderMs += performance.now() - t;
           embedderRuns++;
         }

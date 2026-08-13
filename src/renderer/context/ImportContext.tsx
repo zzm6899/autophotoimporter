@@ -3,8 +3,11 @@ import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, Sourc
 import { FOLDER_PRESETS, DEFAULT_KEYBINDS, DEFAULT_METADATA_EXPORT, DEFAULT_VIEW_OVERLAY_PREFERENCES } from '../../shared/types';
 import { groupBursts } from '../../shared/burst';
 import { clampStops, normalizeExposureStops } from '../../shared/exposure';
-import { FACE_GROUP_EMBEDDING_THRESHOLD, assignSceneBuckets, autoCullGroup, bestInGroup, clearEmbeddingCache, configureReviewProfile, groupByFaceSimilarity, groupByVisualHash, humanMomentQuality, isUsablyFocused, rankBestShots, scoreReview, selectKeepersToTarget } from '../../shared/review';
+import { FACE_GROUP_EMBEDDING_THRESHOLD, assignSceneBuckets, autoCullGroup, bestInGroup, clearEmbeddingCache, configureReviewProfile, groupByFaceSimilarity, groupByVisualHash, humanMomentQuality, isAutoCullBulkDecisionEligible, isUsablyFocused, rankBestShots, scoreReview, selectKeepersToTarget } from '../../shared/review';
 import { isPathInsideSourceRoot } from '../utils/sourcePath';
+import { appendCatalogueFiles, applyIndexedCatalogueMapUpdates, applyIndexedCatalogueUpdates, getCataloguePathIndex, inheritCataloguePathIndex } from '../utils/catalogueDelta';
+import { markSessionCheckpointRequired, markSessionPathsChanged, resetSessionChangeJournal, stageRestoredSessionBaseline } from '../utils/sessionChangeJournal';
+import { stripLocalFaceAndSubjectData, stripSceneSubjectAnalysis } from '../../shared/face-data';
 
 export type AppPhase = 'idle' | 'scanning' | 'ready' | 'importing' | 'complete';
 export type ViewMode = 'grid' | 'single' | 'split' | 'compare' | 'settings';
@@ -33,24 +36,7 @@ function reviewOverlayDelayMs(fileCount: number): number {
 export function invalidateSceneSubjectAnalysis(
   analysis: MediaFile['sceneAnalysis'],
 ): MediaFile['sceneAnalysis'] {
-  if (!analysis) return undefined;
-  const {
-    subjectSharpnessScore: _subjectSharpnessScore,
-    backgroundSharpnessScore: _backgroundSharpnessScore,
-    subjectFocusConfidence: _subjectFocusConfidence,
-    subjectFocusCoverage: _subjectFocusCoverage,
-    subjectArea: _subjectArea,
-    subjectCountAnalyzed: _subjectCountAnalyzed,
-    subjectReasons,
-    reasons,
-    ...sceneOnly
-  } = analysis;
-  const staleReasons = new Set(subjectReasons ?? []);
-  const sceneReasons = reasons?.filter((reason) => !staleReasons.has(reason));
-  return {
-    ...sceneOnly,
-    ...(sceneReasons && sceneReasons.length > 0 ? { reasons: sceneReasons } : {}),
-  };
+  return stripSceneSubjectAnalysis(analysis);
 }
 
 interface State {
@@ -204,6 +190,7 @@ export type Action =
   | { type: 'SET_THUMBNAIL'; filePath: string; thumbnail: string }
   | { type: 'SET_THUMBNAILS'; thumbnails: Record<string, string>; scanId?: string }
   | { type: 'SET_DUPLICATE'; filePath: string; duplicate?: boolean; duplicateMemory?: MediaFile['duplicateMemory']; scanId?: string }
+  | { type: 'SET_DUPLICATES'; duplicates: Record<string, { duplicate?: boolean; duplicateMemory?: MediaFile['duplicateMemory'] }>; scanId?: string }
   | { type: 'CLEAR_DUPLICATES' }
   | { type: 'CLEAR_CATALOG_MEMORY_FOR_SOURCE'; sourcePath: string }
   | { type: 'SET_PICK'; filePath: string; pick: 'selected' | 'rejected' | undefined }
@@ -327,6 +314,86 @@ export type Action =
   | { type: 'SET_METADATA_EXPORT'; flags: Partial<MetadataExportFlags> }
   | { type: 'SET_VIEW_OVERLAY_PREFERENCES'; preferences: Partial<ViewOverlayPreferences> }
   | { type: 'RESTORE_SESSION'; session: AppSession };
+
+/**
+ * Record the small set of durable file rows touched by an action. Thumbnail
+ * URLs are intentionally excluded from sessions, so their high-frequency
+ * updates never dirty persistence.
+ */
+function trackSessionFileChanges(action: Action): void {
+  switch (action.type) {
+    case 'SELECT_SOURCE':
+    case 'SCAN_START':
+    case 'RESET_FILES':
+    case 'ADVANCE_VOLUME_IMPORT_QUEUE':
+      resetSessionChangeJournal(true);
+      return;
+    case 'RESTORE_SESSION':
+      stageRestoredSessionBaseline(action.session);
+      return;
+    case 'SET_THUMBNAIL':
+    case 'SET_THUMBNAILS':
+    case 'SCAN_BATCH':
+    case 'SCAN_COMPLETE':
+      return;
+    case 'SET_DUPLICATE':
+    case 'SET_PICK':
+    case 'SET_COLOR_LABEL':
+    case 'SET_RATING':
+      markSessionPathsChanged([action.filePath]);
+      return;
+    case 'SET_DUPLICATES':
+      markSessionPathsChanged(Object.keys(action.duplicates));
+      return;
+    case 'SET_PICK_BATCH':
+    case 'SET_COLOR_LABEL_BATCH':
+    case 'SET_WHITE_BALANCE_ADJUSTMENT':
+    case 'SET_NORMALIZE_TO_ANCHOR':
+    case 'SET_EXPOSURE_ADJUSTMENT':
+    case 'NUDGE_EXPOSURE_ADJUSTMENT':
+    case 'RESOLVE_SECOND_PASS':
+      markSessionPathsChanged(action.filePaths);
+      return;
+    case 'NORMALIZE_SELECTION_TO_FOCUSED':
+    case 'NORMALIZE_SELECTION_TO_MEDIAN':
+      markSessionPathsChanged(action.filePaths);
+      return;
+    case 'SET_SHARPNESS_BATCH':
+      markSessionPathsChanged(Object.keys(action.scores));
+      return;
+    case 'SET_REVIEW_SCORES':
+      markSessionPathsChanged(Object.keys(action.scores));
+      return;
+    case 'APPLY_AUTO_CULL_PROPOSAL':
+      markSessionPathsChanged([...action.keep, ...action.reject]);
+      return;
+    case 'SET_WORKFLOW_OPTION':
+      if (action.key === 'burstGrouping') markSessionCheckpointRequired();
+      return;
+    case 'CLEAR_DUPLICATES':
+    case 'CLEAR_CATALOG_MEMORY_FOR_SOURCE':
+    case 'CLEAR_PICKS':
+    case 'SET_BURST_WINDOW':
+    case 'SET_EVENT_MODE':
+    case 'CLEAR_EXPOSURE_ANCHOR':
+    case 'PICK_BURST_KEEPERS':
+    case 'CULL_TO_TARGET':
+    case 'APPLY_REVIEW_SNAPSHOT':
+    case 'GROUP_VISUAL_DUPLICATES':
+    case 'GROUP_FACE_SIMILAR':
+    case 'GROUP_SCENE_BUCKETS':
+    case 'PICK_BEST_IN_GROUPS':
+    case 'AUTO_CULL_SAFE':
+    case 'SYNC_EDITS_FROM_FOCUSED':
+    case 'REJECT_DUPLICATES':
+    case 'UNDO_FILE_EDIT':
+    case 'CLEAR_FACE_DATA':
+      markSessionCheckpointRequired();
+      return;
+    default:
+      return;
+  }
+}
 
 const systemDark = typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches;
 
@@ -470,10 +537,12 @@ const initialState: State = {
 };
 
 function withFileHistory(state: State, files: MediaFile[]): State {
+  const historyLimit = files.length >= 250_000 ? 3 : files.length >= 50_000 ? 8 : 20;
+  inheritCataloguePathIndex(state.files, files);
   return {
     ...state,
     files,
-    fileHistory: [state.files, ...state.fileHistory].slice(0, 20),
+    fileHistory: [state.files, ...state.fileHistory].slice(0, historyLimit),
   };
 }
 
@@ -482,6 +551,21 @@ function withFileHistoryIfChanged(state: State, files: MediaFile[]): State {
     return state;
   }
   return withFileHistory(state, files);
+}
+
+function withIndexedFileHistoryUpdate<U>(
+  state: State,
+  updates: ReadonlyMap<string, U>,
+  update: (file: MediaFile, value: U) => MediaFile,
+): State {
+  const result = applyIndexedCatalogueMapUpdates(state.files, updates, update);
+  return result.files === state.files ? state : withFileHistory(state, result.files);
+}
+
+function constantPathUpdates<U>(paths: readonly string[], value: U): Map<string, U> {
+  const updates = new Map<string, U>();
+  for (const filePath of paths) updates.set(filePath, value);
+  return updates;
 }
 
 function sameWhiteBalanceAdjustment(
@@ -528,10 +612,14 @@ function normalizeKnownPaths(files: MediaFile[], paths: string[]): string[] {
 
 export function queueBestPaths(
   files: MediaFile[],
-  options: { cullConfidence?: CullConfidence; groupPhotoEveryoneGood?: boolean; keeperQuota?: KeeperQuota; skipDuplicates?: boolean } = {},
+  options: { eventMode?: EventMode; cullConfidence?: CullConfidence; groupPhotoEveryoneGood?: boolean; keeperQuota?: KeeperQuota; skipDuplicates?: boolean } = {},
 ): string[] {
   const skipDuplicates = options.skipDuplicates ?? true;
+  const eventMode = options.eventMode ?? 'general';
   const eligible = files.filter((f) => f.type === 'photo' && f.pick !== 'rejected' && (!skipDuplicates || !f.duplicate));
+  const automaticEligible = (file: MediaFile) =>
+    file.pick === 'selected' || file.isProtected || (file.rating ?? 0) > 0 ||
+    (isAutoCullBulkDecisionEligible(file, eventMode) && isUsablyFocused(file));
   const groups = collectReviewGroups(eligible, false);
   const groupedPaths = new Set<string>();
   const queued = new Set<string>();
@@ -542,7 +630,7 @@ export function queueBestPaths(
       if (f.pick === 'selected' || f.isProtected || (f.rating ?? 0) > 0) queued.add(f.path);
     }
     const ranked = rankBestShots(group);
-    const best = ranked.find((file) => file.pick === 'selected' || file.isProtected || (file.rating ?? 0) > 0 || isUsablyFocused(file)) ?? null;
+    const best = ranked.find(automaticEligible) ?? null;
     if (best) queued.add(best.path);
 
     if (options.cullConfidence === 'conservative') {
@@ -555,7 +643,7 @@ export function queueBestPaths(
     }
 
     const quota = options.keeperQuota ?? 'best-1';
-    const autoCandidates = ranked.filter((file) => file.pick === 'selected' || file.isProtected || (file.rating ?? 0) > 0 || isUsablyFocused(file));
+    const autoCandidates = ranked.filter(automaticEligible);
     if (quota === 'top-2') {
       for (const file of autoCandidates.slice(0, 2)) queued.add(file.path);
     } else if (quota === 'smile-and-sharp') {
@@ -577,7 +665,7 @@ export function queueBestPaths(
   }
 
   for (const f of eligible) {
-    if (!groupedPaths.has(f.path) && (f.pick === 'selected' || f.isProtected || (f.rating ?? 0) > 0 || isUsablyFocused(f))) {
+    if (!groupedPaths.has(f.path) && automaticEligible(f)) {
       queued.add(f.path);
     }
   }
@@ -637,7 +725,7 @@ export function reducer(state: State, action: Action): State {
     case 'SCAN_BATCH':
       if (state.phase !== 'scanning') return state;
       if (action.scanId && state.activeScanId && action.scanId !== state.activeScanId) return withStaleScanEventIgnored(state);
-      return { ...state, files: [...state.files, ...action.files] };
+      return { ...state, files: appendCatalogueFiles(state.files, action.files) };
     case 'SCAN_COMPLETE': {
       // Guard: ignore stale SCAN_COMPLETE events that arrive after a new
       // SCAN_START has already been dispatched (or after import began).
@@ -658,6 +746,7 @@ export function reducer(state: State, action: Action): State {
             return f;
           });
       const grouped = assignSceneBuckets(burstGrouped, state.eventMode);
+      inheritCataloguePathIndex(state.files, grouped);
       return {
         ...state,
         files: grouped,
@@ -729,42 +818,53 @@ export function reducer(state: State, action: Action): State {
         filter: state.filter === 'import-failures' ? 'all' : state.filter,
       };
     case 'SET_THUMBNAIL':
-      return {
-        ...state,
-        files: state.files.map((f) =>
-          f.path === action.filePath ? { ...f, thumbnail: action.thumbnail } : f,
-        ),
-      };
+      {
+        const result = applyIndexedCatalogueUpdates(
+          state.files,
+          { [action.filePath]: action.thumbnail },
+          (file, thumbnail) => thumbnail === file.thumbnail ? file : { ...file, thumbnail },
+        );
+        return result.files === state.files ? state : { ...state, files: result.files };
+      }
     case 'SET_THUMBNAILS': {
       if (action.scanId && state.activeScanId && action.scanId !== state.activeScanId) return withStaleScanEventIgnored(state);
-      const updates = action.thumbnails;
-      let changed = false;
-      const files = state.files.map((f) => {
-        const thumbnail = updates[f.path];
-        if (thumbnail === undefined || thumbnail === f.thumbnail) return f;
-        changed = true;
-        return { ...f, thumbnail };
-      });
-      return changed ? { ...state, files } : state;
+      const result = applyIndexedCatalogueUpdates(
+        state.files,
+        action.thumbnails,
+        (file, thumbnail) => thumbnail === file.thumbnail ? file : { ...file, thumbnail },
+      );
+      return result.files === state.files ? state : { ...state, files: result.files };
     }
     case 'SET_DUPLICATE':
       if (action.scanId && state.activeScanId && action.scanId !== state.activeScanId) return withStaleScanEventIgnored(state);
-      return {
-        ...state,
-        files: state.files.map((f) =>
-          f.path === action.filePath
-            ? {
-              ...f,
-              // `duplicate` is deliberately limited to the active output
-              // folder. Catalog memory is useful context, but it must not
-              // stop a photographer culling/importing the same source into a
-              // different destination.
-              duplicate: action.duplicate === true || (action.duplicate === undefined && !action.duplicateMemory),
-              duplicateMemory: action.duplicateMemory ?? f.duplicateMemory,
-            }
-            : f,
-        ),
-      };
+      {
+        const result = applyIndexedCatalogueUpdates(
+          state.files,
+          { [action.filePath]: { duplicate: action.duplicate, duplicateMemory: action.duplicateMemory } },
+          (file, update) => ({
+            ...file,
+            // `duplicate` is deliberately limited to the active output
+            // folder. Catalog memory is useful context, but it must not stop
+            // a photographer importing the source elsewhere.
+            duplicate: update.duplicate === true || (update.duplicate === undefined && !update.duplicateMemory),
+            duplicateMemory: update.duplicateMemory ?? file.duplicateMemory,
+          }),
+        );
+        return result.files === state.files ? state : { ...state, files: result.files };
+      }
+    case 'SET_DUPLICATES': {
+      if (action.scanId && state.activeScanId && action.scanId !== state.activeScanId) return withStaleScanEventIgnored(state);
+      const result = applyIndexedCatalogueUpdates(
+        state.files,
+        action.duplicates,
+        (file, update) => ({
+          ...file,
+          duplicate: update.duplicate === true || (update.duplicate === undefined && !update.duplicateMemory),
+          duplicateMemory: update.duplicateMemory ?? file.duplicateMemory,
+        }),
+      );
+      return result.files === state.files ? state : { ...state, files: result.files };
+    }
     case 'CLEAR_DUPLICATES':
       return {
         ...state,
@@ -782,14 +882,17 @@ export function reducer(state: State, action: Action): State {
           : state.scanDiagnostics,
       };
     case 'SET_PICK':
-      return withFileHistory(state, state.files.map((f) =>
-        f.path === action.filePath ? { ...f, pick: action.pick } : f,
-      ));
+      return withIndexedFileHistoryUpdate(
+        state,
+        new Map([[action.filePath, action.pick]]),
+        (file, pick) => file.pick === pick ? file : { ...file, pick },
+      );
     case 'SET_PICK_BATCH': {
-      const pathSet = new Set(action.filePaths);
-      return withFileHistory(state, state.files.map((f) =>
-        pathSet.has(f.path) ? { ...f, pick: action.pick } : f,
-      ));
+      return withIndexedFileHistoryUpdate(
+        state,
+        constantPathUpdates(action.filePaths, action.pick),
+        (file, pick) => file.pick === pick ? file : { ...file, pick },
+      );
     }
     case 'CLEAR_PICKS':
       return withFileHistory(state, state.files.map((f) => ({ ...f, pick: undefined })));
@@ -819,14 +922,17 @@ export function reducer(state: State, action: Action): State {
     case 'SET_THUMBNAIL_SIZE':
       return { ...state, thumbnailSize: Math.max(80, Math.min(320, action.size)) };
     case 'SET_COLOR_LABEL':
-      return withFileHistory(state, state.files.map((f) =>
-        f.path === action.filePath ? { ...f, colorLabel: action.label } : f,
-      ));
+      return withIndexedFileHistoryUpdate(
+        state,
+        new Map([[action.filePath, action.label]]),
+        (file, colorLabel) => file.colorLabel === colorLabel ? file : { ...file, colorLabel },
+      );
     case 'SET_COLOR_LABEL_BATCH': {
-      const pathSet = new Set(action.filePaths);
-      return withFileHistory(state, state.files.map((f) =>
-        pathSet.has(f.path) ? { ...f, colorLabel: action.label } : f,
-      ));
+      return withIndexedFileHistoryUpdate(
+        state,
+        constantPathUpdates(action.filePaths, action.label),
+        (file, colorLabel) => file.colorLabel === colorLabel ? file : { ...file, colorLabel },
+      );
     }
     case 'SET_THEME':
       return { ...state, theme: action.theme };
@@ -843,9 +949,11 @@ export function reducer(state: State, action: Action): State {
     case 'RESET_FILES':
       return { ...state, files: [], phase: 'idle', focusedIndex: -1, focusedPath: null, queuedPaths: [], selectedPaths: [] };
     case 'SET_RATING':
-      return withFileHistory(state, state.files.map((f) =>
-        f.path === action.filePath ? { ...f, rating: action.rating } : f,
-      ));
+      return withIndexedFileHistoryUpdate(
+        state,
+        new Map([[action.filePath, action.rating]]),
+        (file, rating) => file.rating === rating ? file : { ...file, rating },
+      );
     case 'SET_SOURCE_KIND':
       return { ...state, sourceKind: action.kind };
     case 'SET_FTP_CONFIG':
@@ -892,7 +1000,8 @@ export function reducer(state: State, action: Action): State {
     case 'SET_SELECTION_SETS':
       return { ...state, selectionSets: action.sets };
     case 'SELECTION_SET_SAVE': {
-      const paths = [...new Set(action.paths)].filter((p) => state.files.some((f) => f.path === p));
+      const valid = getCataloguePathIndex(state.files);
+      const paths = [...new Set(action.paths)].filter((p) => valid.has(p));
       if (paths.length === 0) return state;
       const set: SelectionSet = {
         name: action.name.trim(),
@@ -907,7 +1016,7 @@ export function reducer(state: State, action: Action): State {
     case 'SELECTION_SET_APPLY': {
       const set = state.selectionSets.find((s) => s.name === action.name);
       if (!set) return state;
-      const valid = new Set(state.files.map((f) => f.path));
+      const valid = getCataloguePathIndex(state.files);
       return { ...state, selectedPaths: set.paths.filter((p) => valid.has(p)) };
     }
     case 'SET_WORKFLOW_OPTION': {
@@ -924,6 +1033,7 @@ export function reducer(state: State, action: Action): State {
               }
               return f;
             });
+        inheritCataloguePathIndex(state.files, next.files);
         next.collapsedBursts = [];
       }
       return next;
@@ -955,12 +1065,14 @@ export function reducer(state: State, action: Action): State {
       return { ...state, watermarkMode: action.mode };
     case 'SET_BURST_WINDOW': {
       const seconds = Math.max(0.25, Math.min(10, action.seconds));
+      const files = state.burstGrouping
+        ? groupBursts(state.files, { windowSec: seconds })
+        : state.files;
+      inheritCataloguePathIndex(state.files, files);
       return {
         ...state,
         burstWindowSec: seconds,
-        files: state.burstGrouping
-          ? groupBursts(state.files, { windowSec: seconds })
-          : state.files,
+        files,
         collapsedBursts: [],
       };
     }
@@ -1005,20 +1117,24 @@ export function reducer(state: State, action: Action): State {
         whiteBalanceTint: Math.max(-100, Math.min(100, action.tint)),
       };
     case 'SET_WHITE_BALANCE_ADJUSTMENT': {
-      const pathSet = new Set(action.filePaths);
       const temperature = Math.max(-100, Math.min(100, action.temperature));
       const tint = Math.max(-100, Math.min(100, action.tint));
       const nextAdjustment = Math.abs(temperature) >= 0.5 || Math.abs(tint) >= 0.5
         ? { temperature, tint }
         : undefined;
-      return withFileHistoryIfChanged(state, state.files.map((f) =>
-        pathSet.has(f.path) && !sameWhiteBalanceAdjustment(f.whiteBalanceAdjustment, nextAdjustment)
-          ? { ...f, whiteBalanceAdjustment: nextAdjustment }
-          : f,
-      ));
+      return withIndexedFileHistoryUpdate(
+        state,
+        constantPathUpdates(action.filePaths, nextAdjustment),
+        (file, adjustment) => sameWhiteBalanceAdjustment(file.whiteBalanceAdjustment, adjustment)
+          ? file
+          : { ...file, whiteBalanceAdjustment: adjustment },
+      );
     }
-    case 'SET_EVENT_MODE':
-      return { ...state, eventMode: action.mode, files: assignSceneBuckets(state.files, action.mode) };
+    case 'SET_EVENT_MODE': {
+      const files = assignSceneBuckets(state.files, action.mode);
+      inheritCataloguePathIndex(state.files, files);
+      return { ...state, eventMode: action.mode, files };
+    }
     case 'SET_CULL_CONFIDENCE':
       return { ...state, cullConfidence: action.confidence };
     case 'SET_GROUP_PHOTO_EVERYONE_GOOD':
@@ -1026,46 +1142,49 @@ export function reducer(state: State, action: Action): State {
     case 'SET_KEEPER_QUOTA':
       return { ...state, keeperQuota: action.quota };
     case 'SET_NORMALIZE_TO_ANCHOR': {
-      const pathSet = new Set(action.filePaths);
-      return withFileHistoryIfChanged(state, state.files.map((f) => {
-        if (!pathSet.has(f.path)) return f;
-        const normalizeToAnchor = action.value &&
+      return withIndexedFileHistoryUpdate(state, constantPathUpdates(action.filePaths, action.value), (f, value) => {
+        const normalizeToAnchor = value &&
           f.path !== state.exposureAnchorPath &&
           typeof f.exposureValue === 'number';
         return !!f.normalizeToAnchor === normalizeToAnchor ? f : { ...f, normalizeToAnchor };
-      }));
+      });
     }
     case 'SET_EXPOSURE_ADJUSTMENT': {
-      const pathSet = new Set(action.filePaths);
       const stops = normalizeExposureStops(clampStops(action.stops, state.exposureMaxStops));
-      return withFileHistoryIfChanged(state, state.files.map((f) => {
-        if (!pathSet.has(f.path)) return f;
-        if (normalizeExposureStops(f.exposureAdjustmentStops ?? 0) === stops) return f;
-        return { ...f, exposureAdjustmentStops: stops === 0 ? undefined : stops };
-      }));
+      return withIndexedFileHistoryUpdate(
+        state,
+        constantPathUpdates(action.filePaths, stops),
+        (file, nextStops) => normalizeExposureStops(file.exposureAdjustmentStops ?? 0) === nextStops
+          ? file
+          : { ...file, exposureAdjustmentStops: nextStops === 0 ? undefined : nextStops },
+      );
     }
     case 'NUDGE_EXPOSURE_ADJUSTMENT': {
-      const pathSet = new Set(action.filePaths);
-      return withFileHistoryIfChanged(state, state.files.map((f) => {
-        if (!pathSet.has(f.path)) return f;
-        const next = normalizeExposureStops(clampStops((f.exposureAdjustmentStops ?? 0) + action.delta, state.exposureMaxStops));
-        if (normalizeExposureStops(f.exposureAdjustmentStops ?? 0) === next) return f;
-        return { ...f, exposureAdjustmentStops: next === 0 ? undefined : next };
-      }));
+      return withIndexedFileHistoryUpdate(
+        state,
+        constantPathUpdates(action.filePaths, action.delta),
+        (file, delta) => {
+          const next = normalizeExposureStops(clampStops((file.exposureAdjustmentStops ?? 0) + delta, state.exposureMaxStops));
+          return normalizeExposureStops(file.exposureAdjustmentStops ?? 0) === next
+            ? file
+            : { ...file, exposureAdjustmentStops: next === 0 ? undefined : next };
+        },
+      );
     }
     case 'NORMALIZE_SELECTION_TO_FOCUSED': {
-      const anchor = state.files.find((f) => f.path === action.anchorPath && typeof f.exposureValue === 'number');
+      const anchorIndex = getCataloguePathIndex(state.files).get(action.anchorPath);
+      const anchor = anchorIndex === undefined ? undefined : state.files[anchorIndex];
+      if (anchor && typeof anchor.exposureValue !== 'number') return state;
       if (!anchor) return state;
-      const pathSet = new Set(action.filePaths);
       return {
-        ...withFileHistory(state, state.files.map((f) =>
-          pathSet.has(f.path)
-            ? {
-                ...f,
-                normalizeToAnchor: f.path !== anchor.path && typeof f.exposureValue === 'number',
-              }
-            : f,
-        )),
+        ...withIndexedFileHistoryUpdate(
+          state,
+          constantPathUpdates(action.filePaths, anchor.path),
+          (file, anchorPath) => {
+            const normalizeToAnchor = file.path !== anchorPath && typeof file.exposureValue === 'number';
+            return !!file.normalizeToAnchor === normalizeToAnchor ? file : { ...file, normalizeToAnchor };
+          },
+        ),
         exposureAnchorPath: anchor.path,
       };
     }
@@ -1111,38 +1230,27 @@ export function reducer(state: State, action: Action): State {
           : f,
       ));
     }
-    case 'SET_SHARPNESS_BATCH':
-      return {
-        ...state,
-        files: state.files.map((f) =>
-          Object.prototype.hasOwnProperty.call(action.scores, f.path)
-            ? (() => {
-                const sharpnessScore = action.scores[f.path];
-                const review = scoreReview({ ...f, sharpnessScore });
-                return {
-                  ...f,
-                  sharpnessScore,
-                  blurRisk: review.blurRisk,
-                  reviewScore: review.score,
-                  reviewReasons: review.reasons,
-                };
-              })()
-            : f,
-        ),
-      };
+    case 'SET_SHARPNESS_BATCH': {
+      const result = applyIndexedCatalogueUpdates(state.files, action.scores, (file, sharpnessScore) => {
+        const review = scoreReview({ ...file, sharpnessScore });
+        return {
+          ...file,
+          sharpnessScore,
+          blurRisk: review.blurRisk,
+          reviewScore: review.score,
+          reviewReasons: review.reasons,
+        };
+      });
+      return result.files === state.files ? state : { ...state, files: result.files };
+    }
     case 'SET_REVIEW_SCORES': {
       // In the live app this action is intercepted by ImportProvider before
       // reaching the reducer (see the dispatch override in ImportProvider),
       // so this path only runs in tests that call the reducer directly.
       const patchPaths = Object.keys(action.scores);
       if (patchPaths.length === 0) return state;
-      const patchSet = new Set(patchPaths);
-      let changed = false;
-      const files = state.files.map((f) => {
-        if (!patchSet.has(f.path)) return f;
-        const patch = action.scores[f.path];
+      const result = applyIndexedCatalogueUpdates(state.files, action.scores, (f, patch) => {
         if (!patch) return f;
-        changed = true;
         const merged = { ...f, ...patch };
         const review = scoreReview(merged);
         return {
@@ -1152,7 +1260,7 @@ export function reducer(state: State, action: Action): State {
           reviewReasons: patch.reviewReasons ?? review.reasons,
         };
       });
-      return changed ? { ...state, files } : state;
+      return result.files === state.files ? state : { ...state, files: result.files };
     }
     case 'COMMIT_REVIEW_SCORES':
       // ImportProvider intercepts this marker and materializes its renderer-held
@@ -1165,41 +1273,16 @@ export function reducer(state: State, action: Action): State {
       return action.files === state.files ? state : { ...state, files: action.files };
     case 'RESOLVE_SECOND_PASS': {
       if (action.filePaths.length === 0) return state;
-      const pathSet = new Set(action.filePaths);
-      return withFileHistory(state, state.files.map((f) =>
-        pathSet.has(f.path)
-          ? { ...f, pick: action.pick, reviewApproved: true }
-          : f,
-      ));
+      return withIndexedFileHistoryUpdate(
+        state,
+        constantPathUpdates(action.filePaths, action.pick),
+        (file, pick) => ({ ...file, pick, reviewApproved: true }),
+      );
     }
     case 'CLEAR_FACE_DATA':
-      // Wipe faceBoxes + subjectSharpnessScore so the background reviewer
-      // re-runs analyzeSubject for every photo using the current FaceDetector.
       return {
         ...state,
-        files: state.files.map((f) =>
-          f.type !== 'photo' ? f : {
-            ...f,
-            faceBoxes: undefined,
-            faceCount: undefined,
-            faceDetection: undefined,
-            faceEmbedding: undefined,
-            faceEmbeddings: undefined,
-            faceEmbeddingBoxes: undefined,
-            faceSignature: undefined,
-            faceGroupId: undefined,
-            faceGroupSize: undefined,
-            personCount: undefined,
-            personBoxes: undefined,
-            reviewAnalysisStage: undefined,
-            reviewAnalysisFeatures: undefined,
-            reviewAnalysisUnavailable: undefined,
-            reviewAnalysisUnavailableFeatures: undefined,
-            subjectSharpnessScore: undefined,
-            subjectReasons: undefined,
-            sceneAnalysis: invalidateSceneSubjectAnalysis(f.sceneAnalysis),
-          },
-        ),
+        files: state.files.map((file) => file.type === 'photo' ? stripLocalFaceAndSubjectData(file) : file),
       };
     case 'GROUP_VISUAL_DUPLICATES': {
       const groups = groupByVisualHash(action.files ?? state.files, action.threshold ?? 8);
@@ -1264,6 +1347,7 @@ export function reducer(state: State, action: Action): State {
     }
     case 'QUEUE_BEST': {
       const next = queueBestPaths(state.files, {
+        eventMode: state.eventMode,
         cullConfidence: state.cullConfidence,
         groupPhotoEveryoneGood: state.groupPhotoEveryoneGood,
         keeperQuota: state.keeperQuota,
@@ -1293,22 +1377,24 @@ export function reducer(state: State, action: Action): State {
       }));
     }
     case 'APPLY_AUTO_CULL_PROPOSAL': {
-      const keep = new Set(action.keep);
-      const reject = new Set(action.reject);
-      if (keep.size === 0 && reject.size === 0) return state;
-      return withFileHistory(state, state.files.map((file) => {
-        if (keep.has(file.path)) return { ...file, pick: 'selected' };
-        if (reject.has(file.path)) return { ...file, pick: 'rejected' };
-        return file;
-      }));
+      const updates = new Map<string, 'selected' | 'rejected'>();
+      for (const filePath of action.keep) updates.set(filePath, 'selected');
+      for (const filePath of action.reject) updates.set(filePath, 'rejected');
+      if (updates.size === 0) return state;
+      return withIndexedFileHistoryUpdate(
+        state,
+        updates,
+        (file, pick) => file.pick === pick ? file : { ...file, pick },
+      );
     }
     case 'REJECT_DUPLICATES':
       return withFileHistory(state, state.files.map((f) =>
         f.duplicate ? { ...f, pick: 'rejected' } : f,
       ));
     case 'SYNC_EDITS_FROM_FOCUSED': {
+      const focusedIndex = action.filePath ? getCataloguePathIndex(state.files).get(action.filePath) : undefined;
       const focused = action.filePath
-        ? state.files.find((f) => f.path === action.filePath)
+        ? focusedIndex === undefined ? undefined : state.files[focusedIndex]
         : state.focusedIndex >= 0 ? state.files[state.focusedIndex] : null;
       if (!focused) return state;
       const targetPaths = state.selectedPaths.length > 0
@@ -1326,16 +1412,16 @@ export function reducer(state: State, action: Action): State {
             .map((f) => f.path));
       targetPaths.delete(focused.path);
       if (targetPaths.size === 0) return state;
-      return withFileHistory(state, state.files.map((f) =>
-        targetPaths.has(f.path)
-          ? {
-              ...f,
+      return withIndexedFileHistoryUpdate(
+        state,
+        constantPathUpdates([...targetPaths], true),
+        (file) => ({
+              ...file,
               exposureAdjustmentStops: focused.exposureAdjustmentStops,
-              normalizeToAnchor: focused.normalizeToAnchor && typeof f.exposureValue === 'number',
+              normalizeToAnchor: focused.normalizeToAnchor && typeof file.exposureValue === 'number',
               whiteBalanceAdjustment: focused.whiteBalanceAdjustment,
-            }
-          : f,
-      ));
+            }),
+      );
     }
     case 'UNDO_FILE_EDIT':
       if (state.fileHistory.length === 0) return state;
@@ -1348,22 +1434,27 @@ export function reducer(state: State, action: Action): State {
       // Find files in the selection that actually have an EV — the median is
       // only meaningful over computed values. Ties break toward the lower
       // index (stable sort), which tends to be the earlier shot.
-      const pathSet = new Set(action.filePaths);
-      const candidates = state.files
-        .filter((f) => pathSet.has(f.path) && typeof f.exposureValue === 'number')
-        .slice()
+      const catalogueIndex = getCataloguePathIndex(state.files);
+      const candidates = action.filePaths
+        .map((filePath) => catalogueIndex.get(filePath))
+        .filter((index): index is number => index !== undefined)
+        .map((index) => state.files[index])
+        .filter((file) => typeof file.exposureValue === 'number')
         .sort((a, b) => (a.exposureValue as number) - (b.exposureValue as number));
       if (candidates.length === 0) return state;
       const anchor = candidates[Math.floor((candidates.length - 1) / 2)];
       return {
-        ...withFileHistory(state, state.files.map((f) => {
-          if (!pathSet.has(f.path)) return f;
-          if (f.path === anchor.path) {
+        ...withIndexedFileHistoryUpdate(
+          state,
+          constantPathUpdates(action.filePaths, anchor.path),
+          (file, anchorPath) => {
+          if (file.path === anchorPath) {
             // The anchor itself never needs normalizing.
-            return { ...f, normalizeToAnchor: false };
+            return file.normalizeToAnchor ? { ...file, normalizeToAnchor: false } : file;
           }
-          return { ...f, normalizeToAnchor: typeof f.exposureValue === 'number' };
-        })),
+          const normalizeToAnchor = typeof file.exposureValue === 'number';
+          return !!file.normalizeToAnchor === normalizeToAnchor ? file : { ...file, normalizeToAnchor };
+        }),
         exposureAnchorPath: anchor.path,
       };
     }
@@ -1576,11 +1667,7 @@ function mergeReviewPatch(file: MediaFile, patch: ReviewPatch): MediaFile {
 
 function mergeReviewScoreOverlay(files: MediaFile[], overlay: Map<string, ReviewPatch>): MediaFile[] {
   if (overlay.size === 0) return files;
-  return files.map((f) => {
-    const patch = overlay.get(f.path);
-    if (!patch) return f;
-    return mergeReviewPatch(f, patch);
-  });
+  return applyIndexedCatalogueMapUpdates(files, overlay, mergeReviewPatch).files;
 }
 
 /**
@@ -1642,13 +1729,15 @@ export function ImportProvider({ children }: { children: ReactNode }) {
   // Compute the O(n) overlay merge once per flush and share the same array with
   // every consumer. Previously Grid, Destination, Help and bulk preview each
   // remapped the complete catalogue independently on every AI tick.
-  const mergedFiles = useMemo(
-    () => mergeReviewScoreOverlay(state.files, reviewScoresRef.current),
-    [state.files, reviewVersion],
-  );
+  const mergedFiles = useMemo(() => {
+    const merged = mergeReviewScoreOverlay(state.files, reviewScoresRef.current);
+    if (merged !== state.files) inheritCataloguePathIndex(state.files, merged);
+    return merged;
+  }, [state.files, reviewVersion]);
 
   // Intercept SET_REVIEW_SCORES before it hits the reducer.
   const dispatch = useCallback<Dispatch<Action>>((action) => {
+    trackSessionFileChanges(action);
     if (action.type === 'COMMIT_REVIEW_SCORES') {
       if (reviewScoresRef.current.size === 0) return;
       const mergedFiles = mergeReviewScoreOverlay(stateRef.current.files, reviewScoresRef.current);
@@ -1682,7 +1771,8 @@ export function ImportProvider({ children }: { children: ReactNode }) {
       action.type === 'SCAN_ERROR' ||
       action.type === 'RESET_FILES' ||
       action.type === 'CLEAR_FACE_DATA' ||
-      action.type === 'ADVANCE_VOLUME_IMPORT_QUEUE'
+      action.type === 'ADVANCE_VOLUME_IMPORT_QUEUE' ||
+      action.type === 'RESTORE_SESSION'
     ) {
       reviewScoresRef.current.clear();
       clearEmbeddingCache();
@@ -1706,6 +1796,7 @@ export function ImportProvider({ children }: { children: ReactNode }) {
       const mergedFiles = mergeReviewScoreOverlay(rawFiles, overlay);
       const current = stateRef.current;
       const next = queueBestPaths(mergedFiles, {
+        eventMode: current.eventMode,
         cullConfidence: current.cullConfidence,
         groupPhotoEveryoneGood: current.groupPhotoEveryoneGood,
         keeperQuota: current.keeperQuota,

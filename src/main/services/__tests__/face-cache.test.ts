@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -19,10 +19,12 @@ vi.mock('electron', () => ({
 }));
 
 import { FACE_PIPELINE_FINGERPRINT } from '../face-model-manifest';
+import type { FaceAnalysisResult } from '../face-engine';
 import {
   cacheKeyFor,
   clearFaceCache,
   closeFaceCache,
+  getBestCachedFaceResult,
   getCachedFaceResult,
   getFaceCacheDiagnostics,
   maintainFaceCache,
@@ -35,7 +37,10 @@ function analysisResult(options: {
   faceMatching?: boolean;
   personDetection?: boolean;
   poseAnalysis?: boolean;
-} = {}) {
+  personFallback?: boolean;
+  eyeDetail?: boolean;
+  sportsSafeguards?: boolean;
+} = {}): { result: FaceAnalysisResult; hexEmbeddings: string[] } {
   const faceMatching = options.faceMatching ?? false;
   const embeddingHex = Buffer.from(new Float32Array([0.25, -0.5, 0.75, 1]).buffer).toString('hex');
   return {
@@ -49,6 +54,9 @@ function analysisResult(options: {
         personDetection: options.personDetection ?? true,
         poseAnalysis: options.poseAnalysis ?? false,
         embeddingLimit: faceMatching ? 1 : 0,
+        personFallback: options.personFallback ?? false,
+        eyeDetail: options.eyeDetail ?? false,
+        sportsSafeguards: options.sportsSafeguards ?? false,
       },
     },
     hexEmbeddings: faceMatching ? [embeddingHex] : [],
@@ -64,13 +72,21 @@ function richFullAnalysisResult() {
     new Float32Array([0.25, -0.5, 0.75, 1]),
     new Float32Array([-0.125, 0.375, 0.625, -0.875]),
   ];
+  const poses = [{
+    keypoints: Array.from({ length: 17 }, (_, index) => ({
+      x: 0.12 + index * 0.01,
+      y: 0.18 + index * 0.01,
+      score: 0.8,
+    })),
+    score: 0.8,
+  }];
   return {
     result: {
       boxes,
       personBoxes: [{ x: 0.05, y: 0.1, width: 0.45, height: 0.8, score: 0.92 }],
       embeddings,
       embeddingBoxes: boxes,
-      poses: [],
+      poses,
       features: {
         faceMatching: true,
         personDetection: true,
@@ -107,6 +123,34 @@ afterAll(async () => {
 });
 
 describe('face-cache SQLite storage', () => {
+  it('accepts scanner-captured identity without changing the cache key', async () => {
+    const source = await stat(imagePath);
+    const hint = { size: source.size, mtimeMs: source.mtimeMs };
+    expect(await cacheKeyFor(imagePath, hint)).toBe(await cacheKeyFor(imagePath));
+
+    const { result, hexEmbeddings } = analysisResult();
+    await setCachedFaceResult(imagePath, result, hexEmbeddings, 'subjects', hint);
+    await expect(getCachedFaceResult(imagePath, {
+      analysisDepth: 'subjects',
+      identity: hint,
+    })).resolves.not.toBeNull();
+  });
+
+  it('returns a shallower record as an enrichment seed without satisfying a full read', async () => {
+    const source = await stat(imagePath);
+    const hint = { size: source.size, mtimeMs: source.mtimeMs };
+    const { result, hexEmbeddings } = analysisResult({ personDetection: true });
+    await setCachedFaceResult(imagePath, result, hexEmbeddings, 'subjects', hint);
+
+    await expect(getCachedFaceResult(imagePath, {
+      analysisDepth: 'full',
+      identity: hint,
+    })).resolves.toBeNull();
+    const seed = await getBestCachedFaceResult(imagePath, hint);
+    expect(seed?.result.boxes).toEqual(result.boxes);
+    expect(seed?.result.features?.personDetection).toBe(true);
+  });
+
   it('persists exact provenance and compact binary embeddings', async () => {
     const { result, hexEmbeddings } = analysisResult({ faceMatching: true });
     await setCachedFaceResult(imagePath, result, hexEmbeddings);
@@ -142,6 +186,45 @@ describe('face-cache SQLite storage', () => {
     await expect(getCachedFaceResult(imagePath, { personDetection: true })).resolves.not.toBeNull();
     await expect(getCachedFaceResult(imagePath, { faceMatching: true })).resolves.toBeNull();
     await expect(getCachedFaceResult(imagePath, { poseAnalysis: true })).resolves.toBeNull();
+    await expect(getCachedFaceResult(imagePath, { personFallback: true })).resolves.toBeNull();
+    await expect(getCachedFaceResult(imagePath, { eyeDetail: true })).resolves.toBeNull();
+    await expect(getCachedFaceResult(imagePath, { sportsSafeguards: true })).resolves.toBeNull();
+  });
+
+  it('requires and persists eye-detail and sports-safeguard provenance', async () => {
+    const { result, hexEmbeddings } = analysisResult({
+      eyeDetail: true,
+      sportsSafeguards: true,
+    });
+    await setCachedFaceResult(imagePath, result, hexEmbeddings, 'subjects');
+
+    const cached = await getCachedFaceResult(imagePath, {
+      analysisDepth: 'subjects',
+      eyeDetail: true,
+      sportsSafeguards: true,
+    });
+    expect(cached?.result.features).toMatchObject({
+      eyeDetail: true,
+      sportsSafeguards: true,
+    });
+  });
+
+  it('persists alternate-person fallback provenance and prevents its regression', async () => {
+    const { result, hexEmbeddings } = analysisResult({ personFallback: true });
+    await setCachedFaceResult(imagePath, result, hexEmbeddings, 'subjects');
+
+    const withoutFallback = {
+      ...result,
+      features: { ...result.features!, personFallback: false },
+    };
+    await setCachedFaceResult(imagePath, withoutFallback, hexEmbeddings, 'subjects');
+    await closeFaceCache();
+
+    const cached = await getCachedFaceResult(imagePath, {
+      analysisDepth: 'subjects',
+      personFallback: true,
+    });
+    expect(cached?.result.features?.personFallback).toBe(true);
   });
 
   it('never lets a shallower cascade result satisfy or overwrite a deeper one', async () => {
@@ -293,6 +376,138 @@ describe('face-cache SQLite storage', () => {
       embeddingLimit: 2,
     });
     expect(persisted?.hexEmbeddings).toEqual(hexEmbeddings);
+  });
+
+  it('merges independently completed eye, body, pose, and embedding evidence', async () => {
+    const subjectResult = analysisResult({
+      personDetection: true,
+      eyeDetail: true,
+      sportsSafeguards: true,
+    }).result;
+    subjectResult.boxes[0] = { ...subjectResult.boxes[0], eyeScore: 2, eyeSharpness: 0.82 };
+    subjectResult.personBoxes = [{ x: 0.08, y: 0.1, width: 0.5, height: 0.82, score: 0.94 }];
+    subjectResult.poses = [{
+      keypoints: Array.from({ length: 17 }, (_, index) => ({
+        x: 0.2 + index * 0.01,
+        y: 0.25 + index * 0.01,
+        score: 0.8,
+      })),
+      score: 0.8,
+    }];
+    subjectResult.features!.poseAnalysis = true;
+    await setCachedFaceResult(imagePath, subjectResult, [], 'subjects');
+
+    const richerIdentity = analysisResult({ faceMatching: true, personDetection: true }).result;
+    richerIdentity.boxes = subjectResult.boxes.map(({ eyeScore: _eyeScore, eyeSharpness: _eyeSharpness, ...box }) => box);
+    // A seeded full enrichment preserves the already completed subject stage;
+    // the cache must keep the same canonical boxes and transfer richer pose or
+    // eye annotations by box alignment.
+    richerIdentity.personBoxes = subjectResult.personBoxes.map((box) => ({ ...box }));
+    richerIdentity.poses = subjectResult.poses;
+    richerIdentity.features = {
+      ...richerIdentity.features!,
+      eyeDetail: true,
+      poseAnalysis: true,
+    };
+    const embeddingHex = Buffer.from(richerIdentity.embeddings[0].buffer).toString('hex');
+    await setCachedFaceResult(imagePath, richerIdentity, [embeddingHex], 'full');
+    await closeFaceCache();
+
+    const cached = await getCachedFaceResult(imagePath, {
+      analysisDepth: 'full',
+      faceMatching: true,
+      personDetection: true,
+      poseAnalysis: true,
+      eyeDetail: true,
+      sportsSafeguards: true,
+    });
+    expect(cached?.result.boxes[0]).toMatchObject({ eyeScore: 2, eyeSharpness: 0.82 });
+    expect(cached?.result.personBoxes).toHaveLength(1);
+    expect(cached?.result.poses?.[0].keypoints).toHaveLength(17);
+    expect(cached?.hexEmbeddings).toEqual([embeddingHex]);
+  });
+
+  it('keeps the newest detector set, transfers matched eye evidence, and suppresses jittered bodies', async () => {
+    const first = analysisResult({ personDetection: true, eyeDetail: true }).result;
+    first.boxes = [
+      { x: 0.1, y: 0.1, width: 0.12, height: 0.18, score: 0.91, eyeScore: 2 },
+      // A stale false positive must disappear when the next completed detector
+      // pass no longer returns it.
+      { x: 0.42, y: 0.04, width: 0.08, height: 0.08, score: 0.71 },
+    ];
+    first.personBoxes = [{ x: 0.1, y: 0.08, width: 0.4, height: 0.82, score: 0.8 }];
+    await setCachedFaceResult(imagePath, first, [], 'subjects');
+
+    const second = analysisResult({ personDetection: true, eyeDetail: true }).result;
+    second.boxes = [
+      { x: 0.11, y: 0.1, width: 0.12, height: 0.18, score: 0.94 },
+      { x: 0.72, y: 0.12, width: 0.1, height: 0.16, score: 0.88 },
+    ];
+    second.personBoxes = [{ x: 0.13, y: 0.1, width: 0.41, height: 0.8, score: 0.93 }];
+    await setCachedFaceResult(imagePath, second, [], 'subjects');
+    await closeFaceCache();
+
+    const cached = await getCachedFaceResult(imagePath, {
+      analysisDepth: 'subjects', personDetection: true, eyeDetail: true,
+    });
+    expect(cached?.result.boxes).toHaveLength(2);
+    expect(cached?.result.boxes[0].eyeScore).toBe(2);
+    expect(cached?.result.personBoxes).toHaveLength(1);
+    expect(cached?.result.personBoxes[0].score).toBe(0.93);
+  });
+
+  it('invalidates pose completion when a newer body pass adds an unposed primary athlete', async () => {
+    const posed = analysisResult({ personDetection: true }).result;
+    posed.personBoxes = [{ x: 0.1, y: 0.1, width: 0.32, height: 0.72, score: 0.91 }];
+    posed.poses = [{
+      keypoints: Array.from({ length: 17 }, (_, index) => ({
+        x: 0.15 + index * 0.01,
+        y: 0.2 + index * 0.01,
+        score: 0.8,
+      })),
+      score: 0.8,
+    }];
+    posed.features!.poseAnalysis = true;
+    await setCachedFaceResult(imagePath, posed, [], 'full');
+
+    const redetected = analysisResult({ personDetection: true }).result;
+    redetected.personBoxes = [
+      { ...posed.personBoxes[0] },
+      { x: 0.38, y: 0.06, width: 0.5, height: 0.9, score: 0.98 },
+    ];
+    redetected.poses = undefined;
+    redetected.features!.poseAnalysis = false;
+    await setCachedFaceResult(imagePath, redetected, [], 'full');
+
+    await expect(getCachedFaceResult(imagePath, {
+      analysisDepth: 'full',
+      personDetection: true,
+      poseAnalysis: true,
+    })).resolves.toBeNull();
+  });
+
+  it('lets a shallower sports pass enrich an existing full record without lowering depth', async () => {
+    const full = analysisResult({ faceMatching: true, personDetection: true });
+    await setCachedFaceResult(imagePath, full.result, full.hexEmbeddings, 'full');
+
+    const sports = analysisResult({
+      personDetection: true,
+      personFallback: true,
+      eyeDetail: true,
+      sportsSafeguards: true,
+    });
+    sports.result.personBoxes = [{ x: 0.12, y: 0.08, width: 0.55, height: 0.86, score: 0.91 }];
+    await setCachedFaceResult(imagePath, sports.result, sports.hexEmbeddings, 'subjects');
+    await closeFaceCache();
+
+    const cached = await getCachedFaceResult(imagePath, {
+      analysisDepth: 'full',
+      faceMatching: true,
+      sportsSafeguards: true,
+      personFallback: true,
+    });
+    expect(cached?.result.personBoxes).toHaveLength(1);
+    expect(cached?.hexEmbeddings).toEqual(full.hexEmbeddings);
   });
 
   it('requires a profile upgrade when only a shallow result is cached', async () => {

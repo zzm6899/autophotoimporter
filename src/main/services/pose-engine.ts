@@ -19,9 +19,12 @@
 
 import path from 'node:path';
 import { existsSync } from 'node:fs';
+import { createReadStream } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { app } from 'electron';
 import { log } from '../logger';
 import type { PoseKeypoint, PoseKeypoints } from '../../shared/types';
+import { POSE_MODEL_IDENTITY } from './face-model-manifest';
 
 type OrtModule = {
   InferenceSession: { create: (modelPath: string, options: Record<string, unknown>) => Promise<any> };
@@ -50,8 +53,8 @@ const POSE_INPUT = 256;
 const KEYPOINT_COUNT = 17;
 const IS_BGRA_PLATFORM = process.platform === 'win32' || process.platform === 'darwin';
 
-function poseModelPath(): string | null {
-  const candidates = app.isPackaged
+function poseModelCandidates(): string[] {
+  return app.isPackaged
     ? [
         path.join(app.getPath('userData'), 'models', 'movenet_thunder.onnx'),
         path.join(process.resourcesPath, 'models', 'movenet_thunder.onnx'),
@@ -60,22 +63,99 @@ function poseModelPath(): string | null {
         path.join(__dirname, '..', '..', '..', 'models', 'movenet_thunder.onnx'),
         path.join(process.cwd(), 'models', 'movenet_thunder.onnx'),
       ];
-  for (const p of candidates) if (existsSync(p)) return p;
-  return null;
+}
+
+function poseModelPath(): string | null {
+  return poseModelCandidates().find((candidate) => existsSync(candidate)) ?? null;
 }
 
 export function poseModelAvailable(): boolean {
   return poseModelPath() !== null;
 }
 
+export async function verifyPoseModelFile(filePath: string): Promise<boolean> {
+  if (!existsSync(filePath)) return false;
+  const digest = await new Promise<string>((resolve) => {
+    const hash = createHash('sha256');
+    const stream = createReadStream(filePath);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('end', () => resolve(hash.digest('hex')));
+    stream.on('error', () => resolve(''));
+  });
+  return digest === POSE_MODEL_IDENTITY.sha256;
+}
+
+async function resolveVerifiedPoseModelPath(): Promise<string | null> {
+  for (const candidate of poseModelCandidates()) {
+    if (!existsSync(candidate)) continue;
+    if (await verifyPoseModelFile(candidate)) return candidate;
+    log.warn(`[pose-engine] ignoring untrusted MoveNet candidate: ${candidate}`);
+  }
+  return null;
+}
+
 let session: any | null = null;
 let inputName = 'input';
 let inputType: 'int32' | 'float32' | 'uint8' = 'int32';
 let loadPromise: Promise<boolean> | null = null;
+let poseLoadGeneration = 0;
 let poseEnabled = false;
+const POSE_INFERENCE_TIMEOUT_MS = 12_000;
+const POSE_RELEASE_TIMEOUT_MS = 2_000;
+let poseCircuitFailure: Error | null = null;
+let poseCircuitGeneration = 0;
+const poseActiveRejectors = new Set<(error: Error) => void>();
+
+export function poseInferenceDiagnostics() {
+  return {
+    state: poseCircuitFailure ? 'open' as const : 'closed' as const,
+    failure: poseCircuitFailure?.message,
+    active: poseActiveRejectors.size,
+  };
+}
+
+async function runPoseInference<T>(work: () => Promise<T>): Promise<T> {
+  if (poseCircuitFailure) {
+    throw new Error(`pose inference unavailable: ${poseCircuitFailure.message}`);
+  }
+  const generation = poseCircuitGeneration;
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      poseActiveRejectors.delete(rejectFromCircuit);
+      callback();
+    };
+    const rejectFromCircuit = (error: Error) => finish(() => reject(error));
+    poseActiveRejectors.add(rejectFromCircuit);
+    const trip = (error: Error) => {
+      if (generation !== poseCircuitGeneration || poseCircuitFailure) return;
+      poseCircuitFailure = error;
+      poseCircuitGeneration++;
+      const active = [...poseActiveRejectors];
+      poseActiveRejectors.clear();
+      for (const rejectActive of active) rejectActive(error);
+    };
+    const timer = setTimeout(() => trip(new Error(
+      `pose inference timed out after ${POSE_INFERENCE_TIMEOUT_MS}ms; disabled until model session reset`,
+    )), POSE_INFERENCE_TIMEOUT_MS);
+    Promise.resolve().then(work).then(
+      (value) => finish(() => resolve(value)),
+      (error) => trip(new Error(
+        `pose inference failed: ${error instanceof Error ? error.message : String(error)}; disabled until model session reset`,
+      )),
+    );
+  });
+}
 
 export function configurePoseAnalysis(enabled: boolean): void {
+  const changed = poseEnabled !== enabled;
   poseEnabled = enabled;
+  if (changed && !enabled && (session || loadPromise)) {
+    void disposePoseEngine().catch(() => undefined);
+  }
 }
 
 export function isPoseAnalysisEnabled(): boolean {
@@ -84,41 +164,190 @@ export function isPoseAnalysisEnabled(): boolean {
 
 async function loadPoseSession(): Promise<boolean> {
   if (loadPromise) return loadPromise;
-  loadPromise = (async () => {
-    const modelFile = poseModelPath();
+  const loadGeneration = poseLoadGeneration;
+  const loading = (async () => {
+    const modelFile = await resolveVerifiedPoseModelPath();
     if (!modelFile) {
-      log.info('[pose-engine] movenet_thunder.onnx not found — pose analysis disabled');
+      log.info('[pose-engine] no digest-verified movenet_thunder.onnx found — pose analysis disabled');
       return false;
     }
+    let loadedSession: any | null = null;
     try {
       const runtime = getOrt();
       const providers = process.platform === 'win32' ? ['dml', 'cpu'] : ['cpu'];
-      session = await runtime.InferenceSession.create(modelFile, {
+      loadedSession = await runtime.InferenceSession.create(modelFile, {
         executionProviders: providers,
         graphOptimizationLevel: 'all',
         logSeverityLevel: 3,
       });
-      inputName = session.inputNames?.[0] ?? 'input';
+      const loadedInputName = loadedSession.inputNames?.[0] ?? 'input';
       // MoveNet Thunder typically wants int32; some exports use uint8/float32.
-      const meta = session.inputMetadata?.[0] ?? session.inputNames?.[0];
+      const meta = loadedSession.inputMetadata?.[0] ?? loadedSession.inputNames?.[0];
       const typeStr = typeof meta === 'object' && meta?.type ? String(meta.type) : '';
-      inputType = typeStr.includes('float') ? 'float32' : typeStr.includes('uint8') ? 'uint8' : 'int32';
+      const loadedInputType = typeStr.includes('float') ? 'float32' as const
+        : typeStr.includes('uint8') ? 'uint8' as const : 'int32' as const;
+      if (loadGeneration !== poseLoadGeneration) {
+        await releasePoseSessionBounded(loadedSession, 'superseded MoveNet load');
+        return false;
+      }
+      session = loadedSession;
+      inputName = loadedInputName;
+      inputType = loadedInputType;
       log.info(`[pose-engine] MoveNet loaded (input=${inputName}, type=${inputType})`);
       return true;
     } catch (err) {
       log.warn('[pose-engine] failed to load MoveNet:', (err as Error).message);
-      session = null;
+      if (loadedSession && loadedSession !== session) {
+        await releasePoseSessionBounded(loadedSession, 'failed MoveNet load');
+      }
+      if (loadGeneration === poseLoadGeneration) session = null;
       return false;
+    } finally {
+      if (loadGeneration === poseLoadGeneration && session === null) loadPromise = null;
     }
   })();
-  return loadPromise;
+  loadPromise = loading;
+  return loading;
+}
+
+async function releasePoseSessionBounded(target: any, label: string): Promise<void> {
+  if (!target?.release) return;
+  let timer: NodeJS.Timeout | undefined;
+  await Promise.race([
+    Promise.resolve().then(() => target.release()).catch(() => undefined),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(() => {
+        log.warn(`[pose-engine] ${label} release exceeded ${POSE_RELEASE_TIMEOUT_MS}ms`);
+        resolve();
+      }, POSE_RELEASE_TIMEOUT_MS);
+    }),
+  ]).finally(() => { if (timer) clearTimeout(timer); });
 }
 
 export async function disposePoseEngine(): Promise<void> {
+  poseLoadGeneration++;
   const s = session;
   session = null;
   loadPromise = null;
-  await s?.release?.().catch(() => undefined);
+  poseCircuitFailure = null;
+  poseCircuitGeneration++;
+  const resetError = new Error('pose inference reset');
+  const active = [...poseActiveRejectors];
+  poseActiveRejectors.clear();
+  for (const reject of active) reject(resetError);
+  await releasePoseSessionBounded(s, 'session');
+}
+
+export interface PoseModelSmokeStatus {
+  ok: boolean;
+  modelPath?: string;
+  digestVerified: boolean;
+  sessionLoaded: boolean;
+  inferenceRan: boolean;
+  inputName?: string;
+  inputType?: 'int32' | 'float32' | 'uint8';
+  outputName?: string;
+  outputShape?: number[];
+  outputValues?: number;
+  inferenceMs?: number;
+  error?: string;
+}
+
+/**
+ * Exercise the exact packaged MoveNet loader and runtime with one bounded-size
+ * synthetic input. Package smoke calls this before release so a present but
+ * corrupt model, missing native provider, or incompatible graph cannot ship as
+ * an apparently healthy pose feature.
+ */
+export async function runPoseModelSmoke(): Promise<PoseModelSmokeStatus> {
+  const modelFile = await resolveVerifiedPoseModelPath();
+  if (!modelFile) {
+    return {
+      ok: false,
+      digestVerified: false,
+      sessionLoaded: false,
+      inferenceRan: false,
+      error: 'MoveNet model was not found',
+    };
+  }
+
+  const digestVerified = await verifyPoseModelFile(modelFile);
+  if (!digestVerified) {
+    return {
+      ok: false,
+      modelPath: modelFile,
+      digestVerified: false,
+      sessionLoaded: false,
+      inferenceRan: false,
+      error: 'MoveNet model digest did not match the pinned identity',
+    };
+  }
+
+  try {
+    const loaded = await loadPoseSession();
+    if (!loaded || !session) {
+      return {
+        ok: false,
+        modelPath: modelFile,
+        digestVerified: true,
+        sessionLoaded: false,
+        inferenceRan: false,
+        error: 'MoveNet session could not be loaded',
+      };
+    }
+
+    const inputValues = POSE_INPUT * POSE_INPUT * 3;
+    const input = inputType === 'float32'
+      ? new Float32Array(inputValues)
+      : inputType === 'uint8'
+        ? new Uint8Array(inputValues)
+        : new Int32Array(inputValues);
+    const tensor = new (getOrt().Tensor)(inputType, input, [1, POSE_INPUT, POSE_INPUT, 3]);
+    const startedAt = performance.now();
+    const outputs = await runPoseInference<Record<string, any>>(
+      () => session.run({ [inputName]: tensor }),
+    );
+    const inferenceMs = performance.now() - startedAt;
+    const outputName = Object.keys(outputs)[0];
+    const output = outputName ? outputs[outputName] : undefined;
+    const outputShape: number[] = Array.isArray(output?.dims)
+      ? output.dims.map((value: unknown) => Number(value))
+      : [];
+    const outputValues = Number(output?.data?.length ?? 0);
+    const expectedShape = [1, 1, KEYPOINT_COUNT, 3];
+    const shapeMatches = outputShape.length === expectedShape.length &&
+      outputShape.every((value, index) => value === expectedShape[index]);
+    const valuesAreFinite = outputValues === KEYPOINT_COUNT * 3 &&
+      Array.from(output.data as ArrayLike<number>).every((value) => Number.isFinite(Number(value)));
+
+    return {
+      ok: shapeMatches && valuesAreFinite,
+      modelPath: modelFile,
+      digestVerified: true,
+      sessionLoaded: true,
+      inferenceRan: true,
+      inputName,
+      inputType,
+      outputName,
+      outputShape,
+      outputValues,
+      inferenceMs: Math.round(inferenceMs * 100) / 100,
+      ...(!shapeMatches || !valuesAreFinite
+        ? { error: 'MoveNet inference returned an unexpected output contract' }
+        : {}),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      modelPath: modelFile,
+      digestVerified: true,
+      sessionLoaded: session !== null,
+      inferenceRan: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    await disposePoseEngine();
+  }
 }
 
 interface NormBox { x: number; y: number; width: number; height: number }
@@ -173,14 +402,54 @@ function buildCropTensor(img: Electron.NativeImage, box: NormBox): any {
  * Returns [] when pose analysis is disabled or the model is unavailable.
  */
 export async function estimatePoses(img: Electron.NativeImage, personBoxes: NormBox[]): Promise<PoseKeypoints[]> {
-  if (!isPoseAnalysisEnabled() || personBoxes.length === 0) return [];
+  return (await estimatePosesDetailed(img, personBoxes)).poses;
+}
+
+export interface PoseEstimateBatch {
+  poses: PoseKeypoints[];
+  selectedCount: number;
+  successfulSelectedCount: number;
+}
+
+export async function estimatePosesDetailed(
+  img: Electron.NativeImage,
+  personBoxes: NormBox[],
+): Promise<PoseEstimateBatch> {
+  if (!isPoseAnalysisEnabled() || personBoxes.length === 0) {
+    return { poses: [], selectedCount: 0, successfulSelectedCount: 0 };
+  }
   const ok = await loadPoseSession();
-  if (!ok || !session) return [];
+  if (!ok || !session) return { poses: [], selectedCount: 0, successfulSelectedCount: 0 };
 
   const { width: imgW, height: imgH } = img.getSize();
+  // SinglePose inference scales linearly with the number of crowd boxes. Keep
+  // this optional stage bounded to the two strongest likely primary athletes;
+  // unselected and failed boxes receive aligned score-zero placeholders.
+  const selected = new Set(personBoxes
+    .map((box, index) => {
+      const centerX = box.x + box.width / 2;
+      const centerY = box.y + box.height / 2;
+      const centrality = 1 - Math.min(1, Math.hypot(centerX - 0.5, centerY - 0.48) / 0.72);
+      const confidence = typeof (box as NormBox & { score?: number }).score === 'number'
+        ? (box as NormBox & { score: number }).score
+        : 0.5;
+      return {
+        index,
+        primaryScore: box.width * box.height * 3.2 + centrality * 0.35 + confidence * 0.25,
+      };
+    })
+    .sort((a, b) => b.primaryScore - a.primaryScore)
+    .slice(0, 2)
+    .map((entry) => entry.index));
   const results: PoseKeypoints[] = [];
+  let successfulSelectedCount = 0;
 
-  for (const box of personBoxes) {
+  for (let boxIndex = 0; boxIndex < personBoxes.length; boxIndex++) {
+    const box = personBoxes[boxIndex];
+    if (!selected.has(boxIndex)) {
+      results.push({ keypoints: [], score: 0 });
+      continue;
+    }
     try {
       const padX = box.width * 0.15;
       const padY = box.height * 0.1;
@@ -195,7 +464,9 @@ export async function estimatePoses(img: Electron.NativeImage, personBoxes: Norm
       const offYpx = Math.floor((squarePx - cropHpx) / 2);
 
       const tensor = buildCropTensor(img, box);
-      const out = await session.run({ [inputName]: tensor });
+      const out = await runPoseInference<Record<string, any>>(
+        () => session.run({ [inputName]: tensor }),
+      );
       const data = out[Object.keys(out)[0]].data as Float32Array;
 
       const keypoints: PoseKeypoint[] = [];
@@ -215,9 +486,13 @@ export async function estimatePoses(img: Electron.NativeImage, personBoxes: Norm
       }
       const avg = keypoints.reduce((s, p) => s + p.score, 0) / KEYPOINT_COUNT;
       results.push({ keypoints, score: avg });
+      successfulSelectedCount++;
     } catch (err) {
       log.warn('[pose-engine] pose estimation failed for a box:', (err as Error).message);
+      results.push({ keypoints: [], score: 0 });
+      if (poseCircuitFailure) break;
     }
   }
-  return results;
+  while (results.length < personBoxes.length) results.push({ keypoints: [], score: 0 });
+  return { poses: results, selectedCount: selected.size, successfulSelectedCount };
 }

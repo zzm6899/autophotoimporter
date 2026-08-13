@@ -63,6 +63,33 @@ describe('selectSuperSpeedProfile', () => {
     })).toBe('subjects');
   });
 
+  it('upgrades an old sports cache until the zero-evidence safeguards complete', () => {
+    const prior = photo({
+      reviewAnalysisStage: 'subjects',
+      reviewAnalysisFeatures: {
+        faceDetection: true,
+        personDetection: true,
+        faceMatching: false,
+        poseAnalysis: false,
+      },
+      faceBoxes: [],
+      personBoxes: [],
+      burstId: 'hyrox-burst',
+      burstSize: 4,
+    });
+    const options = {
+      eventMode: 'hyrox-endurance' as const,
+      faceMatching: true,
+      personDetection: true,
+      poseAnalysis: true,
+    };
+    expect(selectSuperSpeedProfile(prior, options)).toBe('subjects');
+    expect(selectSuperSpeedProfile({
+      ...prior,
+      reviewAnalysisUnavailableFeatures: { sportsSafeguards: true },
+    }, options)).toBeNull();
+  });
+
   it('promotes only comparison sports subjects to the full pose/matching pass', () => {
     const analysed = photo({
       reviewAnalysisStage: 'subjects',
@@ -71,6 +98,8 @@ describe('selectSuperSpeedProfile', () => {
         personDetection: true,
         faceMatching: false,
         poseAnalysis: false,
+        eyeDetail: true,
+        sportsSafeguards: true,
       },
       faceBoxes: [{ x: 0.2, y: 0.2, width: 0.2, height: 0.2 }],
       faceCount: 1,
@@ -108,12 +137,48 @@ describe('selectSuperSpeedProfile', () => {
 
   it('does not spend identity matching on unrelated standalone faces', () => {
     expect(selectSuperSpeedProfile(photo({
+      reviewAnalysisStage: 'subjects',
+      reviewAnalysisFeatures: {
+        faceDetection: true,
+        personDetection: true,
+        faceMatching: false,
+        poseAnalysis: false,
+        eyeDetail: true,
+      },
       faceBoxes: [{ x: 0.2, y: 0.2, width: 0.2, height: 0.2 }],
       faceCount: 1,
       personBoxes: [],
     }), {
       eventMode: 'general', faceMatching: true, personDetection: true,
     })).toBeNull();
+  });
+
+  it('retries incomplete eye detail with subjects enrichment for a standalone native face', () => {
+    const analysed = photo({
+      reviewAnalysisStage: 'subjects',
+      reviewAnalysisFeatures: {
+        faceDetection: true,
+        personDetection: true,
+        faceMatching: false,
+        poseAnalysis: false,
+        eyeDetail: false,
+      },
+      faceBoxes: [{ x: 0.2, y: 0.2, width: 0.2, height: 0.2 }],
+      faceCount: 1,
+      personBoxes: [],
+      personCount: 0,
+    });
+    const options = {
+      eventMode: 'general' as const,
+      faceMatching: true,
+      personDetection: true,
+    };
+
+    expect(selectSuperSpeedProfile(analysed, options)).toBe('subjects');
+    expect(selectSuperSpeedProfile({
+      ...analysed,
+      reviewAnalysisUnavailableFeatures: { eyeDetail: true },
+    }, options)).toBeNull();
   });
 
   it('does not send a body-only subject result through a redundant full pass', () => {
@@ -138,6 +203,8 @@ describe('selectSuperSpeedProfile', () => {
         personDetection: true,
         faceMatching: true,
         poseAnalysis: false,
+        eyeDetail: true,
+        sportsSafeguards: true,
       },
       faceBoxes: [{ x: 0.2, y: 0.2, width: 0.2, height: 0.2 }],
       faceCount: 1,
@@ -173,6 +240,7 @@ describe('selectSuperSpeedProfile', () => {
         personDetection: true,
         faceMatching: true,
         poseAnalysis: false,
+        eyeDetail: true,
       },
       burstId: 'burst-1',
       burstSize: 3,
@@ -189,6 +257,7 @@ describe('selectSuperSpeedProfile', () => {
         personDetection: true,
         faceMatching: false,
         poseAnalysis: false,
+        sportsSafeguards: true,
       },
       faceBoxes: [{ x: 0.2, y: 0.2, width: 0.2, height: 0.2 }],
       faceCount: 1,
@@ -209,7 +278,12 @@ describe('selectSuperSpeedProfile', () => {
         faceMatching: false,
         poseAnalysis: false,
       },
-      reviewAnalysisUnavailableFeatures: { faceMatching: true, poseAnalysis: true },
+      reviewAnalysisUnavailableFeatures: {
+        faceMatching: true,
+        poseAnalysis: true,
+        eyeDetail: true,
+        sportsSafeguards: true,
+      },
       faceBoxes: [{ x: 0.2, y: 0.2, width: 0.2, height: 0.2 }],
       faceCount: 1,
       personBoxes: [{ x: 0.1, y: 0.1, width: 0.4, height: 0.8 }],

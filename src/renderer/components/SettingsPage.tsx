@@ -232,6 +232,7 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   const [gpus, setGpus] = useState<Array<{ id: number; name: string; adapterCompatibility?: string; videoMemoryMB?: number }>>([]);
   const [executionProvider, setExecutionProvider] = useState<string | null>(null);
   const [faceCacheClearing, setFaceCacheClearing] = useState(false);
+  const [faceDataFeedback, setFaceDataFeedback] = useState<string | null>(null);
   const [trialBusy, setTrialBusy] = useState(false);
   const [trialFeedback, setTrialFeedback] = useState<string | null>(null);
   const [trialEmailInput, setTrialEmailInput] = useState('');
@@ -918,13 +919,29 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
   };
 
   const handleClearFaceCache = async () => {
+    const confirmed = window.confirm(
+      'Clear local face and subject AI data?\n\n' +
+      'This removes cached detections, face embeddings/groups, body and pose regions, and review evidence derived from them from saved sessions and the catalog. Photos, import history, picks, ratings, and edits are kept.\n\n' +
+      'AI Review can recreate this local data the next time it runs.',
+    );
+    if (!confirmed) return;
     setFaceCacheClearing(true);
+    setFaceDataFeedback(null);
+    // Clear renderer memory first. A concurrent durable save can then contain
+    // only the scrubbed file records while the main-process purge is running.
+    window.dispatchEvent(new Event('photo-importer:purge-face-data'));
+    dispatch({ type: 'CLEAR_FACE_DATA' });
     try {
-      await window.electronAPI.clearFaceCache();
-      // Reset face data in the renderer overlay so files re-enter the candidate
-      // list and get re-analyzed from scratch against the now-empty cache.
-      dispatch({ type: 'CLEAR_FACE_DATA' });
-      window.dispatchEvent(new Event('photo-importer:resume-ai'));
+      const result = await window.electronAPI.clearFaceCache();
+      if (result.success) {
+        setFaceDataFeedback(
+          `Cleared local face/subject data from ${result.sessionFilesPurged} saved session row${result.sessionFilesPurged === 1 ? '' : 's'} and ${result.catalogFilesPurged} catalog row${result.catalogFilesPurged === 1 ? '' : 's'}.`,
+        );
+      } else {
+        setFaceDataFeedback(`The local purge was incomplete: ${result.error ?? 'unknown error'}`);
+      }
+    } catch (error) {
+      setFaceDataFeedback(`The local purge was incomplete: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setFaceCacheClearing(false);
     }
@@ -3048,12 +3065,13 @@ export function SettingsPage({ onClose, inline = false }: SettingsPageProps) {
                 disabled={faceCacheClearing}
                 className="text-[10px] text-text-secondary border border-surface-border rounded px-2 py-1 hover:text-text hover:border-text-secondary transition-colors disabled:opacity-50"
               >
-                {faceCacheClearing ? 'Clearing…' : 'Clear face cache'}
+                {faceCacheClearing ? 'Clearing…' : 'Clear local face data'}
               </button>
             </div>
             <p className="text-[10px] text-text-muted mt-0.5">
-              Run face scan now resumes AI review immediately for this gallery. Clear face cache also wipes persisted ONNX results so future imports re-analyze from scratch.
+              Face and subject AI runs locally on this computer. Clear removes cached detections, embeddings and face groups, body/pose regions, and derived review evidence from memory, saved sessions, and the catalog. Originals, import history, picks, ratings, and edits stay unchanged. AI Review can recreate the data when it runs again.
             </p>
+            {faceDataFeedback && <p className="text-[10px] text-text-secondary mt-1">{faceDataFeedback}</p>}
 
             <div className="mt-2 rounded border border-border bg-surface-alt px-2 py-2">
               <p className="text-[10px] font-semibold uppercase tracking-wider text-text-secondary">Performance help</p>

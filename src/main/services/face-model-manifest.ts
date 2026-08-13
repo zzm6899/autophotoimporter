@@ -29,14 +29,32 @@ export const FACE_MODEL_IDENTITIES: Record<FaceModelRole, FaceModelIdentity> = {
   },
 };
 
+export const POSE_MODEL_IDENTITY: FaceModelIdentity = {
+  fileName: 'movenet_thunder.onnx',
+  sha256: '3dca9f6e5f8a64dc9935a5be06fd8bf81bf01e696c9c05c6f2a650e0a401b763',
+};
+
 // Bump for any change that can alter returned boxes, embeddings, poses, or
 // per-face quality signals even when the model files themselves are unchanged.
-export const FACE_PREPROCESSING_REVISION = 'orientation-v1.person-cascade-v1.eye-detail-v1.sface-crop-v1';
+export const FACE_PREPROCESSING_REVISION = [
+  'orientation-main-authority-v3',
+  'supervised-rgb-worker-v1',
+  'person-cascade-v3',
+  'resumable-enrichment-v1',
+  'eye-detail-v1',
+  'sface-crop-v1',
+  'movenet-singlepose-crop-letterbox-v2',
+  'sports-pose-score-v2',
+  // Invalidates the short-lived development cache in which evaluation-only
+  // NanoDet boxes could be merged into production person detections.
+  'experimental-detector-isolation-v1',
+].join('.');
 
 export const FACE_PIPELINE_FINGERPRINT = [
-  'face-pipeline-v5',
+  'face-pipeline-v6',
   FACE_PREPROCESSING_REVISION,
   ...(['detector', 'embedder', 'person'] as const).map((role) =>
     `${role}:${FACE_MODEL_IDENTITIES[role].sha256}`,
   ),
+  `pose:${POSE_MODEL_IDENTITY.sha256}`,
 ].join('|');

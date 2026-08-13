@@ -19,7 +19,7 @@ import { ActionButton, ToolbarGroup } from './ui';
 import { applyCanvasSafeCrossOrigin, getCachedPreview, getPreviewCacheStats, setBackgroundPreviewPaused, warmPreviews } from '../utils/previewCache';
 import { getSourceFolderLabel, isPathInsideSourceRoot } from '../utils/sourcePath';
 import { clampStops, getEffectiveExposureStops, getNormalizedExposureStops, normalizeExposureStops } from '../../shared/exposure';
-import { buildAutoCullProposal, cosineSimilarity, deserializeEmbedding, FACE_GROUP_EMBEDDING_THRESHOLD, faceSignalConfidence, focusQuality, hasCullingAnalysis, humanMomentQuality, isUsablyFocused, type FaceIdentityGroup } from '../../shared/review';
+import { buildAutoCullProposal, cosineSimilarity, deserializeEmbedding, FACE_GROUP_EMBEDDING_THRESHOLD, faceSignalConfidence, focusQuality, hasCullingAnalysis, humanMomentQuality, isAutoCullBulkDecisionEligible, isUsablyFocused, type FaceIdentityGroup } from '../../shared/review';
 import { needsSecondPass } from '../../shared/review-lane';
 import { useFaceIdentityWorker } from '../hooks/useFaceIdentityWorker';
 import { analyzeSceneFromImage } from '../utils/sceneAnalysis';
@@ -345,16 +345,15 @@ function stablePathId(value: string): string {
   return Math.abs(hash).toString(36);
 }
 
-const mediaDateSortCache = new Map<string, { date?: string; ms: number }>();
+let mediaDateSortCache = new WeakMap<MediaFile, { date?: string; ms: number }>();
 const mediaSearchTextCache = new Map<string, { fingerprint: string; text: string }>();
 const MEDIA_DERIVED_CACHE_LIMIT = 50000;
 
 function mediaDateSortMs(file: MediaFile): number {
-  const cached = mediaDateSortCache.get(file.path);
+  const cached = mediaDateSortCache.get(file);
   if (cached && cached.date === file.dateTaken) return cached.ms;
-  if (mediaDateSortCache.size > MEDIA_DERIVED_CACHE_LIMIT) mediaDateSortCache.clear();
   const ms = file.dateTaken ? Date.parse(file.dateTaken) || 0 : 0;
-  mediaDateSortCache.set(file.path, { date: file.dateTaken, ms });
+  mediaDateSortCache.set(file, { date: file.dateTaken, ms });
   return ms;
 }
 
@@ -422,20 +421,85 @@ export function shouldFinalizeFaceAnalysisFailure(attempts: number): boolean {
   return attempts >= 3;
 }
 
+/** Pure optional-stage retry transition used by eye-detail enrichment. */
+export function nextOptionalReviewFeatureFailure(
+  previousAttempts: number,
+  incomplete: boolean,
+): { attempts: number; unavailable: boolean } {
+  const attempts = incomplete ? previousAttempts + 1 : 0;
+  return {
+    attempts,
+    unavailable: incomplete && shouldFinalizeFaceAnalysisFailure(attempts),
+  };
+}
+
+type OptionalReviewFeature = keyof NonNullable<MediaFile['reviewAnalysisUnavailableFeatures']>;
+
+/** Clear stale optional-stage terminal markers when a later retry succeeds. */
+export function reconcileOptionalReviewFeatureAvailability(
+  previous: MediaFile['reviewAnalysisUnavailableFeatures'],
+  completed: Partial<Record<OptionalReviewFeature, boolean>>,
+  newlyUnavailable: Partial<Record<OptionalReviewFeature, boolean>>,
+): NonNullable<MediaFile['reviewAnalysisUnavailableFeatures']> {
+  const next = { ...previous, ...newlyUnavailable };
+  for (const feature of Object.keys(completed) as OptionalReviewFeature[]) {
+    if (completed[feature]) delete next[feature];
+  }
+  return next;
+}
+
+export function bestOfAutomaticDecision(
+  files: MediaFile[],
+  eventMode: EventMode,
+): MediaFile | null {
+  return rankBestOfSelection(files.filter((file) =>
+    isAutoCullBulkDecisionEligible(file, eventMode),
+  ))[0] ?? null;
+}
+
 export function shouldRunOnnxForReview(
   file: MediaFile,
   options: {
     reviewFaceAnalysis: boolean;
     reviewFaceMatching: boolean;
     reviewPersonDetection: boolean;
+    reviewPoseAnalysis?: boolean;
+    reviewSportsSafeguards?: boolean;
   },
 ): boolean {
   if (!options.reviewFaceAnalysis) return false;
+  // A whole native request can fail before it returns per-feature completion
+  // flags. The review loop marks that file terminal after three attempts; do
+  // not let an older native face box immediately re-enter the eye/matching
+  // route and turn the bounded failure into an infinite retry.
+  if (file.reviewAnalysisUnavailable) return false;
   if (file.faceBoxes === undefined) return true;
   if (options.reviewPersonDetection && file.personBoxes === undefined && file.personCount === undefined) return true;
-  if (!options.reviewFaceMatching) return false;
   const faceCount = file.faceBoxes?.length ?? file.faceCount ?? 0;
-  return file.faceDetection === 'native' && faceCount > 0 && !hasFaceMatchData(file);
+  if (
+    file.faceDetection === 'native' &&
+    faceCount > 0 &&
+    file.reviewAnalysisFeatures?.eyeDetail !== true &&
+    file.reviewAnalysisUnavailableFeatures?.eyeDetail !== true
+  ) return true;
+  if (
+    options.reviewPoseAnalysis &&
+    (file.personBoxes?.length ?? file.personCount ?? 0) > 0 &&
+    file.reviewAnalysisFeatures?.poseAnalysis !== true &&
+    file.reviewAnalysisUnavailableFeatures?.poseAnalysis !== true
+  ) return true;
+  if (
+    options.reviewSportsSafeguards &&
+    options.reviewPersonDetection &&
+    file.reviewAnalysisFeatures?.sportsSafeguards !== true &&
+    file.reviewAnalysisUnavailableFeatures?.sportsSafeguards !== true
+  ) return true;
+  if (!options.reviewFaceMatching) return false;
+  return file.faceDetection === 'native' &&
+    faceCount > 0 &&
+    file.reviewAnalysisFeatures?.faceMatching !== true &&
+    file.reviewAnalysisUnavailableFeatures?.faceMatching !== true &&
+    !hasFaceMatchData(file);
 }
 
 function faceMatchFingerprint(files: MediaFile[], enabled: boolean): string {
@@ -2123,7 +2187,15 @@ export function ThumbnailGrid() {
   const lastExposureTapRef = useRef(0);
   const sharpnessInFlightRef = useRef(false);
   const faceAnalysisFailureCountRef = useRef<Map<string, number>>(new Map());
-  const optionalFeatureFailureCountRef = useRef<Map<string, { faceMatching: number; poseAnalysis: number }>>(new Map());
+  const optionalFeatureFailureCountRef = useRef<Map<string, {
+    faceMatching: number;
+    poseAnalysis: number;
+    eyeDetail: number;
+    sportsSafeguards: number;
+  }>>(new Map());
+  const panelPriorityPathsRef = useRef<Set<string>>(new Set());
+  const previewPendingUntilRef = useRef<Map<string, number>>(new Map());
+  const previewPendingRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reviewBatchCounterRef = useRef(0);
   const reviewGenerationRef = useRef(0);
   // Read the mutable overlay directly between intentionally infrequent UI
@@ -2135,6 +2207,8 @@ export function ThumbnailGrid() {
   const faceScanEtaRef = useRef<{ source: string | null; total: number; startedAt: number; startedScanned: number } | null>(null);
   const lastCatalogFacePersistRef = useRef('');
   const lastCatalogFaceFileFingerprintsRef = useRef<Map<string, string>>(new Map());
+  const catalogFacePersistGenerationRef = useRef(0);
+  const catalogFacePersistBlockedRef = useRef(false);
   // Stable refs so the review loop effect doesn't need files/sortedFiles as deps.
   // Without these, every SET_REVIEW_SCORES dispatch (one per analyzed image) triggers
   // a new files reference → effect cleanup + re-run mid-flight → concurrent ONNX batches
@@ -2220,6 +2294,38 @@ export function ThumbnailGrid() {
     shouldBuildFaceIdentityGroups,
   );
   const filesByPath = useMemo(() => new Map(files.map((file) => [file.path, file])), [files]);
+  const captureOrderCacheRef = useRef<{
+    source: string | null;
+    paths: string[];
+  } | null>(null);
+  const captureOrderedFiles = useMemo(() => {
+    // Discovery is streamed and capture metadata is still arriving during a
+    // scan. Preserve discovery order until completion instead of re-sorting an
+    // ever-growing million-row array for every batch.
+    if (phase === 'scanning') return files;
+    const cached = captureOrderCacheRef.current;
+    const canReuse = cached?.source === selectedSource &&
+      cached.paths.length === files.length &&
+      cached.paths.every((filePath) => filesByPath.has(filePath));
+    if (canReuse) {
+      return cached.paths
+        .map((filePath) => filesByPath.get(filePath))
+        .filter((file): file is MediaFile => !!file);
+    }
+    const ordered = files.map((file, index) => ({
+      file,
+      index,
+      time: mediaDateSortMs(file),
+      burstIndex: file.burstIndex ?? 0,
+    })).sort((a, b) =>
+      a.time - b.time || a.burstIndex - b.burstIndex || a.index - b.index,
+    ).map((entry) => entry.file);
+    captureOrderCacheRef.current = {
+      source: selectedSource,
+      paths: ordered.map((file) => file.path),
+    };
+    return ordered;
+  }, [files, filesByPath, phase, selectedSource]);
   const displayFaceIdentityGroups = useMemo(() => {
     if (faceIdentityGroups.length === 0 && manualFaceGroups.length === 0) return [];
     const order = new Map(files.map((file, index) => [file.path, index]));
@@ -2332,7 +2438,9 @@ export function ThumbnailGrid() {
     if (files.length === 0) return [];
     if (filter === 'face-gallery') return [];
     const query = deferredSearchText.trim().toLowerCase();
-    const filtered = files.filter((f) => {
+    const captureOrder = gridSortOrder === 'capture-asc';
+    const orderedSource = captureOrder ? captureOrderedFiles : files;
+    const filtered = orderedSource.filter((f) => {
       if (query) {
         if (!mediaSearchText(f).includes(query)) return false;
       }
@@ -2389,7 +2497,9 @@ export function ThumbnailGrid() {
         default: return true;
       }
     });
-    const sorted = [...filtered].sort((a, b) => {
+    const sorted = captureOrder
+      ? filtered
+      : [...filtered].sort((a, b) => {
       if (gridSortOrder === 'score-desc') {
         const sa = a.reviewScore ?? 0;
         const sb = b.reviewScore ?? 0;
@@ -2404,7 +2514,7 @@ export function ThumbnailGrid() {
       if (ta !== tb) return gridSortOrder === 'capture-desc' ? tb - ta : ta - tb;
       // Within the same second, bursts go by their index so shots stay in order.
       return (a.burstIndex ?? 0) - (b.burstIndex ?? 0);
-    });
+      });
     // Apply collapse: when a burst is collapsed we only show its "leader"
     // (highest-rated shot, or the first by burstIndex). The leader surfaces
     // the total count so the user can expand it.
@@ -2416,7 +2526,7 @@ export function ThumbnailGrid() {
       seenCollapsedLeader.add(f.burstId);
       return true;
     });
-  }, [files, filter, gridSortOrder, collapsedSet, exposureAnchorPath, deferredSearchText, queuedSet, importFailedSet, faceIdentityPathMap, faceIdentityGroupedPaths, selectedSource]);
+  }, [captureOrderedFiles, files, filter, gridSortOrder, collapsedSet, exposureAnchorPath, deferredSearchText, queuedSet, importFailedSet, faceIdentityPathMap, faceIdentityGroupedPaths, selectedSource]);
   const flatGridContentWidth = Math.max(0, flatGridWidth - 32);
   const virtualGridColumns = Math.max(1, Math.floor((flatGridContentWidth + 12) / (thumbnailSize + 12)));
   const virtualGridEnabled = viewMode === 'grid' && filter !== 'face-gallery' && !groupByFolder && sortedFiles.length > 300;
@@ -2722,6 +2832,11 @@ export function ThumbnailGrid() {
       reviewGenerationRef.current++;
       faceAnalysisFailureCountRef.current.clear();
       optionalFeatureFailureCountRef.current.clear();
+      previewPendingUntilRef.current.clear();
+      if (previewPendingRetryTimerRef.current) {
+        clearTimeout(previewPendingRetryTimerRef.current);
+        previewPendingRetryTimerRef.current = null;
+      }
       sharpnessInFlightRef.current = false;
       void window.electronAPI.cancelFaceAnalysis?.().catch(() => undefined);
     } else if (phase === 'importing') {
@@ -2759,6 +2874,11 @@ export function ThumbnailGrid() {
     const stopBackgroundReview = () => {
       reviewGenerationRef.current++;
       sharpnessInFlightRef.current = false;
+      previewPendingUntilRef.current.clear();
+      if (previewPendingRetryTimerRef.current) {
+        clearTimeout(previewPendingRetryTimerRef.current);
+        previewPendingRetryTimerRef.current = null;
+      }
       void window.electronAPI.cancelFaceAnalysis?.().catch(() => undefined);
     };
     window.addEventListener('pagehide', stopBackgroundReview);
@@ -2779,10 +2899,16 @@ export function ThumbnailGrid() {
     return () => observer.disconnect();
   }, [viewMode]);
   useEffect(() => {
+    catalogFacePersistBlockedRef.current = false;
     reviewGenerationRef.current++;
     sharpnessInFlightRef.current = false;
     faceAnalysisFailureCountRef.current.clear();
     optionalFeatureFailureCountRef.current.clear();
+    previewPendingUntilRef.current.clear();
+    if (previewPendingRetryTimerRef.current) {
+      clearTimeout(previewPendingRetryTimerRef.current);
+      previewPendingRetryTimerRef.current = null;
+    }
     setSelectedFaceGroupIds(new Set());
     setManualFaceGroups([]);
     setManualFaceSplitPaths(new Set());
@@ -2792,7 +2918,8 @@ export function ThumbnailGrid() {
     lastCatalogFacePersistRef.current = '';
     lastCatalogFaceFileFingerprintsRef.current.clear();
     reviewScanCursorRef.current = 0;
-    mediaDateSortCache.clear();
+    mediaDateSortCache = new WeakMap();
+    captureOrderCacheRef.current = null;
     mediaSearchTextCache.clear();
   }, [selectedSource]);
   useEffect(() => {
@@ -2817,6 +2944,7 @@ export function ThumbnailGrid() {
   useEffect(() => {
     if (!catalogFacePersistFingerprint || !selectedSource) return;
     const timer = window.setTimeout(() => {
+      if (catalogFacePersistBlockedRef.current) return;
       if (lastCatalogFacePersistRef.current === catalogFacePersistFingerprint) return;
       const sentFingerprints = lastCatalogFaceFileFingerprintsRef.current;
       const changedFaceFiles: MediaFile[] = [];
@@ -2836,9 +2964,12 @@ export function ThumbnailGrid() {
         return;
       }
       void (async () => {
+        const persistGeneration = catalogFacePersistGenerationRef.current;
         for (let i = 0; i < changedFaceFiles.length; i += 100) {
+          if (catalogFacePersistBlockedRef.current || persistGeneration !== catalogFacePersistGenerationRef.current) return;
           await window.electronAPI.upsertCatalogFaceMetadata(changedFaceFiles.slice(i, i + 100), selectedSource);
         }
+        if (persistGeneration !== catalogFacePersistGenerationRef.current) return;
         for (const [path, fingerprint] of pendingFingerprints) {
           sentFingerprints.set(path, fingerprint);
         }
@@ -2921,12 +3052,13 @@ export function ThumbnailGrid() {
     const rankedCandidatePaths = new Set<string>();
     const rankCandidate = (f: MediaFile) => {
       const focus = focusedPath && f.path === focusedPath ? -1000 : 0;
+      const panel = panelPriorityPathsRef.current.has(f.path) ? -900 : 0;
       const queue = queuedPathSet.has(f.path) ? -800 : 0;
       const selected = selectedPathSet.has(f.path) ? -700 : 0;
       const pick = f.pick === 'selected' ? -500 : f.pick === 'rejected' ? 500 : 0;
       const missingFace = f.faceBoxes === undefined ? -200 : 0;
       const visible = visibleRank.get(f.path) ?? 9999;
-      return focus + queue + selected + pick + missingFace + visible;
+      return focus + panel + queue + selected + pick + missingFace + visible;
     };
     const offerCandidate = (file: MediaFile) => {
       if (rankedCandidatePaths.has(file.path)) return;
@@ -2948,6 +3080,11 @@ export function ThumbnailGrid() {
     };
     const requestedProfileFor = (f: MediaFile): ReviewAnalysisProfile | null => {
       if (!currentReviewFaceAnalysis) return null;
+      const previewRetryAt = previewPendingUntilRef.current.get(f.path);
+      if (previewRetryAt !== undefined) {
+        if (previewRetryAt > Date.now()) return null;
+        previewPendingUntilRef.current.delete(f.path);
+      }
       if (currentSuperSpeedMode) {
         return selectSuperSpeedProfile(f, {
           eventMode: eventModeRef.current,
@@ -2961,6 +3098,9 @@ export function ThumbnailGrid() {
         reviewFaceAnalysis: currentReviewFaceAnalysis,
         reviewFaceMatching: currentReviewFaceMatching,
         reviewPersonDetection: reviewPersonDetectionRef.current,
+        reviewPoseAnalysis: isSportsEventMode(eventModeRef.current),
+        reviewSportsSafeguards: isSportsEventMode(eventModeRef.current) &&
+          reviewPersonDetectionRef.current,
       }) ? 'full' : null;
     };
     const offerIfNeeded = (f: MediaFile) => {
@@ -3055,11 +3195,22 @@ export function ThumbnailGrid() {
           const orientations = chunk.map((filePath) => candidateByPath.get(filePath)?.orientation);
           const hasCompleteOrientations = orientations.every((value) =>
             Number.isInteger(value) && Number(value) >= 1 && Number(value) <= 8);
+          const identities = chunk.map((filePath) => {
+            const file = candidateByPath.get(filePath);
+            return file && Number.isFinite(file.sourceModifiedAtMs)
+              ? { size: file.size, mtimeMs: file.sourceModifiedAtMs as number }
+              : undefined;
+          });
+          const hasCompleteIdentities = identities.every((value) => value !== undefined);
           const request: Promise<NativeAnalysisBatch> = window.electronAPI
             .analyzeFaces(chunk, {
               profile,
+              sportsMode: isSportsEventMode(eventModeRef.current),
               ...(hasCompleteOrientations
                 ? { orientations: orientations as Array<1 | 2 | 3 | 4 | 5 | 6 | 7 | 8> }
+                : {}),
+              ...(hasCompleteIdentities
+                ? { identities: identities as Array<{ size: number; mtimeMs: number }> }
                 : {}),
             })
             .catch((error: unknown) => chunk.map((filePath) => ({
@@ -3108,9 +3259,13 @@ export function ThumbnailGrid() {
             !needsOnnx
               ? Promise.resolve([] as Awaited<ReturnType<typeof window.electronAPI.analyzeFaces>>)
               : (nativeAnalysisByPath.get(f.path) ?? window.electronAPI.analyzeFaces(f.path, {
-                  profile: requestedProfile ?? 'full',
+                profile: requestedProfile ?? 'full',
+                  sportsMode: isSportsEventMode(eventModeRef.current),
                   ...(Number.isInteger(f.orientation) && Number(f.orientation) >= 1 && Number(f.orientation) <= 8
                     ? { orientation: f.orientation as 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 }
+                    : {}),
+                  ...(Number.isFinite(f.sourceModifiedAtMs)
+                    ? { identity: { size: f.size, mtimeMs: f.sourceModifiedAtMs as number } }
                     : {}),
                 })).catch((error: unknown) => {
                   onnxInvocationError = error instanceof Error ? error.message : String(error);
@@ -3162,19 +3317,29 @@ export function ThumbnailGrid() {
           // stays a retry candidate instead of being locked in as "confirmed:
           // no faces" forever.
           const onnxError = onnxInvocationError ?? onnx?.error;
+          const previewPending = onnx?.errorCode === 'PREVIEW_PENDING';
           if (onnxError) {
             console.warn(`[review-loop] face analysis failed for ${f.path}: ${onnxError}`);
           }
+          if (previewPending) {
+            previewPendingUntilRef.current.set(f.path, Date.now() + 5_000);
+            if (!previewPendingRetryTimerRef.current) {
+              previewPendingRetryTimerRef.current = setTimeout(() => {
+                previewPendingRetryTimerRef.current = null;
+                setReviewLoopTick((value) => value + 1);
+              }, 5_100);
+            }
+          }
           const onnxOk = !!onnx && !onnxError;
-          const failureAttempts = onnxError
+          const failureAttempts = onnxError && !previewPending
             ? (faceAnalysisFailureCountRef.current.get(f.path) ?? 0) + 1
-            : 0;
-          if (onnxError) {
+            : faceAnalysisFailureCountRef.current.get(f.path) ?? 0;
+          if (onnxError && !previewPending) {
             faceAnalysisFailureCountRef.current.set(f.path, failureAttempts);
-          } else if (needsOnnx) {
+          } else if (!onnxError && needsOnnx) {
             faceAnalysisFailureCountRef.current.delete(f.path);
           }
-          const terminalOnnxFailure = !!onnxError && shouldFinalizeFaceAnalysisFailure(failureAttempts);
+          const terminalOnnxFailure = !!onnxError && !previewPending && shouldFinalizeFaceAnalysisFailure(failureAttempts);
           const onnxFaceBoxes = normalizeFaceEngineBoxes(onnxOk ? onnx.boxes : undefined);
           const onnxEmbeddingBoxes = normalizeFaceEngineBoxes(onnxOk ? onnx.embeddingBoxes : undefined);
           const onnxPersonBoxes = normalizeFaceEngineBoxes(onnxOk ? onnx.personBoxes : undefined);
@@ -3182,7 +3347,12 @@ export function ThumbnailGrid() {
           const detectedPeople = onnxFaceBoxes.length > 0 || onnxPersonBoxes.length > 0;
           const sceneAnalysis = thumbnailSignals.sceneAnalysis ?? f.sceneAnalysis;
           const mergedReasons = [
-            ...(subject.subjectReasons ?? []),
+            ...(subject.subjectReasons ?? []).filter((reason) => ![
+              'face matching unavailable',
+              'pose analysis unavailable',
+              'eye detail unavailable',
+              'sports safeguards unavailable',
+            ].includes(reason)),
             ...(onnxFaceBoxes.length > 0 ? ['onnx faces'] : []),
             ...(onnxPersonBoxes.length > 0 ? ['person detected'] : []),
           ];
@@ -3203,43 +3373,79 @@ export function ThumbnailGrid() {
                 ? 'subjects'
                 : 'full';
             patch.reviewAnalysisFeatures = {
-              faceDetection: onnx.features?.faceDetection ?? true,
-              personDetection: onnx.features?.personDetection ?? false,
-              faceMatching: onnx.features?.faceMatching ?? false,
-              poseAnalysis: onnx.features?.poseAnalysis ?? false,
+              faceDetection: f.reviewAnalysisFeatures?.faceDetection || (onnx.features?.faceDetection ?? true),
+              personDetection: f.reviewAnalysisFeatures?.personDetection || (onnx.features?.personDetection ?? false),
+              faceMatching: f.reviewAnalysisFeatures?.faceMatching || (onnx.features?.faceMatching ?? false),
+              poseAnalysis: f.reviewAnalysisFeatures?.poseAnalysis || (onnx.features?.poseAnalysis ?? false),
+              eyeDetail: f.reviewAnalysisFeatures?.eyeDetail || (onnx.features?.eyeDetail ?? false),
+              personFallback: f.reviewAnalysisFeatures?.personFallback || (onnx.features?.personFallback ?? false),
+              sportsSafeguards: f.reviewAnalysisFeatures?.sportsSafeguards ||
+                (onnx.features?.sportsSafeguards ?? false),
             };
 
-            if (requestedProfile === 'full') {
-              const previousOptionalFailures = optionalFeatureFailureCountRef.current.get(f.path) ?? {
-                faceMatching: 0,
-                poseAnalysis: 0,
-              };
-              const matchingRequested = currentReviewFaceMatching && onnxFaceBoxes.length > 0;
-              const poseRequested = isSportsEventMode(eventModeRef.current) && onnxPersonBoxes.length > 0;
-              const matchingIncomplete = matchingRequested && !(onnx.features?.faceMatching ?? false);
-              const poseIncomplete = poseRequested && !(onnx.features?.poseAnalysis ?? false);
-              const nextOptionalFailures = {
-                faceMatching: matchingIncomplete ? previousOptionalFailures.faceMatching + 1 : 0,
-                poseAnalysis: poseIncomplete ? previousOptionalFailures.poseAnalysis + 1 : 0,
-              };
-              if (matchingIncomplete || poseIncomplete) {
-                optionalFeatureFailureCountRef.current.set(f.path, nextOptionalFailures);
-              } else {
-                optionalFeatureFailureCountRef.current.delete(f.path);
-              }
-              const unavailableFeatures = {
-                ...f.reviewAnalysisUnavailableFeatures,
+            const previousOptionalFailures = optionalFeatureFailureCountRef.current.get(f.path) ?? {
+              faceMatching: 0,
+              poseAnalysis: 0,
+              eyeDetail: 0,
+              sportsSafeguards: 0,
+            };
+            const matchingRequested = requestedProfile === 'full' && currentReviewFaceMatching && onnxFaceBoxes.length > 0;
+            const poseRequested = requestedProfile === 'full' &&
+              isSportsEventMode(eventModeRef.current) && onnxPersonBoxes.length > 0;
+            const eyeDetailRequested = requestedProfile !== 'detect' && onnxFaceBoxes.length > 0;
+            const sportsSafeguardsRequested = requestedProfile !== 'detect' &&
+              isSportsEventMode(eventModeRef.current) && reviewPersonDetectionRef.current;
+            const matchingIncomplete = matchingRequested && !(onnx.features?.faceMatching ?? false);
+            const poseIncomplete = poseRequested && !(onnx.features?.poseAnalysis ?? false);
+            const eyeDetailIncomplete = eyeDetailRequested && !(onnx.features?.eyeDetail ?? false);
+            const sportsSafeguardsIncomplete = sportsSafeguardsRequested &&
+              !(onnx.features?.sportsSafeguards ?? false);
+            const eyeDetailFailure = nextOptionalReviewFeatureFailure(
+              previousOptionalFailures.eyeDetail,
+              eyeDetailIncomplete,
+            );
+            const nextOptionalFailures = {
+              faceMatching: matchingIncomplete ? previousOptionalFailures.faceMatching + 1 : 0,
+              poseAnalysis: poseIncomplete ? previousOptionalFailures.poseAnalysis + 1 : 0,
+              eyeDetail: eyeDetailFailure.attempts,
+              sportsSafeguards: sportsSafeguardsIncomplete
+                ? previousOptionalFailures.sportsSafeguards + 1
+                : 0,
+            };
+            if (matchingIncomplete || poseIncomplete || eyeDetailIncomplete || sportsSafeguardsIncomplete) {
+              optionalFeatureFailureCountRef.current.set(f.path, nextOptionalFailures);
+            } else {
+              optionalFeatureFailureCountRef.current.delete(f.path);
+            }
+            const unavailableFeatures = reconcileOptionalReviewFeatureAvailability(
+              f.reviewAnalysisUnavailableFeatures,
+              {
+                faceMatching: onnx.features?.faceMatching === true,
+                poseAnalysis: onnx.features?.poseAnalysis === true,
+                eyeDetail: onnx.features?.eyeDetail === true,
+                sportsSafeguards: onnx.features?.sportsSafeguards === true,
+              },
+              {
                 ...(matchingIncomplete && shouldFinalizeFaceAnalysisFailure(nextOptionalFailures.faceMatching)
-                  ? { faceMatching: true }
-                  : {}),
+                ? { faceMatching: true }
+                : {}),
                 ...(poseIncomplete && (
-                  onnx.features?.poseAnalysisAvailable === false ||
-                  shouldFinalizeFaceAnalysisFailure(nextOptionalFailures.poseAnalysis)
-                ) ? { poseAnalysis: true } : {}),
-              };
-              if (unavailableFeatures.faceMatching || unavailableFeatures.poseAnalysis) {
-                patch.reviewAnalysisUnavailableFeatures = unavailableFeatures;
-              }
+                onnx.features?.poseAnalysisAvailable === false ||
+                shouldFinalizeFaceAnalysisFailure(nextOptionalFailures.poseAnalysis)
+              ) ? { poseAnalysis: true } : {}),
+                ...(eyeDetailFailure.unavailable
+                ? { eyeDetail: true }
+                : {}),
+                ...(sportsSafeguardsIncomplete &&
+                shouldFinalizeFaceAnalysisFailure(nextOptionalFailures.sportsSafeguards)
+                ? { sportsSafeguards: true }
+                : {}),
+              },
+            );
+            // An explicit empty map is meaningful: it clears terminal markers
+            // retained by the sparse review overlay after a successful retry.
+            if (f.reviewAnalysisUnavailableFeatures || Object.keys(unavailableFeatures).length > 0) {
+              patch.reviewAnalysisUnavailableFeatures = unavailableFeatures;
             }
           }
           if (hash !== undefined) patch.visualHash = hash;
@@ -3287,18 +3493,25 @@ export function ThumbnailGrid() {
             if (f.personCount !== undefined) patch.personCount = f.personCount;
             if (f.personBoxes !== undefined) patch.personBoxes = f.personBoxes;
           }
-          if (onnxOk && requestedProfile === 'full' && onnx?.poses?.length) patch.poses = onnx.poses;
-          else if (f.poses !== undefined) patch.poses = f.poses;
+          if (onnxOk && requestedProfile === 'full') {
+            // Pose arrays are aligned to the current person boxes. An empty
+            // successful result must clear an older athlete's pose rather than
+            // silently preserving stale action evidence after a rescan.
+            patch.poses = onnx?.poses ?? [];
+          } else if (f.poses !== undefined) patch.poses = f.poses;
           patch.subjectReasons = [...new Set([
             ...mergedReasons,
             ...(sceneAnalysis?.subjectReasons ?? []),
             ...(terminalOnnxFailure ? ['face analysis unavailable'] : []),
             ...(patch.reviewAnalysisUnavailableFeatures?.faceMatching ? ['face matching unavailable'] : []),
             ...(patch.reviewAnalysisUnavailableFeatures?.poseAnalysis ? ['pose analysis unavailable'] : []),
+            ...(patch.reviewAnalysisUnavailableFeatures?.eyeDetail ? ['eye detail unavailable'] : []),
+            ...(patch.reviewAnalysisUnavailableFeatures?.sportsSafeguards ? ['sports safeguards unavailable'] : []),
           ])];
           if (reviewGeneration === reviewGenerationRef.current) {
             dispatch({ type: 'SET_REVIEW_SCORES', scores: { [f.path]: patch } });
           }
+          panelPriorityPathsRef.current.delete(f.path);
           return [f.path, patch];
         } catch (err) {
           console.error(`[review-loop] file error: ${f.path}`, err);
@@ -3320,6 +3533,7 @@ export function ThumbnailGrid() {
           if (reviewGeneration === reviewGenerationRef.current) {
             dispatch({ type: 'SET_REVIEW_SCORES', scores: { [f.path]: patch } });
           }
+          panelPriorityPathsRef.current.delete(f.path);
           return [f.path, patch];
         }
       });
@@ -3414,15 +3628,24 @@ export function ThumbnailGrid() {
     setReviewLoopTick((value) => value + 1);
   }, []);
 
-  const rerunFaceScan = useCallback(() => {
+  const resetFaceReviewAttempts = useCallback(() => {
     reviewGenerationRef.current++;
     faceAnalysisFailureCountRef.current.clear();
     optionalFeatureFailureCountRef.current.clear();
+    previewPendingUntilRef.current.clear();
+    if (previewPendingRetryTimerRef.current) {
+      clearTimeout(previewPendingRetryTimerRef.current);
+      previewPendingRetryTimerRef.current = null;
+    }
     sharpnessInFlightRef.current = false;
     void window.electronAPI.cancelFaceAnalysis?.().catch(() => undefined);
+  }, []);
+
+  const rerunFaceScan = useCallback(() => {
+    resetFaceReviewAttempts();
     dispatch({ type: 'CLEAR_FACE_DATA' });
     resumeAiReview();
-  }, [dispatch, resumeAiReview]);
+  }, [dispatch, resetFaceReviewAttempts, resumeAiReview]);
 
   const pauseAiReview = useCallback(() => {
     setReviewPaused(true);
@@ -3433,10 +3656,42 @@ export function ThumbnailGrid() {
   }, []);
 
   useEffect(() => {
-    const resume = () => resumeAiReview();
+    // Settings dispatches CLEAR_FACE_DATA before this event. Reset the retry
+    // maps too so a deliberate rescan always receives a fresh attempt budget.
+    const resume = () => {
+      catalogFacePersistBlockedRef.current = false;
+      catalogFacePersistGenerationRef.current++;
+      lastCatalogFacePersistRef.current = '';
+      lastCatalogFaceFileFingerprintsRef.current.clear();
+      resetFaceReviewAttempts();
+      resumeAiReview();
+    };
+    const purge = () => {
+      catalogFacePersistBlockedRef.current = true;
+      catalogFacePersistGenerationRef.current++;
+      lastCatalogFacePersistRef.current = '';
+      lastCatalogFaceFileFingerprintsRef.current.clear();
+      // CLEAR_FACE_DATA scrubs the catalogue/overlay. These component-local
+      // structures also encode identity relationships or catalog matches and
+      // must not survive the user-facing "clear from memory" boundary.
+      setSelectedFaceGroupIds(new Set());
+      setManualFaceGroups([]);
+      setManualFaceSplitPaths(new Set());
+      setCatalogFaceSearch(null);
+      setFaceCoverOverrides({});
+      setFaceThresholdOverrides({});
+      resetFaceReviewAttempts();
+      setReviewPaused(true);
+      reviewPausedRef.current = true;
+      setBackgroundLoadingPaused(true);
+    };
     window.addEventListener('photo-importer:resume-ai', resume);
-    return () => window.removeEventListener('photo-importer:resume-ai', resume);
-  }, [resumeAiReview]);
+    window.addEventListener('photo-importer:purge-face-data', purge);
+    return () => {
+      window.removeEventListener('photo-importer:resume-ai', resume);
+      window.removeEventListener('photo-importer:purge-face-data', purge);
+    };
+  }, [resetFaceReviewAttempts, resumeAiReview]);
 
   useEffect(() => {
     const id = window.setInterval(() => setCacheStats(getPreviewCacheStats()), 750);
@@ -3647,6 +3902,7 @@ export function ThumbnailGrid() {
   const enterQueueKeepersMode = useCallback(() => {
     if (queueActionsDisabled) return;
     const proposed = queueBestPaths(files, {
+      eventMode,
       cullConfidence,
       groupPhotoEveryoneGood,
       keeperQuota,
@@ -3699,11 +3955,7 @@ export function ThumbnailGrid() {
       if (group.length < 2) continue;
       const groupType = key.split(':', 1)[0];
       for (const file of group) {
-        const hasDetectedSubject = (file.faceBoxes?.length ?? 0) > 0 || (file.personBoxes?.length ?? 0) > 0;
-        const subjectConfidence = file.sceneAnalysis?.subjectFocusConfidence;
-        const reliableAnalysis = hasCullingAnalysis(file) && (
-          !hasDetectedSubject || (typeof subjectConfidence === 'number' && subjectConfidence >= 0.2)
-        );
+        const reliableAnalysis = isAutoCullBulkDecisionEligible(file, eventMode);
         const manualKeeper = file.pick !== 'rejected' && (
           file.isProtected || (file.rating ?? 0) > 0 || file.pick === 'selected'
         );
@@ -3717,11 +3969,7 @@ export function ThumbnailGrid() {
       }
       const winner = rankBestOfSelection(group.filter((file) => {
         if (file.pick === 'rejected') return false;
-        const hasDetectedSubject = (file.faceBoxes?.length ?? 0) > 0 || (file.personBoxes?.length ?? 0) > 0;
-        const subjectConfidence = file.sceneAnalysis?.subjectFocusConfidence;
-        return hasCullingAnalysis(file) && (
-          !hasDetectedSubject || (typeof subjectConfidence === 'number' && subjectConfidence >= 0.2)
-        );
+        return isAutoCullBulkDecisionEligible(file, eventMode);
       }))[0];
       if (winner) keep.add(winner.path);
     }
@@ -3747,15 +3995,26 @@ export function ThumbnailGrid() {
         reject: selected.filter((item) => item.outcome === 'reject').map((item) => item.path),
       }),
     });
-  }, [decisionReasons, dispatch, files, openDecisionPreview]);
+  }, [decisionReasons, dispatch, eventMode, files, openDecisionPreview]);
 
   const openBlurRejectPreview = useCallback(() => {
     const protectedCount = files.filter((file) =>
       file.blurRisk === 'high' && (file.isProtected || (file.rating ?? 0) > 0 || file.pick === 'selected'),
     ).length;
     const candidates = files.filter((file) =>
-      file.blurRisk === 'high' && !file.isProtected && (file.rating ?? 0) === 0 && file.pick !== 'selected',
+      file.blurRisk === 'high' &&
+      !file.isProtected &&
+      (file.rating ?? 0) === 0 &&
+      file.pick !== 'selected' &&
+      isAutoCullBulkDecisionEligible(file, eventMode),
     );
+    const safetyExcludedCount = files.filter((file) =>
+      file.blurRisk === 'high' &&
+      !file.isProtected &&
+      (file.rating ?? 0) === 0 &&
+      file.pick !== 'selected' &&
+      !isAutoCullBulkDecisionEligible(file, eventMode),
+    ).length;
     openDecisionPreview({
       id: `blur-reject:${Date.now()}`,
       title: 'Preview high-blur rejects',
@@ -3771,6 +4030,7 @@ export function ThumbnailGrid() {
       unchangedCount: files.length - candidates.length,
       warnings: [
         `${protectedCount} protected, rated or manually picked high-blur photo${protectedCount === 1 ? ' was' : 's were'} excluded.`,
+        `${safetyExcludedCount} photo${safetyExcludedCount === 1 ? ' remains' : 's remain'} unchanged because subject analysis is pending, unavailable, or unsafe for an automatic sports decision.`,
         'A sharp background is not used to excuse a soft detected subject.',
       ],
       applyLabel: 'Reject reviewed blur candidates',
@@ -3780,7 +4040,7 @@ export function ThumbnailGrid() {
         reject: selected.map((item) => item.path),
       }),
     });
-  }, [decisionReasons, dispatch, files, openDecisionPreview]);
+  }, [decisionReasons, dispatch, eventMode, files, openDecisionPreview]);
 
   const handleCardClick = useCallback((index: number, e: React.MouseEvent) => {
     const currentSortedFiles = sortedFilesRef.current;
@@ -3890,51 +4150,20 @@ export function ThumbnailGrid() {
     }
   }, [dispatch, filter, queuedPaths.length, searchText, setFocused, viewMode]);
 
-  // Trigger ONNX face scan for any unscanned photos about to appear in a panel.
+  // Prioritise panel photos in the single staged review orchestrator. Direct
+  // FACE_ANALYZE calls here used to race background analysis, omit event/
+  // orientation provenance, and repeat decode + ONNX work.
   const scanUnscannedPanelFiles = useCallback((paths: string[]) => {
     if (!aiReviewEnabledRef.current) return;
     if (!reviewFaceAnalysisRef.current || fastKeeperModeRef.current) return;
-    const unscanned = files
-      .filter((f) => paths.includes(f.path) && f.type === 'photo' && f.faceBoxes === undefined);
-    if (unscanned.length === 0) return;
-    void (async () => {
-      const panelConcurrency = Math.min(4, Math.max(1, faceConcurrencyRef.current));
-      await mapWithConcurrency(unscanned, panelConcurrency, async (f) => {
-        try {
-          const results = await window.electronAPI.analyzeFaces(f.path);
-          const result = results[0];
-          if (!result) return;
-          // A per-file `error` (models not ready, stale job, decode/timeout failure)
-          // means this photo was never actually analysed — skip the dispatch so
-          // faceBoxes stays undefined and the file remains a retry candidate for
-          // the main review loop, instead of being locked in as "confirmed: no faces".
-          if (result.error) {
-            console.warn(`[panel-scan] face analysis failed for ${f.path}: ${result.error}`);
-            return;
-          }
-          const faceBoxes = normalizeFaceEngineBoxes(result.boxes);
-          const embeddingBoxes = normalizeFaceEngineBoxes(result.embeddingBoxes);
-          const personBoxes = normalizeFaceEngineBoxes(result.personBoxes);
-          dispatch({
-            type: 'SET_REVIEW_SCORES',
-            scores: {
-              [f.path]: {
-                faceCount: result.boxes.length,
-                faceBoxes,
-                faceDetection: result.boxes.length > 0 ? 'native' : undefined,
-                faceEmbedding: result.embeddings?.[0] || f.faceEmbedding,
-                faceEmbeddings: result.embeddings?.length ? result.embeddings : f.faceEmbeddings,
-                faceEmbeddingBoxes: embeddingBoxes.length > 0 ? embeddingBoxes : f.faceEmbeddingBoxes,
-                personCount: result.personBoxes.length,
-                personBoxes,
-                poses: result.poses?.length ? result.poses : f.poses,
-              },
-            },
-          });
-        } catch { /* ignore */ }
-      });
-    })();
-  }, [files, dispatch]);
+    let added = false;
+    for (const filePath of paths) {
+      if (panelPriorityPathsRef.current.has(filePath)) continue;
+      panelPriorityPathsRef.current.add(filePath);
+      added = true;
+    }
+    if (added) setReviewLoopTick((value) => value + 1);
+  }, []);
 
   const openBestOfSelection = useCallback(() => {
     const focused = focusedIndex >= 0 && focusedIndex < sortedFiles.length ? sortedFiles[focusedIndex] : null;
@@ -4953,18 +5182,24 @@ export function ThumbnailGrid() {
     const byPath = new Map(files.map((f) => [f.path, f]));
     return bestScope.paths.map((p) => byPath.get(p)).filter((f): f is NonNullable<typeof f> => !!f);
   }, [bestScope, files, selectedFiles]);
-  const bestOfSelection = bestPanelFiles.length > 0 ? rankBestOfSelection(bestPanelFiles)[0] : null;
+  const bestOfSelection = bestPanelFiles.length > 0
+    ? bestOfAutomaticDecision(bestPanelFiles, eventMode)
+    : null;
   const rejectBestPanelRest = useCallback((best: MediaFile, advanceAfterApply = false) => {
     const keep = new Set(bestPanelFiles
       .filter((file) => file.path === best.path || (
         file.pick !== 'rejected' && (file.isProtected || (file.rating ?? 0) > 0 || file.pick === 'selected')
       ))
       .map((file) => file.path));
+    const decisionFiles = bestPanelFiles.filter((file) =>
+      keep.has(file.path) || isAutoCullBulkDecisionEligible(file, eventMode),
+    );
+    const safetyExcludedCount = bestPanelFiles.length - decisionFiles.length;
     openDecisionPreview({
       id: `best-of:${Date.now()}`,
       title: `Preview ${bestScope?.title ?? 'Best Of'} decisions`,
-      summary: `All ${bestPanelFiles.length} photos in this comparison are listed. Review every proposed pick and reject before anything changes.`,
-      items: bestPanelFiles.map((file): BulkAiDecisionItem => ({
+      summary: `${decisionFiles.length} proposed pick/reject decision${decisionFiles.length === 1 ? '' : 's'} are listed. ${safetyExcludedCount} pending or unsafe photo${safetyExcludedCount === 1 ? ' stays' : 's stay'} unchanged.`,
+      items: decisionFiles.map((file): BulkAiDecisionItem => ({
         path: file.path,
         outcome: keep.has(file.path) ? 'keep' : 'reject',
         score: file.reviewScore,
@@ -4976,8 +5211,11 @@ export function ThumbnailGrid() {
             ? 'protected, rated or manually picked'
             : 'lower-ranked comparable frame'),
       })),
-      unchangedCount: Math.max(0, files.length - bestPanelFiles.length),
-      warnings: ['Protected, rated and manually picked alternatives remain keepers. The source is never deleted.'],
+      unchangedCount: Math.max(0, files.length - decisionFiles.length),
+      warnings: [
+        'Protected, rated and manually picked alternatives remain keepers. The source is never deleted.',
+        `${safetyExcludedCount} photo${safetyExcludedCount === 1 ? ' was' : 's were'} excluded from automatic rejection because analysis is pending, unavailable, or unsafe for a sports decision.`,
+      ],
       applyLabel: 'Apply Best Of decisions',
       onApply: (selected) => {
         dispatch({
@@ -4988,7 +5226,7 @@ export function ThumbnailGrid() {
         if (advanceAfterApply && bestScope?.canNextBatch) openAdjacentBatch(1);
       },
     });
-  }, [bestPanelFiles, bestScope, decisionReasons, dispatch, files.length, openAdjacentBatch, openDecisionPreview]);
+  }, [bestPanelFiles, bestScope, decisionReasons, dispatch, eventMode, files.length, openAdjacentBatch, openDecisionPreview]);
   const forceVisibleThumbnails = useCallback((index: number, filePath: string) => {
     if (selectedIndices.has(index) || queuedSet.has(filePath) || index === focusedIndex) return true;
     if (sortedFiles.length <= 72) return true;
@@ -6217,6 +6455,7 @@ export function ThumbnailGrid() {
           onRejectRestAndNext={(best) => {
             rejectBestPanelRest(best, true);
           }}
+          rejectRestBestPath={bestOfSelection?.path ?? null}
         />
       )}
       {/* Unified header */}

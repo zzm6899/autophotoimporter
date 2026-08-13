@@ -87,6 +87,41 @@ export interface SceneAnalysis {
   reasons?: string[];
 }
 
+/** HYROX / endurance-race station labels used by explainable sports ranking. */
+export type EnduranceStation =
+  | 'running'
+  | 'ski-erg'
+  | 'sled-push'
+  | 'sled-pull'
+  | 'burpee-broad-jump'
+  | 'rowing'
+  | 'farmers-carry'
+  | 'sandbag-lunge'
+  | 'wall-ball'
+  | 'finish'
+  | 'unknown';
+
+/**
+ * Optional measured endurance-sport signals. Values are normalized 0..1 and
+ * remain optional so existing sessions and detector-only analysis stay valid.
+ * The review scorer derives conservative pose/box fallbacks when these have
+ * not yet been produced by a specialist station/action model.
+ */
+export interface EnduranceSportsAnalysis {
+  station?: EnduranceStation;
+  confidence?: number;
+  primarySubjectConfidence?: number;
+  torsoSharpnessScore?: number;
+  faceVisibility?: number;
+  expression?: number;
+  subjectIsolation?: number;
+  occlusion?: number;
+  equipmentInteraction?: number;
+  strideExtension?: number;
+  actionPhase?: number;
+  reasons?: string[];
+}
+
 /** COCO keypoint indices, named for readable geometry code. */
 export const COCO_KP = {
   nose: 0, leftEye: 1, rightEye: 2, leftEar: 3, rightEar: 4,
@@ -224,6 +259,8 @@ export interface MediaFile {
   reviewReasons?: string[];
   /** Optional local scene/geometry metrics for genre-aware keeper proposals. */
   sceneAnalysis?: SceneAnalysis;
+  /** Optional HYROX/endurance station and action evidence for sports ranking. */
+  enduranceSportsAnalysis?: EnduranceSportsAnalysis;
   /** Furthest native review stage completed for this frame. */
   reviewAnalysisStage?: 'screened' | 'subjects' | 'full';
   /** Exact optional native features completed. A stage can omit features that
@@ -233,6 +270,12 @@ export interface MediaFile {
     personDetection: boolean;
     faceMatching: boolean;
     poseAnalysis: boolean;
+    /** Per-face eye-detail crops completed. */
+    eyeDetail?: boolean;
+    /** Optional alternate body detector was evaluated. */
+    personFallback?: boolean;
+    /** Sports-specific disagreement/zero-evidence detector pass completed. */
+    sportsSafeguards?: boolean;
   };
   /** Native analysis exhausted bounded retries. The frame stays manual/uncertain. */
   reviewAnalysisUnavailable?: boolean;
@@ -242,6 +285,8 @@ export interface MediaFile {
   reviewAnalysisUnavailableFeatures?: {
     faceMatching?: boolean;
     poseAnalysis?: boolean;
+    eyeDetail?: boolean;
+    sportsSafeguards?: boolean;
   };
   /** True after the operator has explicitly approved this file in second-pass review. */
   reviewApproved?: boolean;
@@ -301,7 +346,8 @@ export type EventMode =
   | 'panels'
   | 'meetups'
   | 'taekwondo'
-  | 'sports-combat';
+  | 'sports-combat'
+  | 'hyrox-endurance';
 
 /**
  * Event modes that retune culling toward peak sports action: frozen motion,
@@ -310,10 +356,18 @@ export type EventMode =
  * person boxes, subject focus and face expression provide a conservative
  * fallback when pose analysis was skipped or unavailable.
  */
-export const SPORTS_EVENT_MODES: ReadonlySet<EventMode> = new Set<EventMode>(['taekwondo', 'sports-combat']);
+export const SPORTS_EVENT_MODES: ReadonlySet<EventMode> = new Set<EventMode>([
+  'taekwondo',
+  'sports-combat',
+  'hyrox-endurance',
+]);
 
 export function isSportsEventMode(mode: EventMode | undefined): boolean {
   return mode !== undefined && SPORTS_EVENT_MODES.has(mode);
+}
+
+export function isEnduranceSportsMode(mode: EventMode | undefined): boolean {
+  return mode === 'hyrox-endurance';
 }
 
 export interface EventModePreset {
@@ -408,10 +462,62 @@ export const EVENT_MODE_PRESETS: Record<EventMode, EventModePreset> = {
     keywords: ['sports', 'combat sport', 'contact', 'action', 'impact', 'athlete'],
     help: 'Same action-first scoring as the taekwondo preset, for boxing, karate, judo, wrestling, MMA, and similar contact sports.',
   },
+  'hyrox-endurance': {
+    label: 'HYROX / endurance race',
+    description: 'Running and fitness-race stations with clear primary athletes, sharp faces/torsos, equipment interaction, and strong action phases.',
+    keywords: ['hyrox', 'fitness race', 'endurance sport', 'athlete', 'running', 'ski erg', 'sled push', 'sled pull', 'burpee broad jump', 'rowing', 'farmers carry', 'sandbag lunge', 'wall ball', 'roxzone'],
+    help: 'Tuned for HYROX-style coverage. Prefers a clear, sharp primary athlete, usable stride or station action, visible face/expression, low occlusion, and clean equipment interaction. It does not use combat-contact or kick-form rewards.',
+  },
 };
 
 export function eventModeKeywords(mode: EventMode | undefined): string[] {
   return EVENT_MODE_PRESETS[mode ?? 'general']?.keywords ?? EVENT_MODE_PRESETS.general.keywords;
+}
+
+export interface EventModeSuggestion {
+  mode: EventMode;
+  genre: Exclude<CullingGenre, 'auto'>;
+  confidence: 'medium' | 'high';
+  matchedCues: string[];
+}
+
+/**
+ * Suggest (but never silently apply) a review profile from folder/job/event
+ * text. Distinctive HYROX wording wins immediately; otherwise two station cues
+ * are required so a generic word such as "running" cannot retune a shoot.
+ */
+export function suggestEventModeFromCues(cues: string | string[]): EventModeSuggestion | null {
+  const source = (Array.isArray(cues) ? cues : [cues])
+    .join(' ')
+    .toLocaleLowerCase()
+    .replace(/[_\\/.-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!source) return null;
+
+  const containsPhrase = (phrase: string): boolean => {
+    const escaped = phrase
+      .split(/\s+/)
+      .map((part) => part.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&'))
+      .join('\\s+');
+    return new RegExp(`(?:^|\\s)${escaped}(?:$|\\s)`, 'i').test(source);
+  };
+  const stationCues = [
+    'ski erg', 'skierg', 'sled push', 'sled pull', 'burpee broad jump',
+    'farmers carry', "farmer's carry", 'sandbag lunge', 'wall ball', 'roxzone',
+  ];
+  const matchedStations = stationCues.filter(containsPhrase);
+  const distinctive = ['hyrox', 'fitness race', 'functional fitness race'].filter(containsPhrase);
+  const enduranceContext = ['endurance race', 'indoor fitness', 'run station'].filter(containsPhrase);
+  const matchedCues = [...new Set([...distinctive, ...matchedStations, ...enduranceContext])];
+
+  if (distinctive.includes('hyrox') || matchedStations.length >= 2) {
+    return { mode: 'hyrox-endurance', genre: 'sports', confidence: 'high', matchedCues };
+  }
+  if (distinctive.length > 0 || (matchedStations.length >= 1 && enduranceContext.length >= 1)) {
+    return { mode: 'hyrox-endurance', genre: 'sports', confidence: 'medium', matchedCues };
+  }
+  return null;
 }
 
 export interface SelectionSet {
@@ -821,6 +927,85 @@ export interface AppSession {
   };
 }
 
+/**
+ * Lightweight durable-session metadata. This is safe to request during app
+ * startup because it never carries the potentially million-row file catalogue.
+ */
+export interface AppSessionSummary {
+  id: string;
+  updatedAt: string;
+  sourcePath: string | null;
+  destRoot: string | null;
+  filter: string;
+  focusedPath?: string;
+  importLedgerId?: string;
+  stats: AppSession['stats'];
+}
+
+/** Main-owned, generation-scoped page request for an explicit session restore. */
+export interface SessionRestorePageRequest {
+  sessionId: string;
+  generation: string;
+  offset: number;
+  limit: number;
+}
+
+/** Releases an incomplete, generation-scoped restore transaction. */
+export interface SessionRestoreAbortRequest {
+  sessionId: string;
+  generation: string;
+}
+
+export interface SessionRestoreAbortResult {
+  generation: string;
+  aborted: boolean;
+}
+
+/**
+ * One ordered slice of a durable review. Selection and queue paths are paged
+ * with the same offset/limit; both collections are bounded by totalFiles.
+ */
+export interface SessionRestorePage {
+  generation: string;
+  summary: AppSessionSummary;
+  offset: number;
+  files: MediaFile[];
+  selectedPaths: string[];
+  queuedPaths: string[];
+  complete: boolean;
+}
+
+/**
+ * Bounded, generation-scoped restore protocol. A large review catalogue is
+ * registered with the main process in chunks and only becomes active after a
+ * matching finalize message, so a stale/partial restore can never replace the
+ * preview allow-list.
+ */
+export type SessionFileRegistrationRequest =
+  | {
+    action: 'begin';
+    generation: string;
+    totalFiles: number;
+    /** Main-issued session id returned by SESSION_LATEST. */
+    restoreSessionId?: string;
+  }
+  | {
+    action: 'append';
+    generation: string;
+    offset: number;
+    files: MediaFile[];
+  }
+  | {
+    action: 'finalize';
+    generation: string;
+  };
+
+export interface SessionFileRegistrationResult {
+  generation: string;
+  registered: number;
+  complete: boolean;
+}
+
 export interface WatchFolder {
   id: string;
   label?: string;
@@ -922,6 +1107,15 @@ export interface CatalogFaceMetadataWriteResult {
   upserted: number;
   faceFiles: number;
   embeddings: number;
+}
+
+/** Result of the user-requested purge of locally persisted face/subject AI data. */
+export interface LocalFaceDataPurgeResult {
+  success: boolean;
+  cacheCleared: boolean;
+  sessionFilesPurged: number;
+  catalogFilesPurged: number;
+  error?: string;
 }
 
 export interface CatalogMissingPath {
@@ -1533,7 +1727,12 @@ export const IPC = {
   IMPORT_HEALTH_SUMMARY: 'import:health-summary',
   SESSION_SAVE: 'session:save',
   SESSION_LATEST: 'session:latest',
+  SESSION_LATEST_SUMMARY: 'session:latest-summary',
+  SESSION_RESTORE_PAGE: 'session:restore-page',
+  SESSION_RESTORE_ABORT: 'session:restore-abort',
   SESSION_REGISTER_FILES: 'session:register-files',
+  SESSION_FLUSH_REQUEST: 'session:flush-request',
+  SESSION_FLUSH_ACK: 'session:flush-ack',
   CATALOG_STATS: 'catalog:stats',
   CATALOG_BROWSE: 'catalog:browse',
   CATALOG_SEARCH_FACES: 'catalog:search-faces',

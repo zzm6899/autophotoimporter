@@ -66,7 +66,10 @@ export function detectDeviceTier(override?: PerfTierSetting): DeviceProfile {
           cpuCores,
           totalMemGB,
           previewConcurrency: Math.min(8, Math.max(4, Math.floor(cpuCores / 3))),
-          faceConcurrency: Math.min(12, Math.max(8, Math.floor(cpuCores / 2))),
+          // End-to-end sports corpus sweeps peak at eight lanes on a 16-thread
+          // workstation; 12 oversubscribes Sharp + the CPU person detector and
+          // cuts throughput while doubling p95 latency.
+          faceConcurrency: Math.min(8, Math.max(6, Math.floor(cpuCores / 2))),
           cpuOptimization: false,
           rawPreviewQuality: 80,
         };

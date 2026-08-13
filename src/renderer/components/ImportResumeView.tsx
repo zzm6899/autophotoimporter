@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAppDispatch, useAppState } from '../context/ImportContext';
 import { useFileScanner } from '../hooks/useFileScanner';
 import { useImport } from '../hooks/useImport';
 import { formatDuration, formatSize } from '../utils/formatters';
-import type { AppSession, ImportLedger, ImportLedgerItem, ImportLedgerStatus } from '../../shared/types';
+import type { AppSession, AppSessionSummary, ImportLedger, ImportLedgerItem, ImportLedgerStatus, SessionRestoreAbortRequest } from '../../shared/types';
 
 type ResumeTone = 'panel' | 'settings';
 
@@ -28,6 +28,9 @@ const STATUS_CLASS: Record<ImportLedgerStatus, string> = {
   verified: 'text-cyan-300',
   pending: 'text-orange-300',
 };
+
+const SESSION_RESTORE_PAGE_SIZE = 2_000;
+let sessionRestoreSequence = 0;
 
 export function summarizeImportLedger(ledger: ImportLedger | null) {
   if (!ledger) {
@@ -141,9 +144,11 @@ export function ImportResumeView({ tone = 'panel' }: ImportResumeViewProps) {
   const { startScan } = useFileScanner();
   const { startImport } = useImport();
   const [ledger, setLedger] = useState<ImportLedger | null>(null);
-  const [session, setSession] = useState<AppSession | null>(null);
+  const [reviewSession, setReviewSession] = useState<AppSessionSummary | null>(null);
   const [loading, setLoading] = useState(true);
+  const [restoringReview, setRestoringReview] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const activeRestoreRef = useRef<SessionRestoreAbortRequest | null>(null);
 
   const summary = useMemo(() => summarizeImportLedger(ledger), [ledger]);
   const currentSessionMatches = !!ledger && selectedSource === ledger.sourcePath && destination === ledger.destRoot;
@@ -155,10 +160,10 @@ export function ImportResumeView({ tone = 'panel' }: ImportResumeViewProps) {
     try {
       const [nextLedger, nextSession] = await Promise.all([
         window.electronAPI.getLatestImportLedger(),
-        window.electronAPI.getLatestSession(),
+        window.electronAPI.getLatestSessionSummary(),
       ]);
       setLedger(nextLedger);
-      setSession(nextSession);
+      setReviewSession(nextSession);
       setMessage(null);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Could not read import history.');
@@ -171,6 +176,12 @@ export function ImportResumeView({ tone = 'panel' }: ImportResumeViewProps) {
     void refreshLedger();
   }, []);
 
+  useEffect(() => () => {
+    const active = activeRestoreRef.current;
+    activeRestoreRef.current = null;
+    if (active) void window.electronAPI.abortSessionRestore(active).catch(() => undefined);
+  }, []);
+
   const handleRestoreSession = async () => {
     if (!ledger) return;
     dispatch({ type: 'SELECT_SOURCE', path: ledger.sourcePath });
@@ -179,14 +190,70 @@ export function ImportResumeView({ tone = 'panel' }: ImportResumeViewProps) {
     await startScan(ledger.sourcePath);
   };
 
-  const handleRestoreReviewSession = () => {
-    if (!session) return;
+  const handleRestoreReviewSession = async () => {
+    if (!reviewSession || restoringReview || activeRestoreRef.current) return;
     // Re-arm main-process preview serving for the restored file set BEFORE
     // the grid mounts and starts requesting thumbnails, otherwise every
     // preview request is rejected by the scan-set path guard.
-    void window.electronAPI.registerSessionFiles?.(session.files).catch(() => undefined);
-    dispatch({ type: 'RESTORE_SESSION', session });
-    setMessage('Restored the last review session.');
+    setRestoringReview(true);
+    setMessage(`Preparing ${reviewSession.stats.totalFiles.toLocaleString()} files…`);
+    const restoreRequest: SessionRestoreAbortRequest = {
+      sessionId: reviewSession.id,
+      generation: `restore-${Date.now().toString(36)}-${(++sessionRestoreSequence).toString(36)}`,
+    };
+    activeRestoreRef.current = restoreRequest;
+    try {
+      const files: AppSession['files'] = [];
+      const selectedPaths: string[] = [];
+      const queuedPaths: string[] = [];
+      let offset = 0;
+      let durableSummary = reviewSession;
+      for (;;) {
+        const page = await window.electronAPI.getSessionRestorePage({
+          ...restoreRequest,
+          offset,
+          limit: SESSION_RESTORE_PAGE_SIZE,
+        });
+        if (page.generation !== restoreRequest.generation || page.offset !== offset || page.summary.id !== reviewSession.id) {
+          throw new Error('Session restore page identity changed unexpectedly.');
+        }
+        durableSummary = page.summary;
+        files.push(...page.files);
+        selectedPaths.push(...page.selectedPaths);
+        queuedPaths.push(...page.queuedPaths);
+        setMessage(`Preparing ${Math.min(files.length, durableSummary.stats.totalFiles).toLocaleString()} of ${durableSummary.stats.totalFiles.toLocaleString()} files…`);
+        if (page.complete) break;
+        if (page.files.length !== SESSION_RESTORE_PAGE_SIZE) {
+          throw new Error('Session restore stopped before the next complete page.');
+        }
+        offset += page.files.length;
+      }
+      // Main has already validated global file-path uniqueness while building
+      // its authority Map. Avoid another million-entry Set (and a temporary
+      // million-string map array) in the renderer at completion.
+      if (files.length !== durableSummary.stats.totalFiles
+        || selectedPaths.length > files.length
+        || queuedPaths.length > files.length) {
+        throw new Error('Session restore failed catalogue integrity checks.');
+      }
+      const session: AppSession = {
+        ...durableSummary,
+        files,
+        selectedPaths,
+        queuedPaths,
+      };
+      activeRestoreRef.current = null;
+      dispatch({ type: 'RESTORE_SESSION', session });
+      setMessage('Restored the last review session.');
+    } catch (error) {
+      if (activeRestoreRef.current?.generation === restoreRequest.generation) {
+        activeRestoreRef.current = null;
+        await window.electronAPI.abortSessionRestore(restoreRequest).catch(() => false);
+      }
+      setMessage(error instanceof Error ? error.message : 'Could not prepare the saved review session.');
+    } finally {
+      setRestoringReview(false);
+    }
   };
 
   const handleRetry = async () => {
@@ -221,9 +288,9 @@ export function ImportResumeView({ tone = 'panel' }: ImportResumeViewProps) {
           <button onClick={refreshLedger} className="text-[10px] text-text-muted hover:text-text">Refresh</button>
         </div>
         <p className="mt-1 text-[10px] text-text-muted">No import ledger has been written yet.</p>
-        {session && (
-          <button onClick={handleRestoreReviewSession} className="mt-2 rounded bg-surface-raised px-2 py-1 text-[10px] text-text-secondary hover:bg-border">
-            Restore Last Review
+        {reviewSession && (
+          <button disabled={restoringReview} onClick={handleRestoreReviewSession} className="mt-2 rounded bg-surface-raised px-2 py-1 text-[10px] text-text-secondary hover:bg-border disabled:cursor-not-allowed disabled:opacity-50">
+            {restoringReview ? 'Preparing Review…' : 'Restore Last Review'}
           </button>
         )}
         {message && <p className="mt-1 text-[10px] text-red-400">{message}</p>}
@@ -291,13 +358,14 @@ export function ImportResumeView({ tone = 'panel' }: ImportResumeViewProps) {
       {message && <p className="mt-2 text-[10px] text-text-muted">{message}</p>}
 
       <div className="mt-2 flex flex-wrap gap-1">
-        {session && (
+        {reviewSession && (
           <button
             onClick={handleRestoreReviewSession}
-            className="rounded bg-surface-raised px-2 py-1 text-[10px] text-text-secondary hover:bg-border"
-            title={`${session.stats.picked} picked, ${session.stats.queued} queued, ${session.stats.reviewed}/${session.stats.totalFiles} reviewed.`}
+            disabled={restoringReview}
+            className="rounded bg-surface-raised px-2 py-1 text-[10px] text-text-secondary hover:bg-border disabled:cursor-not-allowed disabled:opacity-50"
+            title={`${reviewSession.stats.picked} picked, ${reviewSession.stats.queued} queued, ${reviewSession.stats.reviewed}/${reviewSession.stats.totalFiles} reviewed.`}
           >
-            Restore Review
+            {restoringReview ? 'Preparing Review…' : 'Restore Review'}
           </button>
         )}
         <button

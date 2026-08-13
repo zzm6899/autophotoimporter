@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC } from '../shared/types';
-import type { ImportConfig, AppSettings, MediaFile, Volume, ImportProgress, ImportResult, UpdateInfo, UpdateReleaseSummary, UpdateState, FtpConfig, FtpSyncStatus, ImportError, LicenseValidation, ImportPreflight, ImportBenchmarkQuery, ImportBenchmarkResult, ImportLedger, ImportHealthSummary, MacFirstRunDoctor, AppDiagnosticsSnapshot, UpdateRepairResult, AppSession, WatchFolder, CatalogStats, CatalogBrowserQuery, CatalogBrowserResult, CatalogFaceSearchQuery, CatalogFaceSearchResult, CatalogFaceMetadataWriteResult, CatalogMaintenanceResult, CatalogPruneResult, CatalogBackupResult, CatalogClearSourceResult, ScanDiagnostics, LightroomHandoffResult } from '../shared/types';
+import type { ImportConfig, AppSettings, MediaFile, Volume, ImportProgress, ImportResult, UpdateInfo, UpdateReleaseSummary, UpdateState, FtpConfig, FtpSyncStatus, ImportError, LicenseValidation, ImportPreflight, ImportBenchmarkQuery, ImportBenchmarkResult, ImportLedger, ImportHealthSummary, MacFirstRunDoctor, AppDiagnosticsSnapshot, UpdateRepairResult, AppSession, AppSessionSummary, WatchFolder, CatalogStats, CatalogBrowserQuery, CatalogBrowserResult, CatalogFaceSearchQuery, CatalogFaceSearchResult, CatalogFaceMetadataWriteResult, CatalogMaintenanceResult, CatalogPruneResult, CatalogBackupResult, CatalogClearSourceResult, ScanDiagnostics, LightroomHandoffResult, SessionFileRegistrationRequest, SessionFileRegistrationResult, SessionRestoreAbortRequest, SessionRestorePage, SessionRestorePageRequest, LocalFaceDataPurgeResult } from '../shared/types';
 import type { FaceBox } from './services/face-engine';
 import type { ModelDownloadProgress } from './services/model-downloader';
 import type { PoseKeypoints } from '../shared/types';
@@ -22,6 +22,77 @@ export interface FtpMirrorProgress {
   done: number;
   total: number;
   name: string;
+}
+
+const SESSION_REGISTRATION_CHUNK_SIZE = 10_000;
+let sessionRegistrationSequence = 0;
+
+async function invokeSessionRegistration(
+  request: SessionFileRegistrationRequest,
+): Promise<SessionFileRegistrationResult> {
+  const result = await ipcRenderer.invoke(IPC.SESSION_REGISTER_FILES, request) as
+    | SessionFileRegistrationResult
+    | { ok: false; message?: string };
+  if (!('generation' in result)) {
+    throw new Error(result.message || 'Session file registration failed.');
+  }
+  return result;
+}
+
+async function registerSessionFiles(
+  files: MediaFile[],
+  restoreSessionId?: string,
+): Promise<SessionFileRegistrationResult> {
+  const generation = `restore-${Date.now().toString(36)}-${(++sessionRegistrationSequence).toString(36)}`;
+  await invokeSessionRegistration({ action: 'begin', generation, totalFiles: files.length, restoreSessionId });
+  for (let offset = 0; offset < files.length; offset += SESSION_REGISTRATION_CHUNK_SIZE) {
+    await invokeSessionRegistration({
+      action: 'append',
+      generation,
+      offset,
+      files: files.slice(offset, offset + SESSION_REGISTRATION_CHUNK_SIZE),
+    });
+  }
+  return invokeSessionRegistration({ action: 'finalize', generation });
+}
+
+async function saveSession(session: AppSession): Promise<AppSession> {
+  const result = await ipcRenderer.invoke(IPC.SESSION_SAVE, session) as AppSession | { ok: false; message?: string };
+  if (!('id' in result)) throw new Error(result.message || 'Session save failed.');
+  return result;
+}
+
+async function getSessionRestorePage(request: SessionRestorePageRequest): Promise<SessionRestorePage> {
+  const result = await ipcRenderer.invoke(IPC.SESSION_RESTORE_PAGE, request) as
+    | SessionRestorePage
+    | { ok: false; message?: string };
+  if (!result || typeof result !== 'object' || !('generation' in result)) {
+    throw new Error(result?.message || 'Session restore page failed.');
+  }
+  return result;
+}
+
+async function abortSessionRestore(request: SessionRestoreAbortRequest): Promise<boolean> {
+  const result = await ipcRenderer.invoke(IPC.SESSION_RESTORE_ABORT, request) as
+    | { generation: string; aborted: boolean }
+    | { ok: false; message?: string };
+  if (!result || typeof result !== 'object' || !('generation' in result) || !('aborted' in result)) {
+    throw new Error(result?.message || 'Session restore abort failed.');
+  }
+  if (result.generation !== request.generation) throw new Error('Session restore abort generation changed.');
+  return result.aborted;
+}
+
+async function getLatestSessionSummary(): Promise<AppSessionSummary | null> {
+  const result = await ipcRenderer.invoke(IPC.SESSION_LATEST_SUMMARY) as
+    | AppSessionSummary
+    | null
+    | { ok: false; message?: string };
+  if (result === null) return null;
+  if (!result || typeof result !== 'object' || !('id' in result) || !('stats' in result)) {
+    throw new Error(result?.message || 'Session summary failed.');
+  }
+  return result;
 }
 
 const api = {
@@ -86,12 +157,20 @@ const api = {
     ipcRenderer.invoke(IPC.IMPORT_LEDGER_LATEST),
   getImportHealthSummary: (): Promise<ImportHealthSummary> =>
     ipcRenderer.invoke(IPC.IMPORT_HEALTH_SUMMARY),
-  saveSession: (session: AppSession): Promise<AppSession> =>
-    ipcRenderer.invoke(IPC.SESSION_SAVE, session),
+  saveSession,
   getLatestSession: (): Promise<AppSession | null> =>
     ipcRenderer.invoke(IPC.SESSION_LATEST),
-  registerSessionFiles: (files: MediaFile[]): Promise<{ registered: number }> =>
-    ipcRenderer.invoke(IPC.SESSION_REGISTER_FILES, files),
+  getLatestSessionSummary,
+  getSessionRestorePage,
+  abortSessionRestore,
+  registerSessionFiles,
+  onSessionFlushRequest: (cb: (token: string) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, token: string) => cb(token);
+    ipcRenderer.on(IPC.SESSION_FLUSH_REQUEST, handler);
+    return () => ipcRenderer.removeListener(IPC.SESSION_FLUSH_REQUEST, handler);
+  },
+  acknowledgeSessionFlush: (token: string, success: boolean, message?: string): Promise<void> =>
+    ipcRenderer.invoke(IPC.SESSION_FLUSH_ACK, token, success, message),
   onImportProgress: (cb: (progress: ImportProgress) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, progress: ImportProgress) => cb(progress);
     ipcRenderer.on(IPC.IMPORT_PROGRESS, handler);
@@ -255,6 +334,12 @@ const api = {
       orientation?: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
       /** Batch-aligned scan-time EXIF orientations; length must match paths. */
       orientations?: Array<1 | 2 | 3 | 4 | 5 | 6 | 7 | 8>;
+      /** Scan-time identity hint; main verifies it against the registered source. */
+      identity?: { size: number; mtimeMs: number };
+      /** Batch-aligned scan-time file identities. */
+      identities?: Array<{ size: number; mtimeMs: number }>;
+      /** Enables sports-specific body-disagreement safeguards for this pass. */
+      sportsMode?: boolean;
     },
   ): Promise<Array<{
     path: string;
@@ -272,8 +357,16 @@ const api = {
       poseAnalysis: boolean;
       /** False when the optional pose model is not installed. */
       poseAnalysisAvailable?: boolean;
+      /** True when the opt-in alternate body detector was evaluated. */
+      personFallback?: boolean;
+      /** True when per-face eye-detail measurement completed. */
+      eyeDetail?: boolean;
+      /** True when sports zero-evidence/disagreement safeguards completed. */
+      sportsSafeguards?: boolean;
     };
     error?: string;
+    /** Stable native-stage error code for retry policy (for example PREVIEW_PENDING). */
+    errorCode?: string;
   }>> =>
     ipcRenderer.invoke(IPC.FACE_ANALYZE, paths, options),
 
@@ -293,8 +386,8 @@ const api = {
   listGpus: (): Promise<Array<{ id: number; name: string; adapterCompatibility?: string; videoMemoryMB?: number }>> =>
     ipcRenderer.invoke(IPC.GPU_LIST),
 
-  /** Clear the persistent face-analysis result cache. */
-  clearFaceCache: (): Promise<{ success: boolean; error?: string }> =>
+  /** Purge local face/subject AI cache, session evidence, and catalog evidence. */
+  clearFaceCache: (): Promise<LocalFaceDataPurgeResult> =>
     ipcRenderer.invoke(IPC.FACE_CACHE_CLEAR),
 
   /** Returns execution provider diagnostics for the face engine. */

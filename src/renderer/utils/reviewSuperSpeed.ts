@@ -1,4 +1,4 @@
-import type { EventMode, MediaFile } from '../../shared/types';
+import { isSportsEventMode, type EventMode, type MediaFile } from '../../shared/types';
 
 export type ReviewAnalysisProfile = 'detect' | 'subjects' | 'full';
 
@@ -27,6 +27,7 @@ const SUBJECT_CRITICAL_MODES: ReadonlySet<EventMode> = new Set([
   'meetups',
   'taekwondo',
   'sports-combat',
+  'hyrox-endurance',
 ]);
 
 function detectedSubjectCount(file: MediaFile): number {
@@ -61,7 +62,10 @@ function completedProfileRank(file: MediaFile): number {
   return 0;
 }
 
-function completedFeature(file: MediaFile, feature: 'personDetection' | 'faceMatching' | 'poseAnalysis'): boolean {
+function completedFeature(
+  file: MediaFile,
+  feature: 'personDetection' | 'faceMatching' | 'poseAnalysis' | 'eyeDetail',
+): boolean {
   const explicit = file.reviewAnalysisFeatures?.[feature];
   if (typeof explicit === 'boolean') return explicit;
   // Backwards-compatible evidence for sessions written before the exact
@@ -73,7 +77,11 @@ function completedFeature(file: MediaFile, feature: 'personDetection' | 'faceMat
   if (feature === 'faceMatching') {
     return !!file.faceEmbedding || file.faceEmbeddings !== undefined;
   }
-  return file.poses !== undefined;
+  if (feature === 'poseAnalysis') return file.poses !== undefined;
+  // There is no safe legacy inference for completion: a face box can contain
+  // one successful eye sample while another eligible crop failed. Only the
+  // explicit feature marker proves the bounded eye-detail pass completed.
+  return false;
 }
 
 function isComparisonCandidate(file: MediaFile): boolean {
@@ -111,10 +119,17 @@ export function selectSuperSpeedProfile(
   const hasMatchData = !!file.faceEmbedding || (file.faceEmbeddings?.length ?? 0) > 0;
   const hasMatchingPass = completedFeature(file, 'faceMatching');
   const hasPosePass = completedFeature(file, 'poseAnalysis');
+  const hasEyeDetailPass = completedFeature(file, 'eyeDetail');
   const matchingUnavailable = file.reviewAnalysisUnavailableFeatures?.faceMatching === true;
   const poseUnavailable = file.reviewAnalysisUnavailableFeatures?.poseAnalysis === true;
+  const eyeDetailUnavailable = file.reviewAnalysisUnavailableFeatures?.eyeDetail === true;
+  const sportsSafeguardsUnavailable = file.reviewAnalysisUnavailableFeatures?.sportsSafeguards === true;
   const comparisonCandidate = isComparisonCandidate(file);
   const subjectCritical = SUBJECT_CRITICAL_MODES.has(options.eventMode);
+  const needsSportsSafeguards = isSportsEventMode(options.eventMode) &&
+    options.personDetection &&
+    file.reviewAnalysisFeatures?.sportsSafeguards !== true &&
+    !sportsSafeguardsUnavailable;
 
   if (!hasNativeFacePass) {
     // Standalone frames cannot replace another image, so run their cheap
@@ -139,6 +154,8 @@ export function selectSuperSpeedProfile(
     return null;
   }
 
+  if (needsSportsSafeguards) return 'subjects';
+
   if (!hasPersonPass && options.personDetection && (
     priority ||
     subjectCritical ||
@@ -159,6 +176,14 @@ export function selectSuperSpeedProfile(
   const needsPose = !!options.poseAnalysis && knownPeople > 0 && !hasPosePass && !poseUnavailable;
   if ((needsMatching || needsPose) && (priority || comparisonCandidate)) {
     return 'full';
+  }
+
+  // Eye detail is a subject-quality signal, not an identity-only feature.
+  // Retry its cheaper subjects enrichment for any native face-positive frame,
+  // including standalone sports/candid photos, until the bounded renderer
+  // retry policy marks this optional crop stage unavailable.
+  if (knownFaces > 0 && !hasEyeDetailPass && !eyeDetailUnavailable) {
+    return 'subjects';
   }
 
   return null;

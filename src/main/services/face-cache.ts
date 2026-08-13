@@ -12,7 +12,7 @@
  */
 
 import crypto from 'node:crypto';
-import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { app } from 'electron';
@@ -64,18 +64,38 @@ interface CachedEntry {
     personDetection: boolean;
     poseAnalysis: boolean;
     embeddingLimit: number;
+    eyeDetail?: boolean;
+    /** Selective alternate person detector was available and evaluated. */
+    personFallback?: boolean;
+    /** Sports-specific zero-evidence/disagreement safeguards completed. */
+    sportsSafeguards?: boolean;
   };
 }
 
 type StoredEntryMetadata = Omit<CachedEntry, 'embeddings'>;
 
+export interface FaceCacheIdentityHint {
+  /** Source byte size captured by the scanner. */
+  size: number;
+  /** Source modification time captured by the scanner. */
+  mtimeMs: number;
+}
+
 type RequiredFeatures = {
   faceMatching?: boolean;
   personDetection?: boolean;
   poseAnalysis?: boolean;
+  /** Require the opt-in alternate person detector to have been evaluated. */
+  personFallback?: boolean;
+  /** Require face crops to have completed eye-detail measurement. */
+  eyeDetail?: boolean;
+  /** Require sports zero-evidence/disagreement safeguards. */
+  sportsSafeguards?: boolean;
   embeddingLimit?: number;
   /** Required cascade depth. A shallower result must never satisfy this read. */
   analysisDepth?: FaceAnalysisProfile;
+  /** Avoid another filesystem stat when the scanner already captured identity. */
+  identity?: FaceCacheIdentityHint;
 };
 
 type SqliteRunResult = { changes: number; lastInsertRowid: number | bigint };
@@ -122,6 +142,8 @@ interface SqliteWriteResult {
   prunedKeys: string[];
   /** Equal-depth writes rejected because they would discard completed evidence. */
   rejectedKeys: string[];
+  /** Exact merged rows committed, used to keep the memory tier identical. */
+  writtenEntries: CachedEntry[];
 }
 
 const createNodeRequire = createRequire(import.meta.url);
@@ -199,28 +221,41 @@ async function legacyFileFor(key: string, createShard = false): Promise<string> 
   return path.join(directory, `${key}.json`);
 }
 
-async function cacheIdentityFor(filePath: string): Promise<{
+function validIdentityHint(value?: FaceCacheIdentityHint): value is FaceCacheIdentityHint {
+  return !!value
+    && Number.isSafeInteger(value.size)
+    && value.size >= 0
+    && Number.isFinite(value.mtimeMs)
+    && value.mtimeMs >= 0;
+}
+
+async function cacheIdentityFor(filePath: string, hint?: FaceCacheIdentityHint): Promise<{
   key: string;
   size: number;
   mtimeMs: number;
 } | null> {
   try {
-    const fileStat = await stat(filePath);
+    const source = validIdentityHint(hint)
+      ? hint
+      : await stat(filePath);
     return {
       key: crypto
         .createHash('md5')
-        .update(`${filePath}|${fileStat.mtimeMs}|${fileStat.size}|${FACE_PIPELINE_FINGERPRINT}`)
+        .update(`${filePath}|${source.mtimeMs}|${source.size}|${FACE_PIPELINE_FINGERPRINT}`)
         .digest('hex'),
-      size: fileStat.size,
-      mtimeMs: fileStat.mtimeMs,
+      size: source.size,
+      mtimeMs: source.mtimeMs,
     };
   } catch {
     return null;
   }
 }
 
-export async function cacheKeyFor(filePath: string): Promise<string | null> {
-  return (await cacheIdentityFor(filePath))?.key ?? null;
+export async function cacheKeyFor(
+  filePath: string,
+  identityHint?: FaceCacheIdentityHint,
+): Promise<string | null> {
+  return (await cacheIdentityFor(filePath, identityHint))?.key ?? null;
 }
 
 function rememberInMemory(key: string, entry: CachedEntry): CachedEntry {
@@ -275,21 +310,159 @@ function analysisDepthRank(value: FaceAnalysisProfile): number {
  * than trading one completed capability for another; a later request for the
  * missing capability remains an explicit cache miss.
  */
+function boxIntersectionOverUnion(left: FaceBox, right: FaceBox): number {
+  const x1 = Math.max(left.x, right.x);
+  const y1 = Math.max(left.y, right.y);
+  const x2 = Math.min(left.x + left.width, right.x + right.width);
+  const y2 = Math.min(left.y + left.height, right.y + right.height);
+  const intersection = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+  if (intersection <= 0) return 0;
+  const union = left.width * left.height + right.width * right.height - intersection;
+  return union > 0 ? intersection / union : 0;
+}
+
+function hasUsablePose(pose: PoseKeypoints | undefined): boolean {
+  if (!pose || pose.keypoints.length !== 17) return false;
+  const usable = pose.keypoints.filter((point) =>
+    Number.isFinite(point.x) && Number.isFinite(point.y) && Number.isFinite(point.score));
+  return usable.length === 17 && usable.some((point) => point.score > 0.05);
+}
+
+function isStoredPose(value: unknown): value is PoseKeypoints {
+  if (!value || typeof value !== 'object') return false;
+  const pose = value as Partial<PoseKeypoints>;
+  if (!Array.isArray(pose.keypoints) || (pose.keypoints.length !== 0 && pose.keypoints.length !== 17)) return false;
+  if (pose.score !== undefined && (!Number.isFinite(pose.score) || pose.score < 0 || pose.score > 1)) return false;
+  return pose.keypoints.every((point) => !!point &&
+    Number.isFinite(point.x) && point.x >= 0 && point.x <= 1 &&
+    Number.isFinite(point.y) && point.y >= 0 && point.y <= 1 &&
+    Number.isFinite(point.score) && point.score >= 0 && point.score <= 1);
+}
+
+function primaryPoseIndexes(personBoxes: FaceBox[]): number[] {
+  return personBoxes
+    .map((box, index) => {
+      const centerX = box.x + box.width / 2;
+      const centerY = box.y + box.height / 2;
+      const centrality = 1 - Math.min(1, Math.hypot(centerX - 0.5, centerY - 0.48) / 0.72);
+      const confidence = typeof box.score === 'number' ? box.score : 0.5;
+      return {
+        index,
+        primaryScore: box.width * box.height * 3.2 + centrality * 0.35 + confidence * 0.25,
+      };
+    })
+    .sort((left, right) => right.primaryScore - left.primaryScore)
+    .slice(0, 2)
+    .map((entry) => entry.index);
+}
+
+function poseEvidenceComplete(personBoxes: FaceBox[], poses: PoseKeypoints[] | undefined): boolean {
+  if (personBoxes.length === 0) return true;
+  return primaryPoseIndexes(personBoxes).every((index) => hasUsablePose(poses?.[index]));
+}
+
+function mergeFaceBoxEvidence(existing: FaceBox[], incoming: FaceBox[]): FaceBox[] {
+  // The newest completed detector pass is authoritative. Unioning unmatched
+  // boxes across reruns makes false positives immortal and slowly inflates face
+  // counts. Retain only annotations from an IoU-matched previous box; identity
+  // embeddings remain aligned to their separate embeddingBoxes array.
+  return incoming.map((candidate) => {
+    let previous: FaceBox | undefined;
+    let bestIou = 0.45;
+    for (const existingBox of existing) {
+      const iou = boxIntersectionOverUnion(existingBox, candidate);
+      if (iou > bestIou) {
+        bestIou = iou;
+        previous = existingBox;
+      }
+    }
+    return {
+      ...candidate,
+      eyeScore: candidate.eyeScore ?? previous?.eyeScore,
+      eyeSharpness: candidate.eyeSharpness ?? previous?.eyeSharpness,
+    };
+  });
+}
+
+function mergePersonAndPoseEvidence(
+  existing: CachedEntry,
+  incoming: CachedEntry,
+): { personBoxes: FaceBox[]; poses?: PoseKeypoints[] } {
+  // A detector-only shallower write has no authority over the person stage.
+  // Once a fresh person pass completes, its canonical boxes replace the old
+  // pass and usable pose evidence is transferred only to IoU-matched athletes.
+  const canonical = incoming.features.personDetection ? incoming : existing;
+  const previous = canonical === incoming ? existing : incoming;
+  const boxes = canonical.personBoxes.map((box) => ({ ...box }));
+  const poses: Array<PoseKeypoints | undefined> = [];
+  for (let canonicalIndex = 0; canonicalIndex < boxes.length; canonicalIndex++) {
+    const canonicalPose = canonical.poses?.[canonicalIndex];
+    if (hasUsablePose(canonicalPose)) {
+      poses[canonicalIndex] = canonicalPose;
+      continue;
+    }
+    let matchedPose: PoseKeypoints | undefined;
+    let bestIou = 0.3;
+    for (let previousIndex = 0; previousIndex < previous.personBoxes.length; previousIndex++) {
+      const iou = boxIntersectionOverUnion(boxes[canonicalIndex], previous.personBoxes[previousIndex]);
+      if (iou > bestIou) {
+        bestIou = iou;
+        const candidatePose = previous.poses?.[previousIndex];
+        matchedPose = hasUsablePose(candidatePose) ? candidatePose : undefined;
+      }
+    }
+    poses[canonicalIndex] = matchedPose;
+  }
+
+  const hasAnyPosePayload = existing.poses !== undefined || incoming.poses !== undefined;
+  return {
+    personBoxes: boxes,
+    poses: hasAnyPosePayload
+      ? poses.map((pose) => pose ?? { keypoints: [], score: 0 })
+      : undefined,
+  };
+}
+
+/**
+ * Merge compatible results rather than selecting one whole record. A profile
+ * upgrade may enrich identity or pose without rerunning eye/body stages, and
+ * a later sports safeguard may be shallower than an already cached full pass.
+ * Each evidence family is therefore monotonic independently.
+ */
 function preferCachedEntry(existing: CachedEntry | undefined, incoming: CachedEntry): CachedEntry {
   if (!existing) return incoming;
   const existingDepth = analysisDepthRank(existing.analysisDepth ?? 'full');
   const incomingDepth = analysisDepthRank(incoming.analysisDepth ?? 'full');
-  if (incomingDepth > existingDepth) return incoming;
-  if (incomingDepth < existingDepth) return existing;
-
-  const preservesCompletedFeatures =
-    (!existing.features.faceMatching || incoming.features.faceMatching)
-    && (!existing.features.personDetection || incoming.features.personDetection)
-    && (!existing.features.poseAnalysis || incoming.features.poseAnalysis);
-  const preservesEmbeddingEvidence =
-    incoming.features.embeddingLimit >= existing.features.embeddingLimit
-    && incoming.embeddings.length >= existing.embeddings.length;
-  return preservesCompletedFeatures && preservesEmbeddingEvidence ? incoming : existing;
+  const deeper = incomingDepth >= existingDepth ? incoming : existing;
+  const otherFaceEvidence = deeper === incoming ? existing : incoming;
+  const embeddingSource = incoming.embeddings.length >= existing.embeddings.length ? incoming : existing;
+  const personEvidence = mergePersonAndPoseEvidence(existing, incoming);
+  const poseWasCompleted = existing.features.poseAnalysis || incoming.features.poseAnalysis;
+  return {
+    ...deeper,
+    cachedAt: Math.max(existing.cachedAt, incoming.cachedAt),
+    analysisDepth: incomingDepth >= existingDepth
+      ? incoming.analysisDepth ?? 'full'
+      : existing.analysisDepth ?? 'full',
+    boxes: mergeFaceBoxEvidence(otherFaceEvidence.boxes, deeper.boxes),
+    personBoxes: personEvidence.personBoxes,
+    poses: personEvidence.poses,
+    embeddings: embeddingSource.embeddings,
+    embeddingBoxes: embeddingSource.embeddingBoxes,
+    features: {
+      faceMatching: existing.features.faceMatching || incoming.features.faceMatching,
+      personDetection: existing.features.personDetection || incoming.features.personDetection,
+      // A newer body pass can add or reprioritise an athlete. Preserve the
+      // completion marker only when every currently selected primary athlete
+      // still has a usable aligned pose; score-zero placeholders are not work.
+      poseAnalysis: poseWasCompleted &&
+        poseEvidenceComplete(personEvidence.personBoxes, personEvidence.poses),
+      embeddingLimit: Math.max(existing.features.embeddingLimit, incoming.features.embeddingLimit),
+      eyeDetail: existing.features.eyeDetail === true || incoming.features.eyeDetail === true,
+      personFallback: existing.features.personFallback === true || incoming.features.personFallback === true,
+      sportsSafeguards: existing.features.sportsSafeguards === true || incoming.features.sportsSafeguards === true,
+    },
+  };
 }
 
 function isValidEntry(value: unknown, expectedKey: string): value is CachedEntry {
@@ -308,6 +481,11 @@ function isValidEntry(value: unknown, expectedKey: string): value is CachedEntry
     && entry.boxes.every(isFaceBox)
     && Array.isArray(entry.personBoxes)
     && entry.personBoxes.every(isFaceBox)
+    && (entry.poses === undefined || (
+      Array.isArray(entry.poses) &&
+      entry.poses.length <= 256 &&
+      entry.poses.every(isStoredPose)
+    ))
     && Array.isArray(entry.embeddings)
     && entry.embeddings.every(isHexEmbedding)
     && (entry.embeddingBoxes === undefined
@@ -316,6 +494,9 @@ function isValidEntry(value: unknown, expectedKey: string): value is CachedEntry
     && typeof features.faceMatching === 'boolean'
     && typeof features.personDetection === 'boolean'
     && typeof features.poseAnalysis === 'boolean'
+    && (features.eyeDetail === undefined || typeof features.eyeDetail === 'boolean')
+    && (features.personFallback === undefined || typeof features.personFallback === 'boolean')
+    && (features.sportsSafeguards === undefined || typeof features.sportsSafeguards === 'boolean')
     && Number.isInteger(features.embeddingLimit)
     && features.embeddingLimit >= 0;
 }
@@ -468,19 +649,6 @@ class SqliteFaceCache {
           payload_bytes = excluded.payload_bytes,
           payload_json = excluded.payload_json,
           embeddings = excluded.embeddings
-        WHERE excluded.analysis_depth > face_analysis_cache.analysis_depth
-          OR (
-            excluded.analysis_depth = face_analysis_cache.analysis_depth
-            AND COALESCE(CAST(json_extract(excluded.payload_json, '$.features.faceMatching') AS INTEGER), 0)
-              >= COALESCE(CAST(json_extract(face_analysis_cache.payload_json, '$.features.faceMatching') AS INTEGER), 0)
-            AND COALESCE(CAST(json_extract(excluded.payload_json, '$.features.personDetection') AS INTEGER), 0)
-              >= COALESCE(CAST(json_extract(face_analysis_cache.payload_json, '$.features.personDetection') AS INTEGER), 0)
-            AND COALESCE(CAST(json_extract(excluded.payload_json, '$.features.poseAnalysis') AS INTEGER), 0)
-              >= COALESCE(CAST(json_extract(face_analysis_cache.payload_json, '$.features.poseAnalysis') AS INTEGER), 0)
-            AND COALESCE(CAST(json_extract(excluded.payload_json, '$.features.embeddingLimit') AS INTEGER), 0)
-              >= COALESCE(CAST(json_extract(face_analysis_cache.payload_json, '$.features.embeddingLimit') AS INTEGER), 0)
-            AND length(excluded.embeddings) >= length(face_analysis_cache.embeddings)
-          )
       `);
       this.touchStatement = this.db.prepare(
         'UPDATE face_analysis_cache SET last_accessed_at = ? WHERE key = ?',
@@ -510,17 +678,21 @@ class SqliteFaceCache {
   }
 
   putMany(entries: CachedEntry[]): SqliteWriteResult {
-    if (entries.length === 0) return { prunedKeys: [], rejectedKeys: [] };
+    if (entries.length === 0) return { prunedKeys: [], rejectedKeys: [], writtenEntries: [] };
+    // Merge against the durable row before serialising. This protects evidence
+    // even when memory was cold after restart or a shallower sports pass adds a
+    // capability to an older full record.
+    const mergedEntries = entries.map((entry) => preferCachedEntry(this.get(entry.key) ?? undefined, entry));
     // Serialize before BEGIN so one pathological/oversized result cannot roll
     // back otherwise healthy records that happened to share its batch.
-    const prepared = entries.flatMap((entry) => {
+    const prepared = mergedEntries.flatMap((entry) => {
       try {
         return [{ entry, stored: serializeForDatabase(entry) }];
       } catch {
         return [];
       }
     });
-    if (prepared.length === 0) return { prunedKeys: [], rejectedKeys: [] };
+    if (prepared.length === 0) return { prunedKeys: [], rejectedKeys: [], writtenEntries: [] };
     const now = Date.now();
     const rejectedKeys: string[] = [];
     this.db.exec('BEGIN IMMEDIATE');
@@ -550,10 +722,18 @@ class SqliteFaceCache {
 
     this.writesSinceMaintenance += prepared.length;
     if (this.writesSinceMaintenance < MAINTENANCE_WRITE_INTERVAL) {
-      return { prunedKeys: [], rejectedKeys };
+      return {
+        prunedKeys: [],
+        rejectedKeys,
+        writtenEntries: prepared.map(({ entry }) => entry),
+      };
     }
     this.writesSinceMaintenance = 0;
-    return { prunedKeys: this.prune({}), rejectedKeys };
+    return {
+      prunedKeys: this.prune({}),
+      rejectedKeys,
+      writtenEntries: prepared.map(({ entry }) => entry),
+    };
   }
 
   stats(): DatabaseStats {
@@ -628,7 +808,13 @@ class SqliteFaceCache {
   }
 
   clear(): void {
-    this.db.exec('DELETE FROM face_analysis_cache; PRAGMA wal_checkpoint(TRUNCATE);');
+    this.db.exec(`
+      PRAGMA secure_delete = ON;
+      DELETE FROM face_analysis_cache;
+      PRAGMA wal_checkpoint(TRUNCATE);
+      VACUUM;
+      PRAGMA wal_checkpoint(TRUNCATE);
+    `);
   }
 
   close(): void {
@@ -688,6 +874,9 @@ function cacheEntryHasRequiredFeatures(
   if (requiredFeatures?.faceMatching && !entry.features.faceMatching) return false;
   if (requiredFeatures?.personDetection && !entry.features.personDetection) return false;
   if (requiredFeatures?.poseAnalysis && !entry.features.poseAnalysis) return false;
+  if (requiredFeatures?.personFallback && !entry.features.personFallback) return false;
+  if (requiredFeatures?.eyeDetail && !entry.features.eyeDetail) return false;
+  if (requiredFeatures?.sportsSafeguards && !entry.features.sportsSafeguards) return false;
   if (
     requiredFeatures?.faceMatching
     && requiredFeatures.embeddingLimit
@@ -764,7 +953,8 @@ async function flushPendingWriteBatch(): Promise<void> {
     const store = await getSqliteStore();
     if (store) {
       try {
-        const { prunedKeys, rejectedKeys } = store.putMany(batch.map((item) => item.entry));
+        const { prunedKeys, rejectedKeys, writtenEntries } = store.putMany(batch.map((item) => item.entry));
+        for (const entry of writtenEntries) rememberInMemory(entry.key, entry);
         for (const key of prunedKeys) inMemoryHits.delete(key);
         // A disk row can be richer than memory after an app restart. When the
         // SQL guard rejects a regressive equal-depth write, restore the actual
@@ -846,7 +1036,7 @@ export async function getCachedFaceResult(
 } | null> {
   if (clearInFlight) await clearInFlight;
   const generation = cacheGeneration;
-  const identity = await cacheIdentityFor(filePath);
+  const identity = await cacheIdentityFor(filePath, requiredFeatures?.identity);
   if (!identity || generation !== cacheGeneration) return null;
 
   const memoryHit = inMemoryHits.get(identity.key);
@@ -885,15 +1075,31 @@ export async function getCachedFaceResult(
   return rehydrate(legacyEntry);
 }
 
+/**
+ * Return the richest stored analysis even when it cannot satisfy the requested
+ * final profile. The face engine uses this as an enrichment seed, so a
+ * subjects→full transition never has to repeat face/person detection.
+ */
+export async function getBestCachedFaceResult(
+  filePath: string,
+  identity?: FaceCacheIdentityHint,
+): Promise<{
+  result: FaceAnalysisResult;
+  hexEmbeddings: string[];
+} | null> {
+  return getCachedFaceResult(filePath, { analysisDepth: 'detect', identity });
+}
+
 export async function setCachedFaceResult(
   filePath: string,
   result: FaceAnalysisResult,
   hexEmbeddings: string[],
   analysisDepth: FaceAnalysisProfile = 'full',
+  identityHint?: FaceCacheIdentityHint,
 ): Promise<void> {
   if (clearInFlight) await clearInFlight;
   const generation = cacheGeneration;
-  const identity = await cacheIdentityFor(filePath);
+  const identity = await cacheIdentityFor(filePath, identityHint);
   if (!identity || generation !== cacheGeneration) return;
 
   const entry: CachedEntry = {
@@ -1040,17 +1246,13 @@ export async function clearFaceCache(): Promise<void> {
 
     try {
       const directory = await getCacheDir();
-      const shards = await readdir(directory);
-      for (const shard of shards) {
-        if (!/^[0-9a-f]{2}$/i.test(shard)) continue;
-        const shardDirectory = path.join(directory, shard);
-        let entries: string[];
-        try { entries = await readdir(shardDirectory); } catch { continue; }
-        for (const name of entries) {
-          if (name.endsWith('.json')) {
-            await unlink(path.join(shardDirectory, name)).catch(() => undefined);
-          }
-        }
+      const protectedDatabaseFiles = new Set([DATABASE_NAME, `${DATABASE_NAME}-wal`, `${DATABASE_NAME}-shm`]);
+      for (const name of await readdir(directory)) {
+        if (protectedDatabaseFiles.has(name)) continue;
+        // Everything else in this dedicated directory is reconstructible:
+        // legacy JSON shards, abandoned write temps, and quarantined corrupt
+        // databases can all retain face/pose/embedding payloads.
+        await rm(path.join(directory, name), { recursive: true, force: true });
       }
     } catch {
       // The cache is reconstructible; clear remains best-effort.
