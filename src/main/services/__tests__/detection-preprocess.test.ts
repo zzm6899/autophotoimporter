@@ -17,7 +17,12 @@ const tempDirs: string[] = [];
 
 afterEach(async () => {
   clearThumbnailMemCache();
-  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  })));
 });
 
 describe('detector thumbnail preprocessing', () => {
