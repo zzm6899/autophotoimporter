@@ -373,6 +373,23 @@ describe('selectKeepersToTarget', () => {
     expect(result.keep).toContain('/B4.jpg');
   });
 
+  it('never treats a recurring face identity as a duplicate scene', () => {
+    const files = [
+      file('/station-run.jpg', {
+        faceGroupId: 'face-1', faceGroupSize: 2,
+        faceEmbeddings: ['00000000'], sharpnessScore: 120, blurRisk: 'low',
+      }),
+      file('/station-sled.jpg', {
+        faceGroupId: 'face-1', faceGroupSize: 2,
+        faceEmbeddings: ['00000000'], sharpnessScore: 110, blurRisk: 'low',
+      }),
+    ];
+    const result = selectKeepersToTarget(files, { target: 2, perGroupCap: 1 });
+    expect(result.keep).toEqual(expect.arrayContaining(['/station-run.jpg', '/station-sled.jpg']));
+    expect(result.reject).toEqual([]);
+    expect(result.groups).toBe(2);
+  });
+
   it('always keeps protected and rated files even past target', () => {
     const files = [
       file('/keep-protected.jpg', { isProtected: true, sharpnessScore: 1, blurRisk: 'high' }),

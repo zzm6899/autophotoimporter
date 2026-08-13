@@ -1,0 +1,621 @@
+{
+  "schemaVersion": 1,
+  "suite": "keptra-detector-candidates",
+  "generatedAt": "2026-08-13T01:53:14.985Z",
+  "runtime": {
+    "provider": "dml",
+    "node": "v24.14.0",
+    "platform": "win32",
+    "arch": "x64",
+    "cpu": "AMD Ryzen 7 7800X3D 8-Core Processor           "
+  },
+  "results": [
+    {
+      "status": "passed",
+      "key": "current-ultraface",
+      "file": "version-RFB-640.onnx",
+      "sha256": "8f4c659275977e7a3bfbfa339a9c769ad793df50f9c0baa8c14b11baa1646430",
+      "sizeBytes": 1588012,
+      "provider": "dml",
+      "input": {
+        "name": "input",
+        "type": "float32",
+        "dims": [
+          1,
+          3,
+          480,
+          640
+        ]
+      },
+      "outputs": {
+        "scores": [
+          1,
+          17640,
+          2
+        ],
+        "boxes": [
+          1,
+          17640,
+          4
+        ]
+      },
+      "loadMs": 535.076,
+      "samples": 100,
+      "minMs": 1.091,
+      "p50Ms": 1.202,
+      "p95Ms": 2.659,
+      "maxMs": 3.208,
+      "meanMs": 1.445
+    },
+    {
+      "status": "passed",
+      "key": "current-ssd-mobilenet-v1",
+      "file": "ssd_mobilenet_v1_12.onnx",
+      "sha256": "b8fba5e404077d4048d27fcd1667e85e27e192eb9bf51e696c46a3acd7d21058",
+      "sizeBytes": 29461455,
+      "provider": "dml",
+      "input": {
+        "name": "inputs",
+        "type": "uint8",
+        "dims": [
+          1,
+          320,
+          320,
+          3
+        ]
+      },
+      "outputs": {
+        "detection_boxes": [
+          1,
+          100,
+          4
+        ],
+        "detection_classes": [
+          1,
+          100
+        ],
+        "detection_scores": [
+          1,
+          100
+        ],
+        "num_detections": [
+          1
+        ]
+      },
+      "loadMs": 4594.188,
+      "samples": 100,
+      "minMs": 30.309,
+      "p50Ms": 40.618,
+      "p95Ms": 46.988,
+      "maxMs": 52.315,
+      "meanMs": 40.755
+    },
+    {
+      "status": "passed",
+      "key": "yunet-fp32",
+      "file": "yunet-fp32.onnx",
+      "sha256": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+      "sizeBytes": 232589,
+      "provider": "dml",
+      "input": {
+        "name": "input",
+        "type": "float32",
+        "dims": [
+          1,
+          3,
+          640,
+          640
+        ]
+      },
+      "outputs": {
+        "cls_8": [
+          1,
+          6400,
+          1
+        ],
+        "cls_16": [
+          1,
+          1600,
+          1
+        ],
+        "cls_32": [
+          1,
+          400,
+          1
+        ],
+        "obj_8": [
+          1,
+          6400,
+          1
+        ],
+        "obj_16": [
+          1,
+          1600,
+          1
+        ],
+        "obj_32": [
+          1,
+          400,
+          1
+        ],
+        "bbox_8": [
+          1,
+          6400,
+          4
+        ],
+        "bbox_16": [
+          1,
+          1600,
+          4
+        ],
+        "bbox_32": [
+          1,
+          400,
+          4
+        ],
+        "kps_8": [
+          1,
+          6400,
+          10
+        ],
+        "kps_16": [
+          1,
+          1600,
+          10
+        ],
+        "kps_32": [
+          1,
+          400,
+          10
+        ]
+      },
+      "loadMs": 451.853,
+      "samples": 100,
+      "minMs": 1.002,
+      "p50Ms": 1.123,
+      "p95Ms": 2.355,
+      "maxMs": 2.989,
+      "meanMs": 1.285
+    },
+    {
+      "status": "passed",
+      "key": "yunet-dynamic-640x480",
+      "file": "yunet-dynamic-2026may.onnx",
+      "sha256": "ebafce4e3c118d6554634be5c27ab333b4c047a9a8c3faf1d7cf93101c22f0f0",
+      "sizeBytes": 229738,
+      "provider": "dml",
+      "input": {
+        "name": "input",
+        "type": "float32",
+        "dims": [
+          1,
+          3,
+          480,
+          640
+        ]
+      },
+      "outputs": {
+        "cls_8": [
+          1,
+          4800,
+          1
+        ],
+        "cls_16": [
+          1,
+          1200,
+          1
+        ],
+        "cls_32": [
+          1,
+          300,
+          1
+        ],
+        "obj_8": [
+          1,
+          4800,
+          1
+        ],
+        "obj_16": [
+          1,
+          1200,
+          1
+        ],
+        "obj_32": [
+          1,
+          300,
+          1
+        ],
+        "bbox_8": [
+          1,
+          4800,
+          4
+        ],
+        "bbox_16": [
+          1,
+          1200,
+          4
+        ],
+        "bbox_32": [
+          1,
+          300,
+          4
+        ],
+        "kps_8": [
+          1,
+          4800,
+          10
+        ],
+        "kps_16": [
+          1,
+          1200,
+          10
+        ],
+        "kps_32": [
+          1,
+          300,
+          10
+        ]
+      },
+      "loadMs": 226.376,
+      "samples": 100,
+      "minMs": 1.579,
+      "p50Ms": 2.006,
+      "p95Ms": 3.352,
+      "maxMs": 3.89,
+      "meanMs": 2.174
+    },
+    {
+      "status": "failed",
+      "key": "yunet-dynamic-320x240",
+      "file": "yunet-dynamic-2026may.onnx",
+      "provider": "dml",
+      "error": "Non-zero status code returned while running Add node. Name:'Add_44' Status Message: D:\\a\\_work\\1\\s\\onnxruntime\\core\\providers\\dml\\DmlExecutionProvider\\src\\MLOperatorAuthorImpl.cpp(2804)\\onnxruntime.dll!00007FFE2986B5B4: (caller: 00007FFE2986B364) Exception(2) tid(51838) 80070057 The parameter is incorrect.\r\n"
+    },
+    {
+      "status": "passed",
+      "key": "yunet-int8bq",
+      "file": "yunet-int8bq.onnx",
+      "sha256": "49f000ec501fef24739071fc7e68267d32209045b6822c0c72dce1da25726f10",
+      "sizeBytes": 122489,
+      "provider": "dml",
+      "input": {
+        "name": "input",
+        "type": "float32",
+        "dims": [
+          1,
+          3,
+          640,
+          640
+        ]
+      },
+      "outputs": {
+        "cls_8": [
+          1,
+          6400,
+          1
+        ],
+        "cls_16": [
+          1,
+          1600,
+          1
+        ],
+        "cls_32": [
+          1,
+          400,
+          1
+        ],
+        "obj_8": [
+          1,
+          6400,
+          1
+        ],
+        "obj_16": [
+          1,
+          1600,
+          1
+        ],
+        "obj_32": [
+          1,
+          400,
+          1
+        ],
+        "bbox_8": [
+          1,
+          6400,
+          4
+        ],
+        "bbox_16": [
+          1,
+          1600,
+          4
+        ],
+        "bbox_32": [
+          1,
+          400,
+          4
+        ],
+        "kps_8": [
+          1,
+          6400,
+          10
+        ],
+        "kps_16": [
+          1,
+          1600,
+          10
+        ],
+        "kps_32": [
+          1,
+          400,
+          10
+        ]
+      },
+      "loadMs": 176.212,
+      "samples": 100,
+      "minMs": 1.005,
+      "p50Ms": 1.158,
+      "p95Ms": 2.493,
+      "maxMs": 23.241,
+      "meanMs": 1.528
+    },
+    {
+      "status": "passed",
+      "key": "nanodet-fp32",
+      "file": "nanodet-fp32.onnx",
+      "sha256": "4b82da9944b88577175ee23a459dce2e26e6e4be573def65b1055dc2d9720186",
+      "sizeBytes": 3800954,
+      "provider": "dml",
+      "input": {
+        "name": "input.1",
+        "type": "float32",
+        "dims": [
+          1,
+          3,
+          416,
+          416
+        ]
+      },
+      "outputs": {
+        "792": [
+          1,
+          2704,
+          80
+        ],
+        "795": [
+          1,
+          2704,
+          32
+        ],
+        "814": [
+          1,
+          676,
+          80
+        ],
+        "817": [
+          1,
+          676,
+          32
+        ],
+        "836": [
+          1,
+          169,
+          80
+        ],
+        "839": [
+          1,
+          169,
+          32
+        ]
+      },
+      "loadMs": 700.609,
+      "samples": 100,
+      "minMs": 1.315,
+      "p50Ms": 1.55,
+      "p95Ms": 3.067,
+      "maxMs": 4.008,
+      "meanMs": 1.842
+    },
+    {
+      "status": "passed",
+      "key": "nanodet-int8",
+      "file": "nanodet-int8.onnx",
+      "sha256": "8dd32b85f2d273e9047f1d6b59e0b2fd008b1076338107bb547ac28942cdf90b",
+      "sizeBytes": 1031424,
+      "provider": "dml",
+      "input": {
+        "name": "input.1",
+        "type": "float32",
+        "dims": [
+          1,
+          3,
+          416,
+          416
+        ]
+      },
+      "outputs": {
+        "792": [
+          1,
+          2704,
+          80
+        ],
+        "795": [
+          1,
+          2704,
+          32
+        ],
+        "814": [
+          1,
+          676,
+          80
+        ],
+        "817": [
+          1,
+          676,
+          32
+        ],
+        "836": [
+          1,
+          169,
+          80
+        ],
+        "839": [
+          1,
+          169,
+          32
+        ]
+      },
+      "loadMs": 427.79,
+      "samples": 100,
+      "minMs": 14.521,
+      "p50Ms": 18.348,
+      "p95Ms": 21.071,
+      "maxMs": 22.785,
+      "meanMs": 18.224
+    },
+    {
+      "status": "failed",
+      "key": "nanodet-int8bq",
+      "file": "nanodet-int8bq.onnx",
+      "provider": "dml",
+      "error": "Load model from <temp>\\nanodet-int8bq.onnx failed:Node (Resize_222) Op (Resize) [ShapeInferenceError] Either `sizes` or `scales` must be provided, but not both of them"
+    },
+    {
+      "status": "passed",
+      "key": "yolox-s-fp32",
+      "file": "yolox-fp32.onnx",
+      "sha256": "c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063",
+      "sizeBytes": 35858002,
+      "provider": "dml",
+      "input": {
+        "name": "images",
+        "type": "float32",
+        "dims": [
+          1,
+          3,
+          640,
+          640
+        ]
+      },
+      "outputs": {
+        "output": [
+          1,
+          8400,
+          85
+        ]
+      },
+      "loadMs": 505.125,
+      "samples": 100,
+      "minMs": 3.782,
+      "p50Ms": 4.404,
+      "p95Ms": 6.708,
+      "maxMs": 8.875,
+      "meanMs": 4.681
+    },
+    {
+      "status": "passed",
+      "key": "yolox-s-int8bq",
+      "file": "yolox-int8bq.onnx",
+      "sha256": "dcaae0aaa2fea4167f89235ee340eb869d3707b25712218d4c7ce921ac90e2ba",
+      "sizeBytes": 9744418,
+      "provider": "dml",
+      "input": {
+        "name": "images",
+        "type": "float32",
+        "dims": [
+          1,
+          3,
+          640,
+          640
+        ]
+      },
+      "outputs": {
+        "output": [
+          1,
+          8400,
+          85
+        ]
+      },
+      "loadMs": 620.646,
+      "samples": 100,
+      "minMs": 3.871,
+      "p50Ms": 4.532,
+      "p95Ms": 7.465,
+      "maxMs": 8.261,
+      "meanMs": 4.831
+    },
+    {
+      "status": "passed",
+      "key": "mediapipe-person-fp32",
+      "file": "mediapipe-person-fp32.onnx",
+      "sha256": "47fd5599d6fa17608f03e0eb0ae230baa6e597d7e8a2c8199fe00abea55a701f",
+      "sizeBytes": 11990159,
+      "provider": "dml",
+      "input": {
+        "name": "input_1:0",
+        "type": "float32",
+        "dims": [
+          1,
+          3,
+          224,
+          224
+        ]
+      },
+      "outputs": {
+        "Identity_1:0": [
+          1,
+          2254,
+          1
+        ],
+        "Identity:0": [
+          1,
+          2254,
+          12
+        ]
+      },
+      "loadMs": 414.714,
+      "samples": 100,
+      "minMs": 0.767,
+      "p50Ms": 0.841,
+      "p95Ms": 1.544,
+      "maxMs": 2.834,
+      "meanMs": 0.997
+    },
+    {
+      "status": "passed",
+      "key": "mediapipe-person-int8bq",
+      "file": "mediapipe-person-int8bq.onnx",
+      "sha256": "c5ed8c00c028b98e5d2c55b920a6e975af6c4cd538cfeea7c054f4fbbd8b9075",
+      "sizeBytes": 3482053,
+      "provider": "dml",
+      "input": {
+        "name": "input_1:0",
+        "type": "float32",
+        "dims": [
+          1,
+          3,
+          224,
+          224
+        ]
+      },
+      "outputs": {
+        "Identity_1:0": [
+          1,
+          2254,
+          1
+        ],
+        "Identity:0": [
+          1,
+          2254,
+          12
+        ]
+      },
+      "loadMs": 510.483,
+      "samples": 100,
+      "minMs": 0.802,
+      "p50Ms": 0.884,
+      "p95Ms": 1.852,
+      "maxMs": 2.893,
+      "meanMs": 1.047
+    }
+  ]
+}

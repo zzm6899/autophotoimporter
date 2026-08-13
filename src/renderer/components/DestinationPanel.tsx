@@ -5,12 +5,12 @@ import { ImportResumeView } from './ImportResumeView';
 import { DestinationPreview } from './import/DestinationPreview';
 import { RecentDestinations } from './import/RecentDestinations';
 import type { AppSettings, EventMode, SaveFormat, JobPreset, ImportConfig, ImportPreflight, ImportBenchmarkResult, ImportConflictPolicy, MetadataExportFlags, SourceProfile } from '../../shared/types';
-import { DEFAULT_METADATA_EXPORT, EVENT_MODE_PRESETS, FOLDER_PRESETS, eventModeKeywords, resolvePattern } from '../../shared/types';
+import { DEFAULT_METADATA_EXPORT, EVENT_MODE_PRESETS, FOLDER_PRESETS, eventModeKeywords, resolvePattern, suggestEventModeFromCues } from '../../shared/types';
 import { formatSize } from '../utils/formatters';
 import { summarizeImportScopePriority } from '../utils/importScopeSummary';
 import { formatWhiteBalanceKelvin, kelvinToWhiteBalanceTemperature, WHITE_BALANCE_MAX_KELVIN, WHITE_BALANCE_MIN_KELVIN, whiteBalanceTemperatureToKelvin } from '../../shared/exposure';
 import { getSecondPassReasons, needsSecondPass } from '../../shared/review-lane';
-import { hasCullingAnalysis, selectKeepersToTarget } from '../../shared/review';
+import { isAutoCullBulkDecisionEligible, selectKeepersToTarget } from '../../shared/review';
 import { useBulkAiPreview, type BulkAiDecisionItem } from '../context/BulkAiPreviewContext';
 
 const FORMAT_EXT: Record<string, string> = {
@@ -95,6 +95,7 @@ const SPEED_PROFILES: Array<{
       metadataExport: FAST_RAW_METADATA_EXPORT,
       fastKeeperMode: true,
       autoSpeedMode: true,
+      superSpeedMode: false,
       perfTier: 'low',
       cpuOptimization: true,
       previewConcurrency: 1,
@@ -120,13 +121,13 @@ const SPEED_PROFILES: Array<{
       metadataExport: DEFAULT_METADATA_EXPORT,
       fastKeeperMode: false,
       autoSpeedMode: true,
+      superSpeedMode: true,
       perfTier: 'balanced',
       cpuOptimization: true,
       previewConcurrency: 2,
       faceConcurrency: 2,
       rawPreviewQuality: 70,
       reviewFaceAnalysis: true,
-      reviewFaceMatching: true,
       reviewPersonDetection: true,
       reviewVisualDuplicates: true,
     },
@@ -145,13 +146,13 @@ const SPEED_PROFILES: Array<{
       metadataExport: DEFAULT_METADATA_EXPORT,
       fastKeeperMode: false,
       autoSpeedMode: false,
+      superSpeedMode: false,
       perfTier: 'high',
       cpuOptimization: false,
       previewConcurrency: 4,
       faceConcurrency: 4,
       rawPreviewQuality: 84,
       reviewFaceAnalysis: true,
-      reviewFaceMatching: true,
       reviewPersonDetection: true,
       reviewVisualDuplicates: true,
     },
@@ -171,7 +172,7 @@ export function DestinationPanel() {
     sourceProfile, conflictPolicy, conflictFolderName,
     previewConcurrency, faceConcurrency, rawPreviewQuality,
     reviewFaceAnalysis, reviewFaceMatching, reviewPersonDetection, reviewVisualDuplicates,
-    fastKeeperMode, autoSpeedMode,
+    fastKeeperMode, autoSpeedMode, superSpeedMode,
     licenseStatus,
     experienceMode,
   } = useAppState();
@@ -313,6 +314,7 @@ export function DestinationPanel() {
     if (settings.metadataExport) dispatch({ type: 'SET_METADATA_EXPORT', flags: settings.metadataExport });
     if (typeof settings.fastKeeperMode === 'boolean') dispatch({ type: 'SET_FAST_KEEPER_MODE', enabled: settings.fastKeeperMode });
     if (typeof settings.autoSpeedMode === 'boolean') dispatch({ type: 'SET_AUTO_SPEED_MODE', enabled: settings.autoSpeedMode });
+    if (typeof settings.superSpeedMode === 'boolean') dispatch({ type: 'SET_SUPER_SPEED_MODE', enabled: settings.superSpeedMode });
     if (typeof settings.cpuOptimization === 'boolean') dispatch({ type: 'SET_PERFORMANCE_OPTION', key: 'cpuOptimization', value: settings.cpuOptimization });
     if (typeof settings.previewConcurrency === 'number') dispatch({ type: 'SET_PREVIEW_CONCURRENCY', concurrency: settings.previewConcurrency });
     if (typeof settings.faceConcurrency === 'number') dispatch({ type: 'SET_FACE_CONCURRENCY', concurrency: settings.faceConcurrency });
@@ -576,6 +578,9 @@ export function DestinationPanel() {
   const metadataCount = metadataKeywords.split(/[\n,;]+/).map((value) => value.trim()).filter(Boolean).length;
   const activeEventMode = EVENT_MODE_PRESETS[eventMode] ?? EVENT_MODE_PRESETS.general;
   const activeEventKeywords = eventModeKeywords(eventMode);
+  const suggestedEventMode = eventMode === 'general' && selectedSource
+    ? suggestEventModeFromCues(selectedSource)
+    : null;
   const normalizeLocalPath = (value: string | null | undefined) => String(value || '').replace(/[\\/]$/, '').toLowerCase();
   const normalizedSource = normalizeLocalPath(selectedSource);
   const normalizedDestination = normalizeLocalPath(destination);
@@ -650,6 +655,7 @@ export function DestinationPanel() {
     reviewVisualDuplicates ? 'dupes on' : 'dupes off',
     fastKeeperMode ? 'fast keeper' : 'AI keeper',
     autoSpeedMode ? 'auto speed' : 'fixed speed',
+    superSpeedMode ? 'Super Speed' : 'full-depth scan',
   ].join(' · ');
   const measuredBenchmarkRatio = realBenchmark?.ok && realBenchmark.rawCopyEtaSeconds > 0 && importBenchmark.keptraSeconds > 0
     ? importBenchmark.keptraSeconds / realBenchmark.rawCopyEtaSeconds
@@ -1051,6 +1057,21 @@ export function DestinationPanel() {
             ))}
           </select>
           <p className="text-[10px] text-text-muted mt-1">{activeEventMode.description}</p>
+          {suggestedEventMode && suggestedEventMode.mode !== eventMode && (
+            <div className="mt-1.5 flex items-center justify-between gap-2 rounded border border-violet-400/25 bg-violet-500/10 px-1.5 py-1">
+              <p className="text-[9px] text-violet-200">
+                Folder suggests {EVENT_MODE_PRESETS[suggestedEventMode.mode].label}
+              </p>
+              <button
+                type="button"
+                onClick={() => handleEventMode(suggestedEventMode.mode)}
+                className="shrink-0 rounded bg-violet-500/20 px-1.5 py-0.5 text-[9px] text-violet-100 hover:bg-violet-500/30"
+                title={`Matched: ${suggestedEventMode.matchedCues.join(', ')}`}
+              >
+                Use preset
+              </button>
+            </div>
+          )}
           <div className="mt-1 flex flex-wrap gap-1">
             {activeEventKeywords.slice(0, 5).map((keyword) => (
               <span key={keyword} className="rounded bg-surface-raised px-1.5 py-0.5 text-[9px] text-text-secondary">
@@ -1071,13 +1092,8 @@ export function DestinationPanel() {
           const isManualKeeper = (file: typeof photos[number]) => file.pick !== 'rejected' && (
             file.isProtected || (file.rating ?? 0) > 0 || file.pick === 'selected'
           );
-          const hasReliableAnalysis = (file: typeof photos[number]) => {
-            if (!hasCullingAnalysis(file)) return false;
-            const hasDetectedSubject = (file.faceBoxes?.length ?? 0) > 0 || (file.personBoxes?.length ?? 0) > 0;
-            if (!hasDetectedSubject) return true;
-            const confidence = file.sceneAnalysis?.subjectFocusConfidence;
-            return typeof confidence === 'number' && confidence >= 0.2;
-          };
+          const hasReliableAnalysis = (file: typeof photos[number]) =>
+            isAutoCullBulkDecisionEligible(file, eventMode);
           const decisionReady = photos.filter((file) =>
             file.pick !== 'rejected' && (isManualKeeper(file) || hasReliableAnalysis(file)),
           );

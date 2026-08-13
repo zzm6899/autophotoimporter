@@ -6,6 +6,7 @@
  * Run once before building or developing:
  *
  *   npm run models
+ *   npm run models -- --experimental-detectors  # also fetch YOLOX evaluation weight
  *
  * Models are cached in ./models/ and skipped if already present.
  * They are listed in .gitignore (large binary files, not source).
@@ -15,10 +16,12 @@
  * license and obtain any required permission before publishing a build.
  *  - version-RFB-640.onnx     ~1.6 MB  - stronger face detection (UltraFace RFB)
  *  - face_recognition_sface_2021dec.onnx ~37 MB - face embeddings (OpenCV SFace, Apache-2.0)
- *  - ssd_mobilenet_v1_12.onnx ~28 MB   - person/body detection for culling
+ *  - face_detection_yunet_2023mar.onnx ~0.2 MB - fast face/landmark pass
+ *  - object_detection_nanodet_2022nov.onnx ~3.8 MB - fast person pass
+ *  - ssd_mobilenet_v1_12.onnx ~28 MB   - selective person/body fallback
  */
 
-import { createReadStream, createWriteStream, existsSync } from 'node:fs';
+import { createReadStream, createWriteStream, existsSync, readFileSync } from 'node:fs';
 import { mkdir, rename, unlink } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,7 +31,17 @@ import { pipeline } from 'node:stream/promises';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MODELS_DIR = join(__dirname, '..', 'models');
+const EXPERIMENTAL_MODELS_DIR = join(MODELS_DIR, 'experimental');
 const DEPRECATED_MODELS = ['w600k_mbf.onnx'];
+const includeExperimentalDetectors = process.argv.includes('--experimental-detectors');
+const detectorManifestPath = join(
+  __dirname,
+  '..',
+  'src',
+  'main',
+  'services',
+  'detector-model-manifest.json',
+);
 
 // ---------------------------------------------------------------------------
 // Model registry
@@ -39,7 +52,7 @@ const DEPRECATED_MODELS = ['w600k_mbf.onnx'];
 const MODELS = [
   {
     name: 'version-RFB-640.onnx',
-    url: 'https://huggingface.co/onnxmodelzoo/version-RFB-640/resolve/main/version-RFB-640.onnx?download=true',
+    url: 'https://huggingface.co/onnxmodelzoo/version-RFB-640/resolve/c39647011b1d0eb48037ce3051438e51b19e2b11/version-RFB-640.onnx?download=true',
     sha256: '8f4c659275977e7a3bfbfa339a9c769ad793df50f9c0baa8c14b11baa1646430',
   },
   {
@@ -50,7 +63,7 @@ const MODELS = [
   },
   {
     name: 'ssd_mobilenet_v1_12.onnx',
-    url: 'https://huggingface.co/onnxmodelzoo/ssd_mobilenet_v1_12/resolve/main/ssd_mobilenet_v1_12.onnx?download=true',
+    url: 'https://huggingface.co/onnxmodelzoo/ssd_mobilenet_v1_12/resolve/019281f3fcb151a90e491f3b2f0273f9f31bd6be/ssd_mobilenet_v1_12.onnx?download=true',
     sha256: 'b8fba5e404077d4048d27fcd1667e85e27e192eb9bf51e696c46a3acd7d21058',
   },
   {
@@ -64,6 +77,40 @@ const MODELS = [
     optional: true,
   },
 ];
+
+function loadDetectorModels() {
+  const manifest = JSON.parse(readFileSync(detectorManifestPath, 'utf8'));
+  if (manifest.schemaVersion !== 2 || manifest.status !== 'mixed' ||
+      manifest.legacyFallbackRemovalRequiresGoldenCorpus !== true || !manifest.productionFastPass ||
+      !Array.isArray(manifest.models)) {
+    throw new Error('Invalid detector manifest');
+  }
+  const productionIds = new Set([
+    manifest.productionFastPass.faceCandidateId,
+    manifest.productionFastPass.personCandidateId,
+  ]);
+  return manifest.models.flatMap((model) => {
+    if (model.redistribution !== 'artifact-license-recorded' ||
+        !/^[a-f0-9]{64}$/.test(model.sha256) || !model.sourceUrl.includes(model.sourceRevision)) {
+      throw new Error(`Detector model failed release-policy validation: ${model.id}`);
+    }
+    const isProduction = productionIds.has(model.id);
+    if (model.bundledByDefault !== isProduction) {
+      throw new Error(`Detector model bundle policy disagrees with production policy: ${model.id}`);
+    }
+    if (!isProduction && !includeExperimentalDetectors) return [];
+    return [{
+      name: model.fileName,
+      url: model.sourceUrl,
+      sha256: model.sha256,
+      destinationDir: isProduction ? MODELS_DIR : EXPERIMENTAL_MODELS_DIR,
+      detectorId: model.id,
+      production: isProduction,
+    }];
+  });
+}
+
+const SELECTED_MODELS = [...MODELS, ...loadDetectorModels()];
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -126,13 +173,14 @@ async function sha256File(filePath) {
 // Main
 // ---------------------------------------------------------------------------
 await mkdir(MODELS_DIR, { recursive: true });
+if (includeExperimentalDetectors) await mkdir(EXPERIMENTAL_MODELS_DIR, { recursive: true });
 for (const deprecated of DEPRECATED_MODELS) {
   await unlink(join(MODELS_DIR, deprecated)).catch(() => undefined);
 }
 
 let allOk = true;
-for (const model of MODELS) {
-  const dest = join(MODELS_DIR, model.name);
+for (const model of SELECTED_MODELS) {
+  const dest = join(model.destinationDir ?? MODELS_DIR, model.name);
 
   if (existsSync(dest)) {
     if (model.sha256) {
@@ -148,7 +196,10 @@ for (const model of MODELS) {
     }
   }
 
-  console.log(`[dl]   ${model.name}`);
+  const detectorLabel = model.detectorId
+    ? model.production ? ` (production fast pass: ${model.detectorId})` : ` (evaluation-only: ${model.detectorId})`
+    : '';
+  console.log(`[dl]   ${model.name}${detectorLabel}`);
   console.log(`       ${model.url}`);
   try {
     await download(model.url, dest);
@@ -180,4 +231,6 @@ if (!allOk) {
   process.exit(1);
 }
 
-console.log('\nAll models ready in ./models/');
+console.log(includeExperimentalDetectors
+  ? '\nProduction models are ready; optional YOLOX remains isolated under ./models/experimental/.'
+  : '\nAll production models ready in ./models/.');

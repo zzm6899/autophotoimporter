@@ -253,6 +253,102 @@ describe('buildAutoCullProposal', () => {
     expect(proposal.unanalysed.sort()).toEqual(['/pending-a.jpg', '/pending-b.jpg']);
   });
 
+  it('does not compare burst frames after only the Super Speed screening pass', () => {
+    const files = [
+      file('/screened-a.jpg', {
+        burstId: 'screened', burstSize: 2, reviewAnalysisStage: 'screened',
+        faceBoxes: [], faceCount: 0, sceneAnalysis: scene('general'),
+      }),
+      file('/screened-b.jpg', {
+        burstId: 'screened', burstSize: 2, reviewAnalysisStage: 'screened',
+        faceBoxes: [], faceCount: 0, sceneAnalysis: scene('general'),
+      }),
+    ];
+
+    expect(files.every((candidate) => !hasCullingAnalysis(candidate))).toBe(true);
+    const proposal = buildAutoCullProposal(files, { genre: 'general' });
+    expect(proposal.reject).toEqual([]);
+    expect(proposal.unanalysed.sort()).toEqual(['/screened-a.jpg', '/screened-b.jpg']);
+  });
+
+  it('keeps exhausted native-analysis failures manual even when canvas scores exist', () => {
+    const failed = file('/unavailable.jpg', {
+      reviewAnalysisUnavailable: true,
+      sharpnessScore: 180,
+      subjectSharpnessScore: 180,
+      reviewScore: 95,
+      sceneAnalysis: scene('general'),
+    });
+
+    expect(hasCullingAnalysis(failed)).toBe(false);
+    const proposal = buildAutoCullProposal([failed], { genre: 'general' });
+    expect(proposal.keep).toEqual([]);
+    expect(proposal.reject).toEqual([]);
+    expect(proposal.unanalysed).toEqual(['/unavailable.jpg']);
+  });
+
+  it('does not reject an analysed frame while another group member is still screened', () => {
+    const files = [
+      file('/pending-best.jpg', {
+        burstId: 'mixed-depth', burstSize: 2, reviewAnalysisStage: 'screened',
+        sharpnessScore: 220, subjectSharpnessScore: undefined,
+        faceBoxes: [], faceCount: 0, sceneAnalysis: scene('general'),
+      }),
+      file('/analysed-runner.jpg', {
+        burstId: 'mixed-depth', burstSize: 2, reviewAnalysisStage: 'subjects',
+        sharpnessScore: 80, subjectSharpnessScore: 80,
+        faceBoxes: [], faceCount: 0, personBoxes: [], personCount: 0,
+        sceneAnalysis: scene('general', { edgeSharpness: 80, centerSharpness: 80 }),
+      }),
+    ];
+
+    const proposal = buildAutoCullProposal(files, { eventMode: 'general', genre: 'general' });
+    expect(proposal.reject).toEqual([]);
+    expect(proposal.unanalysed).toEqual(['/pending-best.jpg']);
+    expect(proposal.uncertain).toContain('/analysed-runner.jpg');
+    expect(proposal.reasons['/analysed-runner.jpg']).toContain('comparison group is still being analysed');
+  });
+
+  it('keeps face-screened landscape repeats manual until body detection completes', () => {
+    const files = [
+      file('/landscape-a.jpg', {
+        burstId: 'landscape', burstSize: 2, reviewAnalysisStage: 'screened',
+        faceBoxes: [], faceCount: 0, sharpnessScore: 180,
+        sceneAnalysis: scene('landscape'),
+      }),
+      file('/landscape-b.jpg', {
+        burstId: 'landscape', burstSize: 2, reviewAnalysisStage: 'screened',
+        faceBoxes: [], faceCount: 0, sharpnessScore: 120,
+        sceneAnalysis: scene('landscape', { edgeSharpness: 90, cornerSharpness: 70 }),
+      }),
+    ];
+
+    const proposal = buildAutoCullProposal(files, { eventMode: 'landscape', genre: 'landscape' });
+    expect(proposal.keep).toEqual([]);
+    expect(proposal.reject).toEqual([]);
+    expect(proposal.unanalysed.sort()).toEqual(['/landscape-a.jpg', '/landscape-b.jpg']);
+  });
+
+  it('keeps dynamically grouped screened scenes manual before group metadata lands', () => {
+    const files = [
+      file('/hash-screened-a.jpg', {
+        reviewAnalysisStage: 'screened', faceBoxes: [], faceCount: 0,
+        visualHash: '0000000000000000', sharpnessScore: 200,
+        sceneAnalysis: scene('landscape'),
+      }),
+      file('/hash-screened-b.jpg', {
+        reviewAnalysisStage: 'screened', faceBoxes: [], faceCount: 0,
+        visualHash: '0000000000000001', sharpnessScore: 80,
+        sceneAnalysis: scene('landscape', { edgeSharpness: 40, cornerSharpness: 30 }),
+      }),
+    ];
+
+    const proposal = buildAutoCullProposal(files, { eventMode: 'landscape', genre: 'landscape' });
+    expect(proposal.keep).toEqual([]);
+    expect(proposal.reject).toEqual([]);
+    expect(proposal.unanalysed.sort()).toEqual(['/hash-screened-a.jpg', '/hash-screened-b.jpg']);
+  });
+
   it('keeps completed but low-confidence subject ROI results uncertain', () => {
     const files = [
       file('/tiny-a.jpg', {

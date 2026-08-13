@@ -20,6 +20,14 @@ import path from 'node:path';
 import { app } from 'electron';
 import type { BrowserWindow } from 'electron';
 import { IPC } from '../../shared/types';
+import {
+  DETECTOR_CANDIDATE_MODELS,
+  PRODUCTION_FAST_DETECTOR_MODELS,
+  getDetectorCandidate,
+  verifyDetectorCandidateFile,
+  type DetectorCandidateId,
+  type DetectorCandidateModel,
+} from './detector-model-manifest';
 
 // ---------------------------------------------------------------------------
 // Model registry
@@ -68,6 +76,12 @@ const MODELS: ModelSpec[] = [
     approxBytes: 25_067_197,
     sha256: '3dca9f6e5f8a64dc9935a5be06fd8bf81bf01e696c9c05c6f2a650e0a401b763',
   },
+  ...Object.values(PRODUCTION_FAST_DETECTOR_MODELS).map((model) => ({
+    name: model.fileName,
+    url: model.sourceUrl,
+    approxBytes: model.bytes,
+    sha256: model.sha256,
+  })),
 ];
 
 // ---------------------------------------------------------------------------
@@ -88,6 +102,14 @@ function modelSearchDirs(): string[] {
     ];
   }
   return [path.join(app.getAppPath(), 'models')];
+}
+
+function experimentalDetectorDir(): string {
+  return path.join(downloadModelsDir(), 'experimental');
+}
+
+function experimentalDetectorSearchDirs(): string[] {
+  return modelSearchDirs().map((dir) => path.join(dir, 'experimental'));
 }
 
 async function digestFile(file: string): Promise<string> {
@@ -119,6 +141,16 @@ async function modelExists(model: ModelSpec): Promise<boolean> {
 async function allModelsPresent(): Promise<boolean> {
   const present = await Promise.all(MODELS.map(modelExists));
   return present.every(Boolean);
+}
+
+async function findVerifiedExperimentalDetector(
+  candidate: DetectorCandidateModel,
+): Promise<string | null> {
+  for (const dir of experimentalDetectorSearchDirs()) {
+    const filePath = path.join(dir, candidate.fileName);
+    if (await verifyDetectorCandidateFile(candidate, filePath)) return filePath;
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -232,6 +264,82 @@ function downloadFile(
 // ---------------------------------------------------------------------------
 
 let downloadInProgress = false;
+const experimentalDetectorDownloads = new Map<DetectorCandidateId, Promise<string>>();
+
+export interface ExperimentalDetectorModelStatus {
+  id: DetectorCandidateId;
+  fileName: string;
+  state: 'not-installed' | 'verified' | 'invalid';
+  /** Main-process-only path. Never expose it to renderer diagnostics. */
+  modelPath?: string;
+}
+
+/**
+ * Report opt-in detector availability without loading ONNX or changing the
+ * production provider selection. A same-name file with the wrong size/digest
+ * is explicitly invalid rather than silently trusted.
+ */
+export async function getExperimentalDetectorModelStatuses(): Promise<ExperimentalDetectorModelStatus[]> {
+  return Promise.all(DETECTOR_CANDIDATE_MODELS
+    .filter((candidate) => !candidate.bundledByDefault)
+    .map(async (candidate) => {
+      const verified = await findVerifiedExperimentalDetector(candidate);
+      if (verified) {
+        return { id: candidate.id, fileName: candidate.fileName, state: 'verified', modelPath: verified };
+      }
+      const installed = experimentalDetectorSearchDirs()
+        .map((dir) => path.join(dir, candidate.fileName))
+        .some((filePath) => existsSync(filePath));
+      return {
+        id: candidate.id,
+        fileName: candidate.fileName,
+        state: installed ? 'invalid' : 'not-installed',
+      };
+    }));
+}
+
+/**
+ * Explicitly download one evaluation-only detector. This API is deliberately
+ * not called by the startup downloader or face engine: promotion requires the
+ * labelled golden-corpus gate documented with the candidate manifest.
+ */
+export function ensureExperimentalDetectorDownloaded(
+  id: DetectorCandidateId,
+  onProgress: (percent: number) => void = () => undefined,
+): Promise<string> {
+  const active = experimentalDetectorDownloads.get(id);
+  if (active) return active;
+
+  const task = (async () => {
+    const candidate = getDetectorCandidate(id);
+    if (candidate.bundledByDefault) {
+      throw new Error(`${candidate.displayName} is a production model managed by the standard downloader.`);
+    }
+    const existing = await findVerifiedExperimentalDetector(candidate);
+    if (existing) return existing;
+
+    const targetDir = experimentalDetectorDir();
+    await mkdir(targetDir, { recursive: true });
+    const destination = path.join(targetDir, candidate.fileName);
+    if (existsSync(destination)) await unlink(destination).catch(() => undefined);
+
+    await downloadFile(
+      candidate.sourceUrl,
+      destination,
+      candidate.bytes,
+      candidate.sha256,
+      (received, total) => onProgress(Math.min(100, Math.round((received / Math.max(1, total)) * 100))),
+    );
+    if (!await verifyDetectorCandidateFile(candidate, destination)) {
+      await unlink(destination).catch(() => undefined);
+      throw new Error(`Downloaded detector candidate failed verification: ${candidate.id}`);
+    }
+    return destination;
+  })().finally(() => experimentalDetectorDownloads.delete(id));
+
+  experimentalDetectorDownloads.set(id, task);
+  return task;
+}
 
 /**
  * Called once from main.ts after the window is ready.

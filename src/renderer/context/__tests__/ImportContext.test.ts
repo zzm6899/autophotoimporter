@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { invalidateSceneSubjectAnalysis, mergeReviewScorePatches, reducer, type Action, type AppPhase } from '../ImportContext';
+import { applyVisualGroupAssignments, buildVisualGroupAssignments, invalidateSceneSubjectAnalysis, mergeReviewPatch, mergeReviewScorePatches, reducer, stagePendingCommittedReviewPatches, stagePendingReviewGroupPatches, visualGroupAssignmentChanges, type Action, type AppPhase, type ReviewPatch } from '../ImportContext';
 import type { MediaFile, ImportProgress, ImportResult, SaveFormat } from '../../../shared/types';
 import { DEFAULT_VIEW_OVERLAY_PREFERENCES, FOLDER_PRESETS } from '../../../shared/types';
 
@@ -135,6 +135,7 @@ function makeState(overrides: Record<string, unknown> = {}) {
     reviewPersonDetection: true,
     reviewVisualDuplicates: true,
     autoSpeedMode: false,
+    superSpeedMode: true,
     perfTier: 'auto' as const,
     fastKeeperMode: false,
     aiReviewEnabled: true,
@@ -390,7 +391,9 @@ describe('ImportContext reducer', () => {
       expect(next.faceConcurrency).toBeGreaterThanOrEqual(4);
       expect(next.rawPreviewQuality).toBeGreaterThanOrEqual(82);
       expect(next.reviewFaceAnalysis).toBe(true);
-      expect(next.reviewFaceMatching).toBe(true);
+      // Performance tiers preserve explicit similar-face consent; they do not
+      // create biometric-style vectors on the user's behalf.
+      expect(next.reviewFaceMatching).toBe(false);
       expect(next.reviewPersonDetection).toBe(true);
       expect(next.reviewVisualDuplicates).toBe(true);
     });
@@ -730,6 +733,11 @@ describe('ImportContext reducer', () => {
           personBoxes: [{ x: 0.1, y: 0.05, width: 0.5, height: 0.85, score: 0.9 }],
           subjectSharpnessScore: 15,
           subjectReasons: ['face-area focus measured'],
+          reviewScore: 92,
+          reviewReasons: ['sharp face'],
+          blurRisk: 'low',
+          faceGroupId: 'face-1',
+          poses: [{ keypoints: [{ x: 0.2, y: 0.3, score: 0.9 }] }],
           sceneAnalysis: {
             kind: 'people',
             confidence: 1,
@@ -752,6 +760,11 @@ describe('ImportContext reducer', () => {
       expect(cleared.personBoxes).toBeUndefined();
       expect(cleared.subjectSharpnessScore).toBeUndefined();
       expect(cleared.subjectReasons).toBeUndefined();
+      expect(cleared.reviewScore).toBeUndefined();
+      expect(cleared.reviewReasons).toBeUndefined();
+      expect(cleared.blurRisk).toBeUndefined();
+      expect(cleared.faceGroupId).toBeUndefined();
+      expect(cleared.poses).toBeUndefined();
       expect(cleared.sceneAnalysis).toEqual({
         kind: 'people',
         confidence: 1,
@@ -788,6 +801,71 @@ describe('ImportContext reducer', () => {
       expect(merged.sceneAnalysis?.subjectFocusConfidence).toBe(0.86);
       expect(merged.reviewScore).toBeUndefined();
       expect(merged.blurRisk).toBeUndefined();
+    });
+
+    it('applies a committed review snapshot without growing undo history', () => {
+      const files = [makeFile({ path: '/photo.jpg' })];
+      const reviewed = [{ ...files[0], reviewAnalysisStage: 'screened' as const, faceBoxes: [], faceCount: 0 }];
+      const next = reducer(makeState({ files }), {
+        type: 'APPLY_REVIEW_SNAPSHOT',
+        files: reviewed,
+      });
+
+      expect(next.files).toBe(reviewed);
+      expect(next.files[0].reviewAnalysisStage).toBe('screened');
+      expect(next.fileHistory).toEqual([]);
+    });
+
+    it('composes two committed overlays before React renders either reducer result', () => {
+      const file = makeFile({ path: '/photo.jpg' });
+      const pending = new Map<string, ReviewPatch>();
+      stagePendingCommittedReviewPatches(pending, new Map([[
+        file.path,
+        { reviewAnalysisStage: 'screened', faceCount: 1, faceBoxes: [] },
+      ]]));
+      stagePendingCommittedReviewPatches(pending, new Map([[
+        file.path,
+        { visualHash: '0011223344556677', sharpnessScore: 123 },
+      ]]));
+
+      const durable = mergeReviewPatch(file, pending.get(file.path)!);
+      expect(durable).toEqual(expect.objectContaining({
+        reviewAnalysisStage: 'screened',
+        faceCount: 1,
+        visualHash: '0011223344556677',
+        sharpnessScore: 123,
+      }));
+    });
+
+    it('does not let a pending grouping bridge overwrite a pick dispatched after COMMIT', () => {
+      const file = makeFile({ path: '/photo.jpg', reviewScore: 82 });
+      const grouped = { ...file, visualGroupId: 'visual-1', visualGroupSize: 2 };
+      const pending = new Map<string, ReviewPatch>();
+      stagePendingReviewGroupPatches(pending, [grouped], [file.path]);
+
+      // React reduces both queued actions before rendering. Persistence may
+      // still observe the bridge Map briefly, so that patch must be field-safe.
+      const committed = reducer(makeState({ files: [file] }), {
+        type: 'APPLY_REVIEW_SNAPSHOT',
+        files: [grouped],
+      });
+      const picked = reducer(committed, {
+        type: 'SET_PICK',
+        filePath: file.path,
+        pick: 'selected',
+      });
+      const durable = mergeReviewPatch(picked.files[0], pending.get(file.path)!);
+
+      expect(pending.get(file.path)).toEqual({
+        visualGroupId: 'visual-1',
+        visualGroupSize: 2,
+        faceGroupId: undefined,
+        faceGroupSize: undefined,
+        __preserveReviewScore: true,
+      });
+      expect(durable.pick).toBe('selected');
+      expect(durable.visualGroupId).toBe('visual-1');
+      expect(durable.reviewScore).toBe(82);
     });
 
     it('removes every subject ROI field without discarding scene metrics', () => {
@@ -835,6 +913,28 @@ describe('ImportContext reducer', () => {
       expect(next.files[0].visualGroupId).toBeTruthy();
       expect(next.files[1].visualGroupId).toBe(next.files[0].visualGroupId);
       expect(next.files[2].visualGroupId).toBeUndefined();
+
+      const repeated = reducer(next, { type: 'GROUP_VISUAL_DUPLICATES', threshold: 2 });
+      expect(repeated).toBe(next);
+      expect(repeated.files).toBe(next.files);
+    });
+
+    it('reports only visual-group rows whose membership changed or was cleared', () => {
+      const files = [
+        makeFile({ path: '/a.jpg', visualHash: '0000000000000000', visualGroupId: 'visual-1', visualGroupSize: 2 }),
+        makeFile({ path: '/b.jpg', visualHash: '0000000000000001', visualGroupId: 'visual-1', visualGroupSize: 2 }),
+        makeFile({ path: '/stale.jpg', visualHash: 'ffffffffffffffff', visualGroupId: 'old', visualGroupSize: 2 }),
+        makeFile({ path: '/solo.jpg', visualHash: 'aaaaaaaaaaaaaaaa' }),
+      ];
+      const assignments = buildVisualGroupAssignments(files, 2);
+
+      expect(visualGroupAssignmentChanges(files, assignments)).toEqual(['/stale.jpg']);
+      const grouped = applyVisualGroupAssignments(files, assignments);
+      expect(grouped.changedPaths).toEqual(['/stale.jpg']);
+      expect(grouped.files[0]).toBe(files[0]);
+      expect(grouped.files[1]).toBe(files[1]);
+      expect(grouped.files[2].visualGroupId).toBeUndefined();
+      expect(grouped.files[3]).toBe(files[3]);
     });
 
     it('groups visual duplicates from supplied merged review files', () => {
@@ -870,6 +970,10 @@ describe('ImportContext reducer', () => {
       expect(next.files[1].faceGroupId).toBe(next.files[0].faceGroupId);
       expect(next.files[0].faceGroupSize).toBe(2);
       expect(next.files[2].faceGroupId).toBeUndefined();
+
+      const repeated = reducer(next, { type: 'GROUP_FACE_SIMILAR', threshold: 10, files: mergedFiles });
+      expect(repeated).toBe(next);
+      expect(repeated.files).toBe(next.files);
     });
 
     it('keeps lower-confidence face candidates split with the default app threshold', () => {
@@ -975,6 +1079,19 @@ describe('ImportContext reducer', () => {
       const next = reducer(makeState({ files }), { type: 'PICK_BEST_IN_GROUPS', files: mergedFiles });
       expect(next.files.find((f) => f.path === '/fresh-best.jpg')?.pick).toBe('selected');
       expect(next.files.find((f) => f.path === '/stale-best.jpg')?.pick).toBe('rejected');
+    });
+
+    it('never treats a similar-face identity as a reject group', () => {
+      const files = [
+        makeFile({ path: '/hyrox-run.jpg', faceGroupId: 'same-person', faceGroupSize: 2, reviewScore: 92, sharpnessScore: 180 }),
+        makeFile({ path: '/hyrox-sled.jpg', faceGroupId: 'same-person', faceGroupSize: 2, reviewScore: 55, sharpnessScore: 95 }),
+      ];
+
+      const picked = reducer(makeState({ files }), { type: 'PICK_BEST_IN_GROUPS' });
+      const culled = reducer(makeState({ files }), { type: 'AUTO_CULL_SAFE' });
+
+      expect(picked.files.map((item) => item.pick)).toEqual([undefined, undefined]);
+      expect(culled.files.map((item) => item.pick)).toEqual([undefined, undefined]);
     });
 
     it('auto-culls groups from supplied merged review files', () => {
@@ -1091,6 +1208,7 @@ describe('ImportContext reducer', () => {
           burstIndex: 1,
           faceCount: 1,
           faceBoxes: [{ x: 0.3, y: 0.2, width: 0.2, height: 0.22, eyeScore: 2, smileScore: 0.45, score: 0.94 }],
+          sceneAnalysis: { kind: 'people', confidence: 0.9, subjectFocusConfidence: 0.8, subjectSharpnessScore: 132 },
           subjectSharpnessScore: 132,
           sharpnessScore: 150,
           reviewScore: 82,
@@ -1102,6 +1220,7 @@ describe('ImportContext reducer', () => {
           burstIndex: 2,
           faceCount: 1,
           faceBoxes: [{ x: 0.3, y: 0.2, width: 0.2, height: 0.22, eyeScore: 2, smileScore: 1, score: 0.9 }],
+          sceneAnalysis: { kind: 'people', confidence: 0.9, subjectFocusConfidence: 0.8, subjectSharpnessScore: 92 },
           subjectSharpnessScore: 92,
           sharpnessScore: 110,
           reviewScore: 72,
@@ -1113,6 +1232,7 @@ describe('ImportContext reducer', () => {
           burstIndex: 3,
           faceCount: 1,
           faceBoxes: [{ x: 0.3, y: 0.2, width: 0.2, height: 0.22, eyeScore: 1, smileScore: 0.3, score: 0.86 }],
+          sceneAnalysis: { kind: 'people', confidence: 0.9, subjectFocusConfidence: 0.8, subjectSharpnessScore: 175 },
           subjectSharpnessScore: 175,
           sharpnessScore: 190,
           reviewScore: 68,

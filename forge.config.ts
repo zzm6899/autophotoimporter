@@ -26,6 +26,47 @@ function copyDirSync(src: string, dst: string): void {
   }
 }
 
+function copySharpRuntime(resourcesDir: string, platform: string, arch: string): void {
+  const sharpRoot = path.resolve(__dirname, 'node_modules', 'sharp');
+  const runtimeRoot = path.join(resourcesDir, 'sharp-runtime', 'node_modules');
+  if (!fs.existsSync(sharpRoot)) throw new Error(`Sharp runtime is missing: ${sharpRoot}`);
+  copyDirSync(sharpRoot, path.join(runtimeRoot, 'sharp'));
+  for (const packageName of ['detect-libc', 'semver']) {
+    const source = path.resolve(__dirname, 'node_modules', packageName);
+    if (!fs.existsSync(source)) throw new Error(`Sharp dependency is missing: ${packageName}`);
+    copyDirSync(source, path.join(runtimeRoot, packageName));
+  }
+  const colourSource = path.resolve(__dirname, 'node_modules', '@img', 'colour');
+  if (!fs.existsSync(colourSource)) throw new Error('Sharp dependency is missing: @img/colour');
+  copyDirSync(colourSource, path.join(runtimeRoot, '@img', 'colour'));
+
+  const packages = platform === 'darwin' && arch === 'universal'
+    ? ['sharp-darwin-arm64', 'sharp-darwin-x64']
+    : [`sharp-${platform}-${arch}`];
+  for (const packageName of packages) {
+    const source = path.resolve(__dirname, 'node_modules', '@img', packageName);
+    if (!fs.existsSync(source)) {
+      throw new Error(`Sharp native target package is missing: @img/${packageName}`);
+    }
+    copyDirSync(source, path.join(runtimeRoot, '@img', packageName));
+    const libvipsName = packageName.replace(/^sharp-/, 'sharp-libvips-');
+    const libvipsSource = path.resolve(__dirname, 'node_modules', '@img', libvipsName);
+    if (fs.existsSync(libvipsSource)) {
+      copyDirSync(libvipsSource, path.join(runtimeRoot, '@img', libvipsName));
+    }
+  }
+}
+
+function pruneEvaluationOnlyDetectorResources(resourcesDir: string): void {
+  if (process.env.KEPTRA_PACKAGE_EXPERIMENTAL_DETECTORS === '1') return;
+  const modelRoot = path.resolve(resourcesDir, 'models');
+  const candidateDir = path.resolve(modelRoot, 'experimental');
+  if (!candidateDir.startsWith(modelRoot + path.sep)) {
+    throw new Error(`Refusing to prune an unsafe detector path: ${candidateDir}`);
+  }
+  if (fs.existsSync(candidateDir)) fs.rmSync(candidateDir, { recursive: true, force: true });
+}
+
 const ortNativeArchitectures: Readonly<Record<string, readonly string[]>> = {
   darwin: ['arm64', 'x64'],
   linux: ['arm64', 'x64'],
@@ -175,6 +216,11 @@ const config: ForgeConfig = {
       // the asar archive. Copied here as an extraResource so it lands in
       // resources/onnxruntime-node/ and can be required via process.resourcesPath.
       path.resolve(__dirname, 'node_modules', 'onnxruntime-node'),
+      // UtilityProcess entrypoints are also kept outside app.asar. Electron's
+      // hardened ASAR fuse can reject a forked module before JavaScript runs;
+      // the same Vite bundle remains in app.asar for integrity/audit, while
+      // this executable copy gives the process a normal filesystem path.
+      path.resolve(__dirname, '.vite', 'build', 'image-preprocess-worker.js'),
     ],
     // After copying extraResources, inject onnxruntime-common (and global-agent)
     // into onnxruntime-node/node_modules/ so bare require() calls inside
@@ -209,7 +255,17 @@ const config: ForgeConfig = {
           const resourcesDir = platform === 'darwin'
             ? path.join(stagingPath, `${productName}.app`, 'Contents', 'Resources')
             : path.join(stagingPath, 'resources');
+          pruneEvaluationOnlyDetectorResources(resourcesDir);
+          copySharpRuntime(resourcesDir, platform, arch);
           pruneOrtNativeBinaries(path.join(resourcesDir, 'onnxruntime-node'), platform, arch);
+          // Candidate weights are permitted in local evaluation checkouts but
+          // must never enter a normal production artifact implicitly.
+          if (process.env.KEPTRA_PACKAGE_EXPERIMENTAL_DETECTORS !== '1') {
+            fs.rmSync(path.join(resourcesDir, 'models', 'experimental'), {
+              recursive: true,
+              force: true,
+            });
+          }
           done();
         } catch (e) {
           done(e instanceof Error ? e : new Error(String(e)));
@@ -257,6 +313,11 @@ const config: ForgeConfig = {
           entry: 'src/main/preload.ts',
           config: 'vite.preload.config.ts',
           target: 'preload',
+        },
+        {
+          entry: 'src/main/workers/image-preprocess-worker.ts',
+          config: 'vite.preprocess-worker.config.ts',
+          target: 'main',
         },
       ],
       renderer: [

@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useAppDispatch, useAppState, useMergedFiles } from '../context/ImportContext';
+import { SESSION_PERSISTENCE_STATUS_EVENT, type SessionPersistenceState } from '../hooks/useSessionPersistence';
 
 const isMac = typeof window !== 'undefined' && window.electronAPI?.platform === 'darwin';
 const MOD = isMac ? 'Cmd' : 'Ctrl';
@@ -21,6 +22,24 @@ export function HelpBar() {
   const files = useMergedFiles();
   const dispatch = useAppDispatch();
   const [showAiStats, setShowAiStats] = useState(true);
+  const [sessionPersistence, setSessionPersistence] = useState<{
+    state: SessionPersistenceState;
+    attempt: number;
+    message?: string;
+  }>({ state: 'idle', attempt: 0 });
+
+  useEffect(() => {
+    const onStatus = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        state: SessionPersistenceState;
+        attempt?: number;
+        message?: string;
+      }>).detail;
+      if (detail?.state) setSessionPersistence({ ...detail, attempt: detail.attempt ?? 0 });
+    };
+    window.addEventListener(SESSION_PERSISTENCE_STATUS_EVENT, onStatus);
+    return () => window.removeEventListener(SESSION_PERSISTENCE_STATUS_EVENT, onStatus);
+  }, []);
 
   const stats = useMemo(() => {
     let picked = 0;
@@ -194,6 +213,16 @@ export function HelpBar() {
         {ftpSyncStatus.state === 'running' && (
           <span className="shrink-0 text-blue-700 dark:text-blue-300" title={ftpSyncStatus.message}>
             FTP sync {ftpSyncStatus.done && ftpSyncStatus.total ? `${ftpSyncStatus.done}/${ftpSyncStatus.total}` : 'running'}
+          </span>
+        )}
+        {sessionPersistence.state === 'retrying' && (
+          <span className="shrink-0 text-amber-700 dark:text-amber-300" title={sessionPersistence.message}>
+            Session save retry {sessionPersistence.attempt}/5
+          </span>
+        )}
+        {sessionPersistence.state === 'failed' && (
+          <span className="shrink-0 text-red-700 dark:text-red-300" title={sessionPersistence.message}>
+            Session recovery save failed
           </span>
         )}
 

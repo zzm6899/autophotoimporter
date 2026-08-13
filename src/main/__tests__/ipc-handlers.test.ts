@@ -44,6 +44,7 @@ vi.mock('node:fs/promises', () => ({
     close: vi.fn().mockResolvedValue(undefined),
   }),
   readdir: vi.fn().mockResolvedValue([]),
+  unlink: vi.fn().mockResolvedValue(undefined),
   rename: vi.fn().mockResolvedValue(undefined),
   rm: vi.fn().mockResolvedValue(undefined),
   chmod: vi.fn().mockResolvedValue(undefined),
@@ -148,13 +149,18 @@ vi.mock('../services/license', () => ({
   checkHostedLicenseStatus: vi.fn(async (_key: string, existing: any) => existing ?? { valid: false, message: 'No license activated.' }),
 }));
 
-import { registerIpcHandlers } from '../ipc-handlers';
+import {
+  registerIpcHandlers,
+  requestRendererSessionFlush,
+  resolveTrustedFaceOrientation,
+  SESSION_RESTORE_LEASE_MS,
+} from '../ipc-handlers';
 import { importFiles } from '../services/import-engine';
 import { scanFiles } from '../services/file-scanner';
 import { isDuplicate } from '../services/duplicate-detector';
 import { generatePreview, generatePreviewPayload, setRawPreviewCache, setRawPreviewQuality } from '../services/exif-parser';
 import { checkForUpdate, fetchUpdateHistory, readLastKnownGoodUpdateMetadata } from '../services/update-checker';
-import { readFile, writeFile, chmod, stat } from 'node:fs/promises';
+import { readFile, writeFile, chmod, stat, open, readdir, unlink } from 'node:fs/promises';
 
 const mockImportFiles = vi.mocked(importFiles);
 const mockScanFiles = vi.mocked(scanFiles);
@@ -167,6 +173,9 @@ const mockReadFile = vi.mocked(readFile);
 const mockWriteFile = vi.mocked(writeFile);
 const mockChmod = vi.mocked(chmod);
 const mockStat = vi.mocked(stat);
+const mockOpen = vi.mocked(open);
+const mockReaddir = vi.mocked(readdir);
+const mockUnlink = vi.mocked(unlink);
 const mockCheckForUpdate = vi.mocked(checkForUpdate);
 const mockFetchUpdateHistory = vi.mocked(fetchUpdateHistory);
 const mockReadLastKnownGoodUpdateMetadata = vi.mocked(readLastKnownGoodUpdateMetadata);
@@ -178,6 +187,50 @@ function getHandler(channel: string): (...args: unknown[]) => Promise<unknown> {
   if (!call) throw new Error(`No handler registered for ${channel}`);
   return call[1] as (...args: unknown[]) => Promise<unknown>;
 }
+
+function makeIpcSender(id: number) {
+  const destroyedListeners = new Set<() => void>();
+  let destroyed = false;
+  const sender = {
+    id,
+    isDestroyed: () => destroyed,
+    once: vi.fn((event: string, listener: () => void) => {
+      if (event === 'destroyed') destroyedListeners.add(listener);
+      return sender;
+    }),
+    removeListener: vi.fn((event: string, listener: () => void) => {
+      if (event === 'destroyed') destroyedListeners.delete(listener);
+      return sender;
+    }),
+    destroyForTest: () => {
+      destroyed = true;
+      const listeners = [...destroyedListeners];
+      destroyedListeners.clear();
+      for (const listener of listeners) listener();
+    },
+  };
+  return sender;
+}
+
+function ipcEvent(sender: ReturnType<typeof makeIpcSender>) {
+  return { sender } as any;
+}
+
+describe('trusted face orientation', () => {
+  it('uses the main-owned scan orientation and ignores a conflicting renderer hint', () => {
+    const registered = {
+      path: '/photos/portrait.jpg',
+      name: 'portrait.jpg',
+      size: 123,
+      type: 'photo',
+      extension: '.jpg',
+      orientation: 6,
+    } satisfies MediaFile;
+
+    expect(resolveTrustedFaceOrientation(registered, 1)).toBe(6);
+    expect(resolveTrustedFaceOrientation({ ...registered, orientation: 12 }, 8)).toBeUndefined();
+  });
+});
 
 describe('IPC Handlers', () => {
   beforeEach(() => {
@@ -195,6 +248,16 @@ describe('IPC Handlers', () => {
     mockChmod.mockResolvedValue(undefined);
     mockStat.mockReset();
     mockStat.mockRejectedValue(new Error('ENOENT'));
+    mockOpen.mockReset();
+    mockOpen.mockResolvedValue({
+      writeFile: vi.fn().mockResolvedValue(undefined),
+      sync: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+    } as any);
+    mockReaddir.mockReset();
+    mockReaddir.mockResolvedValue([] as any);
+    mockUnlink.mockReset();
+    mockUnlink.mockResolvedValue(undefined);
     mockCheckForUpdate.mockReset();
     mockCheckForUpdate.mockResolvedValue({ status: 'up-to-date', currentVersion: '1.1.0', latestVersion: '1.1.0' });
     mockFetchUpdateHistory.mockReset();
@@ -629,6 +692,13 @@ describe('IPC Handlers', () => {
       expect(settings.theme).toBe('light');
     });
 
+    it('migrates legacy display-adapter indices to safe DirectML Auto', async () => {
+      mockReadFile.mockResolvedValue(JSON.stringify({ gpuDeviceId: 1 }) as any);
+      const settings = await getHandler('settings:get')({}) as any;
+
+      expect(settings.gpuDeviceId).toBe(-1);
+    });
+
     it('clamps saved face concurrency to a device-safe maximum', async () => {
       mockReadFile.mockResolvedValue(JSON.stringify({ perfTier: 'high', faceConcurrency: 24 }) as any);
       const handler = getHandler('settings:get');
@@ -716,6 +786,44 @@ describe('IPC Handlers', () => {
       const written = JSON.parse(String(mockWriteFile.mock.calls[0][1]));
 
       expect(written.previewConcurrency).toBe(12);
+    });
+
+    it('refuses to enable similar-face matching without the explicit local consent marker', async () => {
+      mockReadFile.mockResolvedValue(JSON.stringify({
+        reviewFaceMatching: false,
+        faceMatchingConsentVersion: '',
+      }) as any);
+
+      await getHandler('settings:set')({}, { reviewFaceMatching: true });
+      const written = JSON.parse(String(mockWriteFile.mock.calls[0][1]));
+
+      expect(written.reviewFaceMatching).toBe(false);
+      expect(written.faceMatchingConsentVersion).toBe('');
+    });
+
+    it('enables similar-face matching only with its versioned consent marker', async () => {
+      mockReadFile.mockResolvedValue(JSON.stringify({
+        reviewFaceMatching: false,
+        faceMatchingConsentVersion: '',
+      }) as any);
+
+      await getHandler('settings:set')({}, {
+        reviewFaceMatching: true,
+        faceMatchingConsentVersion: 'local-similarity-v1',
+      });
+      const written = JSON.parse(String(mockWriteFile.mock.calls[0][1]));
+
+      expect(written.reviewFaceMatching).toBe(true);
+      expect(written.faceMatchingConsentVersion).toBe('local-similarity-v1');
+    });
+
+    it('never persists a WMI display index as a DirectML device id', async () => {
+      mockReadFile.mockResolvedValue(JSON.stringify({ gpuDeviceId: -1 }) as any);
+
+      await getHandler('settings:set')({}, { gpuDeviceId: 2 });
+      const written = JSON.parse(String(mockWriteFile.mock.calls[0][1]));
+
+      expect(written.gpuDeviceId).toBe(-1);
     });
 
     it('applies tier preview defaults when tier changes without an explicit preview override', async () => {
@@ -864,16 +972,74 @@ describe('IPC Handlers', () => {
       };
     };
 
+    const authorizeSession = async (session: AppSession): Promise<void> => {
+      mockReadFile.mockImplementation(async (filePath) => {
+        if (String(filePath).includes('latest.json')) return JSON.stringify(session);
+        throw new Error('ENOENT');
+      });
+      await getHandler('session:latest')({});
+      await getHandler('session:register-files')({}, session.files);
+      mockWriteFile.mockClear();
+    };
+
+    const installPagedSession = (
+      session: AppSession,
+      beforeSessionRead?: () => Promise<void>,
+    ): AppSession => {
+      const compact = { ...session, files: session.files.map(({ thumbnail: _thumbnail, ...file }) => file) };
+      const summary = {
+        id: session.id,
+        updatedAt: session.updatedAt,
+        sourcePath: session.sourcePath,
+        destRoot: session.destRoot,
+        filter: session.filter,
+        focusedPath: session.focusedPath,
+        importLedgerId: session.importLedgerId,
+        stats: session.stats,
+      };
+      const checkpoint = {
+        id: session.id,
+        updatedAt: session.updatedAt,
+        totalFiles: session.files.length,
+        generation: 7,
+        summary,
+      };
+      const raw = JSON.stringify(compact);
+      mockReadFile.mockImplementation(async (filePath) => {
+        const target = String(filePath);
+        if (target.includes('latest.checkpoint.json')) return JSON.stringify(checkpoint);
+        if (target.includes(`${session.id}.json`)) {
+          await beforeSessionRead?.();
+          return raw;
+        }
+        if (target.includes('latest.json')) return raw;
+        throw new Error('ENOENT');
+      });
+      mockOpen.mockResolvedValue({
+        read: vi.fn(async (buffer: Buffer, offset: number, length: number) => {
+          const content = Buffer.from(raw);
+          const bytesRead = Math.min(length, content.length);
+          content.copy(buffer, offset, 0, bytesRead);
+          return { bytesRead, buffer };
+        }),
+        close: vi.fn().mockResolvedValue(undefined),
+      } as any);
+      return compact as AppSession;
+    };
+
     it('persists review sessions without thumbnail payloads', async () => {
+      const session = makeSession();
+      await authorizeSession(session);
       const handler = getHandler('session:save');
-      const result = await handler({}, makeSession()) as AppSession;
+      const result = await handler({}, session) as AppSession;
 
       expect(result.files[0].thumbnail).toBeUndefined();
       const sessionWrites = mockWriteFile.mock.calls.filter(([filePath]) => String(filePath).includes('sessions'));
       expect(sessionWrites.length).toBeGreaterThanOrEqual(2);
       for (const [, content] of sessionWrites) {
         expect(String(content)).not.toContain('large-preview-payload');
-        expect(JSON.parse(String(content)).files[0].thumbnail).toBeUndefined();
+        const parsed = JSON.parse(String(content));
+        if (Array.isArray(parsed.files)) expect(parsed.files[0].thumbnail).toBeUndefined();
       }
     });
 
@@ -894,9 +1060,475 @@ describe('IPC Handlers', () => {
         expect(String(content)).not.toContain('large-preview-payload');
       }
     });
+
+    it('returns a summary first, then restores and authorizes main-owned pages without registration replay', async () => {
+      const files: MediaFile[] = [
+        { path: '/photos/page-a.jpg', name: 'page-a.jpg', size: 1, type: 'photo', extension: '.jpg' },
+        { path: '/photos/page-b.jpg', name: 'page-b.jpg', size: 2, type: 'photo', extension: '.jpg', pick: 'selected' },
+      ];
+      const session: AppSession = {
+        ...makeSession(),
+        id: 'paged-restore-session',
+        files,
+        selectedPaths: [files[1].path],
+        queuedPaths: [files[0].path],
+        focusedPath: files[1].path,
+        stats: { totalFiles: 2, picked: 1, rejected: 0, queued: 1, reviewed: 1 },
+      };
+      const compact = installPagedSession(session);
+      const sender = makeIpcSender(101);
+
+      const startup = await getHandler('session:latest-summary')({}) as Record<string, unknown>;
+      expect(startup).toEqual(expect.objectContaining({ id: session.id, stats: expect.objectContaining({ totalFiles: 2 }) }));
+      expect(startup).not.toHaveProperty('files');
+
+      const restore = getHandler('session:restore-page');
+      const first = await restore(ipcEvent(sender), { sessionId: session.id, generation: 'page-generation', offset: 0, limit: 1 }) as any;
+      const second = await restore(ipcEvent(sender), { sessionId: session.id, generation: 'page-generation', offset: 1, limit: 1 }) as any;
+      expect(first).toEqual(expect.objectContaining({
+        offset: 0, complete: false, files: [expect.objectContaining({ path: files[0].path })],
+      }));
+      expect(second).toEqual(expect.objectContaining({
+        offset: 1, complete: true, files: [expect.objectContaining({ path: files[1].path })],
+      }));
+
+      mockWriteFile.mockClear();
+      await expect(getHandler('session:save')({}, compact)).resolves.toEqual(expect.objectContaining({ id: session.id }));
+      expect(mockWriteFile).toHaveBeenCalled();
+    });
+
+    it('rejects cross-sender continuation and replacement until the owner aborts', async () => {
+      const files: MediaFile[] = [
+        { path: '/photos/owned-a.jpg', name: 'owned-a.jpg', size: 1, type: 'photo', extension: '.jpg' },
+        { path: '/photos/owned-b.jpg', name: 'owned-b.jpg', size: 2, type: 'photo', extension: '.jpg' },
+      ];
+      const session: AppSession = {
+        ...makeSession(),
+        id: 'sender-owned-restore',
+        files,
+        selectedPaths: [],
+        queuedPaths: [],
+        focusedPath: files[0].path,
+        stats: { totalFiles: 2, picked: 0, rejected: 0, queued: 0, reviewed: 0 },
+      };
+      installPagedSession(session);
+      await getHandler('session:latest-summary')({});
+      const restore = getHandler('session:restore-page');
+      const abort = getHandler('session:restore-abort');
+      const owner = makeIpcSender(201);
+      const intruder = makeIpcSender(202);
+
+      await expect(restore(ipcEvent(owner), {
+        sessionId: session.id, generation: 'owner-generation', offset: 0, limit: 1,
+      })).resolves.toEqual(expect.objectContaining({ complete: false, offset: 0 }));
+      await expect(restore(ipcEvent(intruder), {
+        sessionId: session.id, generation: 'owner-generation', offset: 1, limit: 1,
+      })).resolves.toEqual(expect.objectContaining({ ok: false, code: 'REGISTRATION_CONFLICT' }));
+      await expect(restore(ipcEvent(intruder), {
+        sessionId: session.id, generation: 'intruder-generation', offset: 0, limit: 1,
+      })).resolves.toEqual(expect.objectContaining({
+        ok: false, code: 'REGISTRATION_CONFLICT', message: 'Session restore is owned by another renderer.',
+      }));
+      await expect(abort(ipcEvent(intruder), {
+        sessionId: session.id, generation: 'owner-generation',
+      })).resolves.toEqual(expect.objectContaining({ ok: false, code: 'REGISTRATION_CONFLICT' }));
+      await expect(abort(ipcEvent(owner), {
+        sessionId: session.id, generation: 'owner-generation',
+      })).resolves.toEqual({ generation: 'owner-generation', aborted: true });
+
+      await expect(restore(ipcEvent(intruder), {
+        sessionId: session.id, generation: 'intruder-generation', offset: 0, limit: 1,
+      })).resolves.toEqual(expect.objectContaining({ complete: false, offset: 0 }));
+      await expect(abort(ipcEvent(intruder), {
+        sessionId: session.id, generation: 'intruder-generation',
+      })).resolves.toEqual({ generation: 'intruder-generation', aborted: true });
+    });
+
+    it('releases an abandoned restore after its bounded lease expires', async () => {
+      const files: MediaFile[] = [
+        { path: '/photos/lease-a.jpg', name: 'lease-a.jpg', size: 1, type: 'photo', extension: '.jpg' },
+        { path: '/photos/lease-b.jpg', name: 'lease-b.jpg', size: 2, type: 'photo', extension: '.jpg' },
+      ];
+      const session: AppSession = {
+        ...makeSession(),
+        id: 'leased-restore',
+        files,
+        selectedPaths: [],
+        queuedPaths: [],
+        focusedPath: files[0].path,
+        stats: { totalFiles: 2, picked: 0, rejected: 0, queued: 0, reviewed: 0 },
+      };
+      installPagedSession(session);
+      await getHandler('session:latest-summary')({});
+      const restore = getHandler('session:restore-page');
+      const abort = getHandler('session:restore-abort');
+      const firstSender = makeIpcSender(301);
+      const replacement = makeIpcSender(302);
+      const initialNow = Date.now();
+      const now = vi.spyOn(Date, 'now').mockReturnValue(initialNow);
+      try {
+        await restore(ipcEvent(firstSender), {
+          sessionId: session.id, generation: 'expired-generation', offset: 0, limit: 1,
+        });
+        now.mockReturnValue(initialNow + SESSION_RESTORE_LEASE_MS + 1);
+        await expect(restore(ipcEvent(replacement), {
+          sessionId: session.id, generation: 'replacement-generation', offset: 0, limit: 1,
+        })).resolves.toEqual(expect.objectContaining({ complete: false, offset: 0 }));
+        await expect(abort(ipcEvent(replacement), {
+          sessionId: session.id, generation: 'replacement-generation',
+        })).resolves.toEqual({ generation: 'replacement-generation', aborted: true });
+      } finally {
+        now.mockRestore();
+      }
+    });
+
+    it('suspends idle expiry during slow storage I/O and rejects duplicate concurrent pages', async () => {
+      const files: MediaFile[] = [
+        { path: '/photos/slow-a.jpg', name: 'slow-a.jpg', size: 1, type: 'photo', extension: '.jpg' },
+        { path: '/photos/slow-b.jpg', name: 'slow-b.jpg', size: 2, type: 'photo', extension: '.jpg' },
+      ];
+      const session: AppSession = {
+        ...makeSession(),
+        id: 'slow-json-restore',
+        files,
+        selectedPaths: [],
+        queuedPaths: [],
+        focusedPath: files[0].path,
+        stats: { totalFiles: 2, picked: 0, rejected: 0, queued: 0, reviewed: 0 },
+      };
+      let releaseRead: () => void = () => undefined;
+      let markReadStarted: () => void = () => undefined;
+      const readGate = new Promise<void>((resolve) => { releaseRead = resolve; });
+      const readStarted = new Promise<void>((resolve) => { markReadStarted = resolve; });
+      installPagedSession(session, async () => {
+        markReadStarted();
+        await readGate;
+      });
+      await getHandler('session:latest-summary')({});
+      const restore = getHandler('session:restore-page');
+      const abort = getHandler('session:restore-abort');
+      const owner = makeIpcSender(351);
+      const intruder = makeIpcSender(352);
+      const request = {
+        sessionId: session.id, generation: 'slow-generation', offset: 0, limit: 1,
+      };
+      const initialNow = Date.now();
+      const now = vi.spyOn(Date, 'now').mockReturnValue(initialNow);
+      const firstPage = restore(ipcEvent(owner), request);
+      await readStarted;
+      try {
+        now.mockReturnValue(initialNow + SESSION_RESTORE_LEASE_MS + 1);
+        await expect(restore(ipcEvent(owner), request)).resolves.toEqual(expect.objectContaining({
+          ok: false, code: 'REGISTRATION_CONFLICT',
+        }));
+        await expect(restore(ipcEvent(intruder), {
+          ...request, generation: 'foreign-replacement',
+        })).resolves.toEqual(expect.objectContaining({
+          ok: false, code: 'REGISTRATION_CONFLICT', message: 'Session restore is owned by another renderer.',
+        }));
+        releaseRead();
+        await expect(firstPage).resolves.toEqual(expect.objectContaining({ complete: false, offset: 0 }));
+        await expect(abort(ipcEvent(owner), {
+          sessionId: session.id, generation: 'slow-generation',
+        })).resolves.toEqual({ generation: 'slow-generation', aborted: true });
+      } finally {
+        releaseRead();
+        await firstPage.catch(() => undefined);
+        owner.destroyForTest();
+        now.mockRestore();
+      }
+    });
+
+    it('releases an incomplete restore when its owning renderer is destroyed', async () => {
+      const files: MediaFile[] = [
+        { path: '/photos/gone-a.jpg', name: 'gone-a.jpg', size: 1, type: 'photo', extension: '.jpg' },
+        { path: '/photos/gone-b.jpg', name: 'gone-b.jpg', size: 2, type: 'photo', extension: '.jpg' },
+      ];
+      const session: AppSession = {
+        ...makeSession(),
+        id: 'destroyed-owner-restore',
+        files,
+        selectedPaths: [],
+        queuedPaths: [],
+        focusedPath: files[0].path,
+        stats: { totalFiles: 2, picked: 0, rejected: 0, queued: 0, reviewed: 0 },
+      };
+      installPagedSession(session);
+      await getHandler('session:latest-summary')({});
+      const restore = getHandler('session:restore-page');
+      const abort = getHandler('session:restore-abort');
+      const owner = makeIpcSender(401);
+      const replacement = makeIpcSender(402);
+
+      await restore(ipcEvent(owner), {
+        sessionId: session.id, generation: 'destroyed-generation', offset: 0, limit: 1,
+      });
+      owner.destroyForTest();
+      await expect(restore(ipcEvent(replacement), {
+        sessionId: session.id, generation: 'after-destroy-generation', offset: 0, limit: 1,
+      })).resolves.toEqual(expect.objectContaining({ complete: false, offset: 0 }));
+      await expect(abort(ipcEvent(replacement), {
+        sessionId: session.id, generation: 'after-destroy-generation',
+      })).resolves.toEqual({ generation: 'after-destroy-generation', aborted: true });
+    });
+
+    it('registers restored files through ordered generation chunks', async () => {
+      const files: MediaFile[] = [
+        { path: '/photos/a.jpg', name: 'a.jpg', size: 1, type: 'photo', extension: '.jpg' },
+        { path: '/photos/b.jpg', name: 'b.jpg', size: 2, type: 'photo', extension: '.jpg' },
+      ];
+      const session = { ...makeSession(), id: 'restore-session-1', files, selectedPaths: [], focusedPath: files[0].path,
+        stats: { totalFiles: 2, picked: 0, rejected: 0, queued: 0, reviewed: 0 } };
+      mockReadFile.mockImplementation(async (filePath) => {
+        if (String(filePath).includes('latest.json')) return JSON.stringify(session);
+        throw new Error('ENOENT');
+      });
+      await getHandler('session:latest')({});
+      const handler = getHandler('session:register-files');
+
+      await expect(handler({}, { action: 'begin', generation: 'restore-1', totalFiles: 2, restoreSessionId: session.id }))
+        .resolves.toEqual({ generation: 'restore-1', registered: 0, complete: false });
+      await expect(handler({}, { action: 'append', generation: 'restore-1', offset: 0, files: [files[0]] }))
+        .resolves.toEqual({ generation: 'restore-1', registered: 1, complete: false });
+      await expect(handler({}, { action: 'append', generation: 'restore-1', offset: 1, files: [files[1]] }))
+        .resolves.toEqual({ generation: 'restore-1', registered: 2, complete: false });
+      await expect(handler({}, { action: 'finalize', generation: 'restore-1' }))
+        .resolves.toEqual({ generation: 'restore-1', registered: 2, complete: true });
+    });
+
+    it('does not activate incomplete, out-of-order, or duplicate registration chunks', async () => {
+      const file: MediaFile = {
+        path: '/photos/a.jpg', name: 'a.jpg', size: 1, type: 'photo', extension: '.jpg',
+      };
+      const second = { ...file, path: '/photos/b.jpg', name: 'b.jpg' };
+      const session = { ...makeSession(), id: 'restore-session-2', files: [file, second], selectedPaths: [], focusedPath: file.path,
+        stats: { totalFiles: 2, picked: 0, rejected: 0, queued: 0, reviewed: 0 } };
+      mockReadFile.mockImplementation(async (filePath) => {
+        if (String(filePath).includes('latest.json')) return JSON.stringify(session);
+        throw new Error('ENOENT');
+      });
+      await getHandler('session:latest')({});
+      const handler = getHandler('session:register-files');
+      await handler({}, { action: 'begin', generation: 'restore-2', totalFiles: 2, restoreSessionId: session.id });
+      await expect(handler({}, { action: 'append', generation: 'restore-2', offset: 1, files: [file] }))
+        .resolves.toEqual(expect.objectContaining({ ok: false, code: 'REGISTRATION_CONFLICT' }));
+      await handler({}, { action: 'append', generation: 'restore-2', offset: 0, files: [file] });
+      await expect(handler({}, { action: 'append', generation: 'restore-2', offset: 1, files: [file] }))
+        .resolves.toEqual(expect.objectContaining({ ok: false, code: 'REGISTRATION_CONFLICT' }));
+      await expect(handler({}, { action: 'finalize', generation: 'restore-2' }))
+        .resolves.toEqual(expect.objectContaining({ ok: false, code: 'REGISTRATION_INCOMPLETE' }));
+    });
+
+    it('waits for the renderer final-save acknowledgement on normal close', async () => {
+      const send = vi.fn();
+      const win = {
+        isDestroyed: () => false,
+        webContents: { isDestroyed: () => false, send },
+      } as any;
+      const flush = requestRendererSessionFlush(win, 1_000);
+      expect(send).toHaveBeenCalledWith('session:flush-request', expect.stringMatching(/^flush-/));
+      const token = String(send.mock.calls[0][1]);
+      await getHandler('session:flush-ack')({}, token, true);
+      await expect(flush).resolves.toEqual({ acknowledged: true, success: true, message: undefined });
+    });
+
+    it('cannot bootstrap arbitrary local paths through save, latest, and registration', async () => {
+      const legitimate = makeSession();
+      await authorizeSession(legitimate);
+      const secretPath = 'C:\\Users\\victim\\Pictures\\private.jpg';
+      const crafted: AppSession = {
+        ...legitimate,
+        id: 'crafted-session',
+        files: [{
+          path: secretPath,
+          name: 'private.jpg',
+          size: 999,
+          type: 'photo',
+          extension: '.jpg',
+        }],
+        selectedPaths: [],
+        queuedPaths: [],
+        focusedPath: secretPath,
+      };
+
+      await expect(getHandler('session:save')({}, crafted)).resolves.toEqual({
+        ok: false,
+        code: 'REGISTRATION_CONFLICT',
+        message: 'Session contains media outside the active main-owned source set.',
+      });
+      expect(mockWriteFile).not.toHaveBeenCalled();
+      await expect(getHandler('session:register-files')({}, crafted.files)).resolves.toEqual(
+        expect.objectContaining({ ok: false, code: 'REGISTRATION_CONFLICT' }),
+      );
+    });
+
+    it('keeps stale session and catalog payloads from resurrecting face data after a privacy purge', async () => {
+      const embedding = '0000803f'.repeat(4);
+      const faceFile: MediaFile = {
+        path: '/photos/privacy.jpg',
+        name: 'privacy.jpg',
+        size: 321,
+        type: 'photo',
+        extension: '.jpg',
+        faceCount: 1,
+        faceBoxes: [{ x: 0.2, y: 0.2, width: 0.2, height: 0.2, score: 0.9 }],
+        faceEmbedding: embedding,
+        faceEmbeddings: [embedding],
+        faceEmbeddingBoxes: [{ x: 0.2, y: 0.2, width: 0.2, height: 0.2, score: 0.9 }],
+        reviewScore: 88,
+      };
+      mockScanFiles.mockImplementation(async (_sourcePath, onBatch: (batch: MediaFile[]) => void) => {
+        onBatch([faceFile]);
+        return 1;
+      });
+      await getHandler('scan:start')({}, '/photos');
+
+      const staleSession: AppSession = {
+        id: 'privacy-session',
+        updatedAt: '2026-08-13T00:00:00.000Z',
+        sourcePath: '/photos',
+        destRoot: '/dest',
+        files: [faceFile],
+        selectedPaths: [],
+        queuedPaths: [],
+        filter: 'all',
+        focusedPath: faceFile.path,
+        stats: { totalFiles: 1, picked: 0, rejected: 0, queued: 0, reviewed: 1 },
+      };
+
+      await expect(getHandler('face-cache:clear')({})).resolves.toEqual(expect.objectContaining({ success: true }));
+      mockWriteFile.mockClear();
+
+      const saved = await getHandler('session:save')({}, staleSession) as AppSession;
+      expect(saved.files[0]).not.toHaveProperty('faceEmbedding');
+      expect(saved.files[0]).not.toHaveProperty('faceEmbeddings');
+      expect(saved.files[0]).not.toHaveProperty('faceBoxes');
+      expect(saved.files[0]).not.toHaveProperty('reviewScore');
+      expect(saved.stats.reviewed).toBe(0);
+      const sessionWrites = mockWriteFile.mock.calls
+        .filter(([filePath]) => String(filePath).includes('sessions'))
+        .map(([, content]) => String(content));
+      expect(sessionWrites.length).toBeGreaterThan(0);
+      for (const content of sessionWrites) {
+        expect(content).not.toContain(embedding);
+        expect(content).not.toContain('"faceBoxes"');
+      }
+
+      const catalogWrite = getHandler('catalog:upsert-face-metadata');
+      await expect(catalogWrite({}, [faceFile], '/photos')).resolves.toEqual({
+        upserted: 0,
+        faceFiles: 0,
+        embeddings: 0,
+      });
+
+      // A malformed/unregistered analysis request cannot reopen persistence.
+      await expect(getHandler('face:analyze')({}, '/photos/not-registered.jpg'))
+        .resolves.toEqual(expect.objectContaining({ ok: false, code: 'VALIDATION_ERROR' }));
+      await expect(catalogWrite({}, [faceFile], '/photos')).resolves.toEqual({
+        upserted: 0,
+        faceFiles: 0,
+        embeddings: 0,
+      });
+
+      // Starting a fresh scan is an explicit recreation boundary.
+      await getHandler('scan:start')({}, '/photos');
+      await expect(catalogWrite({}, [faceFile], '/photos')).resolves.toEqual(expect.objectContaining({
+        upserted: 1,
+        faceFiles: 1,
+        embeddings: 1,
+      }));
+    });
+
+    it('keeps persistence blocked when one of the durable purge stores fails', async () => {
+      const embedding = '0000803f'.repeat(4);
+      const faceFile: MediaFile = {
+        path: '/photos/partial-purge.jpg',
+        name: 'partial-purge.jpg',
+        size: 222,
+        type: 'photo',
+        extension: '.jpg',
+        faceEmbedding: embedding,
+        faceEmbeddings: [embedding],
+      };
+      mockScanFiles.mockImplementation(async (_sourcePath, onBatch: (batch: MediaFile[]) => void) => {
+        onBatch([faceFile]);
+        return 1;
+      });
+      await getHandler('scan:start')({}, '/photos');
+      mockReaddir.mockRejectedValue(new Error('session directory unavailable'));
+
+      await expect(getHandler('face-cache:clear')({})).resolves.toEqual(expect.objectContaining({
+        success: false,
+        error: expect.stringContaining('session directory unavailable'),
+      }));
+      await expect(getHandler('catalog:upsert-face-metadata')({}, [faceFile], '/photos')).resolves.toEqual({
+        upserted: 0,
+        faceFiles: 0,
+        embeddings: 0,
+      });
+
+      mockReaddir.mockReset();
+      mockReaddir.mockResolvedValue([] as any);
+      await getHandler('scan:start')({}, '/photos');
+    });
   });
 
   describe('Payload validation', () => {
+    it('rejects duplicate session paths and inconsistent session statistics', async () => {
+      const handler = getHandler('session:save');
+      const file: MediaFile = {
+        path: '/photos/a.jpg', name: 'a.jpg', size: 1, type: 'photo', extension: '.jpg',
+      };
+      const base: AppSession = {
+        id: 'session-valid',
+        updatedAt: '2026-05-06T00:00:00.000Z',
+        sourcePath: '/photos',
+        destRoot: '/dest',
+        files: [file, { ...file }],
+        selectedPaths: [],
+        queuedPaths: [],
+        filter: 'all',
+        stats: { totalFiles: 2, picked: 2, rejected: 1, queued: 0, reviewed: 2 },
+      };
+      await expect(handler({}, base)).resolves.toEqual({
+        ok: false,
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid session payload.',
+      });
+    });
+
+    it('rejects malformed delta descriptors instead of treating them as full checkpoints', async () => {
+      const handler = getHandler('session:save');
+      const file: MediaFile = {
+        path: '/photos/a.jpg', name: 'a.jpg', size: 1, type: 'photo', extension: '.jpg',
+      };
+      const malformed = {
+        id: 'session-valid',
+        updatedAt: '2026-05-06T00:00:00.000Z',
+        sourcePath: '/photos',
+        destRoot: '/dest',
+        files: [file],
+        selectedPaths: [],
+        queuedPaths: [],
+        filter: 'all',
+        stats: { totalFiles: 0, picked: 0, rejected: 0, queued: 0, reviewed: 0 },
+        __keptraSessionDelta: {
+          version: 1,
+          mode: 'delta',
+          totalFileCount: 0,
+          fileIndexes: [],
+          removedPaths: [file.path],
+          selectedPathsChanged: false,
+          queuedPathsChanged: false,
+        },
+      };
+      await expect(handler({}, malformed)).resolves.toEqual({
+        ok: false,
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid session payload.',
+      });
+    });
+
     it('rejects malformed import config', async () => {
       const handler = getHandler('import:start');
       const result = await handler({}, { sourcePath: 42 }) as any;
@@ -981,6 +1613,66 @@ describe('IPC Handlers', () => {
       const handler = getHandler('face:analyze');
       const result = await handler({}, ['C:\\Users\\test\\photo.jpg', 'C:\\Windows\\System32\\calc.exe']) as any;
       expect(result).toEqual({
+        ok: false,
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid face analysis payload.',
+      });
+    });
+
+    it('rejects unknown face analysis profiles', async () => {
+      const handler = getHandler('face:analyze');
+      const result = await handler({}, 'C:\\Users\\test\\photo.jpg', { profile: 'turbo' }) as any;
+      expect(result).toEqual({
+        ok: false,
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid face analysis payload.',
+      });
+    });
+
+    it('rejects a non-boolean sports analysis hint', async () => {
+      const handler = getHandler('face:analyze');
+      await expect(handler({}, 'C:\\Users\\test\\photo.jpg', {
+        profile: 'subjects',
+        sportsMode: 'yes',
+      })).resolves.toEqual({
+        ok: false,
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid face analysis payload.',
+      });
+    });
+
+    it('rejects invalid or ambiguous orientation hints', async () => {
+      const handler = getHandler('face:analyze');
+      await expect(handler({}, 'C:\\Users\\test\\photo.jpg', { profile: 'detect', orientation: 9 })).resolves.toEqual({
+        ok: false,
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid face analysis payload.',
+      });
+      await expect(handler({}, ['C:\\Users\\test\\a.jpg', 'C:\\Users\\test\\b.jpg'], { orientation: 6 })).resolves.toEqual({
+        ok: false,
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid face analysis payload.',
+      });
+      await expect(handler({}, ['C:\\Users\\test\\a.jpg', 'C:\\Users\\test\\b.jpg'], { orientations: [6] })).resolves.toEqual({
+        ok: false,
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid face analysis payload.',
+      });
+    });
+
+    it('rejects invalid or misaligned scan identity hints', async () => {
+      const handler = getHandler('face:analyze');
+      await expect(handler({}, 'C:\\Users\\test\\photo.jpg', {
+        profile: 'detect',
+        identity: { size: -1, mtimeMs: 1 },
+      })).resolves.toEqual({
+        ok: false,
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid face analysis payload.',
+      });
+      await expect(handler({}, ['C:\\Users\\test\\a.jpg', 'C:\\Users\\test\\b.jpg'], {
+        identities: [{ size: 10, mtimeMs: 1 }],
+      })).resolves.toEqual({
         ok: false,
         code: 'VALIDATION_ERROR',
         message: 'Invalid face analysis payload.',

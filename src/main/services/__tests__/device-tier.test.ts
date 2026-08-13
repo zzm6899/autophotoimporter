@@ -62,7 +62,7 @@ describe('detectDeviceTier', () => {
 
     expect(profile.tier).toBe('high');
     expect(profile.previewConcurrency).toBe(8);
-    expect(profile.faceConcurrency).toBe(12);
+    expect(profile.faceConcurrency).toBe(8);
     expect(profile.cpuOptimization).toBe(false);
     expect(profile.rawPreviewQuality).toBe(80);
   });

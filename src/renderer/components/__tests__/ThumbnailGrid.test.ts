@@ -1,6 +1,98 @@
 import { describe, expect, it } from 'vitest';
-import { alignBestOfBatchOffset, getReviewStartTarget, getSelectedReviewStartTarget, isJpegFamilyPhoto, isRawFilterPhoto, shouldFinalizeFaceAnalysisFailure, shouldOpenBestOfSelectionPanel, shouldQueueVisibleImportablePaths, shouldRunOnnxForReview, sliceBestOfBatchPathPage, summarizeBestOfBatchPage, summarizeReviewFlowHealth, summarizeReviewFlowNextStep } from '../ThumbnailGrid';
+import { alignBestOfBatchOffset, bestOfAutomaticDecision, formatFaceProviderSummary, getReviewStartTarget, getSelectedReviewStartTarget, hasPendingVisualHashInput, isJpegFamilyPhoto, isRawFilterPhoto, nextOptionalReviewFeatureFailure, planTerminalReviewGrouping, reconcileOptionalReviewFeatureAvailability, shouldFinalizeFaceAnalysisFailure, shouldOpenBestOfSelectionPanel, shouldQueueVisibleImportablePaths, shouldRunOnnxForReview, sliceBestOfBatchPathPage, summarizeBestOfBatchPage, summarizeReviewFlowHealth, summarizeReviewFlowNextStep } from '../ThumbnailGrid';
 import type { MediaFile } from '../../../shared/types';
+
+describe('face provider status', () => {
+  it('names the promoted detectors, their providers, and observed SSD fallback rate', () => {
+    expect(formatFaceProviderSummary([], 'mixed', {
+      state: 'active',
+      active: true,
+      faceProvider: 'dml',
+      personProvider: 'dml',
+      personRuns: 40,
+      ssdFallbackRate: 0.125,
+    })).toBe('YuNet DML · NanoDet DML · SSD fallback 13%');
+  });
+
+  it('does not invent a fallback percentage before NanoDet has processed a photo', () => {
+    expect(formatFaceProviderSummary([], 'dml', {
+      state: 'active',
+      active: true,
+      faceProvider: 'dml',
+      personProvider: 'cpu',
+      personRuns: 0,
+      ssdFallbackRate: null,
+    })).toBe('YuNet DML · NanoDet CPU · SSD fallback not measured');
+  });
+
+  it('shows the verified legacy route when the promoted pair is unavailable', () => {
+    expect(formatFaceProviderSummary([
+      { model: 'detector', provider: 'dml' },
+      { model: 'person', provider: 'cpu' },
+    ], 'mixed', {
+      state: 'legacy-fallback',
+      active: false,
+      personRuns: 0,
+      ssdFallbackRate: null,
+    })).toBe('UltraFace DML · SSD CPU · YuNet/NanoDet unavailable');
+  });
+});
+
+describe('terminal review grouping', () => {
+  const photo = (path: string, overrides: Partial<MediaFile> = {}): MediaFile => ({
+    path,
+    name: path.slice(1),
+    size: 1,
+    type: 'photo',
+    extension: '.jpg',
+    ...overrides,
+  });
+
+  it('does not wait forever for a hash that cannot be produced', () => {
+    expect(hasPendingVisualHashInput([
+      photo('/no-thumbnail.jpg'),
+      photo('/unavailable.jpg', { thumbnail: 'keptra-preview://unavailable', reviewAnalysisUnavailable: true }),
+      { ...photo('/video.mp4', { thumbnail: 'keptra-preview://video' }), type: 'video', extension: '.mp4' },
+    ], true)).toBe(false);
+
+    expect(hasPendingVisualHashInput([
+      photo('/ready.jpg', { thumbnail: 'keptra-preview://ready' }),
+    ], true)).toBe(true);
+    expect(hasPendingVisualHashInput([
+      photo('/ready.jpg', { thumbnail: 'keptra-preview://ready' }),
+    ], false)).toBe(false);
+  });
+
+  it('finalizes once, permits one evidence-producing cascade, then ignores navigation ticks', () => {
+    const initialEvidence = {
+      reviewGeneration: 4,
+      evidenceRevision: 20,
+      faceMatching: true,
+      visualDuplicates: true,
+      faceEmbeddingThreshold: 0.6,
+      faceSignatureThreshold: 10,
+      visualThreshold: 8,
+    };
+    const first = planTerminalReviewGrouping('', initialEvidence);
+    expect(first.shouldFinalize).toBe(true);
+
+    // Focus/navigation changed, but review evidence did not.
+    expect(planTerminalReviewGrouping(first.key, initialEvidence).shouldFinalize).toBe(false);
+
+    // Native comparison analysis after grouping produced new evidence.
+    const cascade = planTerminalReviewGrouping(first.key, {
+      ...initialEvidence,
+      evidenceRevision: initialEvidence.evidenceRevision + 1,
+    });
+    expect(cascade.shouldFinalize).toBe(true);
+
+    // The terminal pass after that cascade is stable; later navigation is a no-op.
+    expect(planTerminalReviewGrouping(cascade.key, {
+      ...initialEvidence,
+      evidenceRevision: initialEvidence.evidenceRevision + 1,
+    }).shouldFinalize).toBe(false);
+  });
+});
 
 describe('summarizeReviewFlowNextStep', () => {
   it('shows the importable count when some queued files are blocked', () => {
@@ -280,11 +372,99 @@ describe('shouldRunOnnxForReview', () => {
     }), fullOptions)).toBe(true);
   });
 
+  it('retries native eye detail until the optional feature is completed or unavailable', () => {
+    const analysed = photo({
+      faceDetection: 'native',
+      faceCount: 1,
+      faceBoxes: [{ x: 0.2, y: 0.2, width: 0.2, height: 0.2 }],
+      personBoxes: [],
+      reviewAnalysisFeatures: {
+        faceDetection: true,
+        personDetection: true,
+        faceMatching: false,
+        poseAnalysis: false,
+        eyeDetail: false,
+      },
+    });
+
+    expect(shouldRunOnnxForReview(analysed, {
+      ...fullOptions,
+      reviewFaceMatching: false,
+    })).toBe(true);
+    expect(shouldRunOnnxForReview({
+      ...analysed,
+      reviewAnalysisFeatures: { ...analysed.reviewAnalysisFeatures!, eyeDetail: true },
+    }, {
+      ...fullOptions,
+      reviewFaceMatching: false,
+    })).toBe(false);
+    expect(shouldRunOnnxForReview({
+      ...analysed,
+      reviewAnalysisUnavailableFeatures: { eyeDetail: true },
+    }, {
+      ...fullOptions,
+      reviewFaceMatching: false,
+    })).toBe(false);
+    expect(shouldRunOnnxForReview({
+      ...analysed,
+      reviewAnalysisUnavailable: true,
+    }, {
+      ...fullOptions,
+      reviewFaceMatching: false,
+    })).toBe(false);
+  });
+
   it('respects disabled face analysis', () => {
     expect(shouldRunOnnxForReview(photo(), {
       ...fullOptions,
       reviewFaceAnalysis: false,
     })).toBe(false);
+  });
+
+  it('does not retry sports safeguards when person detection is disabled', () => {
+    expect(shouldRunOnnxForReview(photo({
+      faceBoxes: [],
+      personBoxes: [],
+      reviewAnalysisFeatures: {
+        faceDetection: true,
+        personDetection: false,
+        faceMatching: false,
+        poseAnalysis: false,
+        eyeDetail: true,
+        sportsSafeguards: false,
+      },
+    }), {
+      reviewFaceAnalysis: true,
+      reviewFaceMatching: false,
+      reviewPersonDetection: false,
+      reviewSportsSafeguards: true,
+    })).toBe(false);
+  });
+
+  it('stops matching retries after the feature completes or becomes unavailable', () => {
+    const analysed = photo({
+      faceDetection: 'native',
+      faceCount: 1,
+      faceBoxes: [{ x: 0.2, y: 0.2, width: 0.2, height: 0.2 }],
+      personBoxes: [],
+      reviewAnalysisFeatures: {
+        faceDetection: true,
+        personDetection: true,
+        faceMatching: false,
+        poseAnalysis: false,
+        eyeDetail: true,
+      },
+    });
+
+    expect(shouldRunOnnxForReview(analysed, fullOptions)).toBe(true);
+    expect(shouldRunOnnxForReview({
+      ...analysed,
+      reviewAnalysisFeatures: { ...analysed.reviewAnalysisFeatures!, faceMatching: true },
+    }, fullOptions)).toBe(false);
+    expect(shouldRunOnnxForReview({
+      ...analysed,
+      reviewAnalysisUnavailableFeatures: { faceMatching: true },
+    }, fullOptions)).toBe(false);
   });
 });
 
@@ -293,5 +473,47 @@ describe('shouldFinalizeFaceAnalysisFailure', () => {
     expect(shouldFinalizeFaceAnalysisFailure(1)).toBe(false);
     expect(shouldFinalizeFaceAnalysisFailure(2)).toBe(false);
     expect(shouldFinalizeFaceAnalysisFailure(3)).toBe(true);
+  });
+
+  it('clears an unavailable marker when a later optional-stage retry succeeds', () => {
+    expect(reconcileOptionalReviewFeatureAvailability(
+      { eyeDetail: true, poseAnalysis: true },
+      { eyeDetail: true },
+      {},
+    )).toEqual({ poseAnalysis: true });
+  });
+
+  it('marks an incomplete optional eye stage unavailable on the third attempt and resets after success', () => {
+    const first = nextOptionalReviewFeatureFailure(0, true);
+    const second = nextOptionalReviewFeatureFailure(first.attempts, true);
+    const third = nextOptionalReviewFeatureFailure(second.attempts, true);
+
+    expect(first).toEqual({ attempts: 1, unavailable: false });
+    expect(second).toEqual({ attempts: 2, unavailable: false });
+    expect(third).toEqual({ attempts: 3, unavailable: true });
+    expect(nextOptionalReviewFeatureFailure(third.attempts, false)).toEqual({
+      attempts: 0,
+      unavailable: false,
+    });
+  });
+});
+
+describe('bestOfAutomaticDecision', () => {
+  it('does not let a higher coarse-score HYROX detector miss reject an analysed athlete', () => {
+    const unsafe: MediaFile = {
+      path: '/unsafe.jpg', name: 'unsafe.jpg', size: 1, type: 'photo', extension: '.jpg',
+      reviewScore: 99, sharpnessScore: 200, reviewAnalysisStage: 'subjects',
+      faceBoxes: [], personBoxes: [],
+    };
+    const eligible: MediaFile = {
+      path: '/athlete.jpg', name: 'athlete.jpg', size: 1, type: 'photo', extension: '.jpg',
+      reviewScore: 80, sharpnessScore: 160,
+      faceDetection: 'native',
+      faceBoxes: [{ x: 0.4, y: 0.15, width: 0.12, height: 0.16, score: 0.92 }],
+      personBoxes: [{ x: 0.25, y: 0.08, width: 0.45, height: 0.84, score: 0.95 }],
+      sceneAnalysis: { kind: 'people', confidence: 0.9, subjectFocusConfidence: 0.8 },
+      reviewAnalysisStage: 'subjects',
+    };
+    expect(bestOfAutomaticDecision([unsafe, eligible], 'hyrox-endurance')?.path).toBe('/athlete.jpg');
   });
 });

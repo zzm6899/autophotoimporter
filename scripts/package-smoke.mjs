@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import process from 'node:process';
+import { extractFile, listPackage } from '@electron/asar';
 
 const root = process.cwd();
 const outDir = path.join(root, 'out');
@@ -69,10 +70,47 @@ const required = [
   resourcesDir,
   path.join(resourcesDir, 'models'),
   path.join(resourcesDir, 'onnxruntime-node', 'dist', 'index.js'),
+  path.join(resourcesDir, 'sharp-runtime', 'node_modules', 'sharp', 'dist', 'index.cjs'),
+  path.join(resourcesDir, 'image-preprocess-worker.js'),
 ];
 
 for (const target of required) {
   if (!existsSync(target)) fail(`Missing packaged runtime asset: ${target}`);
+}
+
+const asarPath = path.join(resourcesDir, 'app.asar');
+if (!existsSync(asarPath)) fail(`Missing packaged app.asar: ${asarPath}`);
+const asarEntries = listPackage(asarPath);
+if (!asarEntries.some((entry) => entry.replaceAll('\\', '/').endsWith('/.vite/build/image-preprocess-worker.js'))) {
+  fail('Packaged app.asar is missing .vite/build/image-preprocess-worker.js');
+}
+const looseWorkerPath = path.join(resourcesDir, 'image-preprocess-worker.js');
+// @electron/asar expects the host platform's path separator when extracting
+// (listPackage itself returns platform-shaped entries as well).
+const protectedWorkerEntry = path.join('.vite', 'build', 'image-preprocess-worker.js');
+const asarWorker = extractFile(asarPath, protectedWorkerEntry);
+const looseWorker = readFileSync(looseWorkerPath);
+const asarWorkerDigest = createHash('sha256').update(asarWorker).digest('hex');
+const looseWorkerDigest = createHash('sha256').update(looseWorker).digest('hex');
+if (asarWorkerDigest !== looseWorkerDigest) {
+  fail(`Loose preprocess worker differs from integrity-protected ASAR worker: ${looseWorkerDigest} != ${asarWorkerDigest}`);
+}
+const sharpRuntimeDir = path.join(resourcesDir, 'sharp-runtime', 'node_modules');
+const sharpProbe = spawnSync(process.execPath, ['-e', `
+  const path = require('node:path');
+  const runtime = ${JSON.stringify(sharpRuntimeDir)};
+  for (const dependency of ['@img/colour', 'detect-libc', 'semver']) {
+    const resolved = require.resolve(dependency, { paths: [path.join(runtime, 'sharp')] });
+    if (!resolved.startsWith(runtime + path.sep)) {
+      throw new Error(dependency + ' escaped packaged sharp-runtime: ' + resolved);
+    }
+  }
+  const sharp = require(path.join(runtime, 'sharp'));
+  sharp({ create: { width: 2, height: 2, channels: 3, background: '#336699' } })
+    .raw().toBuffer().then((b) => { if (b.length !== 12) process.exit(2); });
+`], { encoding: 'utf8', timeout: 15000 });
+if (sharpProbe.status !== 0 || sharpProbe.error) {
+  fail(`Packaged Sharp runtime is not resolvable: ${sharpProbe.error?.message ?? sharpProbe.stderr}`);
 }
 
 const ortNativeRoot = path.join(resourcesDir, 'onnxruntime-node', 'bin', 'napi-v3');
@@ -108,11 +146,30 @@ for (const retainedArch of retainedArchitectures) {
 }
 
 const modelDir = path.join(resourcesDir, 'models');
-const models = ['version-RFB-640.onnx', 'face_recognition_sface_2021dec.onnx', 'ssd_mobilenet_v1_12.onnx', 'movenet_thunder.onnx'];
+const models = [
+  'version-RFB-640.onnx',
+  'face_recognition_sface_2021dec.onnx',
+  'face_detection_yunet_2023mar.onnx',
+  'object_detection_nanodet_2022nov.onnx',
+  'ssd_mobilenet_v1_12.onnx',
+  'movenet_thunder.onnx',
+];
+const expectedModelDigests = {
+  'version-RFB-640.onnx': '8f4c659275977e7a3bfbfa339a9c769ad793df50f9c0baa8c14b11baa1646430',
+  'face_recognition_sface_2021dec.onnx': '0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79',
+  'face_detection_yunet_2023mar.onnx': '8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4',
+  'object_detection_nanodet_2022nov.onnx': '4b82da9944b88577175ee23a459dce2e26e6e4be573def65b1055dc2d9720186',
+  'ssd_mobilenet_v1_12.onnx': 'b8fba5e404077d4048d27fcd1667e85e27e192eb9bf51e696c46a3acd7d21058',
+  'movenet_thunder.onnx': '3dca9f6e5f8a64dc9935a5be06fd8bf81bf01e696c9c05c6f2a650e0a401b763',
+};
+const packagedModelDigests = {};
 for (const model of models) {
   const modelPath = path.join(modelDir, model);
   if (!existsSync(modelPath)) fail(`Missing packaged model: ${model}`);
   if (statSync(modelPath).size <= 0) fail(`Packaged model is empty: ${model}`);
+  const digest = createHash('sha256').update(readFileSync(modelPath)).digest('hex');
+  packagedModelDigests[model] = digest;
+  if (digest !== expectedModelDigests[model]) fail(`Packaged model digest mismatch: ${model} (${digest})`);
 }
 const deprecatedModel = path.join(modelDir, 'w600k_mbf.onnx');
 if (existsSync(deprecatedModel)) fail('Non-commercial legacy face model was packaged: w600k_mbf.onnx');
@@ -124,9 +181,93 @@ for (const entry of readdirSync(modelDir, { withFileTypes: true })) {
     fail(`Non-commercial legacy face model digest was packaged as: ${entry.name}`);
   }
 }
+const detectorManifestPath = path.join(root, 'src', 'main', 'services', 'detector-model-manifest.json');
+if (!existsSync(detectorManifestPath)) fail('Missing detector candidate manifest.');
+const detectorManifest = JSON.parse(readFileSync(detectorManifestPath, 'utf8'));
+if (detectorManifest.schemaVersion !== 2 || detectorManifest.status !== 'mixed' ||
+    detectorManifest.legacyFallbackRemovalRequiresGoldenCorpus !== true || !detectorManifest.productionFastPass ||
+    !Array.isArray(detectorManifest.models)) {
+  fail('Invalid detector manifest.');
+}
+const productionDetectorIds = new Set([
+  detectorManifest.productionFastPass.faceCandidateId,
+  detectorManifest.productionFastPass.personCandidateId,
+]);
+for (const candidate of detectorManifest.models) {
+  const isProduction = productionDetectorIds.has(candidate.id);
+  if (candidate.redistribution !== 'artifact-license-recorded' ||
+      !/^[a-f0-9]{64}$/.test(candidate.sha256) ||
+      !candidate.sourceUrl?.includes(candidate.sourceRevision)) {
+    fail(`Detector model failed provenance validation: ${candidate.id}`);
+  }
+  if (candidate.bundledByDefault !== isProduction) {
+    fail(`Detector bundle policy disagrees with production policy: ${candidate.id}`);
+  }
+  const rootPath = path.join(modelDir, candidate.fileName);
+  if (isProduction) {
+    if (!existsSync(rootPath)) fail(`Missing production fast detector: ${candidate.fileName}`);
+    const digest = createHash('sha256').update(readFileSync(rootPath)).digest('hex');
+    if (statSync(rootPath).size !== candidate.bytes || digest !== candidate.sha256) {
+      fail(`Production fast detector failed manifest verification: ${candidate.fileName}`);
+    }
+  } else if (existsSync(rootPath)) {
+    fail(`Evaluation-only detector escaped into the production model root: ${candidate.fileName}`);
+  }
+}
+const experimentalModelDir = path.join(modelDir, 'experimental');
+const packagedExperimentalDetectors = [];
+if (existsSync(experimentalModelDir)) {
+  const knownFiles = new Set(detectorManifest.models
+    .filter((candidate) => !candidate.bundledByDefault)
+    .map((candidate) => candidate.fileName));
+  for (const entry of readdirSync(experimentalModelDir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith('.onnx')) continue;
+    if (!knownFiles.has(entry.name)) fail(`Unknown experimental detector was packaged: ${entry.name}`);
+    const candidate = detectorManifest.models.find((model) => model.fileName === entry.name);
+    const filePath = path.join(experimentalModelDir, entry.name);
+    const digest = createHash('sha256').update(readFileSync(filePath)).digest('hex');
+    if (statSync(filePath).size !== candidate.bytes || digest !== candidate.sha256) {
+      fail(`Experimental detector failed manifest verification: ${entry.name}`);
+    }
+    packagedExperimentalDetectors.push({ id: candidate.id, name: entry.name, bytes: statSync(filePath).size });
+  }
+}
+if (packagedExperimentalDetectors.length > 0 && process.env.KEPTRA_PACKAGE_EXPERIMENTAL_DETECTORS !== '1') {
+  fail('Evaluation-only detector weights were packaged without KEPTRA_PACKAGE_EXPERIMENTAL_DETECTORS=1.');
+}
 const thirdPartyDir = path.join(resourcesDir, 'third_party');
-for (const notice of ['NOTICES.md', 'SFace-Apache-2.0.txt']) {
+for (const notice of ['NOTICES.md', 'ONNX-Model-Zoo-MIT.txt', 'SFace-Apache-2.0.txt', 'UltraFace-MIT.txt', 'YuNet-MIT.txt']) {
   if (!existsSync(path.join(thirdPartyDir, notice))) fail(`Missing packaged third-party notice: ${notice}`);
+}
+const notices = readFileSync(path.join(thirdPartyDir, 'NOTICES.md'), 'utf8');
+for (const requiredNoticeToken of [
+  'c39647011b1d0eb48037ce3051438e51b19e2b11',
+  'cc497be475371d891d5795e46fc80ebaddf683c5',
+  '019281f3fcb151a90e491f3b2f0273f9f31bd6be',
+  '91849267da7c576503f0f87a941b3139b64b7781',
+  '38296077a99667cdad67af5096ce7eeb9b327453',
+  '3364a833d9b3b5ff16af08beb04b1832cb012033',
+  'f12e12798e8314f7c074a6656816c048dcc95b7a',
+  '510899a2a0adb8c25957915fd030d66dbd553919',
+  'WIDER FACE',
+  'COCO',
+  'opt-in',
+  'ONNX-Model-Zoo-MIT.txt',
+  'UltraFace-MIT.txt',
+]) {
+  if (!notices.includes(requiredNoticeToken)) fail(`Third-party notices omit pinned provenance: ${requiredNoticeToken}`);
+}
+if (notices.includes('929618539097dbeb779c13aed75dfe346d016d48')) {
+  fail('Third-party notices retain the invalid historical SSD revision.');
+}
+for (const licenseCheck of [
+  ['ONNX-Model-Zoo-MIT.txt', 'Copyright (c) ONNX Project Contributors'],
+  ['UltraFace-MIT.txt', 'Copyright (c) 2019 linzai'],
+  ['SFace-Apache-2.0.txt', 'Apache License'],
+  ['YuNet-MIT.txt', 'Permission is hereby granted'],
+]) {
+  const licenseText = readFileSync(path.join(thirdPartyDir, licenseCheck[0]), 'utf8');
+  if (!licenseText.includes(licenseCheck[1])) fail(`Third-party license text is incomplete: ${licenseCheck[0]}`);
 }
 
 const manifest = {
@@ -136,6 +277,9 @@ const manifest = {
   appDir,
   resourcesDir,
   models: models.map((model) => ({ name: model, bytes: statSync(path.join(modelDir, model)).size })),
+  modelDigests: packagedModelDigests,
+  preprocessWorkerDigest: looseWorkerDigest,
+  experimentalDetectors: packagedExperimentalDetectors,
   onnxRuntime: {
     retainedArchitectures,
     nativeFiles: listFiles(targetPlatformDir),

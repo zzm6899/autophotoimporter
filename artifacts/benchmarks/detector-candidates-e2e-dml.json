@@ -1,0 +1,148 @@
+{
+  "schemaVersion": 1,
+  "suite": "keptra-detector-candidate-e2e",
+  "generatedAt": "2026-08-13T02:29:54.572Z",
+  "safetyStatus": "evaluation-only",
+  "throughputTarget": {
+    "millionPhotosHours": [
+      4,
+      8
+    ],
+    "requiredPhotosPerSecond": [
+      34.722,
+      69.444
+    ],
+    "caveat": "Warm-cache single-process projection; validate cold storage, RAW previews, UI, and labelled accuracy separately."
+  },
+  "runtime": {
+    "provider": "dml",
+    "node": "v24.14.0",
+    "onnxRuntime": "1.21.0 package",
+    "platform": "win32",
+    "arch": "x64",
+    "cpu": "AMD Ryzen 7 7800X3D 8-Core Processor           ",
+    "logicalCpuCount": 16,
+    "totalMemoryGiB": 63.14
+  },
+  "inputs": {
+    "images": 3,
+    "iterations": 100,
+    "labels": false
+  },
+  "results": [
+    {
+      "candidateId": "yunet-2023mar-fp32",
+      "displayName": "OpenCV YuNet 2023mar FP32",
+      "role": "face",
+      "decoder": "yunet-v1",
+      "provider": "dml",
+      "modelFile": "face_detection_yunet_2023mar.onnx",
+      "modelSha256": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+      "imageCount": 3,
+      "warmupRuns": 5,
+      "kernelAndPostprocess": {
+        "samples": 100,
+        "wallMs": 157.566,
+        "photosPerSecond": 634.655,
+        "projectedMillionHours": 0.438,
+        "target35PhotosPerSecondMet": true,
+        "target4HourRateMet": true,
+        "totalMs": {
+          "min": 1.098,
+          "p50": 1.311,
+          "p95": 2.677,
+          "p99": 2.782,
+          "max": 3.297,
+          "mean": 1.572
+        },
+        "meanStageMs": {
+          "preprocess": 0,
+          "inference": 1.404,
+          "postprocess": 0.168
+        }
+      },
+      "endToEndWarmCache": {
+        "samples": 100,
+        "wallMs": 1851.538,
+        "photosPerSecond": 54.009,
+        "projectedMillionHours": 5.143,
+        "target35PhotosPerSecondMet": true,
+        "target4HourRateMet": false,
+        "totalMs": {
+          "min": 14.447,
+          "p50": 19.025,
+          "p95": 21.198,
+          "p99": 21.757,
+          "max": 22.92,
+          "mean": 18.492
+        },
+        "meanStageMs": {
+          "preprocess": 16.879,
+          "inference": 1.491,
+          "postprocess": 0.115
+        }
+      },
+      "detections": {
+        "total": 100,
+        "meanPerImage": 1
+      }
+    },
+    {
+      "candidateId": "nanodet-2022nov-fp32",
+      "displayName": "OpenCV NanoDet Plus 2022nov FP32",
+      "role": "object",
+      "decoder": "nanodet-plus-gfl-v1",
+      "provider": "dml",
+      "modelFile": "object_detection_nanodet_2022nov.onnx",
+      "modelSha256": "4b82da9944b88577175ee23a459dce2e26e6e4be573def65b1055dc2d9720186",
+      "imageCount": 3,
+      "warmupRuns": 5,
+      "kernelAndPostprocess": {
+        "samples": 100,
+        "wallMs": 335.386,
+        "photosPerSecond": 298.164,
+        "projectedMillionHours": 0.932,
+        "target35PhotosPerSecondMet": true,
+        "target4HourRateMet": true,
+        "totalMs": {
+          "min": 2.455,
+          "p50": 2.966,
+          "p95": 5.369,
+          "p99": 5.913,
+          "max": 6.001,
+          "mean": 3.35
+        },
+        "meanStageMs": {
+          "preprocess": 0,
+          "inference": 1.819,
+          "postprocess": 1.531
+        }
+      },
+      "endToEndWarmCache": {
+        "samples": 100,
+        "wallMs": 1851.761,
+        "photosPerSecond": 54.003,
+        "projectedMillionHours": 5.144,
+        "target35PhotosPerSecondMet": true,
+        "target4HourRateMet": false,
+        "totalMs": {
+          "min": 13.431,
+          "p50": 19.281,
+          "p95": 21.884,
+          "p99": 22.716,
+          "max": 22.996,
+          "mean": 18.498
+        },
+        "meanStageMs": {
+          "preprocess": 15.405,
+          "inference": 1.776,
+          "postprocess": 1.31
+        }
+      },
+      "detections": {
+        "total": 166,
+        "meanPerImage": 1.66
+      }
+    }
+  ]
+}

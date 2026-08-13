@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+## 1.5.14 - 2026-08-13
+
+### Fixed
+- Stopped large AI reviews from regrouping and rewriting the full session every 15 seconds. Face and visual grouping now finalize after the analysis sweep and persist only rows whose group membership changed, preventing the long UI freezes that could look like an application crash near completion.
+- Made terminal grouping stable across navigation, delayed previews, unavailable thumbnails, and the one Super Speed comparison follow-up, without repeatedly rebuilding the catalogue.
+- Prevented perceptual-hash similarity chains from collapsing unrelated event moments into one giant comparison group. Visual groups now respect burst boundaries, local capture context, a fixed representative, and a bounded group size.
+- Serialized optional MoveNet pose inference and made its shutdown lifecycle wait safely for in-flight native work before releasing the DirectML session.
+
+### Performance
+- Detector-only JPEG review now reuses an existing quality-safe scanner thumbnail when available, while rejecting tiny camera thumbnails and falling back to the original image to preserve small-face recall.
+- Replaced the quadratic 64-bit visual-hash search used at review completion with an exact indexed search; the saved 22,529-photo HYROX catalogue groups in tens of milliseconds instead of freezing the renderer for minutes.
+- The review status now names the active YuNet and NanoDet providers and reports the observed selective SSD fallback rate.
+
+## 1.5.13 - 2026-08-13
+
+### Performance
+- Added default Super Speed AI routing: cheap focus/hash/scene evidence runs on every frame, while detector, subject/person, and full face/pose stages run only for meaningful comparisons, people-heavy genres, priority photos, and uncertainty.
+- Reused scanner thumbnails for detector-only analysis, batched renderer-to-main analysis calls, separated the CPU person inference gate, and capped whole-photo concurrency to avoid CPU oversubscription.
+- Replaced the 50,000-file JSON cache with a batched SQLite WAL cache sized for million-photo libraries, compact binary embeddings, monotonic analysis-depth validation, corruption recovery, and graceful shutdown.
+- Forced DirectML adapter selection to Auto until a stable DXGI/DML identity mapping is available; WMI display indices can no longer select the wrong adapter.
+
+### AI review
+- Promoted digest-verified YuNet and NanoDet to a shared-decode fast face/body cascade, retaining UltraFace and SSD MobileNet as selective safety fallbacks for weak, empty, edge, and disagreement cases; YOLOX-S remains evaluation-only.
+- Added YuNet landmark-aligned eye and opt-in SFace similarity analysis. Similar faces can add keeper coverage only inside burst/visual comparisons and never become a rejection reason or a real-world identity claim.
+- Added HYROX endurance and Anime convention/cosplay review profiles, including Animaga and SMASH folder cues, subject-aware ranking, and manual holds for uncorroborated detector evidence.
+
+### Safety
+- Incomplete detector-only comparisons remain unanalysed instead of becoming automatic rejects, and completed review evidence is committed to durable session state without expanding undo history.
+
 ## 1.5.12 - 2026-08-13
 
 - Replaced the non-commercial WebFace600K recognition weight with the Apache-2.0 OpenCV SFace model, pinned by immutable source revision and SHA-256, and packaged its license/provenance notices.

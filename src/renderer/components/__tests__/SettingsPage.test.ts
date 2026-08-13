@@ -2,13 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { clampFaceConcurrencyForSettings, recommendFaceConcurrencyTarget } from '../SettingsPage';
 
 describe('recommendFaceConcurrencyTarget', () => {
-  it('clamps very fast DirectML recommendations to the runtime cap', () => {
+  it('keeps very fast DirectML recommendations below the CPU-stage contention point', () => {
     expect(recommendFaceConcurrencyTarget({
       dmlActive: true,
       avgDmlMs: 4,
       cpuCores: 24,
       tier: 'high',
-    })).toBe(24);
+    })).toBe(12);
   });
 
   it('keeps older or unstable DirectML devices below the cap', () => {
@@ -38,6 +38,6 @@ describe('clampFaceConcurrencyForSettings', () => {
   it('rounds and clamps user-facing face scan settings to the supported range', () => {
     expect(clampFaceConcurrencyForSettings(0)).toBe(1);
     expect(clampFaceConcurrencyForSettings(2.6)).toBe(3);
-    expect(clampFaceConcurrencyForSettings(32)).toBe(24);
+    expect(clampFaceConcurrencyForSettings(32)).toBe(16);
   });
 });

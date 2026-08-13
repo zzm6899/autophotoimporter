@@ -1,4 +1,4 @@
-import exifr from 'exifr';
+import exifr, { Exifr } from 'exifr';
 import { stat, readFile, mkdir, open as fsOpen, writeFile, unlink } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import { execFile } from 'node:child_process';
@@ -21,6 +21,60 @@ export { isSharpAvailable } from './sharp-loader';
 
 function getSharp() {
   return getSharpModule();
+}
+
+type ExifrOptions = Exclude<Parameters<typeof exifr.parse>[1], unknown[] | boolean>;
+type ExifrReader = {
+  close?: () => void | Promise<void>;
+};
+type ManagedExifr = Exifr & {
+  // Exifr exposes the reader at runtime but omits it from its public typings.
+  // Keeping access scoped to this helper lets us close its chunked FsReader
+  // without changing the dependency or reading an entire multi-gigabyte RAW.
+  file?: ExifrReader;
+};
+
+/**
+ * Run a path-based Exifr operation and deterministically close its chunked
+ * FsReader. Exifr 7 calls `file.close()` without awaiting it and skips that
+ * call on several early-return/error paths (notably a missing IFD1 thumbnail),
+ * which otherwise leaves FileHandles for the GC to close (Node DEP0137).
+ *
+ * The close wrapper memoizes the first close promise. This means Exifr's own
+ * fire-and-forget close and this finally block share the same promise, so the
+ * caller does not complete until the descriptor is actually released.
+ */
+async function withManagedExifr<T>(
+  filePath: string,
+  options: ExifrOptions,
+  operation: (parser: Exifr) => Promise<T>,
+): Promise<T> {
+  const parser = new Exifr(options) as ManagedExifr;
+  try {
+    await parser.read(filePath);
+    const reader = parser.file;
+    if (reader?.close) {
+      const closeReader = reader.close.bind(reader);
+      let closePromise: Promise<void> | undefined;
+      reader.close = () => {
+        closePromise ??= Promise.resolve(closeReader()).catch(() => undefined);
+        return closePromise;
+      };
+    }
+    return await operation(parser);
+  } finally {
+    // A parser/read failure must retain its original outcome; close is cleanup.
+    // Awaiting it here still prevents unhandled rejections and descriptor GC.
+    await parser.file?.close?.();
+  }
+}
+
+function parseExifFile(filePath: string, options: ExifrOptions): Promise<any> {
+  return withManagedExifr(filePath, options, (parser) => parser.parse());
+}
+
+function extractExifThumbnail(filePath: string): Promise<Uint8Array | undefined> {
+  return withManagedExifr(filePath, undefined, (parser) => parser.extractThumbnail());
 }
 
 // IMPORTANT: no .rotate() here — the renderer ignores embedded EXIF orientation
@@ -119,6 +173,23 @@ const MAX_DIRECT_PREVIEW_BYTES = 6 * 1024 * 1024;
 // 60KB/thumb average) — evict oldest on overflow.
 const thumbMemCache = new Map<string, Buffer>();
 const THUMB_MEM_CACHE_MAX = 2000;
+type CachedThumbnailPayload =
+  | { kind: 'file'; diskPath: string }
+  | { kind: 'buffer'; buffer: Buffer; persisted: boolean };
+// Path-keyed handoff from the scanner/grid to detector-only AI. The scan
+// already invalidates this map at source start/change, so the AI fast path can
+// avoid repeating source-drive stat/hash/EXIF work for every frame.
+const resolvedThumbnailPayloads = new Map<string, CachedThumbnailPayload>();
+const RESOLVED_THUMBNAIL_MAX = 2000;
+
+function rememberResolvedThumbnail(filePath: string, payload: CachedThumbnailPayload): void {
+  if (resolvedThumbnailPayloads.has(filePath)) resolvedThumbnailPayloads.delete(filePath);
+  resolvedThumbnailPayloads.set(filePath, payload);
+  if (resolvedThumbnailPayloads.size > RESOLVED_THUMBNAIL_MAX) {
+    const oldest = resolvedThumbnailPayloads.keys().next().value as string | undefined;
+    if (oldest) resolvedThumbnailPayloads.delete(oldest);
+  }
+}
 
 function thumbMemCacheKey(filePath: string, mtimeMs: number, size: number): string {
   return `${filePath}|${mtimeMs}|${size}`;
@@ -134,6 +205,7 @@ function thumbMemCacheSet(key: string, buffer: Buffer): void {
 
 export function clearThumbnailMemCache(): void {
   thumbMemCache.clear();
+  resolvedThumbnailPayloads.clear();
 }
 
 // Settings-driven overrides (will be set at runtime by ipc-handlers)
@@ -230,7 +302,7 @@ export function normalizeExifOrientation(value: unknown): number | undefined {
  */
 export async function readExifOrientation(filePath: string): Promise<number> {
   try {
-    const metadata = await exifr.parse(filePath, {
+    const metadata = await parseExifFile(filePath, {
       pick: ['Orientation'],
       reviveValues: true,
     });
@@ -300,7 +372,7 @@ export async function parseExifDate(
 
   if (file.type === 'photo' && EXIFR_SUPPORTED.has(file.extension)) {
     try {
-      const exif = await exifr.parse(file.path, {
+      const exif = await parseExifFile(file.path, {
         pick: [
           'DateTimeOriginal', 'CreateDate', 'ModifyDate', 'Orientation',
           'ISO', 'FNumber', 'ExposureTime', 'FocalLength',
@@ -382,10 +454,13 @@ async function extractEmbeddedThumbnailBuffer(
     const memKey = s ? thumbMemCacheKey(filePath, s.mtimeMs, s.size) : null;
     if (memKey) {
       const cached = thumbMemCache.get(memKey);
-      if (cached) return cached;
+      if (cached) {
+        rememberResolvedThumbnail(filePath, { kind: 'buffer', buffer: cached, persisted: false });
+        return cached;
+      }
     }
 
-    const thumbData = await exifr.thumbnail(filePath);
+    const thumbData = await extractExifThumbnail(filePath);
     if (!thumbData || thumbData.byteLength === 0) return undefined;
     const buffer = Buffer.isBuffer(thumbData) ? thumbData : Buffer.from(thumbData);
     let result: Buffer | undefined;
@@ -397,6 +472,7 @@ async function extractEmbeddedThumbnailBuffer(
       result = buffer;
     }
     if (result && memKey) thumbMemCacheSet(memKey, result);
+    if (result) rememberResolvedThumbnail(filePath, { kind: 'buffer', buffer: result, persisted: false });
     return result;
   } catch {
     return undefined;
@@ -680,7 +756,7 @@ async function embeddedFallbackBuffer(
   }
 
   try {
-    const thumbData = await exifr.thumbnail(filePath);
+    const thumbData = await extractExifThumbnail(filePath);
     if (!thumbData || thumbData.byteLength === 0) return undefined;
     const buffer = Buffer.from(thumbData);
     if (persistPath) {
@@ -716,7 +792,7 @@ async function embeddedFallbackForThumbnail(
 
   // Fast path: exifr parses the IFD1 thumbnail without reading the whole file.
   try {
-    const thumbData = await exifr.thumbnail(filePath);
+    const thumbData = await extractExifThumbnail(filePath);
     if (thumbData && thumbData.byteLength > 0) {
       const buffer = Buffer.isBuffer(thumbData) ? thumbData : Buffer.from(thumbData);
       let result: Buffer | undefined;
@@ -780,9 +856,7 @@ async function previewCacheKeyFor(
     .slice(0, 16);
 }
 
-export type PreviewPayload =
-  | { kind: 'file'; diskPath: string }
-  | { kind: 'buffer'; buffer: Buffer; persisted: boolean };
+export type PreviewPayload = CachedThumbnailPayload;
 
 const inflightPreviews = new Map<string, Promise<PreviewPayload | undefined>>();
 
@@ -917,21 +991,30 @@ async function generateThumbnailBuffer(filePath: string): Promise<Buffer | undef
 
     try {
       await stat(outPath);
-      return await readFile(outPath);
+      const buffer = await readFile(outPath);
+      rememberResolvedThumbnail(filePath, { kind: 'file', diskPath: outPath });
+      return buffer;
     } catch {
       // not cached
     }
 
     if (RAW_EXTENSIONS.has(ext)) {
       const fallback = await embeddedFallbackForThumbnail(filePath, ext, outPath);
-      if (fallback) return fallback;
+      if (fallback) {
+        rememberResolvedThumbnail(filePath, { kind: 'buffer', buffer: fallback, persisted: false });
+        return fallback;
+      }
     }
 
     try {
       await platformResize(filePath, outPath, THUMB_WIDTH, 60, 15000);
-      return await readFile(outPath);
+      const buffer = await readFile(outPath);
+      rememberResolvedThumbnail(filePath, { kind: 'file', diskPath: outPath });
+      return buffer;
     } catch {
-      return embeddedFallbackForThumbnail(filePath, ext, outPath);
+      const fallback = await embeddedFallbackForThumbnail(filePath, ext, outPath);
+      if (fallback) rememberResolvedThumbnail(filePath, { kind: 'buffer', buffer: fallback, persisted: false });
+      return fallback;
     }
   } catch {
     return undefined;
@@ -1031,6 +1114,13 @@ function releaseThumbFetchSlot(): void {
 }
 
 export async function getThumbnailPayload(filePath: string): Promise<PreviewPayload | undefined> {
+  const resolved = resolvedThumbnailPayloads.get(filePath);
+  if (resolved) {
+    // Refresh bounded insertion order because active AI work should not be
+    // evicted behind thumbnails that have not reached review yet.
+    rememberResolvedThumbnail(filePath, resolved);
+    return resolved;
+  }
   const existing = inflightThumbPayloads.get(filePath);
   if (existing) return existing;
 
@@ -1070,8 +1160,160 @@ export async function getThumbnailPayload(filePath: string): Promise<PreviewPayl
 
   inflightThumbPayloads.set(filePath, promise);
   try {
-    return await promise;
+    const payload = await promise;
+    if (payload) rememberResolvedThumbnail(filePath, payload);
+    return payload;
   } finally {
     inflightThumbPayloads.delete(filePath);
+  }
+}
+
+/**
+ * Read-only scanner-to-AI handoff. Unlike getThumbnailPayload(), this never
+ * decodes, resizes, invokes Sharp/nativeImage, or spawns a platform converter.
+ * It is therefore safe to use before dispatching RAW work to the supervised
+ * preprocessing utility process.
+ */
+export async function peekThumbnailPayload(filePath: string): Promise<PreviewPayload | undefined> {
+  const resolved = resolvedThumbnailPayloads.get(filePath);
+  if (resolved) {
+    rememberResolvedThumbnail(filePath, resolved);
+    return resolved;
+  }
+  try {
+    const dir = await getThumbDir();
+    const key = await cacheKeyFor(filePath);
+    const outPath = path.join(dir, `${key}.jpg`);
+    await stat(outPath);
+    return { kind: 'file', diskPath: outPath };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Raw RGB pixels prepared from the scanner's existing thumbnail. Sharp/libvips
+ * performs JPEG decode and resize off the Electron main thread, avoiding the
+ * synchronous nativeImage resize/toBitmap pair in high-volume detector-only
+ * review. The original thumbnail dimensions are retained so face-engine can
+ * reject tiny camera thumbnails and use its higher-resolution fallback.
+ */
+export interface DetectionPixelPayload {
+  data: Buffer;
+  width: number;
+  height: number;
+  channels: 3;
+  sourceWidth: number;
+  sourceHeight: number;
+}
+
+/** Read JPEG SOF dimensions without decoding pixels. Exported for regression tests. */
+export function jpegDimensions(buffer: Buffer): { width: number; height: number } | undefined {
+  if (buffer.length < 10 || buffer[0] !== 0xff || buffer[1] !== 0xd8) return undefined;
+  let offset = 2;
+  while (offset + 8 < buffer.length) {
+    if (buffer[offset] !== 0xff) {
+      offset++;
+      continue;
+    }
+    while (offset < buffer.length && buffer[offset] === 0xff) offset++;
+    if (offset >= buffer.length) break;
+    const marker = buffer[offset++];
+    if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd9)) continue;
+    if (offset + 2 > buffer.length) break;
+    const segmentLength = buffer.readUInt16BE(offset);
+    if (segmentLength < 2 || offset + segmentLength > buffer.length) break;
+    const isStartOfFrame = (marker >= 0xc0 && marker <= 0xc3)
+      || (marker >= 0xc5 && marker <= 0xc7)
+      || (marker >= 0xc9 && marker <= 0xcb)
+      || (marker >= 0xcd && marker <= 0xcf);
+    if (isStartOfFrame && segmentLength >= 7) {
+      const height = buffer.readUInt16BE(offset + 3);
+      const width = buffer.readUInt16BE(offset + 5);
+      return width > 0 && height > 0 ? { width, height } : undefined;
+    }
+    offset += segmentLength;
+  }
+  return undefined;
+}
+
+export async function getDetectionPixels(
+  filePath: string,
+  targetWidth: number,
+  targetHeight: number,
+): Promise<DetectionPixelPayload | undefined> {
+  if (!Number.isInteger(targetWidth) || !Number.isInteger(targetHeight)
+    || targetWidth <= 0 || targetHeight <= 0
+    || targetWidth > 4096 || targetHeight > 4096) return undefined;
+
+  const sharp = getSharp();
+  if (!sharp) return undefined;
+
+  try {
+    const directJpeg = new Set(['.jpg', '.jpeg', '.jpe']).has(path.extname(filePath).toLowerCase());
+    if (directJpeg) {
+      // A detector cache miss must not enter generateThumbnailBuffer(), whose
+      // final fallback can launch a platform resizer. libjpeg can decode JPEGs
+      // directly at a reduced DCT scale (shrink-on-load), avoiding both the
+      // 320px intermediate encode and synchronous nativeImage work.
+      const pipeline = sharp(filePath, {
+        failOn: 'error', sequentialRead: true, limitInputPixels: 180_000_000,
+      });
+      const metadata = await pipeline.metadata();
+      const sourceWidth = metadata.width ?? 0;
+      const sourceHeight = metadata.height ?? 0;
+      if (sourceWidth <= 0 || sourceHeight <= 0) return undefined;
+      const { data, info } = await sharp(filePath, {
+        failOn: 'error', sequentialRead: true, limitInputPixels: 180_000_000,
+      })
+        .resize({ width: targetWidth, height: targetHeight, fit: 'fill' })
+        .toColourspace('srgb')
+        .removeAlpha()
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+      if (info.width !== targetWidth || info.height !== targetHeight || info.channels !== 3) return undefined;
+      return { data, width: info.width, height: info.height, channels: 3, sourceWidth, sourceHeight };
+    }
+
+    const payload = await getThumbnailPayload(filePath);
+    if (!payload) return undefined;
+    // Scanner thumbnails are deliberately bounded. Read a disk payload once
+    // and share that buffer between header validation and libvips instead of
+    // making separate header and decoder reads from removable storage.
+    const input = payload.kind === 'file' ? await readFile(payload.diskPath) : payload.buffer;
+    let sourceDimensions = jpegDimensions(input);
+    if (!sourceDimensions) {
+      // Defensive support for any future non-JPEG thumbnail payload.
+      const metadata = await sharp(input, { failOn: 'none', sequentialRead: true }).metadata();
+      if (metadata.width && metadata.height) {
+        sourceDimensions = { width: metadata.width, height: metadata.height };
+      }
+    }
+    const sourceWidth = sourceDimensions?.width ?? 0;
+    const sourceHeight = sourceDimensions?.height ?? 0;
+    if (sourceWidth <= 0 || sourceHeight <= 0) return undefined;
+
+    const { data, info } = await sharp(input, { failOn: 'none', sequentialRead: true })
+      .resize({ width: targetWidth, height: targetHeight, fit: 'fill' })
+      .toColourspace('srgb')
+      .removeAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    if (info.width !== targetWidth || info.height !== targetHeight || info.channels !== 3) {
+      return undefined;
+    }
+    return {
+      data,
+      width: info.width,
+      height: info.height,
+      channels: 3,
+      sourceWidth,
+      sourceHeight,
+    };
+  } catch {
+    // Unsupported/corrupt formats retain the established nativeImage/RAW
+    // fallback in face-engine. Detector preparation must never make analysis
+    // fail merely because the accelerated decoder rejected one file.
+    return undefined;
   }
 }

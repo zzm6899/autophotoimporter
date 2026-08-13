@@ -3,10 +3,49 @@ import type { MediaFile } from '../../../shared/types';
 
 // Mocks
 vi.mock('exifr', () => ({
-  default: {
-    parse: vi.fn(),
-    thumbnail: vi.fn(),
-  },
+  ...(() => {
+    const parse = vi.fn();
+    const thumbnail = vi.fn();
+    const closeHook = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+    const instances: Array<{
+      file: { close: () => void | Promise<void>; closeSpy: ReturnType<typeof vi.fn> };
+    }> = [];
+
+    class Exifr {
+      private input: unknown;
+      private readonly options: unknown;
+      readonly file: { close: () => void | Promise<void>; closeSpy: ReturnType<typeof vi.fn> };
+
+      constructor(options?: unknown) {
+        this.options = options;
+        const closeSpy = vi.fn(() => closeHook());
+        this.file = { close: closeSpy, closeSpy };
+        instances.push(this);
+      }
+
+      async read(input: unknown): Promise<void> {
+        this.input = input;
+      }
+
+      async parse(): Promise<unknown> {
+        const result = await parse(this.input, this.options);
+        // Mirror Exifr's successful parse path: it starts close without
+        // awaiting it. The service helper must join this same close promise.
+        void this.file.close();
+        return result;
+      }
+
+      async extractThumbnail(): Promise<unknown> {
+        // Deliberately do not close here. Real Exifr has an early return when
+        // an image has no TIFF/IFD1 thumbnail; that is the leaking path the
+        // service helper must close in its finally block.
+        return thumbnail(this.input);
+      }
+    }
+
+    const mocked = { parse, thumbnail, Exifr, __instances: instances, __closeHook: closeHook };
+    return { Exifr, default: mocked };
+  })(),
 }));
 
 vi.mock('node:fs/promises', () => ({
@@ -39,10 +78,21 @@ import { parseExifDate, extractEmbeddedThumbnail, generatePreview, generateThumb
 
 const mockExifrParse = vi.mocked(exifr.parse);
 const mockExifrThumbnail = vi.mocked(exifr.thumbnail);
+const mockExifrInstances = (exifr as typeof exifr & {
+  __instances: Array<{ file: { closeSpy: ReturnType<typeof vi.fn> } }>;
+}).__instances;
+const mockExifrCloseHook = (exifr as typeof exifr & {
+  __closeHook: ReturnType<typeof vi.fn>;
+}).__closeHook;
 const mockStat = vi.mocked(stat);
 const mockReadFile = vi.mocked(readFile);
 const mockUnlink = vi.mocked(unlink);
 const mockExecFile = vi.mocked(execFile);
+
+beforeEach(() => {
+  mockExifrInstances.length = 0;
+  mockExifrCloseHook.mockReset().mockResolvedValue(undefined);
+});
 
 function makeFile(overrides: Partial<MediaFile> = {}): MediaFile {
   return {
@@ -249,6 +299,54 @@ describe('EXIF orientation for AI preprocessing', () => {
     await expect(readExifOrientation('/photos/portrait.jpg')).resolves.toBe(8);
     mockExifrParse.mockRejectedValueOnce(new Error('broken EXIF'));
     await expect(readExifOrientation('/photos/broken.jpg')).resolves.toBe(1);
+  });
+});
+
+describe('managed Exifr file-handle lifecycle', () => {
+  beforeEach(() => {
+    mockExifrParse.mockReset();
+    mockExifrThumbnail.mockReset();
+    mockStat.mockRejectedValue(new Error('stat-not-needed'));
+  });
+
+  it('waits for Exifr\'s fire-and-forget close before returning a successful parse', async () => {
+    mockExifrParse.mockResolvedValue({ Orientation: 6 });
+    let releaseClose!: () => void;
+    mockExifrCloseHook.mockImplementationOnce(() => new Promise<void>((resolve) => {
+      releaseClose = resolve;
+    }));
+
+    let settled = false;
+    const resultPromise = readExifOrientation('/photos/portrait.jpg').then((result) => {
+      settled = true;
+      return result;
+    });
+
+    await vi.waitFor(() => expect(mockExifrCloseHook).toHaveBeenCalledTimes(1));
+    expect(settled).toBe(false);
+    releaseClose();
+
+    await expect(resultPromise).resolves.toBe(6);
+    // Exifr's own close and the service finally block share one promise.
+    expect(mockExifrInstances[0].file.closeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes the chunked reader when metadata parsing throws', async () => {
+    mockExifrParse.mockRejectedValue(new Error('corrupt EXIF'));
+
+    await expect(readExifOrientation('/photos/corrupt.jpg')).resolves.toBe(1);
+
+    expect(mockExifrCloseHook).toHaveBeenCalledTimes(1);
+    expect(mockExifrInstances[0].file.closeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes the chunked reader on Exifr\'s missing-thumbnail early return', async () => {
+    mockExifrThumbnail.mockResolvedValue(undefined);
+
+    await expect(extractEmbeddedThumbnail('/photos/no-ifd1.nef', '.nef')).resolves.toBeUndefined();
+
+    expect(mockExifrCloseHook).toHaveBeenCalledTimes(1);
+    expect(mockExifrInstances[0].file.closeSpy).toHaveBeenCalledTimes(1);
   });
 });
 

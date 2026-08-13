@@ -6,6 +6,10 @@
  * tests. A digest change or preprocessing revision must change the pipeline
  * fingerprint and therefore invalidate persisted inference results.
  */
+import {
+  PRODUCTION_FAST_DETECTOR_FINGERPRINT,
+  PRODUCTION_FAST_DETECTOR_MODELS,
+} from './detector-model-manifest';
 
 export type FaceModelRole = 'detector' | 'embedder' | 'person';
 
@@ -29,14 +33,36 @@ export const FACE_MODEL_IDENTITIES: Record<FaceModelRole, FaceModelIdentity> = {
   },
 };
 
+export const POSE_MODEL_IDENTITY: FaceModelIdentity = {
+  fileName: 'movenet_thunder.onnx',
+  sha256: '3dca9f6e5f8a64dc9935a5be06fd8bf81bf01e696c9c05c6f2a650e0a401b763',
+};
+
 // Bump for any change that can alter returned boxes, embeddings, poses, or
 // per-face quality signals even when the model files themselves are unchanged.
-export const FACE_PREPROCESSING_REVISION = 'orientation-v1.person-cascade-v1.eye-detail-v1.sface-crop-v1';
+export const FACE_PREPROCESSING_REVISION = [
+  'orientation-main-authority-v3',
+  'supervised-rgb-worker-v1',
+  'fast-detector-selective-cascade-v1',
+  'yunet-threshold-0.70-nms-0.30',
+  'nanodet-evidence-0.40-accept-0.45-nms-0.60-topk-per-head-512-max-256',
+  'selective-fallback-face-0.76-person-0.48-edge-0.01',
+  'resumable-enrichment-v1',
+  'eye-detail-v1',
+  'sface-yunet-five-point-alignment-v1',
+  'movenet-singlepose-crop-letterbox-v2',
+  'sports-pose-score-v2',
+  'legacy-zero-evidence-fallback-v1',
+].join('.');
 
 export const FACE_PIPELINE_FINGERPRINT = [
-  'face-pipeline-v5',
+  'face-pipeline-v7',
   FACE_PREPROCESSING_REVISION,
   ...(['detector', 'embedder', 'person'] as const).map((role) =>
     `${role}:${FACE_MODEL_IDENTITIES[role].sha256}`,
   ),
+  `pose:${POSE_MODEL_IDENTITY.sha256}`,
+  PRODUCTION_FAST_DETECTOR_FINGERPRINT,
+  `fast-face:${PRODUCTION_FAST_DETECTOR_MODELS.face.sha256}`,
+  `fast-person:${PRODUCTION_FAST_DETECTOR_MODELS.person.sha256}`,
 ].join('|');

@@ -22,6 +22,7 @@
 import { createWriteStream, existsSync } from 'node:fs';
 import { mkdir, readFile, unlink, rename } from 'node:fs/promises';
 import { get } from 'node:https';
+import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -38,27 +39,45 @@ const REPO = 'zzm6899/autophotoimporter';
 const TAG  = 'models-v1';
 const RELEASE_NAME = 'Culling Vision Models';
 const RELEASE_BODY =
-  'Stable ONNX review-model assets for Photo Importer.\n\n' +
-  '- `version-RFB-640.onnx` - UltraFace RFB face detector (~1.6 MB)\n' +
-  '- `face_recognition_sface_2021dec.onnx` - OpenCV SFace embeddings (~37 MB, Apache-2.0)\n\n' +
-  '- `ssd_mobilenet_v1_12.onnx` - SSD MobileNet person detector (~28 MB)\n\n' +
+  'Stable, digest-pinned ONNX review-model assets for Keptra. Full provenance and license texts ship in `third_party/NOTICES.md`.\n\n' +
+  '- `version-RFB-640.onnx` - UltraFace RFB face detector (MIT upstream)\n' +
+  '- `face_recognition_sface_2021dec.onnx` - OpenCV SFace embeddings (Apache-2.0)\n' +
+  '- `face_detection_yunet_2023mar.onnx` - YuNet fast face/landmark detector (MIT)\n' +
+  '- `object_detection_nanodet_2022nov.onnx` - NanoDet fast person detector (Apache-2.0)\n' +
+  '- `ssd_mobilenet_v1_12.onnx` - selective SSD MobileNet fallback (MIT ONNX artifact; Apache-2.0 TensorFlow lineage)\n\n' +
+  'The deprecated InsightFace/WebFace600K embedding model is intentionally excluded.\n\n' +
   'Do not delete this release - the app downloads models from here on first launch.';
 
 const MODELS = [
   {
     name: 'version-RFB-640.onnx',
-    url: 'https://huggingface.co/onnxmodelzoo/version-RFB-640/resolve/main/version-RFB-640.onnx?download=true',
+    url: 'https://huggingface.co/onnxmodelzoo/version-RFB-640/resolve/c39647011b1d0eb48037ce3051438e51b19e2b11/version-RFB-640.onnx?download=true',
     approxBytes: 1_600_000,
+    sha256: '8f4c659275977e7a3bfbfa339a9c769ad793df50f9c0baa8c14b11baa1646430',
   },
   {
     name: 'face_recognition_sface_2021dec.onnx',
     url: 'https://media.githubusercontent.com/media/opencv/opencv_zoo/ba91a3b91d00d76e86540d4013f944bd6b514e39/models/face_recognition_sface/face_recognition_sface_2021dec.onnx',
     approxBytes: 38_696_353,
+    sha256: '0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79',
   },
   {
     name: 'ssd_mobilenet_v1_12.onnx',
-    url: 'https://huggingface.co/onnxmodelzoo/ssd_mobilenet_v1_12/resolve/main/ssd_mobilenet_v1_12.onnx?download=true',
+    url: 'https://huggingface.co/onnxmodelzoo/ssd_mobilenet_v1_12/resolve/019281f3fcb151a90e491f3b2f0273f9f31bd6be/ssd_mobilenet_v1_12.onnx?download=true',
     approxBytes: 29_000_000,
+    sha256: 'b8fba5e404077d4048d27fcd1667e85e27e192eb9bf51e696c46a3acd7d21058',
+  },
+  {
+    name: 'face_detection_yunet_2023mar.onnx',
+    url: 'https://media.githubusercontent.com/media/opencv/opencv_zoo/f12e12798e8314f7c074a6656816c048dcc95b7a/models/face_detection_yunet/face_detection_yunet_2023mar.onnx',
+    approxBytes: 232_589,
+    sha256: '8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4',
+  },
+  {
+    name: 'object_detection_nanodet_2022nov.onnx',
+    url: 'https://media.githubusercontent.com/media/opencv/opencv_zoo/510899a2a0adb8c25957915fd030d66dbd553919/models/object_detection_nanodet/object_detection_nanodet_2022nov.onnx',
+    approxBytes: 3_800_954,
+    sha256: '4b82da9944b88577175ee23a459dce2e26e6e4be573def65b1055dc2d9720186',
   },
 ];
 
@@ -216,6 +235,13 @@ for (const model of MODELS) {
     console.log(`[skip] ${model.name} already in ./models/ cache\n`);
   }
 
+  const fileBytes = await readFile(localPath);
+  const digest = createHash('sha256').update(fileBytes).digest('hex');
+  if (digest !== model.sha256) {
+    throw new Error(`Refusing to publish ${model.name}: SHA-256 ${digest} did not match ${model.sha256}`);
+  }
+  console.log(`[ok] Verified SHA-256 ${digest}\n`);
+
   // Delete existing asset if present (so we can re-upload cleanly)
   const existing = (release.assets ?? []).find((a) => a.name === model.name);
   if (existing) {
@@ -226,7 +252,6 @@ for (const model of MODELS) {
 
   // Upload
   console.log(`Uploading ${model.name}...`);
-  const fileBytes = await readFile(localPath);
   const uploadUrl = `${uploadBaseUrl}?name=${encodeURIComponent(model.name)}`;
   const uploadRes = await ghFetch(uploadUrl, {
     method: 'POST',

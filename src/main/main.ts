@@ -1,11 +1,14 @@
-import { app, BrowserWindow, Menu, globalShortcut, shell, session, protocol } from 'electron';
+import { app, BrowserWindow, Menu, globalShortcut, shell, session, protocol, nativeImage } from 'electron';
 import path from 'node:path';
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, unlinkSync, writeFileSync } from 'node:fs';
 import started from 'electron-squirrel-startup';
-import { registerIpcHandlers } from './ipc-handlers';
+import { isPersistentShutdownInProgress, registerIpcHandlers, requestRendererSessionFlush } from './ipc-handlers';
 import { ensureModelsDownloaded } from './services/model-downloader';
 import { initializeLogging, log } from './logger';
 import { PREVIEW_PROTOCOL_SCHEME } from '../shared/types';
+import { getImagePreprocessSupervisor } from './services/image-preprocess-supervisor';
+import { runPoseModelSmoke } from './services/pose-engine';
+import { diagnoseFaceEngine } from './services/face-engine';
 
 if (started) {
   app.quit();
@@ -61,7 +64,14 @@ function getWindowIconPath(): string | undefined {
 
 function modelSmokeStatus() {
   const resourcesPath = process.resourcesPath;
-  const models = ['version-RFB-640.onnx', 'face_recognition_sface_2021dec.onnx', 'ssd_mobilenet_v1_12.onnx'];
+  const models = [
+    'version-RFB-640.onnx',
+    'face_recognition_sface_2021dec.onnx',
+    'face_detection_yunet_2023mar.onnx',
+    'object_detection_nanodet_2022nov.onnx',
+    'ssd_mobilenet_v1_12.onnx',
+    'movenet_thunder.onnx',
+  ];
   return {
     resourcesPath,
     onnxRuntimeNode: existsSync(path.join(resourcesPath, 'onnxruntime-node', 'dist', 'index.js')),
@@ -70,6 +80,58 @@ function modelSmokeStatus() {
       exists: existsSync(path.join(resourcesPath, 'models', name)),
     })),
   };
+}
+
+async function preprocessWorkerSmokeStatus() {
+  const fixturePath = path.join(app.getPath('temp'), `keptra-worker-smoke-${process.pid}.png`);
+  const rawFixturePath = path.join(app.getPath('temp'), `keptra-worker-smoke-${process.pid}.nef`);
+  const fixture = nativeImage.createFromBitmap(Buffer.from([
+    0, 0, 255, 255, 0, 255, 0, 255,
+    255, 0, 0, 255, 255, 255, 255, 255,
+    0, 255, 255, 255, 255, 0, 255, 255,
+  ]), { width: 2, height: 3, scaleFactor: 1 });
+  writeFileSync(fixturePath, fixture.toPNG());
+  writeFileSync(rawFixturePath, Buffer.concat([
+    Buffer.from('KEPTRA_RAW_SMOKE\0'), fixture.toJPEG(90), Buffer.alloc(32),
+  ]));
+  try {
+    const prepared = await getImagePreprocessSupervisor().prepare({
+      imagePath: fixturePath,
+      orientation: 6,
+      includeAnalysisSurface: true,
+      includePersonTensors: false,
+      analysisMaxDimension: 32,
+    });
+    const rawPrepared = await getImagePreprocessSupervisor().prepare({
+      imagePath: rawFixturePath,
+      orientation: 8,
+      extractEmbeddedJpeg: true,
+      useSourceOrientation: true,
+      includeDetectorTensor: false,
+      includeAnalysisSurface: true,
+      includePersonTensors: false,
+      analysisMaxDimension: 32,
+    });
+    return {
+      ok: prepared.detectorCHW.length === 640 * 480 * 3 &&
+        prepared.surfaceWidth === 3 && prepared.surfaceHeight === 2 &&
+        rawPrepared.detectorCHW.length === 0 &&
+        rawPrepared.surfaceWidth === 3 && rawPrepared.surfaceHeight === 2,
+      detectorValues: prepared.detectorCHW.length,
+      surfaceWidth: prepared.surfaceWidth,
+      surfaceHeight: prepared.surfaceHeight,
+      rawEmbeddedPreview: {
+        detectorValues: rawPrepared.detectorCHW.length,
+        surfaceWidth: rawPrepared.surfaceWidth,
+        surfaceHeight: rawPrepared.surfaceHeight,
+      },
+    };
+  } catch (error) {
+    return { ok: false, error: serializeError(error) };
+  } finally {
+    try { unlinkSync(fixturePath); } catch { /* best-effort smoke cleanup */ }
+    try { unlinkSync(rawFixturePath); } catch { /* best-effort smoke cleanup */ }
+  }
 }
 
 function finishPackageSmoke(ok: boolean, details: Record<string, unknown>): void {
@@ -242,6 +304,29 @@ const createWindow = () => {
       // starts, so local `npm start` runs without the renderer sandbox.
       sandbox: !rendererDevServerUrl,
     },
+  });
+
+  // A normal window close does not always pass through app.before-quit (most
+  // notably on macOS). Give the renderer a short, bounded chance to start and
+  // acknowledge its latest session checkpoint before destroying the window.
+  let closeFlushComplete = false;
+  let closeFlushInProgress = false;
+  mainWindow.on('close', (event) => {
+    if (closeFlushComplete || isPersistentShutdownInProgress() || !mainWindow) return;
+    if (closeFlushInProgress) {
+      event.preventDefault();
+      return;
+    }
+    event.preventDefault();
+    closeFlushInProgress = true;
+    const closingWindow = mainWindow;
+    void requestRendererSessionFlush(closingWindow).then((result) => {
+      if (!result.success) log.warn('Window closed without a confirmed final session save', result);
+    }).finally(() => {
+      closeFlushComplete = true;
+      closeFlushInProgress = false;
+      if (!closingWindow.isDestroyed()) closingWindow.close();
+    });
   });
 
   let windowShown = false;
@@ -439,9 +524,17 @@ const createWindow = () => {
             hasVisibleAppText: /Source|Review|Destination|Import|Settings|Help/.test(bodyText),
           };
         })()
-      `, true).then((preload) => {
+      `, true).then(async (preload) => {
         clearTimeout(timeout);
         const resources = modelSmokeStatus();
+        const preprocessWorker = await preprocessWorkerSmokeStatus();
+        // Session creation benchmarks run real zero-tensor inference through
+        // detector, SFace and SSD before this detector diagnostic. This makes
+        // the installed package prove native runtime/model compatibility, not
+        // merely file presence.
+        const faceModels = await diagnoseFaceEngine();
+        const productionFastDetectors = faceModels.productionFastDetectors;
+        const poseModel = await runPoseModelSmoke();
         const requiredPreload = ['getSettings', 'startImport', 'preflightImport', 'retryFailedImport', 'exportDiagnostics', 'checkForUpdates', 'downloadUpdate', 'installUpdate'];
         const preloadFunctions = Array.isArray(preload?.preloadFunctions) ? preload.preloadFunctions : [];
         const missingPreload = requiredPreload.filter((name) => !preloadFunctions.includes(name));
@@ -473,6 +566,13 @@ const createWindow = () => {
               accessibilityIssues.length === 0 &&
               imageStatus.ok &&
               resources.onnxRuntimeNode &&
+              preprocessWorker.ok &&
+              Number.isFinite(faceModels.avgInferenceMs) &&
+              faceModels.models.length === 3 &&
+              productionFastDetectors.active &&
+              Number.isFinite(productionFastDetectors.faceInferenceMs) &&
+              Number.isFinite(productionFastDetectors.personInferenceMs) &&
+              poseModel.ok &&
               missingModels.length === 0,
             {
               preload,
@@ -483,6 +583,10 @@ const createWindow = () => {
               accessibilityIssues,
               imageStatus,
               resources,
+              preprocessWorker,
+              faceModels,
+              productionFastDetectors,
+              poseModel,
               missingModels,
               updateMode: process.platform === 'darwin' ? 'manual-dmg' : 'installer-or-native',
             },

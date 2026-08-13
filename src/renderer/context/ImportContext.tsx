@@ -1,25 +1,33 @@
-import { createContext, useContext, useReducer, useRef, useMemo, useCallback, useEffect, useState, type Dispatch, type ReactNode } from 'react';
+import { createContext, useContext, useReducer, useRef, useMemo, useCallback, useEffect, useLayoutEffect, useState, type Dispatch, type ReactNode } from 'react';
 import type { Volume, MediaFile, ImportProgress, ImportResult, SaveFormat, SourceKind, FtpConfig, FtpSyncSettings, FtpSyncStatus, RatingFilter, SelectionSet, LicenseValidation, WatermarkPosition, WatermarkMode, KeybindMap, MetadataExportFlags, ViewOverlayPreferences, EventMode, CullConfidence, KeeperQuota, SourceProfile, ImportConflictPolicy, AppSession, ExperienceMode, ScanDiagnostics } from '../../shared/types';
 import { FOLDER_PRESETS, DEFAULT_KEYBINDS, DEFAULT_METADATA_EXPORT, DEFAULT_VIEW_OVERLAY_PREFERENCES } from '../../shared/types';
 import { groupBursts } from '../../shared/burst';
 import { clampStops, normalizeExposureStops } from '../../shared/exposure';
-import { FACE_GROUP_EMBEDDING_THRESHOLD, assignSceneBuckets, autoCullGroup, bestInGroup, clearEmbeddingCache, configureReviewProfile, groupByFaceSimilarity, groupByVisualHash, humanMomentQuality, isUsablyFocused, rankBestShots, scoreReview, selectKeepersToTarget } from '../../shared/review';
+import { FACE_GROUP_EMBEDDING_THRESHOLD, assignSceneBuckets, autoCullGroup, bestInGroup, clearEmbeddingCache, configureReviewProfile, groupByFaceSimilarity, groupByVisualHash, humanMomentQuality, isAutoCullBulkDecisionEligible, isUsablyFocused, rankBestShots, scoreReview, selectKeepersToTarget } from '../../shared/review';
 import { isPathInsideSourceRoot } from '../utils/sourcePath';
+import { appendCatalogueFiles, applyIndexedCatalogueMapUpdates, applyIndexedCatalogueUpdates, getCataloguePathIndex, inheritCataloguePathIndex } from '../utils/catalogueDelta';
+import { markSessionCheckpointRequired, markSessionPathsChanged, resetSessionChangeJournal, stageRestoredSessionBaseline } from '../utils/sessionChangeJournal';
+import { stripLocalFaceAndSubjectData, stripSceneSubjectAnalysis } from '../../shared/face-data';
 
 export type AppPhase = 'idle' | 'scanning' | 'ready' | 'importing' | 'complete';
 export type ViewMode = 'grid' | 'single' | 'split' | 'compare' | 'settings';
 
 export type FilterMode = 'all' | 'protected' | 'picked' | 'rejected' | 'unrated' | 'duplicates' | 'catalog-duplicates' | 'outside-source' | 'unmarked' | 'queue' | 'best' | 'faces' | 'face-groups' | 'face-gallery' | 'group-photos' | 'blur-risk' | 'near-duplicates' | 'review-needed' | 'needs-exposure' | 'normalized' | 'adjusted' | 'photos' | 'videos' | 'jpeg' | 'raw' | 'import-failures' | 'color-red' | 'color-yellow' | 'color-green' | 'color-blue' | 'color-purple' | RatingFilter | `camera:${string}` | `lens:${string}` | `date:${string}` | `ext:${string}` | `scene:${string}` | `burst:${string}` | `face:${string}`;
-const MAX_FACE_CONCURRENCY = 24;
+export type ReviewGroupAssignments = ReadonlyMap<string, { id: string; size: number }>;
+const MAX_FACE_CONCURRENCY = 16;
 const REVIEW_OVERLAY_SMALL_DELAY_MS = 80;
 const REVIEW_OVERLAY_MEDIUM_DELAY_MS = 140;
 const REVIEW_OVERLAY_LARGE_DELAY_MS = 240;
+const REVIEW_OVERLAY_HUGE_DELAY_MS = 5_000;
+const REVIEW_OVERLAY_MILLION_DELAY_MS = 60_000;
 
 function isExpensiveImportFilter(filter: FilterMode): boolean {
   return filter === 'face-gallery' || filter === 'face-groups' || filter.startsWith('face:');
 }
 
 function reviewOverlayDelayMs(fileCount: number): number {
+  if (fileCount >= 250_000) return REVIEW_OVERLAY_MILLION_DELAY_MS;
+  if (fileCount >= 50_000) return REVIEW_OVERLAY_HUGE_DELAY_MS;
   if (fileCount >= 2500) return REVIEW_OVERLAY_LARGE_DELAY_MS;
   if (fileCount >= 800) return REVIEW_OVERLAY_MEDIUM_DELAY_MS;
   return REVIEW_OVERLAY_SMALL_DELAY_MS;
@@ -29,24 +37,7 @@ function reviewOverlayDelayMs(fileCount: number): number {
 export function invalidateSceneSubjectAnalysis(
   analysis: MediaFile['sceneAnalysis'],
 ): MediaFile['sceneAnalysis'] {
-  if (!analysis) return undefined;
-  const {
-    subjectSharpnessScore: _subjectSharpnessScore,
-    backgroundSharpnessScore: _backgroundSharpnessScore,
-    subjectFocusConfidence: _subjectFocusConfidence,
-    subjectFocusCoverage: _subjectFocusCoverage,
-    subjectArea: _subjectArea,
-    subjectCountAnalyzed: _subjectCountAnalyzed,
-    subjectReasons,
-    reasons,
-    ...sceneOnly
-  } = analysis;
-  const staleReasons = new Set(subjectReasons ?? []);
-  const sceneReasons = reasons?.filter((reason) => !staleReasons.has(reason));
-  return {
-    ...sceneOnly,
-    ...(sceneReasons && sceneReasons.length > 0 ? { reasons: sceneReasons } : {}),
-  };
+  return stripSceneSubjectAnalysis(analysis);
 }
 
 interface State {
@@ -163,6 +154,7 @@ interface State {
   reviewPersonDetection: boolean;
   reviewVisualDuplicates: boolean;
   autoSpeedMode: boolean;
+  superSpeedMode: boolean;
   perfTier: 'auto' | 'low' | 'balanced' | 'high';
   fastKeeperMode: boolean;
   aiReviewEnabled: boolean;
@@ -199,6 +191,7 @@ export type Action =
   | { type: 'SET_THUMBNAIL'; filePath: string; thumbnail: string }
   | { type: 'SET_THUMBNAILS'; thumbnails: Record<string, string>; scanId?: string }
   | { type: 'SET_DUPLICATE'; filePath: string; duplicate?: boolean; duplicateMemory?: MediaFile['duplicateMemory']; scanId?: string }
+  | { type: 'SET_DUPLICATES'; duplicates: Record<string, { duplicate?: boolean; duplicateMemory?: MediaFile['duplicateMemory'] }>; scanId?: string }
   | { type: 'CLEAR_DUPLICATES' }
   | { type: 'CLEAR_CATALOG_MEMORY_FOR_SOURCE'; sourcePath: string }
   | { type: 'SET_PICK'; filePath: string; pick: 'selected' | 'rejected' | undefined }
@@ -274,9 +267,17 @@ export type Action =
   | { type: 'CULL_TO_TARGET'; target: number; perGroupCap?: number }
   | { type: 'SET_SHARPNESS_BATCH'; scores: Record<string, number> }
   | { type: 'SET_REVIEW_SCORES'; scores: Record<string, Partial<MediaFile>> }
+  | { type: 'COMMIT_REVIEW_SCORES'; finalizeGroups?: {
+      visualDuplicates: boolean;
+      faceMatching: boolean;
+      visualThreshold?: number;
+      faceSignatureThreshold?: number;
+      faceEmbeddingThreshold?: number;
+    } }
+  | { type: 'APPLY_REVIEW_SNAPSHOT'; files: MediaFile[] }
   | { type: 'RESOLVE_SECOND_PASS'; filePaths: string[]; pick: 'selected' | 'rejected' }
-  | { type: 'GROUP_VISUAL_DUPLICATES'; threshold?: number; files?: MediaFile[] }
-  | { type: 'GROUP_FACE_SIMILAR'; threshold?: number; embeddingThreshold?: number; files?: MediaFile[] }
+  | { type: 'GROUP_VISUAL_DUPLICATES'; threshold?: number; files?: MediaFile[]; assignments?: ReviewGroupAssignments }
+  | { type: 'GROUP_FACE_SIMILAR'; threshold?: number; embeddingThreshold?: number; files?: MediaFile[]; assignments?: ReviewGroupAssignments }
   | { type: 'GROUP_SCENE_BUCKETS' }
   | { type: 'PICK_BEST_IN_GROUPS'; files?: MediaFile[] }
   | { type: 'QUEUE_BEST' }
@@ -311,6 +312,7 @@ export type Action =
   | { type: 'SET_FAST_KEEPER_MODE'; enabled: boolean }
   | { type: 'SET_AI_REVIEW_ENABLED'; enabled: boolean }
   | { type: 'SET_AUTO_SPEED_MODE'; enabled: boolean }
+  | { type: 'SET_SUPER_SPEED_MODE'; enabled: boolean }
   | { type: 'SET_PREVIEW_CONCURRENCY'; concurrency: number }
   | { type: 'SET_FACE_CONCURRENCY'; concurrency: number }
   | { type: 'SET_KEYBIND'; action: keyof KeybindMap; key: string }
@@ -319,6 +321,84 @@ export type Action =
   | { type: 'SET_METADATA_EXPORT'; flags: Partial<MetadataExportFlags> }
   | { type: 'SET_VIEW_OVERLAY_PREFERENCES'; preferences: Partial<ViewOverlayPreferences> }
   | { type: 'RESTORE_SESSION'; session: AppSession };
+
+/**
+ * Record the small set of durable file rows touched by an action. Thumbnail
+ * URLs are intentionally excluded from sessions, so their high-frequency
+ * updates never dirty persistence.
+ */
+function trackSessionFileChanges(action: Action): void {
+  switch (action.type) {
+    case 'SELECT_SOURCE':
+    case 'SCAN_START':
+    case 'RESET_FILES':
+    case 'ADVANCE_VOLUME_IMPORT_QUEUE':
+      resetSessionChangeJournal(true);
+      return;
+    case 'RESTORE_SESSION':
+      stageRestoredSessionBaseline(action.session);
+      return;
+    case 'SET_THUMBNAIL':
+    case 'SET_THUMBNAILS':
+    case 'SCAN_BATCH':
+    case 'SCAN_COMPLETE':
+      return;
+    case 'SET_DUPLICATE':
+    case 'SET_PICK':
+    case 'SET_COLOR_LABEL':
+    case 'SET_RATING':
+      markSessionPathsChanged([action.filePath]);
+      return;
+    case 'SET_DUPLICATES':
+      markSessionPathsChanged(Object.keys(action.duplicates));
+      return;
+    case 'SET_PICK_BATCH':
+    case 'SET_COLOR_LABEL_BATCH':
+    case 'SET_WHITE_BALANCE_ADJUSTMENT':
+    case 'SET_NORMALIZE_TO_ANCHOR':
+    case 'SET_EXPOSURE_ADJUSTMENT':
+    case 'NUDGE_EXPOSURE_ADJUSTMENT':
+    case 'RESOLVE_SECOND_PASS':
+      markSessionPathsChanged(action.filePaths);
+      return;
+    case 'NORMALIZE_SELECTION_TO_FOCUSED':
+    case 'NORMALIZE_SELECTION_TO_MEDIAN':
+      markSessionPathsChanged(action.filePaths);
+      return;
+    case 'SET_SHARPNESS_BATCH':
+      markSessionPathsChanged(Object.keys(action.scores));
+      return;
+    case 'SET_REVIEW_SCORES':
+      markSessionPathsChanged(Object.keys(action.scores));
+      return;
+    case 'APPLY_AUTO_CULL_PROPOSAL':
+      markSessionPathsChanged([...action.keep, ...action.reject]);
+      return;
+    case 'SET_WORKFLOW_OPTION':
+      if (action.key === 'burstGrouping') markSessionCheckpointRequired();
+      return;
+    case 'CLEAR_DUPLICATES':
+    case 'CLEAR_CATALOG_MEMORY_FOR_SOURCE':
+    case 'CLEAR_PICKS':
+    case 'SET_BURST_WINDOW':
+    case 'SET_EVENT_MODE':
+    case 'CLEAR_EXPOSURE_ANCHOR':
+    case 'PICK_BURST_KEEPERS':
+    case 'CULL_TO_TARGET':
+    case 'APPLY_REVIEW_SNAPSHOT':
+    case 'GROUP_SCENE_BUCKETS':
+    case 'PICK_BEST_IN_GROUPS':
+    case 'AUTO_CULL_SAFE':
+    case 'SYNC_EDITS_FROM_FOCUSED':
+    case 'REJECT_DUPLICATES':
+    case 'UNDO_FILE_EDIT':
+    case 'CLEAR_FACE_DATA':
+      markSessionCheckpointRequired();
+      return;
+    default:
+      return;
+  }
+}
 
 const systemDark = typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches;
 
@@ -446,10 +526,13 @@ const initialState: State = {
   cpuOptimization: true,
   rawPreviewQuality: 70,
   reviewFaceAnalysis: true,
-  reviewFaceMatching: true,
+  // Local similar-face grouping is an explicit user choice. Face/body/eye
+  // quality culling remains available without storing identity embeddings.
+  reviewFaceMatching: false,
   reviewPersonDetection: true,
   reviewVisualDuplicates: true,
   autoSpeedMode: false,
+  superSpeedMode: true,
   perfTier: 'auto',
   fastKeeperMode: false,
   aiReviewEnabled: true,
@@ -461,10 +544,12 @@ const initialState: State = {
 };
 
 function withFileHistory(state: State, files: MediaFile[]): State {
+  const historyLimit = files.length >= 250_000 ? 3 : files.length >= 50_000 ? 8 : 20;
+  inheritCataloguePathIndex(state.files, files);
   return {
     ...state,
     files,
-    fileHistory: [state.files, ...state.fileHistory].slice(0, 20),
+    fileHistory: [state.files, ...state.fileHistory].slice(0, historyLimit),
   };
 }
 
@@ -475,6 +560,21 @@ function withFileHistoryIfChanged(state: State, files: MediaFile[]): State {
   return withFileHistory(state, files);
 }
 
+function withIndexedFileHistoryUpdate<U>(
+  state: State,
+  updates: ReadonlyMap<string, U>,
+  update: (file: MediaFile, value: U) => MediaFile,
+): State {
+  const result = applyIndexedCatalogueMapUpdates(state.files, updates, update);
+  return result.files === state.files ? state : withFileHistory(state, result.files);
+}
+
+function constantPathUpdates<U>(paths: readonly string[], value: U): Map<string, U> {
+  const updates = new Map<string, U>();
+  for (const filePath of paths) updates.set(filePath, value);
+  return updates;
+}
+
 function sameWhiteBalanceAdjustment(
   a: MediaFile['whiteBalanceAdjustment'],
   b: MediaFile['whiteBalanceAdjustment'],
@@ -483,7 +583,7 @@ function sameWhiteBalanceAdjustment(
   return a?.temperature === b?.temperature && a?.tint === b?.tint;
 }
 
-function collectReviewGroups(files: MediaFile[], includeFace = true): Map<string, MediaFile[]> {
+function collectReviewGroups(files: MediaFile[]): Map<string, MediaFile[]> {
   const groups = new Map<string, MediaFile[]>();
   const addToGroup = (id: string, file: MediaFile) => {
     const group = groups.get(id);
@@ -497,9 +597,6 @@ function collectReviewGroups(files: MediaFile[], includeFace = true): Map<string
     }
     if (f.visualGroupId && f.visualGroupSize && f.visualGroupSize > 1) {
       addToGroup(`visual:${f.visualGroupId}`, f);
-    }
-    if (includeFace && f.faceGroupId && f.faceGroupSize && f.faceGroupSize > 1) {
-      addToGroup(`face:${f.faceGroupId}`, f);
     }
   }
   return groups;
@@ -519,11 +616,15 @@ function normalizeKnownPaths(files: MediaFile[], paths: string[]): string[] {
 
 export function queueBestPaths(
   files: MediaFile[],
-  options: { cullConfidence?: CullConfidence; groupPhotoEveryoneGood?: boolean; keeperQuota?: KeeperQuota; skipDuplicates?: boolean } = {},
+  options: { eventMode?: EventMode; cullConfidence?: CullConfidence; groupPhotoEveryoneGood?: boolean; keeperQuota?: KeeperQuota; skipDuplicates?: boolean } = {},
 ): string[] {
   const skipDuplicates = options.skipDuplicates ?? true;
+  const eventMode = options.eventMode ?? 'general';
   const eligible = files.filter((f) => f.type === 'photo' && f.pick !== 'rejected' && (!skipDuplicates || !f.duplicate));
-  const groups = collectReviewGroups(eligible, false);
+  const automaticEligible = (file: MediaFile) =>
+    file.pick === 'selected' || file.isProtected || (file.rating ?? 0) > 0 ||
+    (isAutoCullBulkDecisionEligible(file, eventMode) && isUsablyFocused(file));
+  const groups = collectReviewGroups(eligible);
   const groupedPaths = new Set<string>();
   const queued = new Set<string>();
 
@@ -533,7 +634,7 @@ export function queueBestPaths(
       if (f.pick === 'selected' || f.isProtected || (f.rating ?? 0) > 0) queued.add(f.path);
     }
     const ranked = rankBestShots(group);
-    const best = ranked.find((file) => file.pick === 'selected' || file.isProtected || (file.rating ?? 0) > 0 || isUsablyFocused(file)) ?? null;
+    const best = ranked.find(automaticEligible) ?? null;
     if (best) queued.add(best.path);
 
     if (options.cullConfidence === 'conservative') {
@@ -546,7 +647,7 @@ export function queueBestPaths(
     }
 
     const quota = options.keeperQuota ?? 'best-1';
-    const autoCandidates = ranked.filter((file) => file.pick === 'selected' || file.isProtected || (file.rating ?? 0) > 0 || isUsablyFocused(file));
+    const autoCandidates = ranked.filter(automaticEligible);
     if (quota === 'top-2') {
       for (const file of autoCandidates.slice(0, 2)) queued.add(file.path);
     } else if (quota === 'smile-and-sharp') {
@@ -568,7 +669,7 @@ export function queueBestPaths(
   }
 
   for (const f of eligible) {
-    if (!groupedPaths.has(f.path) && (f.pick === 'selected' || f.isProtected || (f.rating ?? 0) > 0 || isUsablyFocused(f))) {
+    if (!groupedPaths.has(f.path) && automaticEligible(f)) {
       queued.add(f.path);
     }
   }
@@ -600,6 +701,123 @@ function withStaleScanEventIgnored(state: State): State {
   };
 }
 
+function indexReviewGroups(groups: Record<string, string[]>): ReviewGroupAssignments {
+  const assignments = new Map<string, { id: string; size: number }>();
+  for (const [id, paths] of Object.entries(groups)) {
+    for (const filePath of paths) {
+      const current = assignments.get(filePath);
+      // Face grouping can surface the same group-photo path through more than
+      // one identity. Retain the largest comparison set, matching the legacy
+      // reducer behaviour.
+      if (!current || paths.length > current.size) {
+        assignments.set(filePath, { id, size: paths.length });
+      }
+    }
+  }
+  return assignments;
+}
+
+export function buildVisualGroupAssignments(
+  files: MediaFile[],
+  threshold = 8,
+): ReviewGroupAssignments {
+  return indexReviewGroups(groupByVisualHash(files, threshold));
+}
+
+export function buildFaceGroupAssignments(
+  files: MediaFile[],
+  embeddingThreshold = FACE_GROUP_EMBEDDING_THRESHOLD,
+  signatureThreshold = 10,
+): ReviewGroupAssignments {
+  return indexReviewGroups(groupByFaceSimilarity(files, embeddingThreshold, signatureThreshold));
+}
+
+export interface ReviewGroupingResult {
+  files: MediaFile[];
+  changedPaths: string[];
+}
+
+export function visualGroupAssignmentChanges(
+  files: readonly MediaFile[],
+  assignments: ReviewGroupAssignments,
+): string[] {
+  const changedPaths: string[] = [];
+  for (const file of files) {
+    const group = assignments.get(file.path);
+    if (file.visualGroupId !== group?.id || file.visualGroupSize !== group?.size) {
+      changedPaths.push(file.path);
+    }
+  }
+  return changedPaths;
+}
+
+export function faceGroupAssignmentChanges(
+  files: readonly MediaFile[],
+  assignments: ReviewGroupAssignments,
+): string[] {
+  const changedPaths: string[] = [];
+  for (const file of files) {
+    const group = assignments.get(file.path);
+    if (file.faceGroupId !== group?.id || file.faceGroupSize !== group?.size) {
+      changedPaths.push(file.path);
+    }
+  }
+  return changedPaths;
+}
+
+/**
+ * Materialize derived visual-group metadata while retaining the catalogue
+ * array for a no-op regroup. `changedPaths` is the exact persistence delta,
+ * including rows whose previous group was cleared.
+ */
+export function applyVisualGroupAssignments(
+  files: MediaFile[],
+  assignments: ReviewGroupAssignments,
+): ReviewGroupingResult {
+  let nextFiles: MediaFile[] | undefined;
+  const changedPaths: string[] = [];
+  for (let index = 0; index < files.length; index++) {
+    const file = files[index];
+    const group = assignments.get(file.path);
+    const visualGroupId = group?.id;
+    const visualGroupSize = group?.size;
+    if (file.visualGroupId === visualGroupId && file.visualGroupSize === visualGroupSize) continue;
+    const next = { ...file, visualGroupId, visualGroupSize };
+    const review = scoreReview(next);
+    next.reviewScore = review.score;
+    next.blurRisk = review.blurRisk;
+    next.reviewReasons = review.reasons;
+    nextFiles ??= files.slice();
+    nextFiles[index] = next;
+    changedPaths.push(file.path);
+  }
+  if (!nextFiles) return { files, changedPaths };
+  inheritCataloguePathIndex(files, nextFiles);
+  return { files: nextFiles, changedPaths };
+}
+
+/** Apply face-group metadata with an exact changed-row list for session deltas. */
+export function applyFaceGroupAssignments(
+  files: MediaFile[],
+  assignments: ReviewGroupAssignments,
+): ReviewGroupingResult {
+  let nextFiles: MediaFile[] | undefined;
+  const changedPaths: string[] = [];
+  for (let index = 0; index < files.length; index++) {
+    const file = files[index];
+    const group = assignments.get(file.path);
+    const faceGroupId = group?.id;
+    const faceGroupSize = group?.size;
+    if (file.faceGroupId === faceGroupId && file.faceGroupSize === faceGroupSize) continue;
+    nextFiles ??= files.slice();
+    nextFiles[index] = { ...file, faceGroupId, faceGroupSize };
+    changedPaths.push(file.path);
+  }
+  if (!nextFiles) return { files, changedPaths };
+  inheritCataloguePathIndex(files, nextFiles);
+  return { files: nextFiles, changedPaths };
+}
+
 export function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'SET_VOLUMES':
@@ -628,7 +846,7 @@ export function reducer(state: State, action: Action): State {
     case 'SCAN_BATCH':
       if (state.phase !== 'scanning') return state;
       if (action.scanId && state.activeScanId && action.scanId !== state.activeScanId) return withStaleScanEventIgnored(state);
-      return { ...state, files: [...state.files, ...action.files] };
+      return { ...state, files: appendCatalogueFiles(state.files, action.files) };
     case 'SCAN_COMPLETE': {
       // Guard: ignore stale SCAN_COMPLETE events that arrive after a new
       // SCAN_START has already been dispatched (or after import began).
@@ -649,6 +867,7 @@ export function reducer(state: State, action: Action): State {
             return f;
           });
       const grouped = assignSceneBuckets(burstGrouped, state.eventMode);
+      inheritCataloguePathIndex(state.files, grouped);
       return {
         ...state,
         files: grouped,
@@ -720,42 +939,53 @@ export function reducer(state: State, action: Action): State {
         filter: state.filter === 'import-failures' ? 'all' : state.filter,
       };
     case 'SET_THUMBNAIL':
-      return {
-        ...state,
-        files: state.files.map((f) =>
-          f.path === action.filePath ? { ...f, thumbnail: action.thumbnail } : f,
-        ),
-      };
+      {
+        const result = applyIndexedCatalogueUpdates(
+          state.files,
+          { [action.filePath]: action.thumbnail },
+          (file, thumbnail) => thumbnail === file.thumbnail ? file : { ...file, thumbnail },
+        );
+        return result.files === state.files ? state : { ...state, files: result.files };
+      }
     case 'SET_THUMBNAILS': {
       if (action.scanId && state.activeScanId && action.scanId !== state.activeScanId) return withStaleScanEventIgnored(state);
-      const updates = action.thumbnails;
-      let changed = false;
-      const files = state.files.map((f) => {
-        const thumbnail = updates[f.path];
-        if (thumbnail === undefined || thumbnail === f.thumbnail) return f;
-        changed = true;
-        return { ...f, thumbnail };
-      });
-      return changed ? { ...state, files } : state;
+      const result = applyIndexedCatalogueUpdates(
+        state.files,
+        action.thumbnails,
+        (file, thumbnail) => thumbnail === file.thumbnail ? file : { ...file, thumbnail },
+      );
+      return result.files === state.files ? state : { ...state, files: result.files };
     }
     case 'SET_DUPLICATE':
       if (action.scanId && state.activeScanId && action.scanId !== state.activeScanId) return withStaleScanEventIgnored(state);
-      return {
-        ...state,
-        files: state.files.map((f) =>
-          f.path === action.filePath
-            ? {
-              ...f,
-              // `duplicate` is deliberately limited to the active output
-              // folder. Catalog memory is useful context, but it must not
-              // stop a photographer culling/importing the same source into a
-              // different destination.
-              duplicate: action.duplicate === true || (action.duplicate === undefined && !action.duplicateMemory),
-              duplicateMemory: action.duplicateMemory ?? f.duplicateMemory,
-            }
-            : f,
-        ),
-      };
+      {
+        const result = applyIndexedCatalogueUpdates(
+          state.files,
+          { [action.filePath]: { duplicate: action.duplicate, duplicateMemory: action.duplicateMemory } },
+          (file, update) => ({
+            ...file,
+            // `duplicate` is deliberately limited to the active output
+            // folder. Catalog memory is useful context, but it must not stop
+            // a photographer importing the source elsewhere.
+            duplicate: update.duplicate === true || (update.duplicate === undefined && !update.duplicateMemory),
+            duplicateMemory: update.duplicateMemory ?? file.duplicateMemory,
+          }),
+        );
+        return result.files === state.files ? state : { ...state, files: result.files };
+      }
+    case 'SET_DUPLICATES': {
+      if (action.scanId && state.activeScanId && action.scanId !== state.activeScanId) return withStaleScanEventIgnored(state);
+      const result = applyIndexedCatalogueUpdates(
+        state.files,
+        action.duplicates,
+        (file, update) => ({
+          ...file,
+          duplicate: update.duplicate === true || (update.duplicate === undefined && !update.duplicateMemory),
+          duplicateMemory: update.duplicateMemory ?? file.duplicateMemory,
+        }),
+      );
+      return result.files === state.files ? state : { ...state, files: result.files };
+    }
     case 'CLEAR_DUPLICATES':
       return {
         ...state,
@@ -773,14 +1003,17 @@ export function reducer(state: State, action: Action): State {
           : state.scanDiagnostics,
       };
     case 'SET_PICK':
-      return withFileHistory(state, state.files.map((f) =>
-        f.path === action.filePath ? { ...f, pick: action.pick } : f,
-      ));
+      return withIndexedFileHistoryUpdate(
+        state,
+        new Map([[action.filePath, action.pick]]),
+        (file, pick) => file.pick === pick ? file : { ...file, pick },
+      );
     case 'SET_PICK_BATCH': {
-      const pathSet = new Set(action.filePaths);
-      return withFileHistory(state, state.files.map((f) =>
-        pathSet.has(f.path) ? { ...f, pick: action.pick } : f,
-      ));
+      return withIndexedFileHistoryUpdate(
+        state,
+        constantPathUpdates(action.filePaths, action.pick),
+        (file, pick) => file.pick === pick ? file : { ...file, pick },
+      );
     }
     case 'CLEAR_PICKS':
       return withFileHistory(state, state.files.map((f) => ({ ...f, pick: undefined })));
@@ -810,14 +1043,17 @@ export function reducer(state: State, action: Action): State {
     case 'SET_THUMBNAIL_SIZE':
       return { ...state, thumbnailSize: Math.max(80, Math.min(320, action.size)) };
     case 'SET_COLOR_LABEL':
-      return withFileHistory(state, state.files.map((f) =>
-        f.path === action.filePath ? { ...f, colorLabel: action.label } : f,
-      ));
+      return withIndexedFileHistoryUpdate(
+        state,
+        new Map([[action.filePath, action.label]]),
+        (file, colorLabel) => file.colorLabel === colorLabel ? file : { ...file, colorLabel },
+      );
     case 'SET_COLOR_LABEL_BATCH': {
-      const pathSet = new Set(action.filePaths);
-      return withFileHistory(state, state.files.map((f) =>
-        pathSet.has(f.path) ? { ...f, colorLabel: action.label } : f,
-      ));
+      return withIndexedFileHistoryUpdate(
+        state,
+        constantPathUpdates(action.filePaths, action.label),
+        (file, colorLabel) => file.colorLabel === colorLabel ? file : { ...file, colorLabel },
+      );
     }
     case 'SET_THEME':
       return { ...state, theme: action.theme };
@@ -834,9 +1070,11 @@ export function reducer(state: State, action: Action): State {
     case 'RESET_FILES':
       return { ...state, files: [], phase: 'idle', focusedIndex: -1, focusedPath: null, queuedPaths: [], selectedPaths: [] };
     case 'SET_RATING':
-      return withFileHistory(state, state.files.map((f) =>
-        f.path === action.filePath ? { ...f, rating: action.rating } : f,
-      ));
+      return withIndexedFileHistoryUpdate(
+        state,
+        new Map([[action.filePath, action.rating]]),
+        (file, rating) => file.rating === rating ? file : { ...file, rating },
+      );
     case 'SET_SOURCE_KIND':
       return { ...state, sourceKind: action.kind };
     case 'SET_FTP_CONFIG':
@@ -883,7 +1121,8 @@ export function reducer(state: State, action: Action): State {
     case 'SET_SELECTION_SETS':
       return { ...state, selectionSets: action.sets };
     case 'SELECTION_SET_SAVE': {
-      const paths = [...new Set(action.paths)].filter((p) => state.files.some((f) => f.path === p));
+      const valid = getCataloguePathIndex(state.files);
+      const paths = [...new Set(action.paths)].filter((p) => valid.has(p));
       if (paths.length === 0) return state;
       const set: SelectionSet = {
         name: action.name.trim(),
@@ -898,7 +1137,7 @@ export function reducer(state: State, action: Action): State {
     case 'SELECTION_SET_APPLY': {
       const set = state.selectionSets.find((s) => s.name === action.name);
       if (!set) return state;
-      const valid = new Set(state.files.map((f) => f.path));
+      const valid = getCataloguePathIndex(state.files);
       return { ...state, selectedPaths: set.paths.filter((p) => valid.has(p)) };
     }
     case 'SET_WORKFLOW_OPTION': {
@@ -915,6 +1154,7 @@ export function reducer(state: State, action: Action): State {
               }
               return f;
             });
+        inheritCataloguePathIndex(state.files, next.files);
         next.collapsedBursts = [];
       }
       return next;
@@ -946,12 +1186,14 @@ export function reducer(state: State, action: Action): State {
       return { ...state, watermarkMode: action.mode };
     case 'SET_BURST_WINDOW': {
       const seconds = Math.max(0.25, Math.min(10, action.seconds));
+      const files = state.burstGrouping
+        ? groupBursts(state.files, { windowSec: seconds })
+        : state.files;
+      inheritCataloguePathIndex(state.files, files);
       return {
         ...state,
         burstWindowSec: seconds,
-        files: state.burstGrouping
-          ? groupBursts(state.files, { windowSec: seconds })
-          : state.files,
+        files,
         collapsedBursts: [],
       };
     }
@@ -996,20 +1238,24 @@ export function reducer(state: State, action: Action): State {
         whiteBalanceTint: Math.max(-100, Math.min(100, action.tint)),
       };
     case 'SET_WHITE_BALANCE_ADJUSTMENT': {
-      const pathSet = new Set(action.filePaths);
       const temperature = Math.max(-100, Math.min(100, action.temperature));
       const tint = Math.max(-100, Math.min(100, action.tint));
       const nextAdjustment = Math.abs(temperature) >= 0.5 || Math.abs(tint) >= 0.5
         ? { temperature, tint }
         : undefined;
-      return withFileHistoryIfChanged(state, state.files.map((f) =>
-        pathSet.has(f.path) && !sameWhiteBalanceAdjustment(f.whiteBalanceAdjustment, nextAdjustment)
-          ? { ...f, whiteBalanceAdjustment: nextAdjustment }
-          : f,
-      ));
+      return withIndexedFileHistoryUpdate(
+        state,
+        constantPathUpdates(action.filePaths, nextAdjustment),
+        (file, adjustment) => sameWhiteBalanceAdjustment(file.whiteBalanceAdjustment, adjustment)
+          ? file
+          : { ...file, whiteBalanceAdjustment: adjustment },
+      );
     }
-    case 'SET_EVENT_MODE':
-      return { ...state, eventMode: action.mode, files: assignSceneBuckets(state.files, action.mode) };
+    case 'SET_EVENT_MODE': {
+      const files = assignSceneBuckets(state.files, action.mode);
+      inheritCataloguePathIndex(state.files, files);
+      return { ...state, eventMode: action.mode, files };
+    }
     case 'SET_CULL_CONFIDENCE':
       return { ...state, cullConfidence: action.confidence };
     case 'SET_GROUP_PHOTO_EVERYONE_GOOD':
@@ -1017,46 +1263,49 @@ export function reducer(state: State, action: Action): State {
     case 'SET_KEEPER_QUOTA':
       return { ...state, keeperQuota: action.quota };
     case 'SET_NORMALIZE_TO_ANCHOR': {
-      const pathSet = new Set(action.filePaths);
-      return withFileHistoryIfChanged(state, state.files.map((f) => {
-        if (!pathSet.has(f.path)) return f;
-        const normalizeToAnchor = action.value &&
+      return withIndexedFileHistoryUpdate(state, constantPathUpdates(action.filePaths, action.value), (f, value) => {
+        const normalizeToAnchor = value &&
           f.path !== state.exposureAnchorPath &&
           typeof f.exposureValue === 'number';
         return !!f.normalizeToAnchor === normalizeToAnchor ? f : { ...f, normalizeToAnchor };
-      }));
+      });
     }
     case 'SET_EXPOSURE_ADJUSTMENT': {
-      const pathSet = new Set(action.filePaths);
       const stops = normalizeExposureStops(clampStops(action.stops, state.exposureMaxStops));
-      return withFileHistoryIfChanged(state, state.files.map((f) => {
-        if (!pathSet.has(f.path)) return f;
-        if (normalizeExposureStops(f.exposureAdjustmentStops ?? 0) === stops) return f;
-        return { ...f, exposureAdjustmentStops: stops === 0 ? undefined : stops };
-      }));
+      return withIndexedFileHistoryUpdate(
+        state,
+        constantPathUpdates(action.filePaths, stops),
+        (file, nextStops) => normalizeExposureStops(file.exposureAdjustmentStops ?? 0) === nextStops
+          ? file
+          : { ...file, exposureAdjustmentStops: nextStops === 0 ? undefined : nextStops },
+      );
     }
     case 'NUDGE_EXPOSURE_ADJUSTMENT': {
-      const pathSet = new Set(action.filePaths);
-      return withFileHistoryIfChanged(state, state.files.map((f) => {
-        if (!pathSet.has(f.path)) return f;
-        const next = normalizeExposureStops(clampStops((f.exposureAdjustmentStops ?? 0) + action.delta, state.exposureMaxStops));
-        if (normalizeExposureStops(f.exposureAdjustmentStops ?? 0) === next) return f;
-        return { ...f, exposureAdjustmentStops: next === 0 ? undefined : next };
-      }));
+      return withIndexedFileHistoryUpdate(
+        state,
+        constantPathUpdates(action.filePaths, action.delta),
+        (file, delta) => {
+          const next = normalizeExposureStops(clampStops((file.exposureAdjustmentStops ?? 0) + delta, state.exposureMaxStops));
+          return normalizeExposureStops(file.exposureAdjustmentStops ?? 0) === next
+            ? file
+            : { ...file, exposureAdjustmentStops: next === 0 ? undefined : next };
+        },
+      );
     }
     case 'NORMALIZE_SELECTION_TO_FOCUSED': {
-      const anchor = state.files.find((f) => f.path === action.anchorPath && typeof f.exposureValue === 'number');
+      const anchorIndex = getCataloguePathIndex(state.files).get(action.anchorPath);
+      const anchor = anchorIndex === undefined ? undefined : state.files[anchorIndex];
+      if (anchor && typeof anchor.exposureValue !== 'number') return state;
       if (!anchor) return state;
-      const pathSet = new Set(action.filePaths);
       return {
-        ...withFileHistory(state, state.files.map((f) =>
-          pathSet.has(f.path)
-            ? {
-                ...f,
-                normalizeToAnchor: f.path !== anchor.path && typeof f.exposureValue === 'number',
-              }
-            : f,
-        )),
+        ...withIndexedFileHistoryUpdate(
+          state,
+          constantPathUpdates(action.filePaths, anchor.path),
+          (file, anchorPath) => {
+            const normalizeToAnchor = file.path !== anchorPath && typeof file.exposureValue === 'number';
+            return !!file.normalizeToAnchor === normalizeToAnchor ? file : { ...file, normalizeToAnchor };
+          },
+        ),
         exposureAnchorPath: anchor.path,
       };
     }
@@ -1088,7 +1337,10 @@ export function reducer(state: State, action: Action): State {
       // frame per burst/visual/face group first (variety), always retains
       // protected/rated/picked files, and rejects the rest. Photos only —
       // videos are left untouched.
-      const photos = state.files.filter((f) => f.type === 'photo');
+      const photos = state.files.filter((f) =>
+        f.type === 'photo' &&
+        (isAutoCullBulkDecisionEligible(f, state.eventMode) ||
+          f.isProtected || (f.rating ?? 0) > 0 || f.pick === 'selected'));
       if (photos.length === 0) return state;
       const { keep } = selectKeepersToTarget(photos, {
         target: action.target,
@@ -1096,44 +1348,34 @@ export function reducer(state: State, action: Action): State {
         eventMode: state.eventMode,
       });
       const keepSet = new Set(keep);
+      const decisionPaths = new Set(photos.map((file) => file.path));
       return withFileHistory(state, state.files.map((f) =>
-        f.type === 'photo'
+        f.type === 'photo' && decisionPaths.has(f.path)
           ? { ...f, pick: keepSet.has(f.path) ? 'selected' : 'rejected' }
           : f,
       ));
     }
-    case 'SET_SHARPNESS_BATCH':
-      return {
-        ...state,
-        files: state.files.map((f) =>
-          Object.prototype.hasOwnProperty.call(action.scores, f.path)
-            ? (() => {
-                const sharpnessScore = action.scores[f.path];
-                const review = scoreReview({ ...f, sharpnessScore });
-                return {
-                  ...f,
-                  sharpnessScore,
-                  blurRisk: review.blurRisk,
-                  reviewScore: review.score,
-                  reviewReasons: review.reasons,
-                };
-              })()
-            : f,
-        ),
-      };
+    case 'SET_SHARPNESS_BATCH': {
+      const result = applyIndexedCatalogueUpdates(state.files, action.scores, (file, sharpnessScore) => {
+        const review = scoreReview({ ...file, sharpnessScore });
+        return {
+          ...file,
+          sharpnessScore,
+          blurRisk: review.blurRisk,
+          reviewScore: review.score,
+          reviewReasons: review.reasons,
+        };
+      });
+      return result.files === state.files ? state : { ...state, files: result.files };
+    }
     case 'SET_REVIEW_SCORES': {
       // In the live app this action is intercepted by ImportProvider before
       // reaching the reducer (see the dispatch override in ImportProvider),
       // so this path only runs in tests that call the reducer directly.
       const patchPaths = Object.keys(action.scores);
       if (patchPaths.length === 0) return state;
-      const patchSet = new Set(patchPaths);
-      let changed = false;
-      const files = state.files.map((f) => {
-        if (!patchSet.has(f.path)) return f;
-        const patch = action.scores[f.path];
+      const result = applyIndexedCatalogueUpdates(state.files, action.scores, (f, patch) => {
         if (!patch) return f;
-        changed = true;
         const merged = { ...f, ...patch };
         const review = scoreReview(merged);
         return {
@@ -1143,90 +1385,50 @@ export function reducer(state: State, action: Action): State {
           reviewReasons: patch.reviewReasons ?? review.reasons,
         };
       });
-      return changed ? { ...state, files } : state;
+      return result.files === state.files ? state : { ...state, files: result.files };
     }
+    case 'COMMIT_REVIEW_SCORES':
+      // ImportProvider intercepts this marker and materializes its renderer-held
+      // overlay in one O(n) pass. Keeping the reducer branch a no-op makes the
+      // action safe in isolated reducer tests.
+      return state;
+    case 'APPLY_REVIEW_SNAPSHOT':
+      // A completed review sweep becomes durable session state without adding a
+      // million-photo array to undo history.
+      return action.files === state.files ? state : { ...state, files: action.files };
     case 'RESOLVE_SECOND_PASS': {
       if (action.filePaths.length === 0) return state;
-      const pathSet = new Set(action.filePaths);
-      return withFileHistory(state, state.files.map((f) =>
-        pathSet.has(f.path)
-          ? { ...f, pick: action.pick, reviewApproved: true }
-          : f,
-      ));
+      return withIndexedFileHistoryUpdate(
+        state,
+        constantPathUpdates(action.filePaths, action.pick),
+        (file, pick) => ({ ...file, pick, reviewApproved: true }),
+      );
     }
     case 'CLEAR_FACE_DATA':
-      // Wipe faceBoxes + subjectSharpnessScore so the background reviewer
-      // re-runs analyzeSubject for every photo using the current FaceDetector.
       return {
         ...state,
-        files: state.files.map((f) =>
-          f.type !== 'photo' ? f : {
-            ...f,
-            faceBoxes: undefined,
-            faceCount: undefined,
-            faceDetection: undefined,
-            faceEmbedding: undefined,
-            faceEmbeddings: undefined,
-            faceEmbeddingBoxes: undefined,
-            faceSignature: undefined,
-            faceGroupId: undefined,
-            faceGroupSize: undefined,
-            personCount: undefined,
-            personBoxes: undefined,
-            subjectSharpnessScore: undefined,
-            subjectReasons: undefined,
-            sceneAnalysis: invalidateSceneSubjectAnalysis(f.sceneAnalysis),
-          },
-        ),
+        files: state.files.map((file) => file.type === 'photo' ? stripLocalFaceAndSubjectData(file) : file),
       };
     case 'GROUP_VISUAL_DUPLICATES': {
-      const groups = groupByVisualHash(action.files ?? state.files, action.threshold ?? 8);
-      const groupByPath = new Map<string, { id: string; size: number }>();
-      for (const [id, paths] of Object.entries(groups)) {
-        for (const p of paths) groupByPath.set(p, { id, size: paths.length });
-      }
-      return {
-        ...state,
-        files: state.files.map((f) => {
-          const group = groupByPath.get(f.path);
-          const next = group
-            ? { ...f, visualGroupId: group.id, visualGroupSize: group.size }
-            : { ...f, visualGroupId: undefined, visualGroupSize: undefined };
-          if (next.visualGroupId === f.visualGroupId && next.visualGroupSize === f.visualGroupSize) return f;
-          const review = scoreReview(next);
-          return { ...next, reviewScore: review.score, blurRisk: review.blurRisk, reviewReasons: review.reasons };
-        }),
-      };
+      const assignments = action.assignments
+        ?? buildVisualGroupAssignments(action.files ?? state.files, action.threshold ?? 8);
+      const result = applyVisualGroupAssignments(state.files, assignments);
+      return result.files === state.files ? state : { ...state, files: result.files };
     }
     case 'GROUP_FACE_SIMILAR': {
-      const groups = groupByFaceSimilarity(
+      const assignments = action.assignments ?? buildFaceGroupAssignments(
         action.files ?? state.files,
         action.embeddingThreshold ?? FACE_GROUP_EMBEDDING_THRESHOLD,
         action.threshold ?? 10,
       );
-      const groupByPath = new Map<string, { id: string; size: number }>();
-      for (const [id, paths] of Object.entries(groups)) {
-        for (const p of paths) {
-          const current = groupByPath.get(p);
-          if (!current || paths.length > current.size) groupByPath.set(p, { id, size: paths.length });
-        }
-      }
-      return {
-        ...state,
-        files: state.files.map((f) => {
-          const group = groupByPath.get(f.path);
-          const faceGroupId = group?.id;
-          const faceGroupSize = group?.size;
-          if (f.faceGroupId === faceGroupId && f.faceGroupSize === faceGroupSize) return f;
-          return { ...f, faceGroupId, faceGroupSize };
-        }),
-      };
+      const result = applyFaceGroupAssignments(state.files, assignments);
+      return result.files === state.files ? state : { ...state, files: result.files };
     }
     case 'GROUP_SCENE_BUCKETS':
       return { ...state, files: assignSceneBuckets(state.files, state.eventMode) };
     case 'PICK_BEST_IN_GROUPS': {
       const groupFiles = action.files ?? state.files;
-      const groups = collectReviewGroups(groupFiles, true);
+      const groups = collectReviewGroups(groupFiles);
       const keepers = new Set<string>();
       for (const group of groups.values()) {
         const best = bestInGroup(group);
@@ -1235,13 +1437,13 @@ export function reducer(state: State, action: Action): State {
       return withFileHistory(state, state.files.map((f) => {
         const inGroup =
           (f.visualGroupId && groups.has(`visual:${f.visualGroupId}`)) ||
-          (f.burstId && groups.has(`burst:${f.burstId}`)) ||
-          (f.faceGroupId && groups.has(`face:${f.faceGroupId}`));
+          (f.burstId && groups.has(`burst:${f.burstId}`));
         return inGroup ? { ...f, pick: keepers.has(f.path) ? 'selected' : 'rejected' } : f;
       }));
     }
     case 'QUEUE_BEST': {
       const next = queueBestPaths(state.files, {
+        eventMode: state.eventMode,
         cullConfidence: state.cullConfidence,
         groupPhotoEveryoneGood: state.groupPhotoEveryoneGood,
         keeperQuota: state.keeperQuota,
@@ -1251,7 +1453,7 @@ export function reducer(state: State, action: Action): State {
     }
     case 'AUTO_CULL_SAFE': {
       const groupFiles = action.files ?? state.files;
-      const groups = collectReviewGroups(groupFiles, true);
+      const groups = collectReviewGroups(groupFiles);
       const reject = new Set<string>();
       const keep = new Set<string>();
       for (const group of groups.values()) {
@@ -1259,9 +1461,17 @@ export function reducer(state: State, action: Action): State {
           confidence: state.cullConfidence,
           groupPhotoEveryoneGood: state.groupPhotoEveryoneGood,
           keeperQuota: state.keeperQuota,
+          eventMode: state.eventMode,
         });
-        for (const p of decision.keep) keep.add(p);
-        for (const p of decision.reject) reject.add(p);
+        for (const p of decision.keep) {
+          const file = group.find((item) => item.path === p);
+          if (file && (isAutoCullBulkDecisionEligible(file, state.eventMode) ||
+            file.isProtected || (file.rating ?? 0) > 0 || file.pick === 'selected')) keep.add(p);
+        }
+        for (const p of decision.reject) {
+          const file = group.find((item) => item.path === p);
+          if (file && isAutoCullBulkDecisionEligible(file, state.eventMode)) reject.add(p);
+        }
       }
 
       return withFileHistory(state, state.files.map((f) => {
@@ -1271,22 +1481,24 @@ export function reducer(state: State, action: Action): State {
       }));
     }
     case 'APPLY_AUTO_CULL_PROPOSAL': {
-      const keep = new Set(action.keep);
-      const reject = new Set(action.reject);
-      if (keep.size === 0 && reject.size === 0) return state;
-      return withFileHistory(state, state.files.map((file) => {
-        if (keep.has(file.path)) return { ...file, pick: 'selected' };
-        if (reject.has(file.path)) return { ...file, pick: 'rejected' };
-        return file;
-      }));
+      const updates = new Map<string, 'selected' | 'rejected'>();
+      for (const filePath of action.keep) updates.set(filePath, 'selected');
+      for (const filePath of action.reject) updates.set(filePath, 'rejected');
+      if (updates.size === 0) return state;
+      return withIndexedFileHistoryUpdate(
+        state,
+        updates,
+        (file, pick) => file.pick === pick ? file : { ...file, pick },
+      );
     }
     case 'REJECT_DUPLICATES':
       return withFileHistory(state, state.files.map((f) =>
         f.duplicate ? { ...f, pick: 'rejected' } : f,
       ));
     case 'SYNC_EDITS_FROM_FOCUSED': {
+      const focusedIndex = action.filePath ? getCataloguePathIndex(state.files).get(action.filePath) : undefined;
       const focused = action.filePath
-        ? state.files.find((f) => f.path === action.filePath)
+        ? focusedIndex === undefined ? undefined : state.files[focusedIndex]
         : state.focusedIndex >= 0 ? state.files[state.focusedIndex] : null;
       if (!focused) return state;
       const targetPaths = state.selectedPaths.length > 0
@@ -1304,16 +1516,16 @@ export function reducer(state: State, action: Action): State {
             .map((f) => f.path));
       targetPaths.delete(focused.path);
       if (targetPaths.size === 0) return state;
-      return withFileHistory(state, state.files.map((f) =>
-        targetPaths.has(f.path)
-          ? {
-              ...f,
+      return withIndexedFileHistoryUpdate(
+        state,
+        constantPathUpdates([...targetPaths], true),
+        (file) => ({
+              ...file,
               exposureAdjustmentStops: focused.exposureAdjustmentStops,
-              normalizeToAnchor: focused.normalizeToAnchor && typeof f.exposureValue === 'number',
+              normalizeToAnchor: focused.normalizeToAnchor && typeof file.exposureValue === 'number',
               whiteBalanceAdjustment: focused.whiteBalanceAdjustment,
-            }
-          : f,
-      ));
+            }),
+      );
     }
     case 'UNDO_FILE_EDIT':
       if (state.fileHistory.length === 0) return state;
@@ -1326,22 +1538,27 @@ export function reducer(state: State, action: Action): State {
       // Find files in the selection that actually have an EV — the median is
       // only meaningful over computed values. Ties break toward the lower
       // index (stable sort), which tends to be the earlier shot.
-      const pathSet = new Set(action.filePaths);
-      const candidates = state.files
-        .filter((f) => pathSet.has(f.path) && typeof f.exposureValue === 'number')
-        .slice()
+      const catalogueIndex = getCataloguePathIndex(state.files);
+      const candidates = action.filePaths
+        .map((filePath) => catalogueIndex.get(filePath))
+        .filter((index): index is number => index !== undefined)
+        .map((index) => state.files[index])
+        .filter((file) => typeof file.exposureValue === 'number')
         .sort((a, b) => (a.exposureValue as number) - (b.exposureValue as number));
       if (candidates.length === 0) return state;
       const anchor = candidates[Math.floor((candidates.length - 1) / 2)];
       return {
-        ...withFileHistory(state, state.files.map((f) => {
-          if (!pathSet.has(f.path)) return f;
-          if (f.path === anchor.path) {
+        ...withIndexedFileHistoryUpdate(
+          state,
+          constantPathUpdates(action.filePaths, anchor.path),
+          (file, anchorPath) => {
+          if (file.path === anchorPath) {
             // The anchor itself never needs normalizing.
-            return { ...f, normalizeToAnchor: false };
+            return file.normalizeToAnchor ? { ...file, normalizeToAnchor: false } : file;
           }
-          return { ...f, normalizeToAnchor: typeof f.exposureValue === 'number' };
-        })),
+          const normalizeToAnchor = typeof file.exposureValue === 'number';
+          return !!file.normalizeToAnchor === normalizeToAnchor ? file : { ...file, normalizeToAnchor };
+        }),
         exposureAnchorPath: anchor.path,
       };
     }
@@ -1428,7 +1645,7 @@ export function reducer(state: State, action: Action): State {
           faceConcurrency: Math.max(2, state.faceConcurrency),
           rawPreviewQuality: Math.max(65, Math.min(state.rawPreviewQuality, 75)),
           reviewFaceAnalysis: true,
-          reviewFaceMatching: true,
+          reviewFaceMatching: state.reviewFaceMatching,
           reviewPersonDetection: true,
           reviewVisualDuplicates: true,
         };
@@ -1442,7 +1659,7 @@ export function reducer(state: State, action: Action): State {
           faceConcurrency: Math.max(4, state.faceConcurrency),
           rawPreviewQuality: Math.max(state.rawPreviewQuality, 82),
           reviewFaceAnalysis: true,
-          reviewFaceMatching: true,
+          reviewFaceMatching: state.reviewFaceMatching,
           reviewPersonDetection: true,
           reviewVisualDuplicates: true,
         };
@@ -1454,6 +1671,8 @@ export function reducer(state: State, action: Action): State {
       return { ...state, aiReviewEnabled: action.enabled };
     case 'SET_AUTO_SPEED_MODE':
       return { ...state, autoSpeedMode: action.enabled };
+    case 'SET_SUPER_SPEED_MODE':
+      return { ...state, superSpeedMode: action.enabled };
     case 'SET_REVIEW_PERFORMANCE_OPTION':
       return { ...state, [action.key]: action.value };
     case 'SET_PREVIEW_CONCURRENCY':
@@ -1524,12 +1743,20 @@ const DispatchContext = createContext<Dispatch<Action>>(() => {});
 // Components that need merged files call useMergedFiles() instead of
 // reading state.files directly.
 // ---------------------------------------------------------------------------
-export type ReviewPatch = Partial<MediaFile> & { reviewScore?: number; blurRisk?: MediaFile['blurRisk']; reviewReasons?: string[] };
+export type ReviewPatch = Partial<MediaFile> & {
+  reviewScore?: number;
+  blurRisk?: MediaFile['blurRisk'];
+  reviewReasons?: string[];
+  /** Internal durability hint for a patch that changes grouping only. */
+  __preserveReviewScore?: boolean;
+};
 const ReviewScoresContext = createContext<Map<string, ReviewPatch>>(new Map());
+const PendingCommittedReviewContext = createContext<Map<string, ReviewPatch>>(new Map());
 const ReviewScoresVersionContext = createContext<number>(0);
+const MergedFilesContext = createContext<MediaFile[]>(initialState.files);
 const mergedReviewFileCache = new WeakMap<MediaFile, WeakMap<ReviewPatch, MediaFile>>();
 
-function mergeReviewPatch(file: MediaFile, patch: ReviewPatch): MediaFile {
+export function mergeReviewPatch(file: MediaFile, patch: ReviewPatch): MediaFile {
   let byPatch = mergedReviewFileCache.get(file);
   if (!byPatch) {
     byPatch = new WeakMap();
@@ -1538,8 +1765,9 @@ function mergeReviewPatch(file: MediaFile, patch: ReviewPatch): MediaFile {
   const cached = byPatch.get(patch);
   if (cached) return cached;
 
-  const merged = { ...file, ...patch };
-  if (patch.reviewScore === undefined) {
+  const { __preserveReviewScore, ...filePatch } = patch;
+  const merged = { ...file, ...filePatch };
+  if (!__preserveReviewScore && patch.reviewScore === undefined) {
     const review = scoreReview(merged);
     merged.blurRisk = patch.blurRisk ?? review.blurRisk;
     merged.reviewScore = review.score;
@@ -1551,11 +1779,7 @@ function mergeReviewPatch(file: MediaFile, patch: ReviewPatch): MediaFile {
 
 function mergeReviewScoreOverlay(files: MediaFile[], overlay: Map<string, ReviewPatch>): MediaFile[] {
   if (overlay.size === 0) return files;
-  return files.map((f) => {
-    const patch = overlay.get(f.path);
-    if (!patch) return f;
-    return mergeReviewPatch(f, patch);
-  });
+  return applyIndexedCatalogueMapUpdates(files, overlay, mergeReviewPatch).files;
 }
 
 /**
@@ -1572,7 +1796,44 @@ export function mergeReviewScorePatches(
   if (!Object.prototype.hasOwnProperty.call(next, 'reviewScore')) delete merged.reviewScore;
   if (!Object.prototype.hasOwnProperty.call(next, 'blurRisk')) delete merged.blurRisk;
   if (!Object.prototype.hasOwnProperty.call(next, 'reviewReasons')) delete merged.reviewReasons;
+  if (!next.__preserveReviewScore) delete merged.__preserveReviewScore;
   return merged;
+}
+
+/** Accumulate committed patches until React has rendered their reducer state. */
+export function stagePendingCommittedReviewPatches(
+  pending: Map<string, ReviewPatch>,
+  incoming: ReadonlyMap<string, ReviewPatch>,
+): void {
+  for (const [filePath, patch] of incoming) {
+    pending.set(filePath, mergeReviewScorePatches(pending.get(filePath), patch));
+  }
+}
+
+/** Stage only the fields owned by terminal grouping. A full MediaFile here can
+ * overwrite a pick/rating dispatched between COMMIT and the next React render. */
+export function stagePendingReviewGroupPatches(
+  pending: Map<string, ReviewPatch>,
+  files: readonly MediaFile[],
+  changedPaths: Iterable<string>,
+): void {
+  const indexByPath = getCataloguePathIndex(files);
+  for (const filePath of changedPaths) {
+    const index = indexByPath.get(filePath);
+    if (index === undefined) continue;
+    const file = files[index];
+    const existing = pending.get(filePath);
+    pending.set(filePath, {
+      ...existing,
+      visualGroupId: file.visualGroupId,
+      visualGroupSize: file.visualGroupSize,
+      faceGroupId: file.faceGroupId,
+      faceGroupSize: file.faceGroupSize,
+      // With no AI patch to materialize, grouping must not recalculate or
+      // replace already-durable review fields on the base row.
+      ...(existing ? {} : { __preserveReviewScore: true }),
+    });
+  }
 }
 
 export function ImportProvider({ children }: { children: ReactNode }) {
@@ -1585,6 +1846,18 @@ export function ImportProvider({ children }: { children: ReactNode }) {
 
   // Mutable map of review score overlays — never triggers a re-render itself.
   const reviewScoresRef = useRef<Map<string, ReviewPatch>>(new Map());
+  // A COMMIT clears the working overlay before React renders the reducer's new
+  // file array. Preserve the just-committed patches in this stable Map so a
+  // synchronous quit/max-wait flush cannot observe old files + an empty overlay.
+  const pendingCommittedReviewRef = useRef<Map<string, ReviewPatch>>(new Map());
+  const pendingCommittedFilesRef = useRef<MediaFile[] | null>(null);
+  const pendingCommitNeedsRenderRef = useRef(false);
+  // Dispatch is intentionally stable and reads this ref synchronously. Point
+  // it at the pending reducer result immediately so a second COMMIT/action in
+  // the same event turn cannot rebuild from stale pre-commit files.
+  stateRef.current = pendingCommittedFilesRef.current
+    ? { ...state, files: pendingCommittedFilesRef.current }
+    : state;
   // Version counter: batched so per-file review updates do not remap every card.
   const [reviewVersion, setReviewVersion] = useState(0);
   const reviewVersionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1608,14 +1881,72 @@ export function ImportProvider({ children }: { children: ReactNode }) {
     if (reviewVersionTimerRef.current) clearTimeout(reviewVersionTimerRef.current);
   }, []);
 
+  // Reducer actions queued after APPLY_REVIEW_SNAPSHOT (for example SET_PICK)
+  // are included in the same or a later committed React render. Retire the
+  // pre-render durability bridge after that commit regardless of array
+  // identity, then point synchronous dispatches at the fully reduced state.
+  useLayoutEffect(() => {
+    if (!pendingCommitNeedsRenderRef.current) return;
+    pendingCommitNeedsRenderRef.current = false;
+    pendingCommittedFilesRef.current = null;
+    pendingCommittedReviewRef.current.clear();
+    stateRef.current = state;
+  });
+
   // Keep the shared review scorer's profile in sync with the active event mode
   // so best-shot/keeper ranking in the grid reflects sports-action weighting.
   useEffect(() => {
     configureReviewProfile(state.eventMode);
   }, [state.eventMode]);
 
+  // Compute the O(n) overlay merge once per flush and share the same array with
+  // every consumer. Previously Grid, Destination, Help and bulk preview each
+  // remapped the complete catalogue independently on every AI tick.
+  const mergedFiles = useMemo(() => {
+    const merged = mergeReviewScoreOverlay(state.files, reviewScoresRef.current);
+    if (merged !== state.files) inheritCataloguePathIndex(state.files, merged);
+    return merged;
+  }, [state.files, reviewVersion]);
+
   // Intercept SET_REVIEW_SCORES before it hits the reducer.
   const dispatch = useCallback<Dispatch<Action>>((action) => {
+    trackSessionFileChanges(action);
+    if (action.type === 'COMMIT_REVIEW_SCORES') {
+      if (reviewScoresRef.current.size === 0 && !action.finalizeGroups) return;
+      stagePendingCommittedReviewPatches(pendingCommittedReviewRef.current, reviewScoresRef.current);
+      let mergedFiles = mergeReviewScoreOverlay(stateRef.current.files, reviewScoresRef.current);
+      reviewScoresRef.current.clear();
+      const changedPaths = new Set<string>();
+      if (action.finalizeGroups?.faceMatching) {
+        const assignments = buildFaceGroupAssignments(
+          mergedFiles,
+          action.finalizeGroups.faceEmbeddingThreshold ?? FACE_GROUP_EMBEDDING_THRESHOLD,
+          action.finalizeGroups.faceSignatureThreshold ?? 10,
+        );
+        const grouped = applyFaceGroupAssignments(mergedFiles, assignments);
+        mergedFiles = grouped.files;
+        for (const filePath of grouped.changedPaths) changedPaths.add(filePath);
+      }
+      if (action.finalizeGroups?.visualDuplicates) {
+        const assignments = buildVisualGroupAssignments(
+          mergedFiles,
+          action.finalizeGroups.visualThreshold ?? 8,
+        );
+        const grouped = applyVisualGroupAssignments(mergedFiles, assignments);
+        mergedFiles = grouped.files;
+        for (const filePath of grouped.changedPaths) changedPaths.add(filePath);
+      }
+      if (changedPaths.size > 0) markSessionPathsChanged(changedPaths);
+      // Keep the bridge field-scoped: a later pick/rating action must remain
+      // authoritative even if persistence runs before the bridge is retired.
+      stagePendingReviewGroupPatches(pendingCommittedReviewRef.current, mergedFiles, changedPaths);
+      pendingCommittedFilesRef.current = mergedFiles;
+      pendingCommitNeedsRenderRef.current = true;
+      stateRef.current = { ...stateRef.current, files: mergedFiles };
+      rawDispatch({ type: 'APPLY_REVIEW_SNAPSHOT', files: mergedFiles });
+      bumpReviewVersionNow();
+      return;
+    }
     if (action.type === 'SET_REVIEW_SCORES') {
       const scores = action.scores;
       if (Object.keys(scores).length === 0) return;
@@ -1641,9 +1972,13 @@ export function ImportProvider({ children }: { children: ReactNode }) {
       action.type === 'SCAN_ERROR' ||
       action.type === 'RESET_FILES' ||
       action.type === 'CLEAR_FACE_DATA' ||
-      action.type === 'ADVANCE_VOLUME_IMPORT_QUEUE'
+      action.type === 'ADVANCE_VOLUME_IMPORT_QUEUE' ||
+      action.type === 'RESTORE_SESSION'
     ) {
       reviewScoresRef.current.clear();
+      pendingCommittedReviewRef.current.clear();
+      pendingCommittedFilesRef.current = null;
+      pendingCommitNeedsRenderRef.current = false;
       clearEmbeddingCache();
       bumpReviewVersionNow();
     }
@@ -1665,6 +2000,7 @@ export function ImportProvider({ children }: { children: ReactNode }) {
       const mergedFiles = mergeReviewScoreOverlay(rawFiles, overlay);
       const current = stateRef.current;
       const next = queueBestPaths(mergedFiles, {
+        eventMode: current.eventMode,
         cullConfidence: current.cullConfidence,
         groupPhotoEveryoneGood: current.groupPhotoEveryoneGood,
         keeperQuota: current.keeperQuota,
@@ -1674,11 +2010,36 @@ export function ImportProvider({ children }: { children: ReactNode }) {
       if (next.length > 0) rawDispatch({ type: 'SET_FILTER', filter: 'queue' });
       return;
     }
-    // Grouping and grouped bulk decisions depend on AI data held in the overlay.
-    // Compute from merged files, then let the reducer write stable state by path.
+    // Grouping depends on AI data held in the overlay. Compute assignments once,
+    // journal only rows whose membership changed, and pass the compact Map into
+    // the reducer. This keeps large-session saves on the SQLite delta path.
+    if (action.type === 'GROUP_VISUAL_DUPLICATES') {
+      const rawFiles = stateRef.current.files;
+      const workingFiles = action.files ?? mergeReviewScoreOverlay(rawFiles, reviewScoresRef.current);
+      const assignments = action.assignments
+        ?? buildVisualGroupAssignments(workingFiles, action.threshold ?? 8);
+      const changedPaths = visualGroupAssignmentChanges(rawFiles, assignments);
+      if (changedPaths.length === 0) return;
+      markSessionPathsChanged(changedPaths);
+      rawDispatch({ ...action, files: workingFiles, assignments });
+      return;
+    }
+    if (action.type === 'GROUP_FACE_SIMILAR') {
+      const rawFiles = stateRef.current.files;
+      const workingFiles = action.files ?? mergeReviewScoreOverlay(rawFiles, reviewScoresRef.current);
+      const assignments = action.assignments ?? buildFaceGroupAssignments(
+        workingFiles,
+        action.embeddingThreshold ?? FACE_GROUP_EMBEDDING_THRESHOLD,
+        action.threshold ?? 10,
+      );
+      const changedPaths = faceGroupAssignmentChanges(rawFiles, assignments);
+      if (changedPaths.length === 0) return;
+      markSessionPathsChanged(changedPaths);
+      rawDispatch({ ...action, files: workingFiles, assignments });
+      return;
+    }
+    // Grouped bulk decisions depend on AI data held in the overlay.
     if (
-      action.type === 'GROUP_FACE_SIMILAR' ||
-      action.type === 'GROUP_VISUAL_DUPLICATES' ||
       action.type === 'AUTO_CULL_SAFE' ||
       action.type === 'PICK_BEST_IN_GROUPS'
     ) {
@@ -1695,9 +2056,13 @@ export function ImportProvider({ children }: { children: ReactNode }) {
     <StateContext.Provider value={state}>
       <DispatchContext.Provider value={dispatch}>
         <ReviewScoresContext.Provider value={reviewScoresRef.current}>
-          <ReviewScoresVersionContext.Provider value={reviewVersion}>
-            {children}
-          </ReviewScoresVersionContext.Provider>
+          <PendingCommittedReviewContext.Provider value={pendingCommittedReviewRef.current}>
+            <ReviewScoresVersionContext.Provider value={reviewVersion}>
+              <MergedFilesContext.Provider value={mergedFiles}>
+                {children}
+              </MergedFilesContext.Provider>
+            </ReviewScoresVersionContext.Provider>
+          </PendingCommittedReviewContext.Provider>
         </ReviewScoresContext.Provider>
       </DispatchContext.Provider>
     </StateContext.Provider>
@@ -1717,19 +2082,23 @@ export function useReviewScoresVersion(): number {
   return useContext(ReviewScoresVersionContext);
 }
 
+/** Mutable, renderer-local AI evidence used by the background scheduler between
+ * batched UI flushes. Consumers must dispatch SET_REVIEW_SCORES to mutate it. */
+export function useReviewScoreOverlay(): Map<string, ReviewPatch> {
+  return useContext(ReviewScoresContext);
+}
+
+/** Review patches already dispatched into reducer state but not yet visible to
+ * consumers in the current render. Intended for durability snapshots only. */
+export function usePendingCommittedReviewOverlay(): Map<string, ReviewPatch> {
+  return useContext(PendingCommittedReviewContext);
+}
+
 /**
- * Returns state.files with review score overlays merged in.
- * Re-renders when either the files array or review scores change.
- * Use this instead of useAppState().files anywhere face scores are needed.
+ * Returns the provider's single shared state.files + review overlay snapshot.
+ * The O(n) merge runs once per batched version rather than once per consumer.
+ * Use this instead of useAppState().files anywhere AI evidence is needed.
  */
 export function useMergedFiles(): MediaFile[] {
-  const { files } = useContext(StateContext);
-  const scores = useContext(ReviewScoresContext);
-  const version = useContext(ReviewScoresVersionContext);
-
-  return useMemo(() => {
-    if (scores.size === 0) return files;
-    return mergeReviewScoreOverlay(files, scores);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [files, version]);
+  return useContext(MergedFilesContext);
 }

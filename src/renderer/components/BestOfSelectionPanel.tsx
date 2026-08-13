@@ -24,6 +24,8 @@ interface BestOfSelectionPanelProps {
   onQueueBestAndNext?: (file: MediaFile) => void;
   onRejectRest: (best: MediaFile) => void;
   onRejectRestAndNext?: (best: MediaFile) => void;
+  /** Safety-gated comparator used only by automatic Reject Rest actions. */
+  rejectRestBestPath?: string | null;
   queuedPaths?: string[];
 }
 
@@ -750,11 +752,15 @@ export function BestOfSelectionPanel({
   onQueueBestAndNext,
   onRejectRest,
   onRejectRestAndNext,
+  rejectRestBestPath,
   queuedPaths = [],
 }: BestOfSelectionPanelProps) {
   const ranked = useMemo(() => rankBestOfSelection(files).slice(0, 6), [files]);
   const actionableRanked = useMemo(() => actionableBestOfCandidates(ranked), [ranked]);
   const best = actionableRanked[0];
+  const rejectRestBest = rejectRestBestPath === undefined
+    ? best
+    : files.find((file) => file.path === rejectRestBestPath);
   const second = actionableRanked[1];
   const prevBatchDisabled = !canPrevBatch || !onPrevBatch;
   const nextBatchDisabled = !canNextBatch || !onNextBatch;
@@ -819,8 +825,8 @@ export function BestOfSelectionPanel({
       event.preventDefault();
       if (action === 'queue-next') onQueueBestAndNext?.(best);
       else if (action === 'queue') onQueueBest(best);
-      else if (action === 'accept-next') onRejectRestAndNext?.(best);
-      else if (action === 'accept') onRejectRest(best);
+      else if (action === 'accept-next' && rejectRestBest) onRejectRestAndNext?.(rejectRestBest);
+      else if (action === 'accept' && rejectRestBest) onRejectRest(rejectRestBest);
     };
 
     window.addEventListener('keydown', onKeyDown);
@@ -834,6 +840,7 @@ export function BestOfSelectionPanel({
     onQueueBestAndNext,
     onRejectRest,
     onRejectRestAndNext,
+    rejectRestBest,
     readiness?.tone,
   ]);
   const { analyzed, faceFiles, blurRisk } = panelStats;
@@ -972,18 +979,23 @@ export function BestOfSelectionPanel({
             </button>
           )}
           <button
-            onClick={() => onRejectRest(best)}
-            title={actionTitle(actionSummary?.rejectRestLabel, 'Pick the top-ranked candidate and reject the rest in this panel.')}
-            className="px-2.5 py-1 text-[11px] rounded bg-red-500/10 text-red-300 hover:bg-red-500/20"
+            onClick={() => { if (rejectRestBest) onRejectRest(rejectRestBest); }}
+            disabled={!rejectRestBest}
+            title={rejectRestBest
+              ? actionTitle(summarizeBestOfActions(files, rejectRestBest, queuedPaths, isBatch ? 'batch' : isBurst ? 'burst' : 'selection')?.rejectRestLabel, 'Pick the safety-gated candidate and reject eligible alternatives after preview.')
+              : 'Reject Rest is unavailable until at least one candidate completes safe subject analysis.'}
+            className={`px-2.5 py-1 text-[11px] rounded ${rejectRestBest
+              ? 'bg-red-500/10 text-red-300 hover:bg-red-500/20'
+              : 'bg-surface text-text-muted cursor-not-allowed opacity-60'}`}
           >
             {actionSummary?.rejectRestButtonLabel ?? 'Reject Rest'}
           </button>
           {isBatch && onRejectRestAndNext && (
             <button
               onClick={() => {
-                if (!acceptNextDisabled) onRejectRestAndNext(best);
+                if (!acceptNextDisabled && rejectRestBest) onRejectRestAndNext(rejectRestBest);
               }}
-              disabled={acceptNextDisabled}
+              disabled={acceptNextDisabled || !rejectRestBest}
               title={acceptNextDisabled
                 ? nextBatchDisabled
                   ? 'Reject Page Rest is available; there is no next batch page.'

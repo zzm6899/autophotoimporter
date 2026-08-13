@@ -1,5 +1,5 @@
 import type { CullingGenre, CullConfidence, EventMode, KeeperQuota, MediaFile, PoseKeypoint, PoseKeypoints } from './types';
-import { COCO_KP, isSportsEventMode } from './types';
+import { COCO_KP, isConventionEventMode, isEnduranceSportsMode, isPeopleFirstEventMode, isSportsEventMode } from './types';
 
 // ---------------------------------------------------------------------------
 // Active review profile
@@ -33,6 +33,18 @@ export function getCullingGenre(): CullingGenre {
 
 function sportsModeActive(): boolean {
   return isSportsEventMode(activeEventMode);
+}
+
+function enduranceModeActive(): boolean {
+  return isEnduranceSportsMode(activeEventMode);
+}
+
+function conventionModeActive(): boolean {
+  return isConventionEventMode(activeEventMode);
+}
+
+function subjectCriticalModeActive(): boolean {
+  return sportsModeActive() || isPeopleFirstEventMode(activeEventMode);
 }
 
 function activeGenre(): CullingGenre {
@@ -70,17 +82,146 @@ function clamp01(value: number | undefined, fallback = 0): number {
   return Math.max(0, Math.min(1, value));
 }
 
+type Box = { x: number; y: number; width: number; height: number; score?: number };
+type FaceBoxSignal = NonNullable<MediaFile['faceBoxes']>[number];
+
 type SubjectSharpnessInput = Pick<MediaFile, 'subjectSharpnessScore' | 'sceneAnalysis'> &
   Partial<Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'personCount' | 'personBoxes'>>;
 
 function hasDetectedSubject(file: SubjectSharpnessInput): boolean {
-  return (file.faceCount ?? file.faceBoxes?.length ?? 0) > 0 ||
-    (file.personCount ?? file.personBoxes?.length ?? 0) > 0;
+  return Math.max(file.faceCount ?? 0, file.faceBoxes?.length ?? 0) > 0 ||
+    Math.max(file.personCount ?? 0, file.personBoxes?.length ?? 0) > 0;
+}
+
+function boxArea(box: Pick<Box, 'width' | 'height'>): number {
+  return Math.max(0, box.width) * Math.max(0, box.height);
+}
+
+/** Confidence that a face box is useful human evidence, not merely a tiny or
+ * weak geometric match. Presence remains true even when this confidence is
+ * low; this value only gates destructive quality/blink conclusions. */
+function faceBoxEvidence(box: FaceBoxSignal, detection: MediaFile['faceDetection']): number {
+  const detectionScore = clamp01(box.score, detection === 'estimated' ? 0.42 : 0.76);
+  const area = boxArea(box);
+  const sizeSignal = clamp01((Math.sqrt(area) - Math.sqrt(0.0012)) /
+    (Math.sqrt(0.032) - Math.sqrt(0.0012)));
+  const inside = box.x >= -0.01 && box.y >= -0.01 &&
+    box.x + box.width <= 1.01 && box.y + box.height <= 1.01 ? 1 : 0.55;
+  return clamp01(detectionScore * 0.58 + sizeSignal * 0.34 + inside * 0.08);
+}
+
+function faceBoxCanJudgeEyes(box: FaceBoxSignal, detection: MediaFile['faceDetection']): boolean {
+  // At preview resolution, smaller boxes do not contain enough eye pixels for
+  // a reliable negative conclusion. Missing detail stays neutral.
+  return boxArea(box) >= 0.0035 && faceBoxEvidence(box, detection) >= 0.58;
+}
+
+export interface SubjectPresenceEvidence {
+  hasPeople: boolean;
+  faceCount: number;
+  personCount: number;
+  confidence: 'none' | 'uncertain' | 'probable' | 'confirmed';
+  bodySource: 'none' | 'face-inferred' | 'detected';
+  /** Conservative torso-sized ROI for focus only; never a claimed body box. */
+  inferredBodyRoi?: Box & { inferred: true };
+  reasons: string[];
+}
+
+/**
+ * Resolve people presence without turning a person-detector miss into an empty
+ * scene. A face-only frame stays people-present; its torso ROI is explicitly
+ * marked inferred and weak/tiny evidence stays uncertain.
+ */
+export function assessSubjectPresence(
+  file: Partial<Pick<MediaFile,
+    'faceCount' | 'faceBoxes' | 'faceDetection' | 'personCount' | 'personBoxes' |
+    'poses' | 'reviewAnalysisFeatures'>>,
+): SubjectPresenceEvidence {
+  const faces = file.faceBoxes ?? [];
+  const persons = file.personBoxes ?? [];
+  const faceCount = Math.max(file.faceCount ?? 0, faces.length);
+  const personCount = Math.max(file.personCount ?? 0, persons.length);
+  if (personCount > 0) {
+    const fallbackCorroborated = file.reviewAnalysisFeatures?.personFallbackCorroborated === true ||
+      (file.reviewAnalysisFeatures?.personFallbackCorroborated === undefined &&
+        file.reviewAnalysisFeatures?.personDetectorId?.includes('+ssd-fallback') === true);
+    const fastPersonOnly = file.reviewAnalysisFeatures?.fastPersonDetection === true &&
+      !fallbackCorroborated;
+    const faceAssociated = faces.some((face) => persons.some((person) => {
+      const centerX = face.x + face.width / 2;
+      const centerY = face.y + face.height / 2;
+      return centerX >= person.x - person.width * 0.08 &&
+        centerX <= person.x + person.width * 1.08 &&
+        centerY >= person.y - person.height * 0.08 &&
+        centerY <= person.y + person.height * 0.72;
+    }));
+    const corroborated = !fastPersonOnly ||
+      file.reviewAnalysisFeatures?.personFallbackCorroborated === true ||
+      faceAssociated || (file.poses ?? []).some(isUsablePose);
+    return {
+      hasPeople: true,
+      faceCount,
+      personCount,
+      confidence: corroborated ? 'confirmed' : 'probable',
+      bodySource: 'detected',
+      reasons: [corroborated
+        ? 'person/body detected'
+        : 'fast person proposal; confirmation remains review-only'],
+    };
+  }
+  if (faceCount <= 0) {
+    return { hasPeople: false, faceCount: 0, personCount: 0, confidence: 'none', bodySource: 'none', reasons: [] };
+  }
+
+  const strongest = faces.slice().sort((a, b) =>
+    faceBoxEvidence(b, file.faceDetection) - faceBoxEvidence(a, file.faceDetection) ||
+    boxArea(b) - boxArea(a),
+  )[0];
+  const evidence = strongest ? faceBoxEvidence(strongest, file.faceDetection) : 0.28;
+  const confidence = evidence >= 0.7 ? 'probable' : 'uncertain';
+  let inferredBodyRoi: SubjectPresenceEvidence['inferredBodyRoi'];
+  if (strongest) {
+    const width = Math.min(1, strongest.width * 2.7);
+    const height = Math.min(1, strongest.height * 5.2);
+    const centerX = strongest.x + strongest.width / 2;
+    inferredBodyRoi = {
+      x: clamp01(centerX - width / 2),
+      y: clamp01(strongest.y - strongest.height * 0.2),
+      width,
+      height,
+      score: evidence,
+      inferred: true,
+    };
+    inferredBodyRoi.width = Math.min(inferredBodyRoi.width, 1 - inferredBodyRoi.x);
+    inferredBodyRoi.height = Math.min(inferredBodyRoi.height, 1 - inferredBodyRoi.y);
+  }
+  return {
+    hasPeople: true,
+    faceCount,
+    personCount: 0,
+    confidence,
+    bodySource: 'face-inferred',
+    inferredBodyRoi,
+    reasons: confidence === 'probable'
+      ? ['face detected; body detector miss, torso ROI inferred']
+      : ['weak/tiny face evidence; people presence requires review'],
+  };
 }
 
 function subjectFocusConfidence(file: SubjectSharpnessInput): number | undefined {
   const confidence = file.sceneAnalysis?.subjectFocusConfidence;
   return typeof confidence === 'number' && Number.isFinite(confidence) ? confidence : undefined;
+}
+
+/** Conservative evidence gate for destructive convention comparisons. Counts
+ * without usable boxes and tiny/weak body proposals may be a prop, poster or
+ * background attendee, so they stay visible for manual review. */
+function hasReliableConventionSubjectEvidence(file: MediaFile): boolean {
+  const reliableFace = (file.faceBoxes ?? []).some((box) =>
+    faceBoxEvidence(box, file.faceDetection) >= 0.46);
+  const reliablePerson = (file.personBoxes ?? []).some((box) =>
+    box.width > 0 && box.height > 0 && boxArea(box) >= 0.006 && clamp01(box.score, 0.72) >= 0.48);
+  return reliableFace || reliablePerson || (file.poses ?? []).some(isUsablePose);
 }
 
 function resolvedSubjectSharpness(file: SubjectSharpnessInput): number | undefined {
@@ -120,8 +261,6 @@ function boxCenterScore(box: { x: number; y: number; width: number; height: numb
 // kiap), and subject vs whole-frame sharpness (frozen motion). These are strong
 // heuristics for peak-moment selection, not measured limb geometry.
 // ---------------------------------------------------------------------------
-
-type Box = { x: number; y: number; width: number; height: number; score?: number };
 
 function boxIoU(a: Box, b: Box): number {
   const ix1 = Math.max(a.x, b.x);
@@ -199,6 +338,39 @@ export function frozenActionSignal(
 
 const POSE_KP_MIN_SCORE = 0.3;
 
+/**
+ * True only for a complete, finite COCO-17 estimate with enough confidence to
+ * influence culling. Aligned score-zero placeholders must never count as
+ * measured pose evidence.
+ */
+export function isUsablePose(pose: PoseKeypoints | null | undefined): pose is PoseKeypoints {
+  if (!pose || pose.keypoints.length !== 17) return false;
+  if (pose.score !== undefined && (
+    !Number.isFinite(pose.score) || pose.score < 0 || pose.score > 1
+  )) return false;
+  let confident = 0;
+  let confidenceTotal = 0;
+  for (const point of pose.keypoints) {
+    if (!Number.isFinite(point.x) || !Number.isFinite(point.y) || !Number.isFinite(point.score) ||
+      point.x < 0 || point.x > 1 || point.y < 0 || point.y > 1 || point.score < 0 || point.score > 1) {
+      return false;
+    }
+    confidenceTotal += point.score;
+    if (point.score >= POSE_KP_MIN_SCORE) confident++;
+  }
+  // Some producers omit the aggregate or emit zero despite populated COCO
+  // points. Derive it from the validated keypoints, while the empty aligned
+  // placeholders remain rejected above by their zero-length keypoint array.
+  const aggregate = pose.score !== undefined && pose.score > 0
+    ? pose.score
+    : confidenceTotal / pose.keypoints.length;
+  return aggregate > 0.05 && confident >= 5;
+}
+
+function usablePoses(file: Pick<MediaFile, 'poses'>): PoseKeypoints[] {
+  return (file.poses ?? []).filter(isUsablePose);
+}
+
 function kp(pose: PoseKeypoints, index: number): PoseKeypoint | null {
   const point = pose.keypoints[index];
   if (!point || point.score < POSE_KP_MIN_SCORE) return null;
@@ -258,7 +430,7 @@ export function kickStraightness(pose: PoseKeypoints): number {
 
 /** Best kick straightness across all athletes in the frame, 0..1. */
 export function frameKickStraightness(file: Pick<MediaFile, 'poses'>): number {
-  const poses = file.poses ?? [];
+  const poses = usablePoses(file);
   let best = 0;
   for (const pose of poses) best = Math.max(best, kickStraightness(pose));
   return best;
@@ -282,7 +454,7 @@ function torsoCenter(pose: PoseKeypoints): { x: number; y: number } | null {
  * the target's torso size so it is distance-invariant. 1 = foot on the body.
  */
 export function poseContactSignal(file: Pick<MediaFile, 'poses'>): number {
-  const poses = file.poses ?? [];
+  const poses = usablePoses(file);
   if (poses.length < 2) return 0;
   let best = 0;
   for (let i = 0; i < poses.length; i++) {
@@ -313,6 +485,400 @@ export function emotionSignal(file: Pick<MediaFile, 'faceBoxes'>): number {
   );
 }
 
+export interface EnduranceActionBreakdown {
+  score: number;
+  confidence: number;
+  primarySubject: number;
+  torsoFocus: number;
+  faceVisibility: number;
+  expression: number;
+  isolation: number;
+  occlusion: number;
+  equipmentInteraction: number;
+  strideExtension: number;
+  actionPhase: number;
+  reasons: string[];
+  cautions: string[];
+}
+
+function boxIntersectionFraction(subject: Box, other: Box): number {
+  const ix1 = Math.max(subject.x, other.x);
+  const iy1 = Math.max(subject.y, other.y);
+  const ix2 = Math.min(subject.x + subject.width, other.x + other.width);
+  const iy2 = Math.min(subject.y + subject.height, other.y + other.height);
+  return boxArea(subject) > 1e-6
+    ? clamp01(Math.max(0, ix2 - ix1) * Math.max(0, iy2 - iy1) / boxArea(subject))
+    : 0;
+}
+
+function boxFrameVisibility(box: Box): number {
+  let clippedEdges = 0;
+  if (box.x <= 0.006) clippedEdges++;
+  if (box.y <= 0.006) clippedEdges++;
+  if (box.x + box.width >= 0.994) clippedEdges++;
+  if (box.y + box.height >= 0.994) clippedEdges++;
+  const plausibleBody = clamp01((box.height / Math.max(box.width, 0.01) - 1.1) / 1.5);
+  return clamp01(0.72 + plausibleBody * 0.28 - clippedEdges * 0.13);
+}
+
+function primaryPersonIndex(file: Pick<MediaFile, 'personBoxes'>): number {
+  const boxes = file.personBoxes ?? [];
+  let bestIndex = -1;
+  let best = -Infinity;
+  for (let index = 0; index < boxes.length; index++) {
+    const box = boxes[index];
+    const area = clamp01(boxArea(box) / 0.3);
+    const detection = clamp01(box.score, 0.72);
+    const center = boxCenterScore(box);
+    const visibility = boxFrameVisibility(box);
+    const score = area * 0.32 + detection * 0.28 + center * 0.18 + visibility * 0.22;
+    if (score > best) {
+      best = score;
+      bestIndex = index;
+    }
+  }
+  return bestIndex;
+}
+
+function faceAssociatedWithPerson(face: FaceBoxSignal, person: Box): boolean {
+  const cx = face.x + face.width / 2;
+  const cy = face.y + face.height / 2;
+  const marginX = person.width * 0.14;
+  return cx >= person.x - marginX && cx <= person.x + person.width + marginX &&
+    cy >= person.y - person.height * 0.08 && cy <= person.y + person.height * 0.58;
+}
+
+function poseLegExtension(pose: PoseKeypoints): number {
+  const legs: Array<[number, number, number]> = [
+    [COCO_KP.leftHip, COCO_KP.leftKnee, COCO_KP.leftAnkle],
+    [COCO_KP.rightHip, COCO_KP.rightKnee, COCO_KP.rightAnkle],
+  ];
+  const tHeight = torsoHeight(pose) || 0.2;
+  const angles: number[] = [];
+  for (const [hipIndex, kneeIndex, ankleIndex] of legs) {
+    const hip = kp(pose, hipIndex);
+    const knee = kp(pose, kneeIndex);
+    const ankle = kp(pose, ankleIndex);
+    if (hip && knee && ankle) angles.push(jointAngle(hip, knee, ankle));
+  }
+  const leftAnkle = kp(pose, COCO_KP.leftAnkle);
+  const rightAnkle = kp(pose, COCO_KP.rightAnkle);
+  const ankleSeparation = leftAnkle && rightAnkle
+    ? clamp01(Math.hypot(leftAnkle.x - rightAnkle.x, leftAnkle.y - rightAnkle.y) / (tHeight * 1.7))
+    : 0;
+  const straightest = angles.length > 0 ? clamp01((Math.max(...angles) - 135) / 45) : 0;
+  const legContrast = angles.length >= 2 ? clamp01(Math.abs(angles[0] - angles[1]) / 65) : 0;
+  return clamp01(ankleSeparation * 0.48 + straightest * 0.32 + legContrast * 0.2);
+}
+
+function poseStationAction(pose: PoseKeypoints): number {
+  const tHeight = torsoHeight(pose) || 0.2;
+  const shoulders = [kp(pose, COCO_KP.leftShoulder), kp(pose, COCO_KP.rightShoulder)];
+  const wrists = [kp(pose, COCO_KP.leftWrist), kp(pose, COCO_KP.rightWrist)];
+  let armReach = 0;
+  for (let index = 0; index < shoulders.length; index++) {
+    const shoulder = shoulders[index];
+    const wrist = wrists[index];
+    if (shoulder && wrist) armReach = Math.max(armReach,
+      clamp01(Math.hypot(wrist.x - shoulder.x, wrist.y - shoulder.y) / (tHeight * 1.55)));
+  }
+  const hip = kp(pose, COCO_KP.leftHip) ?? kp(pose, COCO_KP.rightHip);
+  const knee = kp(pose, COCO_KP.leftKnee) ?? kp(pose, COCO_KP.rightKnee);
+  const compressed = hip && knee ? clamp01(1 - Math.abs(knee.y - hip.y) / (tHeight * 1.4)) : 0;
+  return clamp01(armReach * 0.62 + compressed * 0.38);
+}
+
+/** Running/functional-fitness extension without combat-specific raised-kick rules. */
+export function frameEnduranceExtension(file: Pick<MediaFile, 'poses'>, primaryIndex?: number): number {
+  const poses = file.poses ?? [];
+  if (poses.length === 0) return 0;
+  if (primaryIndex !== undefined && primaryIndex >= 0) {
+    // Pose arrays are person-box aligned. If the primary athlete was not one
+    // of the bounded pose selections, borrowing a secondary athlete's stride
+    // would falsely promote the primary/frame. Missing primary pose is unknown,
+    // not evidence from somebody else.
+    return isUsablePose(poses[primaryIndex]) ? poseLegExtension(poses[primaryIndex]) : 0;
+  }
+  return poses.filter(isUsablePose)
+    .reduce((best, pose) => Math.max(best, poseLegExtension(pose)), 0);
+}
+
+function sceneStationInteraction(file: Pick<MediaFile, 'sceneAnalysis'>): number {
+  const text = [
+    ...(file.sceneAnalysis?.subjectReasons ?? []),
+    ...(file.sceneAnalysis?.reasons ?? []),
+  ].join(' ').toLocaleLowerCase();
+  return /(ski\s*erg|sled|burpee|row(?:er|ing)|farmers?\s+carry|sandbag|wall\s*ball|equipment)/.test(text)
+    ? 0.55
+    : 0;
+}
+
+/**
+ * HYROX/endurance scoring deliberately excludes contact, kick and poomsae
+ * signals. It favours one readable athlete, face/torso clarity, station or
+ * stride phase, low occlusion and useful equipment interaction.
+ */
+export function enduranceActionBreakdown(file: MediaFile): EnduranceActionBreakdown {
+  const persons = file.personBoxes ?? [];
+  const faces = file.faceBoxes ?? [];
+  const presence = assessSubjectPresence(file);
+  const measured = file.enduranceSportsAnalysis;
+  const primaryIndex = primaryPersonIndex(file);
+  const primary = primaryIndex >= 0 ? persons[primaryIndex] : undefined;
+  const primaryPoseCandidate = primaryIndex >= 0 ? file.poses?.[primaryIndex] : file.poses?.[0];
+  const primaryPose = isUsablePose(primaryPoseCandidate) ? primaryPoseCandidate : undefined;
+  const associatedFaces = primary
+    ? faces.filter((face) => faceAssociatedWithPerson(face, primary))
+    : faces;
+  const strongestFace = associatedFaces.slice().sort((a, b) =>
+    faceBoxEvidence(b, file.faceDetection) - faceBoxEvidence(a, file.faceDetection),
+  )[0];
+
+  const overlap = primary
+    ? persons.reduce((highest, other, index) => index === primaryIndex
+      ? highest
+      : Math.max(highest, boxIntersectionFraction(primary, other)), 0)
+    : 0;
+  const crowdPenalty = clamp01(Math.max(0, persons.length - 3) / 7);
+  const derivedIsolation = primary
+    ? clamp01(1 - overlap * 0.72 - crowdPenalty * 0.55)
+    : presence.confidence === 'probable' ? 0.45 : 0.25;
+  const isolation = clamp01(measured?.subjectIsolation, derivedIsolation);
+  const derivedOcclusion = primary
+    ? clamp01(overlap * 0.7 + (1 - boxFrameVisibility(primary)) * 0.55 + crowdPenalty * 0.25)
+    : 0.5;
+  const occlusion = clamp01(measured?.occlusion, derivedOcclusion);
+
+  const primarySubject = clamp01(measured?.primarySubjectConfidence, primary
+    ? clamp01(clamp01(primary.score, 0.72) * 0.35 + clamp01(boxArea(primary) / 0.28) * 0.2 +
+      boxCenterScore(primary) * 0.18 + boxFrameVisibility(primary) * 0.17 + isolation * 0.1)
+    : presence.confidence === 'probable' ? 0.42 : presence.confidence === 'uncertain' ? 0.22 : 0);
+  const torsoSharpness = measured?.torsoSharpnessScore ?? resolvedSubjectSharpness(file);
+  const torsoFocus = typeof torsoSharpness === 'number'
+    ? clamp01((Math.sqrt(Math.max(0, torsoSharpness)) - 5.8) / 7.2)
+    : 0.42;
+  const derivedFaceVisibility = strongestFace
+    ? faceBoxEvidence(strongestFace, file.faceDetection) * boxFrameVisibility(strongestFace)
+    : 0;
+  const faceVisibility = clamp01(measured?.faceVisibility, derivedFaceVisibility);
+  const expression = clamp01(measured?.expression,
+    strongestFace && faceBoxCanJudgeEyes(strongestFace, file.faceDetection)
+      ? clamp01(strongestFace.smileScore ?? strongestFace.expressionScore, 0.5)
+      : 0.35);
+  const strideExtension = clamp01(measured?.strideExtension,
+    frameEnduranceExtension(file, primaryIndex));
+  const poseAction = primaryPose ? poseStationAction(primaryPose) : 0;
+  const equipmentInteraction = clamp01(measured?.equipmentInteraction, sceneStationInteraction(file));
+  const actionPhase = clamp01(measured?.actionPhase,
+    Math.max(strideExtension, poseAction * 0.78, equipmentInteraction * 0.82));
+  const confidence = clamp01(measured?.confidence,
+    (primary ? 0.42 : presence.confidence === 'probable' ? 0.22 : 0.08) +
+    (primaryPose ? 0.24 : 0) +
+    (typeof torsoSharpness === 'number' ? 0.18 : 0) +
+    (strongestFace ? 0.1 : 0) +
+    (measured?.station && measured.station !== 'unknown' ? 0.06 : 0));
+  const reasons: string[] = [];
+  const cautions: string[] = [];
+
+  if (!presence.hasPeople) {
+    return {
+      score: isDetailStoryKeeper(file) ? 8 : -40,
+      confidence: Math.min(confidence, 0.25),
+      primarySubject: 0,
+      torsoFocus,
+      faceVisibility: 0,
+      expression: 0,
+      isolation: 0,
+      occlusion: 0,
+      equipmentInteraction,
+      strideExtension: 0,
+      actionPhase: 0,
+      reasons: isDetailStoryKeeper(file) ? ['sharp event detail'] : [],
+      cautions: ['no athlete evidence'],
+    };
+  }
+
+  let score =
+    primarySubject * 42 +
+    torsoFocus * 68 +
+    faceVisibility * 26 +
+    expression * 12 +
+    isolation * 34 -
+    occlusion * 48 +
+    equipmentInteraction * 42 +
+    strideExtension * 38 +
+    actionPhase * 46;
+  if (file.blurRisk === 'high') score -= 82;
+  else if (file.blurRisk === 'medium') score -= 28;
+  if (presence.bodySource === 'face-inferred') {
+    // Preserve the frame as people-present but do not let an inferred torso
+    // outrank a measured, clear athlete on body/action claims.
+    score -= presence.confidence === 'uncertain' ? 24 : 10;
+    cautions.push('body detector miss — torso location inferred from face');
+  }
+  if (torsoFocus >= 0.68) reasons.push('sharp primary athlete');
+  if (faceVisibility >= 0.62) reasons.push('clear athlete face');
+  if (isolation >= 0.68 && occlusion <= 0.35) reasons.push('clean subject isolation');
+  if (equipmentInteraction >= 0.55) reasons.push('clear station/equipment interaction');
+  if (strideExtension >= 0.58) reasons.push('usable stride extension');
+  if (actionPhase >= 0.62) reasons.push('strong action phase');
+  if (occlusion >= 0.58) cautions.push('primary athlete is occluded');
+  if (crowdPenalty >= 0.45) cautions.push('crowd competes with primary athlete');
+  if (confidence < 0.5) cautions.push('limited endurance-action evidence');
+
+  return {
+    score: Math.round(score),
+    confidence,
+    primarySubject,
+    torsoFocus,
+    faceVisibility,
+    expression,
+    isolation,
+    occlusion,
+    equipmentInteraction,
+    strideExtension,
+    actionPhase,
+    reasons: [...new Set([...(measured?.reasons ?? []), ...reasons])].slice(0, 5),
+    cautions: cautions.slice(0, 3),
+  };
+}
+
+export function enduranceActionQuality(file: MediaFile): number {
+  return enduranceActionBreakdown(file).score;
+}
+
+export interface ConventionQualityBreakdown {
+  score: number;
+  confidence: number;
+  primarySubject: number;
+  faceAndEyes: number;
+  costumeSharpness: number;
+  expressionAndPose: number;
+  groupCompleteness: number;
+  isolation: number;
+  occlusion: number;
+  reasons: string[];
+  cautions: string[];
+}
+
+/**
+ * Anime-convention/cosplay quality over existing measured evidence. It favours
+ * a readable primary cosplayer, face/eye and costume sharpness, expression,
+ * pose, complete groups and clean isolation. Absent optional evidence stays at
+ * a neutral midpoint and never becomes a negative detector conclusion.
+ */
+export function conventionQualityBreakdown(file: MediaFile): ConventionQualityBreakdown {
+  const presence = assessSubjectPresence(file);
+  const persons = file.personBoxes ?? [];
+  const faces = file.faceBoxes ?? [];
+  const primaryIndex = primaryPersonIndex(file);
+  const primary = primaryIndex >= 0 ? persons[primaryIndex] : undefined;
+  const primaryPose = primaryIndex >= 0 ? file.poses?.[primaryIndex] : file.poses?.[0];
+  const associatedFaces = primary ? faces.filter((face) => faceAssociatedWithPerson(face, primary)) : faces;
+  const strongestFace = associatedFaces.slice().sort((a, b) =>
+    faceBoxEvidence(b, file.faceDetection) - faceBoxEvidence(a, file.faceDetection),
+  )[0];
+  const overlap = primary
+    ? persons.reduce((highest, other, index) => index === primaryIndex
+      ? highest
+      : Math.max(highest, boxIntersectionFraction(primary, other)), 0)
+    : 0;
+  const crowdPenalty = clamp01(Math.max(0, persons.length - 4) / 8);
+  const isolation = primary
+    ? clamp01(1 - overlap * 0.72 - crowdPenalty * 0.48)
+    : presence.confidence === 'probable' ? 0.45 : 0.5;
+  const occlusion = primary
+    ? clamp01(overlap * 0.72 + (1 - boxFrameVisibility(primary)) * 0.5 + crowdPenalty * 0.2)
+    : 0.5;
+  const primarySubject = primary
+    ? clamp01(clamp01(primary.score, 0.72) * 0.31 + clamp01(boxArea(primary) / 0.28) * 0.23 +
+      boxCenterScore(primary) * 0.2 + boxFrameVisibility(primary) * 0.16 + isolation * 0.1)
+    : presence.confidence === 'probable' ? 0.45 : presence.confidence === 'uncertain' ? 0.5 : 0;
+
+  // Tiny/distant faces cannot support a negative eye conclusion. A detected
+  // but unassessable face and entirely absent optional face evidence are both
+  // neutral; a clear native crop can positively separate a burst winner.
+  const faceAndEyes = strongestFace && faceBoxCanJudgeEyes(strongestFace, file.faceDetection)
+    ? clamp01(faceBoxEvidence(strongestFace, file.faceDetection) * 0.4 + eyeDetailSignal(strongestFace) * 0.6)
+    : 0.5;
+  const subjectSharpness = resolvedSubjectSharpness(file);
+  const costumeSharpness = typeof subjectSharpness === 'number'
+    ? normalizedSharpness(subjectSharpness)
+    : 0.5;
+  const expression = strongestFace && faceBoxCanJudgeEyes(strongestFace, file.faceDetection)
+    ? expressionSignal(strongestFace)
+    : 0.5;
+  const pose = isUsablePose(primaryPose)
+    ? clamp01((primaryPose.score ?? primaryPose.keypoints.reduce((sum, point) => sum + point.score, 0) /
+      primaryPose.keypoints.length) * 0.58 + poseStationAction(primaryPose) * 0.42)
+    : 0.5;
+  const expressionAndPose = expression * 0.52 + pose * 0.48;
+  const groupCompleteness = Math.max(faces.length, persons.length) >= 2
+    ? clamp01(groupCoverageQuality(file) / 34)
+    : 0.5;
+  const confidence = clamp01(
+    (presence.confidence === 'confirmed' ? 0.34 : presence.confidence === 'probable' ? 0.2 : presence.confidence === 'uncertain' ? 0.08 : 0) +
+    (typeof subjectSharpness === 'number' ? 0.24 : 0) +
+    (strongestFace && faceBoxCanJudgeEyes(strongestFace, file.faceDetection) ? 0.2 : 0) +
+    (isUsablePose(primaryPose) ? 0.12 : 0) +
+    (file.reviewAnalysisStage === 'subjects' || file.reviewAnalysisStage === 'full' ? 0.1 : 0),
+  );
+  const reasons: string[] = [];
+  const cautions: string[] = [];
+  if (primarySubject >= 0.68) reasons.push('clear primary cosplayer');
+  if (faceAndEyes >= 0.68) reasons.push('clear face and eye detail');
+  if (costumeSharpness >= 0.68) reasons.push('sharp costume and prop detail');
+  if (expressionAndPose >= 0.65) reasons.push('strong expression and pose');
+  if (groupCompleteness >= 0.68) reasons.push('complete readable cosplay group');
+  if (isolation >= 0.68 && occlusion <= 0.35) reasons.push('clean subject isolation');
+  if (occlusion >= 0.58) cautions.push('primary cosplayer is occluded');
+  if (crowdPenalty >= 0.45) cautions.push('crowd competes with primary cosplayer');
+  if (confidence < 0.5) cautions.push('limited convention subject evidence');
+
+  if (!presence.hasPeople) {
+    return {
+      // Neutral midpoint, not an empty-scene penalty: detector zero is unknown
+      // in a crowded convention and the bulk gate below keeps it manual.
+      score: 97 + (isDetailStoryKeeper(file) ? 8 : 0) -
+        (file.blurRisk === 'high' ? 92 : file.blurRisk === 'medium' ? 30 : 0),
+      confidence: Math.min(confidence, 0.25),
+      primarySubject: 0.5,
+      faceAndEyes: 0.5,
+      costumeSharpness: 0.5,
+      expressionAndPose: 0.5,
+      groupCompleteness: 0.5,
+      isolation: 0.5,
+      occlusion: 0.5,
+      reasons: isDetailStoryKeeper(file) ? ['sharp costume or event detail'] : [],
+      cautions: ['no reliable cosplayer evidence — manual review'],
+    };
+  }
+
+  let score =
+    primarySubject * 38 +
+    faceAndEyes * 48 +
+    costumeSharpness * 64 +
+    expressionAndPose * 28 +
+    groupCompleteness * 30 +
+    isolation * 28 -
+    occlusion * 42;
+  if (file.blurRisk === 'high') score -= 92;
+  else if (file.blurRisk === 'medium') score -= 30;
+  if (presence.bodySource === 'face-inferred') {
+    score -= presence.confidence === 'uncertain' ? 14 : 6;
+    cautions.push('body detector miss — costume coverage requires review');
+  }
+  return {
+    score: Math.round(score), confidence, primarySubject, faceAndEyes,
+    costumeSharpness, expressionAndPose, groupCompleteness, isolation,
+    occlusion, reasons: reasons.slice(0, 5), cautions: cautions.slice(0, 3),
+  };
+}
+
+export function conventionQuality(file: MediaFile): number {
+  return conventionQualityBreakdown(file).score;
+}
+
 /**
  * Composite sports-action bonus added to bestShotScore/keeperScore when a sports
  * EventMode is active. Tuned so peak-contact, frozen, emotive, well-focused
@@ -320,9 +886,10 @@ export function emotionSignal(file: Pick<MediaFile, 'faceBoxes'>): number {
  * 25k batch cull down hard.
  */
 export function sportsActionQuality(file: MediaFile): number {
+  if (enduranceModeActive()) return enduranceActionQuality(file);
   const hasPeople = (file.personCount ?? file.personBoxes?.length ?? 0) > 0;
   const hasFaces = (file.faceCount ?? file.faceBoxes?.length ?? 0) > 0;
-  const hasPoses = (file.poses?.length ?? 0) > 0;
+  const hasPoses = (file.poses ?? []).some(isUsablePose);
   // Prefer MEASURED pose geometry when the pose model has run; otherwise fall
   // back to the person-box proxies so scoring degrades gracefully.
   const boxContact = athleteContactSignal(file);
@@ -387,23 +954,28 @@ export function sportsActionQuality(file: MediaFile): number {
 }
 
 export function faceSignalConfidence(
-  file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'faceDetection' | 'subjectSharpnessScore' | 'sceneAnalysis'>,
+  file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'faceDetection' | 'subjectSharpnessScore' | 'sceneAnalysis'> &
+    Partial<Pick<MediaFile, 'personCount' | 'personBoxes'>>,
 ): number {
   const boxes = file.faceBoxes ?? [];
-  const faceCount = file.faceCount ?? boxes.length;
+  const faceCount = Math.max(file.faceCount ?? 0, boxes.length);
   if (faceCount <= 0) return 0;
 
   const avgDetection = boxes.length > 0
-    ? boxes.reduce((sum, box) => sum + clamp01(box.score, file.faceDetection === 'estimated' ? 0.45 : 0.78), 0) / boxes.length
+    ? boxes.reduce((sum, box) => sum + faceBoxEvidence(box, file.faceDetection), 0) / boxes.length
     : (file.faceDetection === 'estimated' ? 0.38 : 0.58);
-  const largestFaceArea = boxes.reduce((best, box) => Math.max(best, box.width * box.height), 0);
-  const areaSignal = boxes.length > 0 ? clamp01(largestFaceArea / 0.035) : 0.35;
+  const largestFaceArea = boxes.reduce((best, box) => Math.max(best, boxArea(box)), 0);
+  const areaSignal = boxes.length > 0 ? clamp01(largestFaceArea / 0.028) : 0.35;
   const subjectSharpness = resolvedSubjectSharpness(file);
   const sharpSignal = typeof subjectSharpness === 'number'
     ? clamp01(subjectSharpness / 135)
     : 0.5;
   const nativeSignal = file.faceDetection === 'native' ? 0.12 : file.faceDetection === 'estimated' ? -0.16 : 0;
   const groupSignal = faceCount >= 2 ? 0.06 : 0;
+  const hasBody = (file.personCount ?? file.personBoxes?.length ?? 0) > 0;
+  const tinyFaceWithoutBodyPenalty = hasBody || boxes.length === 0
+    ? 0
+    : largestFaceArea < 0.002 ? 0.3 : largestFaceArea < 0.005 ? 0.18 : 0;
 
   return clamp01(
     avgDetection * 0.46 +
@@ -411,11 +983,10 @@ export function faceSignalConfidence(
     sharpSignal * 0.18 +
     0.08 +
     nativeSignal +
-    groupSignal,
+    groupSignal -
+    tinyFaceWithoutBodyPenalty,
   );
 }
-
-type FaceBoxSignal = NonNullable<MediaFile['faceBoxes']>[number];
 
 /**
  * Normalized eye-region detail. Missing analysis is deliberately neutral: an
@@ -438,22 +1009,26 @@ function hasEyeDetailSignal(box: FaceBoxSignal): boolean {
 }
 
 export function humanMomentQuality(
-  file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'personCount' | 'personBoxes' | 'subjectSharpnessScore' | 'sceneAnalysis'>,
+  file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'faceDetection' | 'personCount' | 'personBoxes' | 'subjectSharpnessScore' | 'sceneAnalysis'>,
 ): number {
   const faceBoxes = file.faceBoxes ?? [];
+  const usableFaceBoxes = faceBoxes.filter((box) => faceBoxEvidence(box, file.faceDetection) >= 0.46);
   const personBoxes = file.personBoxes ?? [];
-  const faceCount = file.faceCount ?? faceBoxes.length;
+  const faceCount = Math.max(file.faceCount ?? 0, faceBoxes.length);
   const personCount = file.personCount ?? personBoxes.length;
   const sharp = Math.min(24, (resolvedSubjectSharpness(file) ?? 0) / 6);
 
-  if (faceBoxes.length > 0) {
-    const eyeScores = faceBoxes.map((box) => eyeDetailSignal(box));
-    const smileScores = faceBoxes.map((box) => clamp01(box.smileScore ?? box.expressionScore, 0.5));
+  if (usableFaceBoxes.length > 0) {
+    const eyeScores = usableFaceBoxes.map((box) =>
+      faceBoxCanJudgeEyes(box, file.faceDetection) ? eyeDetailSignal(box) : 0.5);
+    const smileScores = usableFaceBoxes.map((box) => faceBoxCanJudgeEyes(box, file.faceDetection)
+      ? clamp01(box.smileScore ?? box.expressionScore, 0.5)
+      : 0.5);
     const avgEye = eyeScores.reduce((sum, score) => sum + score, 0) / eyeScores.length;
     const minEye = Math.min(...eyeScores);
     const avgSmile = smileScores.reduce((sum, score) => sum + score, 0) / smileScores.length;
-    const faceArea = faceBoxes.reduce((sum, box) => sum + box.width * box.height, 0);
-    const centered = faceBoxes.reduce((best, box) => Math.max(best, boxCenterScore(box)), 0);
+    const faceArea = usableFaceBoxes.reduce((sum, box) => sum + boxArea(box), 0);
+    const centered = usableFaceBoxes.reduce((best, box) => Math.max(best, boxCenterScore(box)), 0);
     const groupCoverage = faceCount >= 2 ? Math.min(18, faceCount * 4 + minEye * 14) : 0;
 
     return Math.round(
@@ -483,15 +1058,21 @@ export function humanMomentQuality(
 
 export function faceQuality(file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'faceDetection' | 'subjectSharpnessScore' | 'sceneAnalysis'>): number {
   const boxes = file.faceBoxes ?? [];
+  const usableBoxes = boxes.filter((box) => faceBoxEvidence(box, file.faceDetection) >= 0.46);
   // Keep the historical 0..2 weighting while treating an unmeasured eye region
   // as the midpoint rather than the worst possible result.
-  const eyeDetails = boxes.map((box) => eyeDetailSignal(box) * 2);
+  const eyeDetails = usableBoxes.map((box) =>
+    (faceBoxCanJudgeEyes(box, file.faceDetection) ? eyeDetailSignal(box) : 0.5) * 2);
   const bestEye = eyeDetails.reduce((best, detail) => Math.max(best, detail), 0);
   const eyeSum = eyeDetails.reduce((sum, detail) => sum + detail, 0);
-  const expression = boxes.reduce((sum, box) => sum + clamp01(box.smileScore ?? box.expressionScore, 0.5), 0);
-  const faceCount = file.faceCount ?? boxes.length;
-  const faceArea = boxes.reduce((sum, box) => sum + box.width * box.height, 0);
-  const largestFaceArea = boxes.reduce((best, box) => Math.max(best, box.width * box.height), 0);
+  const expression = usableBoxes.reduce((sum, box) => sum + (faceBoxCanJudgeEyes(box, file.faceDetection)
+    ? clamp01(box.smileScore ?? box.expressionScore, 0.5)
+    : 0.5), 0);
+  const faceCount = boxes.length > 0
+    ? Math.min(Math.max(file.faceCount ?? 0, boxes.length), usableBoxes.length)
+    : (file.faceCount ?? 0);
+  const faceArea = usableBoxes.reduce((sum, box) => sum + boxArea(box), 0);
+  const largestFaceArea = usableBoxes.reduce((best, box) => Math.max(best, boxArea(box)), 0);
   const sharp = Math.min(60, (resolvedSubjectSharpness(file) ?? 0) / 3);
   const faceConfidence = faceSignalConfidence(file);
   return Math.round(
@@ -554,8 +1135,7 @@ export interface GenreScoreBreakdown {
 }
 
 function hasPeople(file: MediaFile): boolean {
-  return (file.faceCount ?? file.faceBoxes?.length ?? 0) > 0 ||
-    (file.personCount ?? file.personBoxes?.length ?? 0) > 0;
+  return assessSubjectPresence(file).hasPeople;
 }
 
 function inferredGenre(file: MediaFile, requested: CullingGenre = 'auto'): Exclude<CullingGenre, 'auto'> {
@@ -585,8 +1165,12 @@ function measured(values: Array<number | undefined>): number {
 function sceneMetricConfidence(file: MediaFile, genre: Exclude<CullingGenre, 'auto'>): number {
   if (genre === 'portrait' || genre === 'group') return faceSignalConfidence(file);
   if (genre === 'sports') {
-    const people = hasPeople(file) ? 0.35 : 0;
-    const pose = (file.poses?.length ?? 0) > 0 ? 0.35 : (file.personBoxes?.length ?? 0) > 0 ? 0.18 : 0;
+    if (enduranceModeActive()) return enduranceActionBreakdown(file).confidence;
+    const presence = assessSubjectPresence(file);
+    const people = presence.confidence === 'confirmed' ? 0.35
+      : presence.confidence === 'probable' ? 0.22
+        : presence.confidence === 'uncertain' ? 0.08 : 0;
+    const pose = (file.poses ?? []).some(isUsablePose) ? 0.35 : (file.personBoxes?.length ?? 0) > 0 ? 0.18 : 0;
     const focus = typeof resolvedSubjectSharpness(file) === 'number' || typeof file.sharpnessScore === 'number' ? 0.2 : 0;
     return clamp01(people + pose + focus + 0.1);
   }
@@ -643,13 +1227,24 @@ export function scoreGenre(file: MediaFile, requestedGenre: CullingGenre = 'auto
     if (weakest >= 0.62) reasons.push('consistent face detail');
     if (weakest < 0.48) cautions.push('one or more faces need review');
   } else if (genre === 'sports') {
-    const action = clamp01((sportsActionQuality(file) + 40) / 250);
-    const focus = focusQuality(file);
-    const contact = Math.max(athleteContactSignal(file), poseContactSignal(file));
-    quality = action * 0.5 + focus * 0.3 + contact * 0.2;
-    if (contact >= 0.5) reasons.push('peak athlete contact');
-    if (frozenActionSignal(file) >= 0.55) reasons.push('frozen action');
-    if (file.blurRisk === 'high') cautions.push('high motion blur risk');
+    if (enduranceModeActive()) {
+      const endurance = enduranceActionBreakdown(file);
+      const normalizedAction = clamp01((endurance.score + 40) / 300);
+      quality = normalizedAction * 0.7 + focusQuality(file) * 0.3;
+      reasons.push(...endurance.reasons);
+      cautions.push(...endurance.cautions);
+      if (file.blurRisk === 'high' && !cautions.includes('high motion blur risk')) {
+        cautions.push('high motion blur risk');
+      }
+    } else {
+      const action = clamp01((sportsActionQuality(file) + 40) / 250);
+      const focus = focusQuality(file);
+      const contact = Math.max(athleteContactSignal(file), poseContactSignal(file));
+      quality = action * 0.5 + focus * 0.3 + contact * 0.2;
+      if (contact >= 0.5) reasons.push('peak athlete contact');
+      if (frozenActionSignal(file) >= 0.55) reasons.push('frozen action');
+      if (file.blurRisk === 'high') cautions.push('high motion blur risk');
+    }
   } else {
     const wholeFocus = focusQuality(file);
     const coverage = clamp01(scene?.focusCoverage, 0.5);
@@ -741,6 +1336,7 @@ export function keeperScore(file: MediaFile): number {
     Math.min(55, file.reviewScore ?? 0) -
     (file.blurRisk === 'high' ? 90 : file.blurRisk === 'medium' ? 30 : 0) +
     (sportsModeActive() ? sportsActionQuality(file) : 0) +
+    (conventionModeActive() ? conventionQuality(file) : 0) +
     genreScoreBonus(file)
   );
 }
@@ -781,6 +1377,7 @@ export function bestShotScore(file: MediaFile): number {
   if (hasFaces && subjectSharp > 0 && subjectSharp < 38) score -= 55;
   if (!hasFaces && subjectSharp > 0 && subjectSharp < 28) score -= 25;
   if (sportsModeActive()) score += sportsActionQuality(file);
+  if (conventionModeActive()) score += conventionQuality(file);
   score += genreScoreBonus(file);
   return Math.round(score);
 }
@@ -797,8 +1394,9 @@ function isAutoBestCandidate(file: MediaFile): boolean {
 }
 
 export function isDetailStoryKeeper(file: MediaFile): boolean {
-  const hasFaces = (file.faceCount ?? file.faceBoxes?.length ?? 0) > 0;
-  const hasPeople = (file.personCount ?? file.personBoxes?.length ?? 0) > 0;
+  const presence = assessSubjectPresence(file);
+  const hasFaces = presence.faceCount > 0;
+  const hasPeople = presence.personCount > 0;
   const sharp = Math.max(file.sharpnessScore ?? 0, file.subjectSharpnessScore ?? 0);
   const review = file.reviewScore ?? 0;
   return !hasFaces && !hasPeople && file.type === 'photo' && file.blurRisk !== 'high' && (sharp >= 120 || review >= 68);
@@ -806,6 +1404,30 @@ export function isDetailStoryKeeper(file: MediaFile): boolean {
 
 export function inferSceneBucket(file: MediaFile, eventMode: EventMode = 'general'): string {
   if (file.type === 'video') return 'Video';
+  if (isEnduranceSportsMode(eventMode)) {
+    const presence = assessSubjectPresence(file);
+    const station = file.enduranceSportsAnalysis?.station;
+    const stationLabels: Partial<Record<NonNullable<MediaFile['enduranceSportsAnalysis']>['station'] & string, string>> = {
+      'ski-erg': 'SkiErg',
+      'sled-push': 'Sled push',
+      'sled-pull': 'Sled pull',
+      'burpee-broad-jump': 'Burpee broad jumps',
+      rowing: 'Rowing',
+      'farmers-carry': 'Farmers carry',
+      'sandbag-lunge': 'Sandbag lunges',
+      'wall-ball': 'Wall balls',
+      running: 'Running',
+      finish: 'Finish / celebration',
+    };
+    if (!presence.hasPeople) return isDetailStoryKeeper(file) ? 'Event details' : 'Venue / scene';
+    if (station && station !== 'unknown' && stationLabels[station]) return stationLabels[station]!;
+    if (presence.bodySource === 'face-inferred') return 'Athlete · body detection review';
+    const endurance = enduranceActionBreakdown(file);
+    if (endurance.strideExtension >= 0.55) return 'Running / stride';
+    if (endurance.equipmentInteraction >= 0.5 || endurance.actionPhase >= 0.6) return 'Station action';
+    if (presence.personCount >= 5 || presence.faceCount >= 5) return 'Crowd / wave';
+    return 'Athletes';
+  }
   if (isSportsEventMode(eventMode)) {
     const faces = file.faceCount ?? file.faceBoxes?.length ?? 0;
     const persons = file.personCount ?? file.personBoxes?.length ?? 0;
@@ -824,6 +1446,7 @@ export function inferSceneBucket(file: MediaFile, eventMode: EventMode = 'genera
     if (eventMode === 'interior') return 'Interior / rooms';
   }
   if ((file.faceCount ?? file.faceBoxes?.length ?? 0) >= 3 || (file.personCount ?? file.personBoxes?.length ?? 0) >= 3) {
+    if (eventMode === 'cosplay') return 'Cosplay groups';
     return 'Groups';
   }
   if ((file.faceCount ?? file.faceBoxes?.length ?? 0) > 0) {
@@ -929,6 +1552,10 @@ function proposalComparisonConfidence(
 ): AutoCullDecision['confidence'] {
   if (!best || !runnerUp) return 'low';
   if (
+    assessSubjectPresence(best).confidence === 'uncertain' ||
+    assessSubjectPresence(runnerUp).confidence === 'uncertain'
+  ) return 'low';
+  if (
     (hasDetectedSubject(best) && (subjectFocusConfidence(best) ?? 0) < 0.2) ||
     (hasDetectedSubject(runnerUp) && (subjectFocusConfidence(runnerUp) ?? 0) < 0.2)
   ) return 'low';
@@ -984,13 +1611,17 @@ function faceUsabilityScore(file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'f
   if (faceCount <= 0) return 0;
   if (boxes.length === 0) return file.faceDetection === 'estimated' ? 0.42 : 0.58;
 
-  const usable = boxes.reduce((sum, box) => {
-    const eye = eyeDetailSignal(box);
-    const detection = clamp01(box.score, file.faceDetection === 'estimated' ? 0.45 : 0.78);
-    const expression = expressionSignal(box);
-    const size = clamp01((box.width * box.height) / 0.028);
+  const usableBoxes = boxes.filter((box) => faceBoxEvidence(box, file.faceDetection) >= 0.46);
+  if (usableBoxes.length === 0) return 0.5;
+
+  const usable = usableBoxes.reduce((sum, box) => {
+    const canJudgeEyes = faceBoxCanJudgeEyes(box, file.faceDetection);
+    const eye = canJudgeEyes ? eyeDetailSignal(box) : 0.5;
+    const detection = faceBoxEvidence(box, file.faceDetection);
+    const expression = canJudgeEyes ? expressionSignal(box) : 0.5;
+    const size = clamp01(boxArea(box) / 0.028);
     return sum + eye * 0.45 + detection * 0.3 + expression * 0.12 + size * 0.13;
-  }, 0) / boxes.length;
+  }, 0) / usableBoxes.length;
   return clamp01(usable, file.faceDetection === 'estimated' ? 0.42 : 0.55);
 }
 
@@ -1002,8 +1633,8 @@ function groupCoverageQuality(file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 
   if (faceCount < 2 && personCount < 2) return 0;
 
   const usableFaces = faceBoxes.filter((box) =>
-    eyeDetailSignal(box) >= 0.5 &&
-    clamp01(box.score, file.faceDetection === 'estimated' ? 0.45 : 0.78) >= 0.68,
+    faceBoxEvidence(box, file.faceDetection) >= 0.58 &&
+    (!faceBoxCanJudgeEyes(box, file.faceDetection) || eyeDetailSignal(box) >= 0.5),
   ).length;
   const usableRatio = faceCount > 0
     ? clamp01(usableFaces / faceCount, faceBoxes.length > 0 ? 0.45 : 0.62)
@@ -1020,6 +1651,10 @@ function weakFacePenalty(file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'face
   const boxes = file.faceBoxes ?? [];
   const faceCount = file.faceCount ?? boxes.length;
   if (faceCount <= 0) return 0;
+  const eyeAssessable = boxes.filter((box) => faceBoxCanJudgeEyes(box, file.faceDetection));
+  // A weak/tiny match is uncertain detection evidence, not evidence of a blink
+  // or bad expression. It must never independently create a reject penalty.
+  if (eyeAssessable.length === 0) return 0;
   const weakest = weakestFaceSignal(file);
   const usability = faceUsabilityScore(file);
   let penalty = 0;
@@ -1167,6 +1802,9 @@ function genreComparisonReasons(best: MediaFile, candidate: MediaFile): string[]
   if (bestGenre.genre === 'group' && groupCoverageQuality(best) - groupCoverageQuality(candidate) >= 10) {
     reasons.push('weaker group coverage');
   }
+  if (conventionModeActive() && conventionQuality(best) - conventionQuality(candidate) >= 42) {
+    reasons.push('weaker cosplay face, costume, pose, or isolation');
+  }
 
   const bestScene = best.sceneAnalysis;
   const candidateScene = candidate.sceneAnalysis;
@@ -1190,9 +1828,9 @@ function genreComparisonReasons(best: MediaFile, candidate: MediaFile): string[]
   return reasons;
 }
 
-function weakestFaceSignal(file: Pick<MediaFile, 'faceBoxes'>): number {
-  const boxes = file.faceBoxes ?? [];
-  if (boxes.length === 0) return 1;
+function weakestFaceSignal(file: Pick<MediaFile, 'faceBoxes' | 'faceDetection'>): number {
+  const boxes = (file.faceBoxes ?? []).filter((box) => faceBoxCanJudgeEyes(box, file.faceDetection));
+  if (boxes.length === 0) return 0.5;
   return Math.min(...boxes.map((box) => {
     const eye = eyeDetailSignal(box);
     const detection = clamp01(box.score, 0.8);
@@ -1228,9 +1866,84 @@ function addQuotaKeepers(ranked: MediaFile[], keep: Set<string>, options: AutoCu
   }
 }
 
-function autoCullGroupWithActiveProfile(files: MediaFile[], options: AutoCullOptions): AutoCullDecision {
+function matchedFaceEmbeddingCount(file: Pick<MediaFile, 'faceEmbedding' | 'faceEmbeddings'>): number {
+  if (file.faceEmbeddings !== undefined) return file.faceEmbeddings.filter(Boolean).length;
+  return file.faceEmbedding ? 1 : 0;
+}
+
+/** Positive-only completeness signal from completed local face matching.
+ * Zero means unknown, never poor quality, so missing/disabled embeddings do
+ * not lower a frame or become rejection evidence. */
+export function faceMatchingCoverageQuality(
+  file: Pick<MediaFile, 'faceCount' | 'faceBoxes' | 'faceEmbedding' | 'faceEmbeddings' | 'faceGroupId' | 'faceGroupSize'>,
+): number {
+  const matched = matchedFaceEmbeddingCount(file);
+  if (matched <= 0) return 0;
+  const detected = Math.max(file.faceCount ?? 0, file.faceBoxes?.length ?? 0, matched);
+  const completion = detected > 0 ? clamp01(matched / detected) : 0;
+  const recurringPrimary = file.faceGroupId && (file.faceGroupSize ?? 0) > 1 ? 12 : 0;
+  return Math.round(Math.min(100, matched * 18 + completion * 28 + recurringPrimary));
+}
+
+function addFaceIdentityCoverageKeepers(
+  ranked: MediaFile[],
+  keep: Set<string>,
+  reasons: Record<string, string[]>,
+): void {
+  const identityMembers = new Map<string, MediaFile[]>();
+  for (const file of ranked) {
+    if (!file.faceGroupId || matchedFaceEmbeddingCount(file) <= 0) continue;
+    const members = identityMembers.get(file.faceGroupId);
+    if (members) members.push(file);
+    else identityMembers.set(file.faceGroupId, [file]);
+  }
+
+  // One quality-qualified representative per recurring primary identity. A
+  // group ID seen only once locally still counts when its session-wide size
+  // proves the person recurs elsewhere in the shoot.
+  for (const members of identityMembers.values()) {
+    const recurring = members.length > 1 || members.some((file) => (file.faceGroupSize ?? 0) > 1);
+    if (!recurring) continue;
+    const representative = members.find(isAutoBestCandidate);
+    if (!representative) continue;
+    keep.add(representative.path);
+    const values = reasons[representative.path] ?? [];
+    pushUnique(values, 'best frame for recurring face group');
+    reasons[representative.path] = values;
+  }
+
+  // Preserve the strongest completed multi-face match as positive evidence of
+  // group completeness. This never penalises a frame with unknown identities.
+  const rankOrder = new Map(ranked.map((file, index) => [file.path, index]));
+  const groupCoverageRepresentative = ranked
+    .filter((file) => {
+      const matched = matchedFaceEmbeddingCount(file);
+      const detected = Math.max(file.faceCount ?? 0, file.faceBoxes?.length ?? 0, matched);
+      return matched >= 2 && matched / detected >= 0.6 && isAutoBestCandidate(file);
+    })
+    .sort((a, b) =>
+      faceMatchingCoverageQuality(b) - faceMatchingCoverageQuality(a) ||
+      (rankOrder.get(a.path) ?? Number.MAX_SAFE_INTEGER) -
+      (rankOrder.get(b.path) ?? Number.MAX_SAFE_INTEGER),
+    )[0];
+  if (groupCoverageRepresentative) {
+    keep.add(groupCoverageRepresentative.path);
+    const values = reasons[groupCoverageRepresentative.path] ?? [];
+    pushUnique(values, 'matched-face group coverage');
+    reasons[groupCoverageRepresentative.path] = values;
+  }
+}
+
+function autoCullGroupWithActiveProfile(
+  files: MediaFile[],
+  options: AutoCullOptions,
+  useFaceIdentityCoverage = false,
+): AutoCullDecision {
   const ranked = rankBestShots(files);
-  const best = ranked.find(isAutoBestCandidate) ?? null;
+  const activeMode = getReviewProfile();
+  const best = ranked.find((file) =>
+    isAutoBestCandidate(file) &&
+    (!subjectCriticalModeActive() || isAutoCullProposalEligible(file, activeMode))) ?? null;
   const keep = new Set<string>();
   const reject = new Set<string>();
   const reasons: Record<string, string[]> = {};
@@ -1239,6 +1952,7 @@ function autoCullGroupWithActiveProfile(files: MediaFile[], options: AutoCullOpt
   keep.add(best.path);
   addQuotaKeepers(ranked, keep, options);
   for (const path of keep) reasons[path] = path === best.path ? ['best shot'] : ['quota keeper'];
+  if (useFaceIdentityCoverage) addFaceIdentityCoverageKeepers(ranked, keep, reasons);
   const bestScore = bestShotScore(best);
   const second = ranked.find((file) => file.path !== best.path && isAutoBestCandidate(file));
   // When there is no eligible runner-up the gap is meaningless — treat as 0
@@ -1266,6 +1980,17 @@ function autoCullGroupWithActiveProfile(files: MediaFile[], options: AutoCullOpt
       reasons[file.path] = ['manual keeper'];
       continue;
     }
+    const subjectEvidenceInconclusive = subjectCriticalModeActive() &&
+      !isAutoCullProposalEligible(file, activeMode);
+    if (subjectCriticalModeActive() && subjectEvidenceInconclusive) {
+      // A complete detector-zero subject-critical frame remains a manual
+      // comparison; an athlete or cosplayer may be distant, occluded or
+      // back-facing. Only an explicit user reject can classify it as rejected.
+      reasons[file.path] = [sportsModeActive()
+        ? 'sports subject detection inconclusive'
+        : 'cosplay subject detection inconclusive'];
+      continue;
+    }
     if (confidence !== 'aggressive' && isDetailStoryKeeper(file)) {
       keep.add(file.path);
       reasons[file.path] = ['detail/story keeper'];
@@ -1279,20 +2004,33 @@ function autoCullGroupWithActiveProfile(files: MediaFile[], options: AutoCullOpt
     const fileFaceCount = file.faceCount ?? file.faceBoxes?.length ?? 0;
     const filePersonCount = file.personCount ?? file.personBoxes?.length ?? 0;
     const weakFace = weakestFaceSignal(file);
+    const filePresence = assessSubjectPresence(file);
+    const trustworthyFaceQuality = filePresence.confidence !== 'uncertain';
     if (file.blurRisk === 'high') fileReasons.push('high blur risk');
-    if (faceQuality(best) - faceQuality(file) >= 42) fileReasons.push('weaker face/eye detail');
-    if (bestHumanMoment - fileHumanMoment >= 28) fileReasons.push('weaker eye/expression detail');
+    if (trustworthyFaceQuality && faceQuality(best) - faceQuality(file) >= 42) fileReasons.push('weaker face/eye detail');
+    if (trustworthyFaceQuality && bestHumanMoment - fileHumanMoment >= 28) fileReasons.push('weaker eye/expression detail');
     if (bestFaceCount >= 2 && bestFaceCount - fileFaceCount >= 1) fileReasons.push('missing group faces');
-    if (bestPersonCount >= 2 && bestPersonCount - filePersonCount >= 1) fileReasons.push('fewer people detected');
-    if (groupMode && bestFaceCount >= 2 && weakFace < 0.58 && bestWeakestFace - weakFace >= 0.12) fileReasons.push('unclear eye/face detail');
-    if (groupMode && (bestFaceCount >= 2 || bestPersonCount >= 2) && (fileFaceCount < bestFaceCount || filePersonCount < bestPersonCount)) fileReasons.push('everyone-good miss');
+    if (fileFaceCount <= 0 && bestPersonCount >= 2 && bestPersonCount - filePersonCount >= 1) fileReasons.push('fewer people detected');
+    if (trustworthyFaceQuality && groupMode && bestFaceCount >= 2 && weakFace < 0.58 &&
+      bestWeakestFace - weakFace >= 0.12) fileReasons.push('unclear eye/face detail');
+    if (groupMode && (bestFaceCount >= 2 || bestPersonCount >= 2) &&
+      (fileFaceCount < bestFaceCount || (fileFaceCount <= 0 && filePersonCount < bestPersonCount))) {
+      fileReasons.push('everyone-good miss');
+    }
     if ((resolvedSubjectSharpness(best) ?? 0) - (resolvedSubjectSharpness(file) ?? 0) >= 28) fileReasons.push('softer subject');
     if ((best.reviewScore ?? 0) - (file.reviewScore ?? 0) >= 22) fileReasons.push('lower review score');
     for (const reason of genreComparisonReasons(best, file)) pushUnique(fileReasons, reason);
     if (bestScore - fileScore >= scoreGapThreshold) fileReasons.push('lower best-shot score');
     const enoughReasons = fileReasons.length >= requiredReasons &&
       (confidence !== 'conservative' || bestScore - fileScore >= 60);
-    if (enoughReasons || (file.blurRisk === 'high' && bestScore - fileScore >= blurGapThreshold)) {
+    const independentFaceOnlyFailure = file.blurRisk === 'high' ||
+      (resolvedSubjectSharpness(best) ?? 0) - (resolvedSubjectSharpness(file) ?? 0) >= 28 ||
+      (file.reviewScore !== undefined && (best.reviewScore ?? 0) - file.reviewScore >= 22) ||
+      (trustworthyFaceQuality && bestHumanMoment - fileHumanMoment >= 28);
+    const faceOnlySafe = filePresence.bodySource !== 'face-inferred' || independentFaceOnlyFailure;
+    const uncertainEvidenceSafe = filePresence.confidence !== 'uncertain' || independentFaceOnlyFailure;
+    if (uncertainEvidenceSafe && faceOnlySafe &&
+      (enoughReasons || (file.blurRisk === 'high' && bestScore - fileScore >= blurGapThreshold))) {
       reject.add(file.path);
       reasons[file.path] = fileReasons;
     }
@@ -1314,7 +2052,13 @@ export function autoCullGroup(files: MediaFile[], options: AutoCullOptions = {})
   if (options.eventMode) configureReviewProfile(options.eventMode);
   if (options.genre) configureCullingGenre(options.genre);
   try {
-    return autoCullGroupWithActiveProfile(files, options);
+    const burstId = files[0]?.burstId;
+    const visualGroupId = files[0]?.visualGroupId;
+    const isDeclaredComparison = files.length > 1 && (
+      (!!burstId && files.every((file) => file.burstId === burstId)) ||
+      (!!visualGroupId && files.every((file) => file.visualGroupId === visualGroupId))
+    );
+    return autoCullGroupWithActiveProfile(files, options, isDeclaredComparison);
   } finally {
     configureReviewProfile(previousMode);
     configureCullingGenre(previousGenre);
@@ -1402,8 +2146,8 @@ export function scoreReview(input: ReviewScoreInput): ReviewScore {
   const rating = input.rating ?? 0;
   const faceBoxes = input.faceBoxes ?? [];
   const personBoxes = input.personBoxes ?? [];
-  const faceCount = input.faceCount ?? faceBoxes.length;
-  const personCount = input.personCount ?? personBoxes.length;
+  const faceCount = Math.max(input.faceCount ?? 0, faceBoxes.length);
+  const personCount = Math.max(input.personCount ?? 0, personBoxes.length);
   let score = Math.min(55, Math.log10(Math.max(1, sharpness) + 1) * 18);
   const reasons: string[] = [];
 
@@ -1417,11 +2161,12 @@ export function scoreReview(input: ReviewScoreInput): ReviewScore {
   }
   if (faceCount > 0) {
     const confidence = faceSignalConfidence(input);
-    score += 16 + Math.min(18, faceQuality(input) / 5);
+    score += (confidence >= 0.5 ? 16 : 4) + Math.min(18, faceQuality(input) / 5) * confidence;
     reasons.push(`${faceCount} face${faceCount === 1 ? '' : 's'}`);
     if (confidence >= 0.78) reasons.push('strong face signal');
     else if (confidence < 0.52) reasons.push('check face confidence');
-    const measuredEyes = faceBoxes.filter(hasEyeDetailSignal);
+    const measuredEyes = faceBoxes.filter((box) =>
+      faceBoxCanJudgeEyes(box, input.faceDetection) && hasEyeDetailSignal(box));
     if (measuredEyes.length > 0) {
       const eyeDetail = measuredEyes.reduce((best, box) => Math.max(best, eyeDetailSignal(box)), 0);
       if (eyeDetail >= 0.75) reasons.push('strong eye detail');
@@ -1471,10 +2216,19 @@ export function scoreReview(input: ReviewScoreInput): ReviewScore {
 }
 
 export function groupByVisualHash(files: MediaFile[], threshold = 8): Record<string, string[]> {
+  const searchThreshold = Math.max(0, Math.floor(threshold));
+  // Review hashes are fixed-width 64-bit values. Their common threshold (8)
+  // used to go through the generic BK-tree below, which degenerates towards
+  // O(n²) on uniformly distributed hashes: a 22.5k-photo terminal regroup took
+  // over two minutes and made the renderer look crashed. Three-way Hamming
+  // multi-indexing is exact for thresholds <= 8 and keeps that work near-linear.
+  if (searchThreshold <= 8) {
+    return groupByVisualHash64(files, searchThreshold);
+  }
   return groupByHexSimilarity(
-    files.filter((f) => f.visualHash),
+    files.filter((f) => isVisualHash64(f.visualHash)),
     (file) => file.visualHash,
-    threshold,
+    searchThreshold,
     'visual',
   );
 }
@@ -1544,6 +2298,284 @@ function groupByHexSimilarity(
   }
 
   return groups;
+}
+
+type HammingBucket = number | number[];
+
+const VISUAL_HASH_64 = /^[0-9a-f]{16}$/i;
+
+function isVisualHash64(hash: string | undefined): hash is string {
+  return !!hash && VISUAL_HASH_64.test(hash);
+}
+
+function visualHash64Chunks(hi: number, lo: number): [number, number, number] {
+  // Low-to-high 22/21/21-bit partitions. If a 64-bit pair differs by at most
+  // t bits, one of three partitions differs by at most floor(t / 3) bits.
+  return [
+    lo & 0x003fffff,
+    ((lo >>> 22) | ((hi & 0x000007ff) << 10)) >>> 0,
+    hi >>> 11,
+  ];
+}
+
+function visitHammingVariants(
+  value: number,
+  bitCount: number,
+  radius: number,
+  visit: (variant: number) => void,
+): void {
+  visit(value);
+  if (radius < 1) return;
+  for (let first = 0; first < bitCount; first++) {
+    visit(value ^ (1 << first));
+  }
+  if (radius < 2) return;
+  for (let first = 0; first < bitCount; first++) {
+    const firstMask = 1 << first;
+    for (let second = first + 1; second < bitCount; second++) {
+      visit(value ^ firstMask ^ (1 << second));
+    }
+  }
+}
+
+function appendHammingBucket(index: Map<number, HammingBucket>, key: number, value: number): void {
+  const bucket = index.get(key);
+  if (bucket === undefined) index.set(key, value);
+  else if (typeof bucket === 'number') index.set(key, [bucket, value]);
+  else bucket.push(value);
+}
+
+function removeHammingBucket(index: Map<number, HammingBucket>, key: number, value: number): void {
+  const bucket = index.get(key);
+  if (bucket === undefined) return;
+  if (typeof bucket === 'number') {
+    if (bucket === value) index.delete(key);
+    return;
+  }
+  const position = bucket.indexOf(value);
+  if (position < 0) return;
+  bucket.splice(position, 1);
+  if (bucket.length === 0) index.delete(key);
+  else if (bucket.length === 1) index.set(key, bucket[0]);
+}
+
+interface VisualHashEntry {
+  file: MediaFile;
+  order: number;
+  hash: string;
+  hi: number;
+  lo: number;
+}
+
+interface VisualAnchorGroup {
+  anchor: number;
+  members: number[];
+  latestOrder: number;
+  latestTimestamp?: number;
+  scope?: string;
+}
+
+interface VisualScopeIndex {
+  anchors: number[];
+  chunks?: Array<Map<number, HammingBucket>>;
+  exact?: Map<string, number>;
+}
+
+const MAX_VISUAL_GROUP_SIZE = 64;
+const UNBURSTED_MAX_ORDER_GAP = 2;
+const UNBURSTED_MAX_CAPTURE_GAP_MS = 5_000;
+const VISUAL_SCOPE_INDEX_THRESHOLD = 64;
+
+function captureTimestamp(file: MediaFile): number | undefined {
+  if (!file.dateTaken) return undefined;
+  const timestamp = Date.parse(file.dateTaken);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
+function newVisualScopeIndex(): VisualScopeIndex {
+  return { anchors: [] };
+}
+
+/**
+ * Exact, deterministic anchor grouping for valid 16-hex perceptual hashes.
+ *
+ * A connected-components interpretation is unsafe for event photography:
+ * A~B and B~C can hold while A and C depict different moments, allowing a
+ * long similarity chain to collapse an entire venue into one group. Each
+ * result below stays within the threshold of its fixed first-frame anchor.
+ * Existing burst boundaries are authoritative. Un-bursted files need both
+ * catalogue adjacency and (when known) capture-time adjacency.
+ */
+function groupByVisualHash64(files: MediaFile[], threshold: number): Record<string, string[]> {
+  const hashed: VisualHashEntry[] = files
+    .map((file, order) => ({ file, order }))
+    .filter((entry): entry is { file: MediaFile & { visualHash: string }; order: number } =>
+      isVisualHash64(entry.file.visualHash))
+    .map(({ file, order }) => ({
+      file,
+      order,
+      hash: file.visualHash.toLowerCase(),
+      hi: parseInt(file.visualHash.slice(0, 8), 16) >>> 0,
+      lo: parseInt(file.visualHash.slice(8), 16) >>> 0,
+    }));
+  const count = hashed.length;
+  if (count < 2) return {};
+
+  const candidateSeen = new Uint32Array(count);
+  const scopeIndexes = new Map<string, VisualScopeIndex>();
+  const groups: VisualAnchorGroup[] = [];
+  const groupByAnchor = new Map<number, VisualAnchorGroup>();
+  let activeUnburstedGroups: VisualAnchorGroup[] = [];
+  const chunkRadius = Math.floor(threshold / 3);
+  const chunkBits = [22, 21, 21] as const;
+
+  const removeFullAnchor = (group: VisualAnchorGroup): void => {
+    if (!group.scope) return;
+    const scopeIndex = scopeIndexes.get(group.scope);
+    if (!scopeIndex?.chunks || !scopeIndex.exact) return;
+    const anchor = hashed[group.anchor];
+    const chunks = visualHash64Chunks(anchor.hi, anchor.lo);
+    for (let chunkIndex = 0; chunkIndex < 3; chunkIndex++) {
+      removeHammingBucket(scopeIndex.chunks[chunkIndex], chunks[chunkIndex], group.anchor);
+    }
+    if (scopeIndex.exact.get(anchor.hash) === group.anchor) {
+      scopeIndex.exact.delete(anchor.hash);
+    }
+  };
+
+  const promoteScopeIndex = (scopeIndex: VisualScopeIndex): void => {
+    if (scopeIndex.chunks) return;
+    scopeIndex.chunks = [new Map(), new Map(), new Map()];
+    scopeIndex.exact = new Map();
+    for (const anchorIndex of scopeIndex.anchors) {
+      const group = groupByAnchor.get(anchorIndex);
+      if (!group || group.members.length >= MAX_VISUAL_GROUP_SIZE) continue;
+      const anchor = hashed[anchorIndex];
+      if (!scopeIndex.exact.has(anchor.hash)) scopeIndex.exact.set(anchor.hash, anchorIndex);
+      const chunks = visualHash64Chunks(anchor.hi, anchor.lo);
+      for (let chunkIndex = 0; chunkIndex < 3; chunkIndex++) {
+        appendHammingBucket(scopeIndex.chunks[chunkIndex], chunks[chunkIndex], anchorIndex);
+      }
+    }
+  };
+
+  for (let index = 0; index < count; index++) {
+    const entry = hashed[index];
+    const scope = entry.file.burstId ? `burst:${entry.file.burstId}` : undefined;
+    const timestamp = captureTimestamp(entry.file);
+    const candidates: number[] = [];
+    let scopeIndex: VisualScopeIndex | undefined;
+
+    if (scope) {
+      scopeIndex = scopeIndexes.get(scope);
+      if (scopeIndex) {
+        if (!scopeIndex.chunks || !scopeIndex.exact) {
+          for (const anchor of scopeIndex.anchors) candidates.push(anchor);
+        } else {
+          const exactAnchor = scopeIndex.exact.get(entry.hash);
+          if (exactAnchor !== undefined) {
+            candidates.push(exactAnchor);
+          } else {
+            const chunks = visualHash64Chunks(entry.hi, entry.lo);
+            const seenToken = index + 1;
+            for (let chunkIndex = 0; chunkIndex < 3; chunkIndex++) {
+              visitHammingVariants(chunks[chunkIndex], chunkBits[chunkIndex], chunkRadius, (variant) => {
+                const bucket = scopeIndex!.chunks![chunkIndex].get(variant);
+                if (bucket === undefined) return;
+                if (typeof bucket === 'number') {
+                  if (candidateSeen[bucket] !== seenToken) {
+                    candidateSeen[bucket] = seenToken;
+                    candidates.push(bucket);
+                  }
+                  return;
+                }
+                for (const candidate of bucket) {
+                  if (candidateSeen[candidate] === seenToken) continue;
+                  candidateSeen[candidate] = seenToken;
+                  candidates.push(candidate);
+                }
+              });
+            }
+          }
+        }
+      }
+    } else {
+      activeUnburstedGroups = activeUnburstedGroups.filter((group) =>
+        group.members.length < MAX_VISUAL_GROUP_SIZE &&
+        entry.order - group.latestOrder <= UNBURSTED_MAX_ORDER_GAP);
+      for (const group of activeUnburstedGroups) candidates.push(group.anchor);
+    }
+
+    let bestGroup: VisualAnchorGroup | undefined;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (const candidate of candidates) {
+      const group = groupByAnchor.get(candidate);
+      if (!group || group.members.length >= MAX_VISUAL_GROUP_SIZE) continue;
+      if (!scope) {
+        if (entry.order - group.latestOrder > UNBURSTED_MAX_ORDER_GAP) continue;
+        if (
+          timestamp !== undefined &&
+          group.latestTimestamp !== undefined &&
+          Math.abs(timestamp - group.latestTimestamp) > UNBURSTED_MAX_CAPTURE_GAP_MS
+        ) continue;
+      }
+      const anchor = hashed[candidate];
+      const distance = popcount32(entry.hi ^ anchor.hi) + popcount32(entry.lo ^ anchor.lo);
+      if (
+        distance <= threshold &&
+        (distance < bestDistance ||
+          (distance === bestDistance && group.anchor < (bestGroup?.anchor ?? Number.POSITIVE_INFINITY)))
+      ) {
+        bestDistance = distance;
+        bestGroup = group;
+      }
+    }
+
+    if (bestGroup) {
+      bestGroup.members.push(index);
+      bestGroup.latestOrder = entry.order;
+      bestGroup.latestTimestamp = timestamp;
+      if (bestGroup.members.length >= MAX_VISUAL_GROUP_SIZE) {
+        if (scope) removeFullAnchor(bestGroup);
+        else activeUnburstedGroups = activeUnburstedGroups.filter((group) => group !== bestGroup);
+      }
+      continue;
+    }
+
+    const group: VisualAnchorGroup = {
+      anchor: index,
+      members: [index],
+      latestOrder: entry.order,
+      latestTimestamp: timestamp,
+      scope,
+    };
+    groups.push(group);
+    groupByAnchor.set(index, group);
+    if (scope) {
+      scopeIndex ??= newVisualScopeIndex();
+      scopeIndexes.set(scope, scopeIndex);
+      scopeIndex.anchors.push(index);
+      if (scopeIndex.chunks && scopeIndex.exact) {
+        if (!scopeIndex.exact.has(entry.hash)) scopeIndex.exact.set(entry.hash, index);
+        const chunks = visualHash64Chunks(entry.hi, entry.lo);
+        for (let chunkIndex = 0; chunkIndex < 3; chunkIndex++) {
+          appendHammingBucket(scopeIndex.chunks[chunkIndex], chunks[chunkIndex], index);
+        }
+      } else if (scopeIndex.anchors.length > VISUAL_SCOPE_INDEX_THRESHOLD) {
+        promoteScopeIndex(scopeIndex);
+      }
+    } else {
+      activeUnburstedGroups.push(group);
+    }
+  }
+
+  const result: Record<string, string[]> = {};
+  let groupIndex = 1;
+  for (const group of groups) {
+    if (group.members.length < 2) continue;
+    result[`visual-${groupIndex++}`] = group.members.map((member) => hashed[member].file.path);
+  }
+  return result;
 }
 
 // Embedding deserialization is called in render-path comparisons for every
@@ -2022,7 +3054,6 @@ export interface KeeperTargetResult {
 function diversityKey(file: MediaFile): string {
   return file.burstId
     ?? file.visualGroupId
-    ?? file.faceGroupId
     ?? `solo:${file.path}`;
 }
 
@@ -2039,7 +3070,7 @@ function popcount32(value: number): number {
 
 /** Parse a 16-hex (64-bit) visualHash into two 32-bit halves for fast Hamming. */
 function parseVisualHash(hash: string | undefined): { hi: number; lo: number } | null {
-  if (!hash || hash.length < 16) return null;
+  if (!isVisualHash64(hash)) return null;
   const hi = parseInt(hash.slice(0, 8), 16);
   const lo = parseInt(hash.slice(8, 16), 16);
   if (!Number.isFinite(hi) || !Number.isFinite(lo)) return null;
@@ -2206,6 +3237,14 @@ export interface AutoCullProposal {
 }
 
 export function hasCullingAnalysis(file: MediaFile): boolean {
+  if (file.reviewAnalysisUnavailable) return false;
+  if (file.reviewAnalysisStage === 'screened') {
+    // A face-only pass cannot rule out a turned-away person. Treat every
+    // screened record as provisional: grouping can be derived later from its
+    // visual hash, before burst/visualGroup metadata has reached the file.
+    // The subjects/body pass promotes it to a cullable analysis depth.
+    return false;
+  }
   const hasSubjectBoxes = (file.faceBoxes?.length ?? 0) > 0 || (file.personBoxes?.length ?? 0) > 0;
   // ONNX boxes arrive before the renderer's follow-up ROI pass. Treat that
   // interval as genuinely unanalysed so a bulk proposal cannot race ahead of
@@ -2218,7 +3257,51 @@ export function hasCullingAnalysis(file: MediaFile): boolean {
     !!file.sceneAnalysis ||
     (file.faceBoxes?.length ?? 0) > 0 ||
     (file.personBoxes?.length ?? 0) > 0 ||
-    (file.poses?.length ?? 0) > 0;
+    (file.poses ?? []).some(isUsablePose);
+}
+
+/**
+ * Shared gate for any AI bulk proposal. Subject-critical sports/convention frames with a
+ * completed detector pass but no face, body or usable pose stay manual: a
+ * detector miss is not evidence that the photograph is empty or inferior.
+ */
+export function isAutoCullProposalEligible(file: MediaFile, eventMode: EventMode): boolean {
+  if (file.reviewAnalysisUnavailable) return false;
+  const subjectPresence = assessSubjectPresence(file);
+  if ((isSportsEventMode(eventMode) || isPeopleFirstEventMode(eventMode)) &&
+      subjectPresence.confidence === 'probable') {
+    // NanoDet-only proposals are useful positive hints for ROI/focus, but a
+    // prop, poster, costume stand or equipment stack can look person-shaped.
+    // Require a face, pose or selective SSD corroboration before this evidence
+    // is allowed to drive an automatic keeper/reject decision.
+    return false;
+  }
+  if (isConventionEventMode(eventMode) && !hasReliableConventionSubjectEvidence(file)) {
+    return false;
+  }
+  if ((isSportsEventMode(eventMode) || isPeopleFirstEventMode(eventMode)) &&
+    !hasDetectedSubject(file) &&
+    !(file.poses ?? []).some(isUsablePose)) {
+    // A bounded sports safeguard pass can still miss a distant, occluded or
+    // back-facing athlete. In a subject-critical sports batch, detector-zero
+    // is not proof that the frame is empty; keep it manual and prevent a
+    // detected neighbour from automatically winning the burst by default.
+    // This also protects legacy/stage-undefined records: old sharpness or a
+    // stale review score cannot turn missing detector provenance into a bulk
+    // AI decision.
+    return false;
+  }
+  // A face-only screen cannot establish that a comparison frame contains no
+  // person. Scene groups become eligible after the subjects/body pass; until
+  // then hasCullingAnalysis intentionally keeps screened repeats manual.
+  return hasCullingAnalysis(file);
+}
+
+/** Decision-ready subset used by direct bulk pick/reject tools. */
+export function isAutoCullBulkDecisionEligible(file: MediaFile, eventMode: EventMode): boolean {
+  if (!isAutoCullProposalEligible(file, eventMode)) return false;
+  if (!hasDetectedSubject(file)) return true;
+  return (subjectFocusConfidence(file) ?? 0) >= 0.2;
 }
 
 function stableGroupEntries(files: MediaFile[], visualHashDistance: number): Array<{
@@ -2289,9 +3372,19 @@ export function buildAutoCullProposal(
     const proposalGroups: AutoCullProposalGroup[] = [];
 
     for (const group of groups) {
+      const analysisReadyByPath = new Map(group.files.map((file) => [
+        file.path,
+        hasCullingAnalysis(file),
+      ]));
+      const decisionReadyByPath = new Map(group.files.map((file) => [
+        file.path,
+        isAutoCullProposalEligible(file, eventMode),
+      ]));
+      const groupAnalysisComplete = group.files.length === 1 ||
+        group.files.every((file) => decisionReadyByPath.get(file.path));
       const ranked = rankBestShots(group.files);
       const decision = group.files.length > 1
-        ? autoCullGroup(group.files, options)
+        ? autoCullGroupWithActiveProfile(group.files, options, group.kind === 'burst' || group.kind === 'visual')
         : null;
       const best = decision?.best ?? ranked.find(isAutoBestCandidate) ?? null;
       // Include a soft/blurred runner-up in confidence measurement: it may be
@@ -2306,6 +3399,7 @@ export function buildAutoCullProposal(
 
       for (const file of ranked) {
         const analysis = scoreGenre(file, genre);
+        const subjectPresence = assessSubjectPresence(file);
         let disposition: AutoCullProposalDisposition;
         const itemReasons: string[] = [];
 
@@ -2315,9 +3409,36 @@ export function buildAutoCullProposal(
         } else if (isMandatoryKeeper(file)) {
           disposition = 'keep';
           itemReasons.push('manual/protected keeper');
-        } else if (!hasCullingAnalysis(file)) {
+        } else if (!analysisReadyByPath.get(file.path)) {
           disposition = 'unanalysed';
           itemReasons.push('quality analysis not available');
+        } else if (!decisionReadyByPath.get(file.path) &&
+          (isSportsEventMode(eventMode) || isPeopleFirstEventMode(eventMode))) {
+          // The analysis completed, but its subject evidence is intentionally
+          // insufficient for an automatic decision. Report that distinction
+          // instead of misleading the photographer that analysis never ran.
+          disposition = 'uncertain';
+          if (subjectPresence.confidence === 'uncertain' &&
+              subjectPresence.faceCount > 0 && subjectPresence.personCount === 0) {
+            itemReasons.push('weak/tiny face evidence cannot support an automatic decision');
+          } else if (subjectPresence.confidence === 'probable') {
+            itemReasons.push('uncorroborated subject evidence cannot support an automatic decision');
+          } else {
+            itemReasons.push('subject detection inconclusive — manual review required');
+          }
+        } else if (!groupAnalysisComplete) {
+          // Never reject a completed frame against an incompletely analysed
+          // neighbour. The missing evidence could still change which member is
+          // best, so completed members remain visible but unchanged.
+          disposition = 'uncertain';
+          itemReasons.push('comparison group is still being analysed');
+        } else if (['uncertain', 'probable'].includes(subjectPresence.confidence) &&
+          (isSportsEventMode(eventMode) || isPeopleFirstEventMode(eventMode))) {
+          disposition = 'uncertain';
+          itemReasons.push(subjectPresence.confidence === 'uncertain' &&
+            subjectPresence.faceCount > 0 && subjectPresence.personCount === 0
+            ? 'weak/tiny face evidence cannot support an automatic decision'
+            : 'uncorroborated subject evidence cannot support an automatic decision');
         } else if (hasDetectedSubject(file) && (subjectFocusConfidence(file) ?? 0) < 0.2) {
           disposition = 'uncertain';
           itemReasons.push('subject focus confidence too low for an automatic decision');
@@ -2339,6 +3460,7 @@ export function buildAutoCullProposal(
           itemReasons.push(...analysis.cautions);
         } else if (decisionKeeps.has(file.path) || file.path === best?.path) {
           disposition = 'keep';
+          itemReasons.push(...(decision?.reasons[file.path] ?? []));
           itemReasons.push(...(analysis.reasons.length > 0 ? analysis.reasons : ['best available representative']));
         } else {
           disposition = 'uncertain';
