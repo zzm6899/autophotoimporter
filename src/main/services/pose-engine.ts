@@ -37,14 +37,33 @@ export async function createPoseInferenceSession(
   platform: NodeJS.Platform = process.platform,
 ): Promise<any> {
   const usesDirectMl = platform === 'win32';
-  return inferenceSession.create(modelPath, {
-    executionProviders: usesDirectMl ? ['dml', 'cpu'] : ['cpu'],
-    // DirectML requires sequential execution and cannot use ORT memory
-    // patterns. Set both explicitly rather than relying on runtime defaults.
-    ...(usesDirectMl ? { executionMode: 'sequential', enableMemPattern: false } : {}),
+  const commonOptions = {
     graphOptimizationLevel: 'all',
     logSeverityLevel: 3,
-  });
+  };
+  if (!usesDirectMl) {
+    return inferenceSession.create(modelPath, {
+      executionProviders: ['cpu'],
+      ...commonOptions,
+    });
+  }
+  try {
+    return await inferenceSession.create(modelPath, {
+      executionProviders: ['dml', 'cpu'],
+      // DirectML requires sequential execution and cannot use ORT memory
+      // patterns. Set both explicitly rather than relying on runtime defaults.
+      executionMode: 'sequential',
+      enableMemPattern: false,
+      ...commonOptions,
+    });
+  } catch (directMlError) {
+    log.warn('[pose-engine] DirectML MoveNet load failed; retrying on CPU:',
+      (directMlError as Error).message);
+    return inferenceSession.create(modelPath, {
+      executionProviders: ['cpu'],
+      ...commonOptions,
+    });
+  }
 }
 
 let ort: OrtModule | null = null;
