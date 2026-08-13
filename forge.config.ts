@@ -169,6 +169,8 @@ const config: ForgeConfig = {
     extraResource: [
       // ONNX face models — loaded at runtime from process.resourcesPath/models
       path.resolve(__dirname, 'models'),
+      // Redistributable model provenance and license texts.
+      path.resolve(__dirname, 'third_party'),
       // onnxruntime-node ships a native .node binary that cannot live inside
       // the asar archive. Copied here as an extraResource so it lands in
       // resources/onnxruntime-node/ and can be required via process.resourcesPath.

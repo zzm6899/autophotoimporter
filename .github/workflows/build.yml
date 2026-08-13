@@ -231,18 +231,34 @@ jobs:
             fi
             cp "$file" "$target"
           done
+          (cd release-assets && sha256sum * > SHA256SUMS.txt)
           ls -la release-assets
 
-      - name: Create GitHub release
+      - name: Create or update draft GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
-          gh release create "$TAG_NAME" release-assets/* \
-            --verify-tag \
-            --title "$TAG_NAME" \
-            --notes "Automated release for $TAG_NAME"
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            IS_DRAFT="$(gh release view "$TAG_NAME" --json isDraft --jq '.isDraft')"
+            if [[ "$IS_DRAFT" != "true" ]]; then
+              echo "::error::Release $TAG_NAME already exists and is public; refusing to overwrite it."
+              exit 1
+            fi
+            gh release edit "$TAG_NAME" \
+              --draft \
+              --verify-tag \
+              --title "$TAG_NAME" \
+              --notes "Automated release for $TAG_NAME"
+            gh release upload "$TAG_NAME" release-assets/* --clobber
+          else
+            gh release create "$TAG_NAME" release-assets/* \
+              --draft \
+              --verify-tag \
+              --title "$TAG_NAME" \
+              --notes "Automated release for $TAG_NAME"
+          fi
 
       - name: Upload hosted artifacts to update admin
         if: ${{ env.UPDATE_ADMIN_ENDPOINT != '' && env.UPDATE_ADMIN_API_TOKEN != '' }}
@@ -328,3 +344,11 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           EXPECT_LATEST_VERSION="$VERSION" npm run release:smoke
+
+      - name: Publish verified GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release edit "$TAG_NAME" --draft=false --latest --verify-tag

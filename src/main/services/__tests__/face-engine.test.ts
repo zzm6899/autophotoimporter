@@ -28,6 +28,7 @@ import {
   estimateEyeDetailFromPixels,
   mapBoxToStoredOrientation,
   orientBitmapForExif,
+  pixelsToSFaceCHW,
   shouldRefinePersonDetection,
   verifyModelFileDigest,
 } from '../face-engine';
@@ -237,6 +238,16 @@ describe('face-engine adaptive person pass', () => {
 });
 
 describe('face-engine model integrity', () => {
+  it('matches OpenCV SFace raw RGB input preprocessing', () => {
+    // Electron returns BGRA on Windows/macOS and RGBA on Linux.
+    const input = Buffer.from([10, 20, 30, 255, 40, 50, 60, 255]);
+    const chw = pixelsToSFaceCHW(input, 2, 1);
+    const bgra = process.platform === 'win32' || process.platform === 'darwin';
+    expect(Array.from(chw)).toEqual(bgra
+      ? [30, 60, 20, 50, 10, 40]
+      : [10, 40, 20, 50, 30, 60]);
+  });
+
   it('accepts the pinned digest and rejects a different digest', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'keptra-model-'));
     tempDirs.push(dir);

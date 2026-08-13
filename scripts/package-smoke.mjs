@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import process from 'node:process';
 
@@ -107,11 +108,25 @@ for (const retainedArch of retainedArchitectures) {
 }
 
 const modelDir = path.join(resourcesDir, 'models');
-const models = ['version-RFB-640.onnx', 'w600k_mbf.onnx', 'ssd_mobilenet_v1_12.onnx', 'movenet_thunder.onnx'];
+const models = ['version-RFB-640.onnx', 'face_recognition_sface_2021dec.onnx', 'ssd_mobilenet_v1_12.onnx', 'movenet_thunder.onnx'];
 for (const model of models) {
   const modelPath = path.join(modelDir, model);
   if (!existsSync(modelPath)) fail(`Missing packaged model: ${model}`);
   if (statSync(modelPath).size <= 0) fail(`Packaged model is empty: ${model}`);
+}
+const deprecatedModel = path.join(modelDir, 'w600k_mbf.onnx');
+if (existsSync(deprecatedModel)) fail('Non-commercial legacy face model was packaged: w600k_mbf.onnx');
+const forbiddenModelDigest = '9cc6e4a75f0e2bf0b1aed94578f144d15175f357bdc05e815e5c4a02b319eb4f';
+for (const entry of readdirSync(modelDir, { withFileTypes: true })) {
+  if (!entry.isFile() || !entry.name.endsWith('.onnx')) continue;
+  const digest = createHash('sha256').update(readFileSync(path.join(modelDir, entry.name))).digest('hex');
+  if (digest === forbiddenModelDigest) {
+    fail(`Non-commercial legacy face model digest was packaged as: ${entry.name}`);
+  }
+}
+const thirdPartyDir = path.join(resourcesDir, 'third_party');
+for (const notice of ['NOTICES.md', 'SFace-Apache-2.0.txt']) {
+  if (!existsSync(path.join(thirdPartyDir, notice))) fail(`Missing packaged third-party notice: ${notice}`);
 }
 
 const manifest = {

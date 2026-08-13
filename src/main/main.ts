@@ -60,7 +60,7 @@ function getWindowIconPath(): string | undefined {
 
 function modelSmokeStatus() {
   const resourcesPath = process.resourcesPath;
-  const models = ['version-RFB-640.onnx', 'w600k_mbf.onnx', 'ssd_mobilenet_v1_12.onnx'];
+  const models = ['version-RFB-640.onnx', 'face_recognition_sface_2021dec.onnx', 'ssd_mobilenet_v1_12.onnx'];
   return {
     resourcesPath,
     onnxRuntimeNode: existsSync(path.join(resourcesPath, 'onnxruntime-node', 'dist', 'index.js')),

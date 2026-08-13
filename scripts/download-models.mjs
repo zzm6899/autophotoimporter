@@ -14,7 +14,7 @@
  * not grant redistribution or commercial rights. Verify each model's current
  * license and obtain any required permission before publishing a build.
  *  - version-RFB-640.onnx     ~1.6 MB  - stronger face detection (UltraFace RFB)
- *  - w600k_mbf.onnx           ~5.0 MB  - face embeddings (MobileFaceNet / WebFace600K)
+ *  - face_recognition_sface_2021dec.onnx ~37 MB - face embeddings (OpenCV SFace, Apache-2.0)
  *  - ssd_mobilenet_v1_12.onnx ~28 MB   - person/body detection for culling
  */
 
@@ -28,6 +28,7 @@ import { pipeline } from 'node:stream/promises';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MODELS_DIR = join(__dirname, '..', 'models');
+const DEPRECATED_MODELS = ['w600k_mbf.onnx'];
 
 // ---------------------------------------------------------------------------
 // Model registry
@@ -42,9 +43,10 @@ const MODELS = [
     sha256: '8f4c659275977e7a3bfbfa339a9c769ad793df50f9c0baa8c14b11baa1646430',
   },
   {
-    name: 'w600k_mbf.onnx',
-    url: 'https://github.com/ruhyadi/vision-fr/releases/download/v1.0.0/w600k_mbf.onnx',
-    sha256: '9cc6e4a75f0e2bf0b1aed94578f144d15175f357bdc05e815e5c4a02b319eb4f',
+    name: 'face_recognition_sface_2021dec.onnx',
+    // OpenCV Zoo pins this model and its directory-level Apache-2.0 license.
+    url: 'https://media.githubusercontent.com/media/opencv/opencv_zoo/ba91a3b91d00d76e86540d4013f944bd6b514e39/models/face_recognition_sface/face_recognition_sface_2021dec.onnx',
+    sha256: '0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79',
   },
   {
     name: 'ssd_mobilenet_v1_12.onnx',
@@ -124,6 +126,9 @@ async function sha256File(filePath) {
 // Main
 // ---------------------------------------------------------------------------
 await mkdir(MODELS_DIR, { recursive: true });
+for (const deprecated of DEPRECATED_MODELS) {
+  await unlink(join(MODELS_DIR, deprecated)).catch(() => undefined);
+}
 
 let allOk = true;
 for (const model of MODELS) {

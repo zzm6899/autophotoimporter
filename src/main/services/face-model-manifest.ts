@@ -20,8 +20,8 @@ export const FACE_MODEL_IDENTITIES: Record<FaceModelRole, FaceModelIdentity> = {
     sha256: '8f4c659275977e7a3bfbfa339a9c769ad793df50f9c0baa8c14b11baa1646430',
   },
   embedder: {
-    fileName: 'w600k_mbf.onnx',
-    sha256: '9cc6e4a75f0e2bf0b1aed94578f144d15175f357bdc05e815e5c4a02b319eb4f',
+    fileName: 'face_recognition_sface_2021dec.onnx',
+    sha256: '0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79',
   },
   person: {
     fileName: 'ssd_mobilenet_v1_12.onnx',
@@ -31,10 +31,10 @@ export const FACE_MODEL_IDENTITIES: Record<FaceModelRole, FaceModelIdentity> = {
 
 // Bump for any change that can alter returned boxes, embeddings, poses, or
 // per-face quality signals even when the model files themselves are unchanged.
-export const FACE_PREPROCESSING_REVISION = 'orientation-v1.person-cascade-v1.eye-detail-v1';
+export const FACE_PREPROCESSING_REVISION = 'orientation-v1.person-cascade-v1.eye-detail-v1.sface-crop-v1';
 
 export const FACE_PIPELINE_FINGERPRINT = [
-  'face-pipeline-v4',
+  'face-pipeline-v5',
   FACE_PREPROCESSING_REVISION,
   ...(['detector', 'embedder', 'person'] as const).map((role) =>
     `${role}:${FACE_MODEL_IDENTITIES[role].sha256}`,

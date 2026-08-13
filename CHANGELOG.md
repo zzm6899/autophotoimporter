@@ -2,6 +2,8 @@
 
 ## 1.5.12 - 2026-08-13
 
+- Replaced the non-commercial WebFace600K recognition weight with the Apache-2.0 OpenCV SFace model, pinned by immutable source revision and SHA-256, and packaged its license/provenance notices.
+
 ### Added
 - A complete review ledger now previews every AI-driven bulk pick, reject, and queue decision before applying it, including Safe Cull, Best Of, group keepers, blur rejection, keeper queues, second-pass review, comparison winners, and target-count culling.
 - Landscape, architecture, and interior review now use scene-specific focus coverage, corner detail, clipping, tonal range, horizon, vertical-line, and composition evidence.
@@ -19,7 +21,7 @@
 
 ### Verified
 - `npm run typecheck` - clean
-- `npm test` - 616 passed, 11 skipped (47 files)
+- `npm test` - 617 passed, 11 skipped (47 files)
 - Packaged Windows build, package smoke, and six-screen visual smoke - clean
 
 ## 1.5.11 - 2026-08-01

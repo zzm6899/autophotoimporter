@@ -39,6 +39,9 @@ interface ModelSpec {
 // Pose uses an immutable upstream revision until it is mirrored to that release.
 const MODEL_RELEASE_BASE =
   'https://github.com/zzm6899/autophotoimporter/releases/download/models-v1';
+const SFACE_MODEL_URL =
+  'https://media.githubusercontent.com/media/opencv/opencv_zoo/ba91a3b91d00d76e86540d4013f944bd6b514e39/models/face_recognition_sface/face_recognition_sface_2021dec.onnx';
+const DEPRECATED_MODELS = ['w600k_mbf.onnx'] as const;
 
 const MODELS: ModelSpec[] = [
   {
@@ -48,10 +51,10 @@ const MODELS: ModelSpec[] = [
     sha256: '8f4c659275977e7a3bfbfa339a9c769ad793df50f9c0baa8c14b11baa1646430',
   },
   {
-    name: 'w600k_mbf.onnx',
-    url: `${MODEL_RELEASE_BASE}/w600k_mbf.onnx`,
-    approxBytes: 5_200_000,
-    sha256: '9cc6e4a75f0e2bf0b1aed94578f144d15175f357bdc05e815e5c4a02b319eb4f',
+    name: 'face_recognition_sface_2021dec.onnx',
+    url: SFACE_MODEL_URL,
+    approxBytes: 38_696_353,
+    sha256: '0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79',
   },
   {
     name: 'ssd_mobilenet_v1_12.onnx',
@@ -238,6 +241,9 @@ let downloadInProgress = false;
  */
 export async function ensureModelsDownloaded(win: BrowserWindow | null): Promise<void> {
   if (downloadInProgress) return;
+  await Promise.all(DEPRECATED_MODELS.map((name) =>
+    unlink(path.join(downloadModelsDir(), name)).catch(() => undefined),
+  ));
   if (await allModelsPresent()) return;
 
   downloadInProgress = true;

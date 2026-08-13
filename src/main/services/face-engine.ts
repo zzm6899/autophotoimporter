@@ -5,7 +5,7 @@
  *
  * Pipeline per image:
  *   1. UltraFace-slim-640  → bounding boxes for each detected face
- *   2. MobileFaceNet        → L2-normalised embedding per face crop
+ *   2. OpenCV SFace         → L2-normalised embedding per face crop
  *
  * The strongest embeddings can be stored on MediaFile.faceEmbeddings and used
  * to cluster similar faces across a session via cosine similarity. This
@@ -1216,14 +1216,24 @@ async function detectPersons(
 }
 
 // ---------------------------------------------------------------------------
-// MobileFaceNet embedding
+// OpenCV SFace embedding
 // ---------------------------------------------------------------------------
 
 const EMBED_W = 112;
 const EMBED_H = 112;
-// ArcFace / MobileFaceNet normalisation
-const EMB_MEAN = [0.5, 0.5, 0.5];
-const EMB_STD  = [0.5, 0.5, 0.5];
+// OpenCV's FaceRecognizerSF feeds SFace an RGB CHW blob at the original
+// 0..255 scale (blobFromImage scale=1, mean=0, swapRB=true). Keep the exact
+// upstream preprocessing here so the raw ONNX session matches that contract.
+const SFACE_MEAN = [0, 0, 0];
+const SFACE_STD = [1 / 255, 1 / 255, 1 / 255];
+
+export function pixelsToSFaceCHW(
+  pixels: Buffer,
+  width: number,
+  height: number,
+): Float32Array {
+  return pixelsToCHW(pixels, width, height, SFACE_MEAN, SFACE_STD);
+}
 
 async function embedFace(imagePath: string, box: FaceBox, cachedImg?: Electron.NativeImage): Promise<Float32Array> {
   if (!embedderSession) throw new Error('Face engine not loaded');
@@ -1249,7 +1259,7 @@ async function embedFace(imagePath: string, box: FaceBox, cachedImg?: Electron.N
   img = img.resize({ width: EMBED_W, height: EMBED_H });
 
   const bitmap = (img.toBitmap?.() ?? img.getBitmap()) as unknown as Buffer;
-  const floats = pixelsToCHW(bitmap, EMBED_W, EMBED_H, EMB_MEAN, EMB_STD);
+  const floats = pixelsToSFaceCHW(bitmap, EMBED_W, EMBED_H);
   const tensor = new (getOrt().Tensor)('float32', floats, [1, 3, EMBED_H, EMBED_W]);
 
   const feeds: Record<string, any> = { [embedderInputName]: tensor };

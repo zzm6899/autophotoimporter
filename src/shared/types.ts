@@ -198,7 +198,7 @@ export interface MediaFile {
   /** Compact perceptual hash of the primary detected face crop. Used only for local same-face clustering. */
   faceSignature?: string;
   /**
-   * Hex-serialised L2-normalised face embedding from MobileFaceNet
+   * Hex-serialised L2-normalised face embedding from OpenCV SFace
    * (via onnxruntime-node). This is the primary/best face and is kept for
    * backwards compatibility with older sessions.
    */

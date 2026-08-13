@@ -21,7 +21,7 @@ if (requestedProvider === 'dml' && process.platform !== 'win32') {
 
 const models = [
   { key: 'face-detector', file: 'version-RFB-640.onnx', type: 'float32', dims: [1, 3, 480, 640] },
-  { key: 'face-embedder', file: 'w600k_mbf.onnx', type: 'float32', dims: [1, 3, 112, 112] },
+  { key: 'face-embedder', file: 'face_recognition_sface_2021dec.onnx', type: 'float32', dims: [1, 3, 112, 112] },
   { key: 'person-detector', file: 'ssd_mobilenet_v1_12.onnx', type: 'uint8', dims: [1, 320, 320, 3] },
 ];
 
