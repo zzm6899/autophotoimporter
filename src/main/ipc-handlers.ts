@@ -2692,6 +2692,8 @@ export function registerIpcHandlers(): void {
       hiddenOrSystemEntriesSkipped: 0,
       inaccessibleDirectories: 0,
       statFailures: 0,
+      ratedFiles: 0,
+      protectedFiles: 0,
     };
     try {
       const total = await measurePerformance('scan.total', () => scanFiles(
@@ -2734,6 +2736,8 @@ export function registerIpcHandlers(): void {
         hiddenOrSystemEntriesSkipped: fileDiagnostics.hiddenOrSystemEntriesSkipped,
         inaccessibleDirectories: fileDiagnostics.inaccessibleDirectories,
         statFailures: fileDiagnostics.statFailures,
+        ratedFiles: fileDiagnostics.ratedFiles,
+        protectedFiles: fileDiagnostics.protectedFiles,
         catalogDuplicatesMarked,
         staleEventsIgnored: 0,
       };
@@ -2749,6 +2753,8 @@ export function registerIpcHandlers(): void {
         hiddenOrSystemEntriesSkipped: fileDiagnostics.hiddenOrSystemEntriesSkipped,
         inaccessibleDirectories: fileDiagnostics.inaccessibleDirectories,
         statFailures: fileDiagnostics.statFailures,
+        ratedFiles: fileDiagnostics.ratedFiles,
+        protectedFiles: fileDiagnostics.protectedFiles,
         catalogDuplicatesMarked: 0,
         staleEventsIgnored: 0,
       };

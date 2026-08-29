@@ -160,6 +160,8 @@ export const EXIFR_SUPPORTED = new Set([
   '.mrw',
   // Epson
   '.erf',
+  '.dcr', '.kdc', '.k25', '.mos', '.mef', '.mdc', '.qtk', '.cap', '.eip',
+  '.pxn', '.r3d', '.ari', '.braw', '.cine', '.raw',
 ]);
 
 const RAW_EXTENSIONS = new Set([
@@ -168,6 +170,8 @@ const RAW_EXTENSIONS = new Set([
   '.arw', '.srf', '.sr2',
   '.raf', '.orf', '.rw2', '.pef', '.srw', '.rwl',
   '.x3f', '.3fr', '.fff', '.iiq', '.dng', '.gpr', '.mrw', '.erf',
+  '.dcr', '.kdc', '.k25', '.mos', '.mef', '.mdc', '.qtk', '.cap', '.eip',
+  '.pxn', '.r3d', '.ari', '.braw', '.cine', '.raw',
 ]);
 
 const THUMB_WIDTH = 320;
@@ -196,6 +200,8 @@ type CachedThumbnailPayload =
 // avoid repeating source-drive stat/hash/EXIF work for every frame.
 const resolvedThumbnailPayloads = new Map<string, CachedThumbnailPayload>();
 const RESOLVED_THUMBNAIL_MAX = 2000;
+const exifToolFlagCache = new Map<string, Promise<Record<string, unknown> | undefined>>();
+const EXIFTOOL_FLAG_CACHE_MAX = 5000;
 
 function rememberResolvedThumbnail(filePath: string, payload: CachedThumbnailPayload): void {
   if (resolvedThumbnailPayloads.has(filePath)) resolvedThumbnailPayloads.delete(filePath);
@@ -331,14 +337,26 @@ function metadataBoolean(value: unknown): boolean {
 }
 
 async function readExifToolMetadata(filePath: string): Promise<Record<string, unknown> | undefined> {
-  try {
-    // Do not use ExifTool's -fast mode here: some proprietary maker-note
-    // protection fields are only reached during a complete metadata walk.
-    const tags = await exifTool.read<Record<string, unknown>>(filePath, { readArgs: [] });
-    return tags;
-  } catch {
-    return undefined;
+  const fileStat = await stat(filePath).catch(() => undefined);
+  const cacheKey = fileStat ? `${filePath}|${fileStat.size}|${fileStat.mtimeMs}` : filePath;
+  const cached = exifToolFlagCache.get(cacheKey);
+  if (cached) return cached;
+  const task = (async () => {
+    try {
+      // Do not use ExifTool's -fast mode here: some proprietary maker-note
+      // protection fields are only reached during a complete metadata walk.
+      const tags = await exifTool.read<Record<string, unknown>>(filePath, { readArgs: [] });
+      return tags;
+    } catch {
+      return undefined;
+    }
+  })();
+  exifToolFlagCache.set(cacheKey, task);
+  if (exifToolFlagCache.size > EXIFTOOL_FLAG_CACHE_MAX) {
+    const oldest = exifToolFlagCache.keys().next().value as string | undefined;
+    if (oldest) exifToolFlagCache.delete(oldest);
   }
+  return task;
 }
 
 function applyFlagMetadata(
@@ -367,7 +385,7 @@ function applyFlagMetadata(
     ].some((name) => metadataBoolean(metadataValue(exif, [name])));
   }
   if (!isProtected) {
-    isProtected = metadataEntriesMatching(exif, /protect|lock/i)
+    isProtected = metadataEntriesMatching(exif, /(?:protect(?:ed|ion|status)?|(?:image|file)?lock(?:ed|status)?)$/i)
       .some(([, value]) => metadataBoolean(value));
   }
   return { rating, isProtected };

@@ -291,7 +291,7 @@ describe('parseExifDate', () => {
       CanonImageProtection: 'Locked',
     });
 
-    const result = await parseExifDate(makeFile());
+    const result = await parseExifDate(makeFile({ path: '/photos/proprietary-fallback.jpg', name: 'proprietary-fallback.jpg' }));
 
     expect(result.rating).toBe(5);
     expect(result.isProtected).toBe(true);
