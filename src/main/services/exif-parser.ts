@@ -1,5 +1,5 @@
 import exifr, { Exifr } from 'exifr';
-import { stat, readFile, mkdir, open as fsOpen, writeFile, unlink } from 'node:fs/promises';
+import { stat, access, readFile, mkdir, open as fsOpen, writeFile, unlink } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -266,10 +266,53 @@ export function resetRawPreviewCacheDiagnostics(): void {
 async function isFileProtected(filePath: string): Promise<boolean> {
   try {
     const s = await stat(filePath);
-    return (s.mode & fsConstants.S_IWUSR) === 0;
+    if ((s.mode & fsConstants.S_IWUSR) === 0) return true;
+
+    // On Windows, camera "protected" images are commonly exposed as the DOS
+    // read-only attribute rather than a POSIX permission bit. W_OK is the
+    // native access check and correctly catches that attribute without
+    // spawning a process for every file in a card scan.
+    if (process.platform === 'win32') {
+      try {
+        await access(filePath, fsConstants.W_OK);
+      } catch {
+        return true;
+      }
+    }
+    return false;
   } catch {
     return false;
   }
+}
+
+function metadataValue(exif: Record<string, unknown>, names: string[]): unknown {
+  for (const name of names) {
+    const exact = exif[name];
+    if (exact !== undefined && exact !== null) return exact;
+    const key = Object.keys(exif).find((candidate) => candidate.toLowerCase() === name.toLowerCase());
+    if (key && exif[key] !== undefined && exif[key] !== null) return exif[key];
+  }
+  return undefined;
+}
+
+function metadataEntriesMatching(exif: Record<string, unknown>, pattern: RegExp): Array<[string, unknown]> {
+  return Object.entries(exif).filter(([key, value]) => pattern.test(key) && value !== undefined && value !== null);
+}
+
+function normalizeCameraRating(value: unknown, percent = false): number | undefined {
+  const numeric = numberFromExif(value) ?? (typeof value === 'string'
+    ? numberFromExif(value.match(/-?\d+(?:\.\d+)?/)?.[0])
+    : undefined);
+  if (numeric === undefined) return undefined;
+  const stars = percent || numeric > 5 ? Math.round(numeric / 20) : Math.round(numeric);
+  return Math.max(0, Math.min(5, stars));
+}
+
+function metadataBoolean(value: unknown): boolean {
+  if (value === true) return true;
+  if (typeof value === 'number') return Number.isFinite(value) && value !== 0;
+  if (typeof value !== 'string') return false;
+  return /^(true|yes|on|locked?|protected|protect(ed|ion)?|read[- ]?only|1)$/i.test(value.trim());
 }
 
 export function normalizeExifOrientation(value: unknown): number | undefined {
@@ -378,12 +421,21 @@ export async function parseExifDate(
           'ISO', 'FNumber', 'ExposureTime', 'FocalLength',
           'Make', 'Model', 'LensModel',
           'Rating', 'RatingPercent', 'ProtectStatus',
+          'RatingStars', 'RatingValue', 'ImageRating', 'UserRating',
+          'Protected', 'Protection', 'Protect', 'FileProtection', 'ImageProtection', 'LockStatus', 'Locked',
           'latitude', 'longitude', 'GPSLatitude', 'GPSLongitude', 'GPSAltitude',
         ],
+        // Camera applications store these values in XMP and/or proprietary
+        // maker notes. Both readers are opt-in in Exifr; without them the
+        // same image can scan correctly on one camera and lose its flags on
+        // another.
+        xmp: true,
+        makerNote: true,
         reviveValues: true,
         gps: true,
       });
       if (exif) {
+        const exifRecord = exif as Record<string, unknown>;
         dateTaken = exif.DateTimeOriginal || exif.CreateDate || exif.ModifyDate || null;
         orientation = normalizeExifOrientation(exif.Orientation);
         if (typeof exif.ISO === 'number') iso = exif.ISO;
@@ -393,10 +445,25 @@ export async function parseExifDate(
         if (typeof exif.Make === 'string') cameraMake = exif.Make;
         if (typeof exif.Model === 'string') cameraModel = exif.Model;
         if (typeof exif.LensModel === 'string') lensModel = exif.LensModel;
-        if (typeof exif.Rating === 'number') rating = exif.Rating;
-        else if (typeof exif.RatingPercent === 'number') rating = Math.round(exif.RatingPercent / 20);
-        if (exif.ProtectStatus && exif.ProtectStatus !== 0 && exif.ProtectStatus !== 'Off') {
-          exifProtected = true;
+        rating = normalizeCameraRating(metadataValue(exifRecord,
+          ['Rating', 'RatingStars', 'RatingValue', 'ImageRating', 'UserRating']));
+        if (rating === undefined) {
+          rating = normalizeCameraRating(metadataValue(exifRecord, ['RatingPercent']), true);
+        }
+        if (rating === undefined) {
+          // Maker-note dictionaries differ by manufacturer and camera model;
+          // use the tag name as a final fallback for newly encountered bodies.
+          const ratingEntry = metadataEntriesMatching(exifRecord, /rating|stars?/i)
+            .find(([key]) => !/percent/i.test(key));
+          rating = normalizeCameraRating(ratingEntry?.[1]);
+        }
+        exifProtected = [
+          'ProtectStatus', 'Protected', 'Protection', 'Protect', 'FileProtection',
+          'ImageProtection', 'LockStatus', 'Locked',
+        ].some((name) => metadataBoolean(metadataValue(exifRecord, [name])));
+        if (!exifProtected) {
+          exifProtected = metadataEntriesMatching(exifRecord, /protect|lock/i)
+            .some(([, value]) => metadataBoolean(value));
         }
         gps = gpsFromExif(exif as Record<string, unknown>);
       }
