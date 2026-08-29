@@ -1,4 +1,5 @@
 import exifr, { Exifr } from 'exifr';
+import { ExifTool, exiftoolPath } from 'exiftool-vendored';
 import { stat, access, readFile, mkdir, open as fsOpen, writeFile, unlink } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import { execFile } from 'node:child_process';
@@ -11,6 +12,20 @@ import { detectPhotographerFromFilename, resolvePattern, VIDEO_EXTENSIONS } from
 import { computeEV100 } from '../../shared/exposure';
 
 const execFileAsync = promisify(execFile);
+
+const exifTool = new ExifTool({
+  // Electron's packaged app runs from an ASAR archive, so point the helper at
+  // the copy shipped as an extra resource. Development falls back to the
+  // package's normal vendored binary.
+  exiftoolPath: async () => {
+    if (app.isPackaged) {
+      const packageName = process.platform === 'win32' ? 'exiftool-vendored.exe' : 'exiftool-vendored.pl';
+      const binaryName = process.platform === 'win32' ? 'exiftool.exe' : 'exiftool';
+      return path.join(process.resourcesPath, packageName, 'bin', binaryName);
+    }
+    return exiftoolPath();
+  },
+});
 
 // Lazy-loaded sharp (libvips). Decodes and resizes on libuv worker threads
 // instead of the main process event loop, and replaces per-file process
@@ -315,6 +330,49 @@ function metadataBoolean(value: unknown): boolean {
   return /^(true|yes|on|locked?|protected|protect(ed|ion)?|read[- ]?only|1)$/i.test(value.trim());
 }
 
+async function readExifToolMetadata(filePath: string): Promise<Record<string, unknown> | undefined> {
+  try {
+    // Do not use ExifTool's -fast mode here: some proprietary maker-note
+    // protection fields are only reached during a complete metadata walk.
+    const tags = await exifTool.read<Record<string, unknown>>(filePath, { readArgs: [] });
+    return tags;
+  } catch {
+    return undefined;
+  }
+}
+
+function applyFlagMetadata(
+  exif: Record<string, unknown>,
+  currentRating: number | undefined,
+  currentProtected: boolean,
+): { rating: number | undefined; isProtected: boolean } {
+  let rating = currentRating;
+  let isProtected = currentProtected;
+  if (rating === undefined) {
+    rating = normalizeCameraRating(metadataValue(exif,
+      ['Rating', 'RatingStars', 'RatingValue', 'ImageRating', 'UserRating']));
+  }
+  if (rating === undefined) {
+    rating = normalizeCameraRating(metadataValue(exif, ['RatingPercent']), true);
+  }
+  if (rating === undefined) {
+    const ratingEntry = metadataEntriesMatching(exif, /rating|stars?/i)
+      .find(([key]) => !/percent/i.test(key));
+    rating = normalizeCameraRating(ratingEntry?.[1]);
+  }
+  if (!isProtected) {
+    isProtected = [
+      'ProtectStatus', 'Protected', 'Protection', 'Protect', 'FileProtection',
+      'ImageProtection', 'LockStatus', 'Locked',
+    ].some((name) => metadataBoolean(metadataValue(exif, [name])));
+  }
+  if (!isProtected) {
+    isProtected = metadataEntriesMatching(exif, /protect|lock/i)
+      .some(([, value]) => metadataBoolean(value));
+  }
+  return { rating, isProtected };
+}
+
 export function normalizeExifOrientation(value: unknown): number | undefined {
   if (typeof value === 'number' && value >= 1 && value <= 8) return value;
   if (typeof value !== 'string') return undefined;
@@ -445,30 +503,21 @@ export async function parseExifDate(
         if (typeof exif.Make === 'string') cameraMake = exif.Make;
         if (typeof exif.Model === 'string') cameraModel = exif.Model;
         if (typeof exif.LensModel === 'string') lensModel = exif.LensModel;
-        rating = normalizeCameraRating(metadataValue(exifRecord,
-          ['Rating', 'RatingStars', 'RatingValue', 'ImageRating', 'UserRating']));
-        if (rating === undefined) {
-          rating = normalizeCameraRating(metadataValue(exifRecord, ['RatingPercent']), true);
-        }
-        if (rating === undefined) {
-          // Maker-note dictionaries differ by manufacturer and camera model;
-          // use the tag name as a final fallback for newly encountered bodies.
-          const ratingEntry = metadataEntriesMatching(exifRecord, /rating|stars?/i)
-            .find(([key]) => !/percent/i.test(key));
-          rating = normalizeCameraRating(ratingEntry?.[1]);
-        }
-        exifProtected = [
-          'ProtectStatus', 'Protected', 'Protection', 'Protect', 'FileProtection',
-          'ImageProtection', 'LockStatus', 'Locked',
-        ].some((name) => metadataBoolean(metadataValue(exifRecord, [name])));
-        if (!exifProtected) {
-          exifProtected = metadataEntriesMatching(exifRecord, /protect|lock/i)
-            .some(([, value]) => metadataBoolean(value));
-        }
+        ({ rating, isProtected: exifProtected } = applyFlagMetadata(exifRecord, rating, exifProtected));
         gps = gpsFromExif(exif as Record<string, unknown>);
       }
     } catch {
       // EXIF parse failed
+    }
+  }
+
+  // ExifTool carries the broadest maintained database of proprietary camera
+  // tags. Use it only when Exifr did not expose one of the two user flags so
+  // normal scans retain the fast in-process path for ordinary JPEGs.
+  if (file.type === 'photo' && (rating === undefined || !exifProtected)) {
+    const toolExif = await readExifToolMetadata(file.path);
+    if (toolExif) {
+      ({ rating, isProtected: exifProtected } = applyFlagMetadata(toolExif, rating, exifProtected));
     }
   }
 

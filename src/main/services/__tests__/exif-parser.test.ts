@@ -48,6 +48,17 @@ vi.mock('exifr', () => ({
   })(),
 }));
 
+vi.mock('exiftool-vendored', () => {
+  const read = vi.fn(async () => ({} as Record<string, unknown>));
+  return {
+    exiftoolPath: vi.fn(async () => '/tmp/exiftool'),
+    ExifTool: class {
+      async read(): Promise<Record<string, unknown>> { return read(); }
+    },
+    __read: read,
+  };
+});
+
 vi.mock('node:fs/promises', () => ({
   stat: vi.fn(),
   access: vi.fn(),
@@ -72,12 +83,16 @@ vi.mock('electron', () => ({
 }));
 
 import exifr from 'exifr';
+import * as exiftoolVendored from 'exiftool-vendored';
 import { stat, access, readFile, unlink } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { resolvePattern } from '../../../shared/types';
 import { parseExifDate, extractEmbeddedThumbnail, generatePreview, generateThumbnail, getRawPreviewCacheDiagnostics, normalizeExifOrientation, readExifOrientation, resetRawPreviewCacheDiagnostics, setRawPreviewCache, setRawPreviewQuality } from '../exif-parser';
 
 const mockExifrParse = vi.mocked(exifr.parse);
+const mockExifToolRead = (exiftoolVendored as typeof exiftoolVendored & {
+  __read: ReturnType<typeof vi.fn>;
+}).__read;
 const mockExifrThumbnail = vi.mocked(exifr.thumbnail);
 const mockExifrInstances = (exifr as typeof exifr & {
   __instances: Array<{ file: { closeSpy: ReturnType<typeof vi.fn> } }>;
@@ -95,6 +110,7 @@ beforeEach(() => {
   mockExifrInstances.length = 0;
   mockExifrCloseHook.mockReset().mockResolvedValue(undefined);
   mockAccess.mockResolvedValue(undefined);
+  mockExifToolRead.mockReset().mockResolvedValue({});
 });
 
 function makeFile(overrides: Partial<MediaFile> = {}): MediaFile {
@@ -265,6 +281,19 @@ describe('parseExifDate', () => {
     const result = await parseExifDate(makeFile());
 
     expect(result.rating).toBe(3);
+    expect(result.isProtected).toBe(true);
+  });
+
+  it('uses ExifTool when a proprietary flag is not decoded by Exifr', async () => {
+    mockExifrParse.mockResolvedValue(null);
+    mockExifToolRead.mockResolvedValue({
+      SonyImageRating: 5,
+      CanonImageProtection: 'Locked',
+    });
+
+    const result = await parseExifDate(makeFile());
+
+    expect(result.rating).toBe(5);
     expect(result.isProtected).toBe(true);
   });
 
