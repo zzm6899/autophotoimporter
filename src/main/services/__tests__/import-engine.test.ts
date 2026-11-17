@@ -314,6 +314,7 @@ describe('importFiles', () => {
     const files = [makeFile()];
     const result = await importFiles(files, makeConfig(), onProgress);
 
+    expect(result.finishedTransfers).toBe(true);
     expect(result.imported).toBe(1);
     expect(result.skipped).toBe(0);
     expect(result.errors).toHaveLength(0);
@@ -610,6 +611,7 @@ describe('importFiles', () => {
 
     const result = await importFiles([makeFile()], makeConfig({ dryRun: true }), onProgress);
 
+    expect(result.finishedTransfers).toBe(false);
     expect(result.imported).toBe(1);
     expect(result.ledgerItems).toEqual([
       expect.objectContaining({ status: 'planned', sourcePath: '/src/IMG_001.jpg' }),
@@ -929,6 +931,7 @@ describe('importFiles', () => {
       conflictPolicy: 'skip',
     }), onProgress);
 
+    expect(result.finishedTransfers).toBe(false);
     expect(result.imported).toBe(1);
     expect(result.skipped).toBe(0);
     expect(result.errors).toHaveLength(0);
@@ -1188,6 +1191,7 @@ describe('importFiles', () => {
     const result = await importFiles(files, makeConfig(), onProgress);
 
     // Only one copy was attempted before abort
+    expect(result.finishedTransfers).toBe(false);
     expect(result.imported + result.errors.length + result.skipped).toBeLessThanOrEqual(2);
   });
 

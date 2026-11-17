@@ -13,6 +13,32 @@ const baseResult: ImportResult = {
 };
 
 describe('summarizeImportResult', () => {
+  it('distinguishes no copies, unchecked, post-copy-only, partial, and full checksum coverage', () => {
+    for (const [imported, verified, checksumVerified, label] of [
+      [0, 0, 0, 'No new copies'], [3, 0, 0, 'Copies not verified'],
+      [3, 2, 0, 'Copy checks recorded'], [3, 3, 2, 'Partial checksum coverage'],
+      [3, 3, 3, 'All new copies checksum-matched'],
+    ] as const) {
+      expect(summarizeImportResult({ ...baseResult, imported, verified, checksumVerified }).transferLabel).toBe(label);
+    }
+  });
+
+  it('prioritizes issues over checksum counts and never infers backup completion from a path', () => {
+    const summary = summarizeImportResult({ ...baseResult, imported: 1, verified: 1, checksumVerified: 1,
+      ledgerItems: [{ sourcePath: 'a', name: 'a', size: 100, backupFullPath: 'b', status: 'failed', error: 'Backup unavailable' }] });
+    expect(summary.transferLabel).toBe('Review required');
+    expect(summary.backupPlannedCount).toBe(1);
+    expect(summarizeImportResult(baseResult).backupPlannedCount).toBe(undefined);
+  });
+
+  it('never calls planned dry-run files new copies', () => {
+    const summary = summarizeImportResult({ ...baseResult, imported: 1, verified: 0, checksumVerified: 0,
+      ledgerItems: [{ sourcePath: 'a', name: 'a', size: 10, status: 'planned' }] });
+    expect(summary.previewOnly).toBe(true);
+    expect(summary.newCopies).toBe(0);
+    expect(summary.outcomeTitle).toBe('Import preview');
+  });
+
   it('describes a clean verified handoff', () => {
     const summary = summarizeImportResult(baseResult);
 

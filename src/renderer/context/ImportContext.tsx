@@ -685,6 +685,8 @@ function createEmptyScanDiagnostics(scanId: string | undefined, sourcePath: stri
     hiddenOrSystemEntriesSkipped: 0,
     inaccessibleDirectories: 0,
     statFailures: 0,
+    ratedFiles: 0,
+    protectedFiles: 0,
     catalogDuplicatesMarked: 0,
     staleEventsIgnored: 0,
   };

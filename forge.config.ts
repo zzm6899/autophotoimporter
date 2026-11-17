@@ -212,6 +212,10 @@ const config: ForgeConfig = {
       path.resolve(__dirname, 'models'),
       // Redistributable model provenance and license texts.
       path.resolve(__dirname, 'third_party'),
+      // ExifTool's proprietary camera tag database is required for protected
+      // and rated images whose fields are not decoded by Exifr. It must be
+      // outside ASAR because the vendored executable loads companion files.
+      path.resolve(__dirname, 'node_modules', process.platform === 'win32' ? 'exiftool-vendored.exe' : 'exiftool-vendored.pl'),
       // onnxruntime-node ships a native .node binary that cannot live inside
       // the asar archive. Copied here as an extraResource so it lands in
       // resources/onnxruntime-node/ and can be required via process.resourcesPath.

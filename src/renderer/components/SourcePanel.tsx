@@ -447,6 +447,10 @@ export function SourcePanel() {
             <span className="text-right font-mono text-text-secondary">{scanDiagnostics.hiddenOrSystemEntriesSkipped}</span>
             <span>scan skips</span>
             <span className="text-right font-mono text-text-secondary">{scanDiagnostics.inaccessibleDirectories + scanDiagnostics.statFailures}</span>
+            <span>starred photos</span>
+            <span className="text-right font-mono text-amber-300">{scanDiagnostics.ratedFiles}</span>
+            <span>protected photos</span>
+            <span className="text-right font-mono text-emerald-300">{scanDiagnostics.protectedFiles}</span>
           </div>
         </div>
       )}

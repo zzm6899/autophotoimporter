@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useAppState, useAppDispatch } from '../context/ImportContext';
 import { formatDuration, formatSize, formatSpeed } from '../utils/formatters';
 import { useImport } from '../hooks/useImport';
@@ -107,10 +107,20 @@ export function summarizeImportResult(result: ImportResult) {
     : verifiedCount > 0
       ? `${verifiedCount} ${verifiedCount === 1 ? 'file was' : 'files were'} verified after copy`
       : 'No post-copy verification was recorded for this run';
+  const plannedCount = (result.ledgerItems ?? []).filter((item) => item.status === 'planned').length;
+  const newCopies = Math.max(0, result.imported - plannedCount);
+  const previewOnly = plannedCount > 0 && newCopies === 0;
+  const transferLabel = previewOnly ? 'Preview only' : issueCount > 0 ? 'Review required'
+    : result.imported === 0 ? 'No new copies'
+    : checksumCount === result.imported ? 'All new copies checksum-matched'
+    : checksumCount > 0 ? 'Partial checksum coverage'
+    : verifiedCount > 0 ? 'Copy checks recorded'
+    : 'Copies not verified';
+  const backupPlannedCount = result.ledgerItems?.filter((item) => item.backupFullPath).length;
   const outcomeTone = issueCount > 0 ? 'needs-attention' : 'complete';
-  const outcomeTitle = issueCount > 0 ? 'Import Finished With Follow-Up' : 'Import Complete';
-  const outcomeMessage = issueCount > 0
-    ? `${completedCount} ${completedCount === 1 ? 'item is' : 'items are'} safely accounted for. ${issueCount} ${issueCount === 1 ? 'item needs' : 'items need'} another pass.`
+  const outcomeTitle = previewOnly ? 'Import preview' : issueCount > 0 ? 'Import Finished With Follow-Up' : 'Import Complete';
+  const outcomeMessage = previewOnly ? 'This was a dry run. No files were copied.' : issueCount > 0
+    ? `${completedCount} ${completedCount === 1 ? 'item is' : 'items are'} accounted for. ${issueCount} ${issueCount === 1 ? 'item needs' : 'items need'} another pass.`
     : recoveredCount > 0
       ? `All selected files are accounted for, including ${recoveredCount} recovered ${recoveredCount === 1 ? 'item' : 'items'}.`
       : 'All selected files are accounted for.';
@@ -125,6 +135,11 @@ export function summarizeImportResult(result: ImportResult) {
     : 'No recovery action is needed.';
 
   return {
+    transferLabel,
+    plannedCount,
+    newCopies,
+    previewOnly,
+    backupPlannedCount,
     failedCount,
     pendingCount,
     nonLedgerErrorCount: importIssues.nonLedgerErrorCount,
@@ -198,14 +213,16 @@ export function ImportSummary() {
   const [handoffBusy, setHandoffBusy] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
 
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const [copied, setCopied] = useState(false);
   useEffect(() => {
-    if (phase !== 'complete' || !importResult) return;
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') dispatch({ type: 'DISMISS_SUMMARY' });
-    };
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  }, [phase, importResult, dispatch]);
+    const dialog = dialogRef.current;
+    if (phase !== 'complete' || !importResult || !dialog) return;
+    setOpenError(null);
+    setCopied(false);
+    dialog.showModal();
+    return () => { if (dialog.open) dialog.close(); };
+  }, [phase, importResult]);
 
   if (phase !== 'complete' || !importResult) return null;
 
@@ -250,11 +267,16 @@ export function ImportSummary() {
       issueLines.length > 0 ? 'Issues:' : 'Issues: none',
       ...issueLines,
     ].join('\n');
-    void navigator.clipboard.writeText(report).catch(() => undefined);
+    setOpenError(null);
+    void navigator.clipboard.writeText(report).then(() => setCopied(true)).catch(() => {
+      setCopied(false);
+      setOpenError('Could not copy the report to the clipboard.');
+    });
   };
 
   const handleExportManifest = () => {
-    void window.electronAPI.exportManifest('csv');
+    setOpenError(null);
+    void window.electronAPI.exportManifest('csv').catch(() => setOpenError('Could not export the manifest.'));
   };
 
   const handleLightroomHandoff = async () => {
@@ -264,10 +286,13 @@ export function ImportSummary() {
       void openPath(existingDir);
       return;
     }
+    setOpenError(null);
     setHandoffBusy(true);
     try {
       const handoff = await window.electronAPI.exportLightroomHandoff(files);
       if (handoff?.outputDir) void openPath(handoff.outputDir);
+    } catch (error) {
+      setOpenError(error instanceof Error ? error.message : 'Could not export the Lightroom handoff.');
     } finally {
       setHandoffBusy(false);
     }
@@ -280,217 +305,95 @@ export function ImportSummary() {
     .filter((item) => (item.status === 'imported' || item.status === 'verified') && (item.destFullPath || item.backupFullPath))
     .slice(0, 6);
   const reportDetails = [
-    `${importResult.imported} imported`,
+    summary.previewOnly ? `${summary.plannedCount} planned, no files copied` : `${summary.newCopies} imported`,
     summary.skippedSummary.reportLabel,
     summary.verificationLabel,
     formatSize(importResult.totalBytes),
     formatDuration(importResult.durationMs),
   ];
 
+  const secondary = 'rounded-md border border-border bg-surface px-3 py-2 text-sm text-text hover:bg-surface-raised focus-visible:outline-accent disabled:opacity-50';
+  const retryable = importFailedPaths.length > 0
+    || (importResult.ledgerItems ?? []).some((item) => item.status === 'failed' || item.status === 'pending');
+  const backupLabel = summary.backupPlannedCount === undefined ? 'No backup record'
+    : summary.backupPlannedCount === 0 ? 'No backup paths recorded'
+    : countLabel(summary.backupPlannedCount, 'planned backup path');
+  const primary = summary.previewOnly ? { label: 'Back to workspace', action: handleDismiss }
+    : retryable
+    ? { label: 'Retry failed or pending files', action: handleRetry }
+    : destination
+      ? { label: 'Open destination', action: handleOpenDestination }
+      : { label: 'Back to workspace', action: handleDismiss };
   return (
-    <div className="fixed inset-0 z-50 bg-surface-overlay flex items-center justify-center">
-      <div
-        className="bg-surface-alt rounded-lg border border-border p-8 max-w-lg w-full mx-4 shadow-2xl"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="import-summary-title"
-        aria-describedby="import-summary-report"
-      >
-        <div className="mb-6">
-          <p className={`text-xs font-semibold uppercase tracking-wider ${summary.outcomeTone === 'complete' ? 'text-emerald-400' : 'text-yellow-400'}`}>
-            {summary.issueCount > 0 ? 'Review needed' : 'Verified handoff'}
-          </p>
-          <h2 id="import-summary-title" className="mt-1 text-lg font-medium text-text">{summary.outcomeTitle}</h2>
-          <p id="import-summary-report" className="mt-2 text-sm text-text-secondary">{summary.outcomeMessage}</p>
-        </div>
-
-        <div className="mb-6 rounded border border-border bg-surface-raised px-3 py-2">
-          <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wider">Import report</h3>
-          <p className="mt-1 text-sm text-text">{reportDetails.join(' · ')}</p>
-          <p className="mt-1 text-xs text-text-muted">{summary.recoveryMessage}</p>
-        </div>
-
-        <div className="mb-6 rounded border border-border bg-surface px-3 py-2">
-          <div className="flex items-center justify-between gap-3">
-            <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wider">Review to import</h3>
-            <span className="shrink-0 rounded bg-surface-raised px-2 py-0.5 text-[10px] font-medium text-text-secondary">
-              {flowSummary.sourceLabel}
-            </span>
+    <dialog ref={dialogRef} onCancel={(event) => { event.preventDefault(); handleDismiss(); }}
+      aria-labelledby="import-summary-title" aria-describedby="import-summary-report"
+      className="m-auto max-w-2xl max-h-[90vh] overflow-hidden rounded-xl border border-border bg-surface-alt p-0 text-text shadow-2xl backdrop:bg-black/60"
+      style={{ width: 'min(42rem, calc(100vw - 2rem))' }}>
+      <div className="flex max-h-[90vh] flex-col">
+        <div className="min-h-0 overflow-y-auto p-5 sm:p-7">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs font-semibold uppercase tracking-widest text-text-muted">Keptra / Transfer report</span>
+            <span className={`rounded-full border border-border px-2.5 py-1 text-xs font-medium ${summary.issueCount ? 'text-orange-800 dark:text-orange-300' : 'text-text-secondary'}`}>{summary.transferLabel}</span>
           </div>
-          <p className="mt-1 text-xs text-text-secondary">{flowSummary.sourceMessage}</p>
-          <p className={`mt-1 text-xs ${summary.issueCount > 0 ? 'text-orange-200' : 'text-text-muted'}`}>
-            Next: {flowSummary.nextStep}
-          </p>
-        </div>
+          <h2 id="import-summary-title" tabIndex={-1} autoFocus className="text-2xl font-semibold tracking-tight">{summary.outcomeTitle}</h2>
+          <p id="import-summary-report" className="mt-1 text-sm text-text-secondary">{summary.outcomeMessage}</p>
 
-        <div className="space-y-3 mb-6">
-          <div className="flex justify-between text-sm">
-            <span className="text-text-secondary">Imported</span>
-            <span className="text-green-400 font-mono font-medium">{importResult.imported}</span>
-          </div>
-          {importResult.skipped > 0 && (
-            <div>
-              <div className="flex justify-between text-sm">
-                <span className="text-text-secondary">Skipped</span>
-                <span className="text-yellow-400 font-mono">{importResult.skipped}</span>
-              </div>
-              {summary.skippedSummary.detail && (
-                <p className="mt-0.5 text-xs text-text-muted">{summary.skippedSummary.detail}</p>
-              )}
-            </div>
-          )}
-          {typeof importResult.verified === 'number' && (
-            <div className="flex justify-between text-sm">
-              <span className="text-text-secondary">Verified</span>
-              <span className="text-emerald-400 font-mono">{importResult.verified}</span>
-            </div>
-          )}
-          {typeof importResult.checksumVerified === 'number' && importResult.checksumVerified > 0 && (
-            <div className="flex justify-between text-sm">
-              <span className="text-text-secondary">Checksum verified</span>
-              <span className="text-emerald-400 font-mono">{importResult.checksumVerified}</span>
-            </div>
-          )}
-          {importResult.errors.length > 0 && (
-            <div className="flex justify-between text-sm">
-              <span className="text-text-secondary">Errors</span>
-              <span className="text-red-400 font-mono">{importResult.errors.length}</span>
-            </div>
-          )}
-          {importResult.importLogCsvPath && (
-            <div className="flex justify-between gap-3 text-sm">
-              <span className="text-text-secondary">Import log</span>
-              <span className="truncate text-right font-mono text-text" title={importResult.importLogCsvPath}>
-                {importResult.importLogCsvPath.split(/[/\\]/).pop()}
-              </span>
-            </div>
-          )}
-          {summary.pendingCount > 0 && (
-            <div className="flex justify-between text-sm">
-              <span className="text-text-secondary">Pending retry</span>
-              <span className="text-orange-300 font-mono">{summary.pendingCount}</span>
-            </div>
-          )}
-          <div className="flex justify-between text-sm">
-            <span className="text-text-secondary">Total size</span>
-            <span className="text-text font-mono">{formatSize(importResult.totalBytes)}</span>
-          </div>
-          <div className="flex justify-between text-sm">
-            <span className="text-text-secondary">Duration</span>
-            <span className="text-text font-mono">{formatDuration(importResult.durationMs)}</span>
-          </div>
-          {importResult.totalBytes > 0 && importResult.durationMs > 500 && (
-            <div className="flex justify-between text-sm">
-              <span className="text-text-secondary">Avg speed</span>
-              <span className="text-text font-mono">
-                {formatSpeed(Math.round(importResult.totalBytes / (importResult.durationMs / 1000)))}
-              </span>
-            </div>
-          )}
-        </div>
-
-        {/* Error list */}
-        {openError && (
-          <div className="mb-4 rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">
-            {openError}
-          </div>
-        )}
-
-        {importedOutputs.length > 0 && (
-          <div className="mb-6 max-h-36 overflow-y-auto rounded border border-border bg-surface px-3 py-2">
-            <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">Imported outputs</h3>
-            <div className="space-y-1">
-              {importedOutputs.map((item) => {
-                const target = item.destFullPath ?? item.backupFullPath;
-                return (
-                  <button
-                    key={`${item.sourcePath}-${target}`}
-                    type="button"
-                    onClick={() => { void openPath(target); }}
-                    className="block w-full truncate rounded px-1 py-0.5 text-left text-xs text-text-secondary hover:bg-surface-raised hover:text-text"
-                    title={target}
-                  >
-                    {item.name}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* Error list */}
-        {displayedIssues.length > 0 && (
-          <div className="mb-6 max-h-32 overflow-y-auto">
-            <h3 className="text-xs font-semibold text-red-400 uppercase tracking-wider mb-2">Needs recovery</h3>
-            {displayedIssues.map((err, i) => (
-              <div key={i} className="text-xs text-text-secondary py-0.5 truncate" title={`${err.file}: ${err.error}`}>
-                <span className="text-text-secondary">{err.file}</span>: {err.error}
+          <dl className="my-5 grid grid-cols-3 divide-x divide-border rounded-lg border border-border bg-surface">
+            {[
+              [summary.previewOnly ? 'Planned' : 'New copies', summary.previewOnly ? summary.plannedCount : summary.newCopies], ['Skipped', importResult.skipped], ['Issues', summary.issueCount],
+            ].map(([label, value]) => (
+              <div key={label} className="px-3 py-3 sm:px-4">
+                <dt className="text-xs text-text-secondary">{label}</dt>
+                <dd className="mt-1 text-2xl font-semibold tabular-nums">{value}</dd>
               </div>
             ))}
-          </div>
-        )}
-
-        {/* Actions */}
-        <div className="flex gap-3 flex-wrap">
-          <button
-            onClick={handleOpenDestination}
-            className="flex-1 min-w-[9rem] py-2 rounded text-sm bg-accent hover:bg-accent-hover text-white font-medium transition-colors"
-          >
-            Open Destination
-          </button>
-          <button
-            onClick={() => { void handleLightroomHandoff(); }}
-            className="flex-1 min-w-[9rem] py-2 rounded text-sm bg-surface-raised hover:bg-blue-500/10 text-blue-300 transition-colors"
-            disabled={handoffBusy}
-            title="Open or export Keptra collection helper manifests for Lightroom Classic."
-          >
-            {handoffBusy ? 'Exporting...' : 'Lightroom Handoff'}
-          </button>
-          <button
-            onClick={handleCopyReport}
-            className="flex-1 min-w-[9rem] py-2 rounded text-sm bg-surface-raised hover:bg-accent/10 text-text transition-colors"
-          >
-            Copy Report
-          </button>
-          <button
-            onClick={handleExportManifest}
-            className="flex-1 min-w-[9rem] py-2 rounded text-sm bg-surface-raised hover:bg-accent/10 text-text transition-colors"
-          >
-            Export Manifest
-          </button>
-          {importResult.importLogCsvPath && (
-            <button
-              onClick={handleOpenImportLog}
-              className="flex-1 min-w-[9rem] py-2 rounded text-sm bg-surface-raised hover:bg-accent/10 text-text transition-colors"
-            >
-              Open Import Log
-            </button>
+          </dl>
+          <section aria-labelledby="verification-title" className="rounded-lg border border-border bg-surface p-4">
+            <h3 id="verification-title" className="mb-2 text-sm font-semibold">Verification and backup</h3>
+            <dl className="space-y-1.5 text-sm">
+              <div className="flex justify-between gap-3"><dt className="text-text-secondary">Post-copy checks</dt><dd>{summary.verifiedCount} / {summary.newCopies} new copies</dd></div>
+              <div className="flex justify-between gap-3"><dt className="text-text-secondary">Checksum matches</dt><dd>{summary.checksumCount} / {summary.newCopies} new copies</dd></div>
+              <div className="flex justify-between gap-3"><dt className="text-text-secondary">Backup plan</dt><dd className="text-right">{backupLabel}</dd></div>
+            </dl>
+            <p className="mt-3 border-t border-border pt-2 text-xs text-text-muted">Post-copy checks are not checksum matches. A planned backup path is not proof of a verified second copy.</p>
+          </section>
+          {displayedIssues.length > 0 && (
+            <section className="mt-4 rounded-lg border border-border bg-surface p-4" aria-labelledby="issues-title">
+              <h3 id="issues-title" className="text-sm font-semibold text-orange-800 dark:text-orange-300">Needs attention</h3>
+              <p className="my-1 text-xs text-text-secondary">{summary.recoveryMessage}</p>
+              <ul className="max-h-32 space-y-1 overflow-auto text-xs">
+                {displayedIssues.map((issue, index) => <li key={index} className="break-words">{issue.file}: {issue.error}</li>)}
+              </ul>
+              {importFailedPaths.length > 0 && <button type="button" className={`mt-2 ${secondary}`} onClick={handleViewFailures}>View affected files ({importFailedPaths.length})</button>}
+            </section>
           )}
-          {summary.issueCount > 0 && (
-            <button
-              onClick={handleRetry}
-              className="flex-1 min-w-[9rem] py-2 rounded text-sm bg-surface-raised hover:bg-red-500/10 text-red-300 transition-colors"
-            >
-              Retry Failed/Pending
-            </button>
-          )}
-          {importFailedPaths.length > 0 && (
-            <button
-              onClick={handleViewFailures}
-              className="flex-1 min-w-[9rem] py-2 rounded text-sm bg-surface-raised hover:bg-orange-500/10 text-orange-300 transition-colors"
-              title={`Filter the grid to the ${importFailedPaths.length} source ${importFailedPaths.length === 1 ? 'file' : 'files'} that failed or are pending retry.`}
-            >
-              View Failures ({importFailedPaths.length})
-            </button>
-          )}
-          <button
-            onClick={handleDismiss}
-            className="flex-1 min-w-[9rem] py-2 rounded text-sm bg-surface-raised hover:bg-accent/10 text-text transition-colors"
-          >
-            Done
-          </button>
+          <details className="mt-4 rounded-lg border border-border bg-surface p-4 text-sm">
+            <summary className="cursor-pointer font-medium">Transfer details and exports</summary>
+            <p className="mt-3 text-text-secondary">{flowSummary.sourceLabel}: {flowSummary.sourceMessage}</p>
+            <p className="mt-1 text-text-secondary">{formatSize(importResult.totalBytes)} · {formatDuration(importResult.durationMs)}
+              {importResult.totalBytes > 0 && importResult.durationMs > 500 && ` · ${formatSpeed(Math.round(importResult.totalBytes / (importResult.durationMs / 1000)))}`}</p>
+            {summary.skippedSummary.detail && <p className="mt-1 text-text-secondary">Skipped: {summary.skippedSummary.detail}</p>}
+            {destination && <p className="mt-2 break-all text-xs text-text-muted">Destination: {destination}</p>}
+            {importResult.importLogCsvPath && <p className="break-all text-xs text-text-muted">Log: {importResult.importLogCsvPath}</p>}
+            {importedOutputs.length > 0 && <div className="mt-3">
+              <h3 className="text-xs font-semibold">Sample outputs</h3>
+              {importedOutputs.map((item) => <button key={item.sourcePath} className="block max-w-full truncate py-1 text-left text-sm text-text-secondary underline" onClick={() => { void openPath(item.destFullPath ?? item.backupFullPath); }}>{item.name}</button>)}
+            </div>}
+            <div className="mt-3 flex flex-wrap gap-2">
+              {retryable && destination && <button className={secondary} onClick={handleOpenDestination}>Open destination</button>}
+              {!summary.previewOnly && <button className={secondary} disabled={handoffBusy} onClick={() => { void handleLightroomHandoff(); }}>{handoffBusy ? 'Exporting…' : 'Lightroom handoff'}</button>}
+              <button className={secondary} onClick={handleCopyReport}>{copied ? 'Report copied' : 'Copy report'}</button>
+              <button className={secondary} onClick={handleExportManifest}>Export manifest</button>
+              {importResult.importLogCsvPath && <button className={secondary} onClick={handleOpenImportLog}>Open import log</button>}
+            </div>
+          </details>
+          {openError && <p role="alert" className="mt-3 text-sm text-red-700 dark:text-red-400">{openError}</p>}
         </div>
+        <footer className="flex flex-wrap items-center justify-end gap-2 border-t border-border bg-surface px-5 py-3">
+          {primary.action !== handleDismiss && <button className={secondary} onClick={handleDismiss}>Done</button>}
+          <button className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover" onClick={primary.action}>{primary.label}</button>
+        </footer>
       </div>
-    </div>
+    </dialog>
   );
 }

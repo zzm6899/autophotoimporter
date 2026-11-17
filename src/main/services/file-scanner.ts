@@ -30,6 +30,8 @@ const RAW_PRIORITY_EXTENSIONS = new Set([
   '.arw', '.srf', '.sr2',
   '.raf', '.orf', '.rw2', '.pef', '.srw', '.rwl',
   '.3fr', '.fff', '.gpr', '.mrw', '.erf',
+  '.dcr', '.kdc', '.k25', '.mos', '.mef', '.mdc', '.qtk', '.cap', '.eip',
+  '.pxn', '.r3d', '.ari', '.braw', '.cine', '.raw',
   '.dng',
 ]);
 
@@ -38,6 +40,8 @@ export interface FileScanDiagnostics {
   hiddenOrSystemEntriesSkipped: number;
   inaccessibleDirectories: number;
   statFailures: number;
+  ratedFiles: number;
+  protectedFiles: number;
 }
 
 export interface FileScanOptions {
@@ -166,6 +170,8 @@ export async function scanFiles(
     hiddenOrSystemEntriesSkipped: 0,
     inaccessibleDirectories: 0,
     statFailures: 0,
+    ratedFiles: 0,
+    protectedFiles: 0,
   };
   await walkDirectory(sourcePath, allFiles, signal, diagnostics);
   diagnostics.filesFound = allFiles.length;
@@ -185,8 +191,13 @@ export async function scanFiles(
     );
     if (signal.aborted) { job.cancel(); if (currentJob === job) currentJob = null; return 0; }
     onBatch(enriched);
+    for (const file of enriched) {
+      if ((file.rating ?? 0) > 0) diagnostics.ratedFiles++;
+      if (file.isProtected) diagnostics.protectedFiles++;
+    }
     job.progress({ current: Math.min(i + BATCH_SIZE, allFiles.length), total: allFiles.length, percent: allFiles.length ? Math.round(((i + BATCH_SIZE) / allFiles.length) * 100) : 0 });
   }
+  options?.onDiagnostics?.({ ...diagnostics });
 
   // Thumbnails load in the background — don't block scan completion.
   // Use a dedicated AbortController so a subsequent scanFiles call can cancel

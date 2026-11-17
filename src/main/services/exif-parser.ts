@@ -1,5 +1,6 @@
 import exifr, { Exifr } from 'exifr';
-import { stat, readFile, mkdir, open as fsOpen, writeFile, unlink } from 'node:fs/promises';
+import { ExifTool, exiftoolPath } from 'exiftool-vendored';
+import { stat, access, readFile, mkdir, open as fsOpen, writeFile, unlink } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -11,6 +12,20 @@ import { detectPhotographerFromFilename, resolvePattern, VIDEO_EXTENSIONS } from
 import { computeEV100 } from '../../shared/exposure';
 
 const execFileAsync = promisify(execFile);
+
+const exifTool = new ExifTool({
+  // Electron's packaged app runs from an ASAR archive, so point the helper at
+  // the copy shipped as an extra resource. Development falls back to the
+  // package's normal vendored binary.
+  exiftoolPath: async () => {
+    if (app.isPackaged) {
+      const packageName = process.platform === 'win32' ? 'exiftool-vendored.exe' : 'exiftool-vendored.pl';
+      const binaryName = process.platform === 'win32' ? 'exiftool.exe' : 'exiftool';
+      return path.join(process.resourcesPath, packageName, 'bin', binaryName);
+    }
+    return exiftoolPath();
+  },
+});
 
 // Lazy-loaded sharp (libvips). Decodes and resizes on libuv worker threads
 // instead of the main process event loop, and replaces per-file process
@@ -145,6 +160,8 @@ export const EXIFR_SUPPORTED = new Set([
   '.mrw',
   // Epson
   '.erf',
+  '.dcr', '.kdc', '.k25', '.mos', '.mef', '.mdc', '.qtk', '.cap', '.eip',
+  '.pxn', '.r3d', '.ari', '.braw', '.cine', '.raw',
 ]);
 
 const RAW_EXTENSIONS = new Set([
@@ -153,6 +170,8 @@ const RAW_EXTENSIONS = new Set([
   '.arw', '.srf', '.sr2',
   '.raf', '.orf', '.rw2', '.pef', '.srw', '.rwl',
   '.x3f', '.3fr', '.fff', '.iiq', '.dng', '.gpr', '.mrw', '.erf',
+  '.dcr', '.kdc', '.k25', '.mos', '.mef', '.mdc', '.qtk', '.cap', '.eip',
+  '.pxn', '.r3d', '.ari', '.braw', '.cine', '.raw',
 ]);
 
 const THUMB_WIDTH = 320;
@@ -181,6 +200,8 @@ type CachedThumbnailPayload =
 // avoid repeating source-drive stat/hash/EXIF work for every frame.
 const resolvedThumbnailPayloads = new Map<string, CachedThumbnailPayload>();
 const RESOLVED_THUMBNAIL_MAX = 2000;
+const exifToolFlagCache = new Map<string, Promise<Record<string, unknown> | undefined>>();
+const EXIFTOOL_FLAG_CACHE_MAX = 5000;
 
 function rememberResolvedThumbnail(filePath: string, payload: CachedThumbnailPayload): void {
   if (resolvedThumbnailPayloads.has(filePath)) resolvedThumbnailPayloads.delete(filePath);
@@ -266,10 +287,108 @@ export function resetRawPreviewCacheDiagnostics(): void {
 async function isFileProtected(filePath: string): Promise<boolean> {
   try {
     const s = await stat(filePath);
-    return (s.mode & fsConstants.S_IWUSR) === 0;
+    if ((s.mode & fsConstants.S_IWUSR) === 0) return true;
+
+    // On Windows, camera "protected" images are commonly exposed as the DOS
+    // read-only attribute rather than a POSIX permission bit. W_OK is the
+    // native access check and correctly catches that attribute without
+    // spawning a process for every file in a card scan.
+    if (process.platform === 'win32') {
+      try {
+        await access(filePath, fsConstants.W_OK);
+      } catch {
+        return true;
+      }
+    }
+    return false;
   } catch {
     return false;
   }
+}
+
+function metadataValue(exif: Record<string, unknown>, names: string[]): unknown {
+  for (const name of names) {
+    const exact = exif[name];
+    if (exact !== undefined && exact !== null) return exact;
+    const key = Object.keys(exif).find((candidate) => candidate.toLowerCase() === name.toLowerCase());
+    if (key && exif[key] !== undefined && exif[key] !== null) return exif[key];
+  }
+  return undefined;
+}
+
+function metadataEntriesMatching(exif: Record<string, unknown>, pattern: RegExp): Array<[string, unknown]> {
+  return Object.entries(exif).filter(([key, value]) => pattern.test(key) && value !== undefined && value !== null);
+}
+
+function normalizeCameraRating(value: unknown, percent = false): number | undefined {
+  const numeric = numberFromExif(value) ?? (typeof value === 'string'
+    ? numberFromExif(value.match(/-?\d+(?:\.\d+)?/)?.[0])
+    : undefined);
+  if (numeric === undefined) return undefined;
+  const stars = percent || numeric > 5 ? Math.round(numeric / 20) : Math.round(numeric);
+  return Math.max(0, Math.min(5, stars));
+}
+
+function metadataBoolean(value: unknown): boolean {
+  if (value === true) return true;
+  if (typeof value === 'number') return Number.isFinite(value) && value !== 0;
+  if (typeof value !== 'string') return false;
+  return /^(true|yes|on|locked?|protected|protect(ed|ion)?|read[- ]?only|1)$/i.test(value.trim());
+}
+
+async function readExifToolMetadata(filePath: string): Promise<Record<string, unknown> | undefined> {
+  const fileStat = await stat(filePath).catch(() => undefined);
+  const cacheKey = fileStat ? `${filePath}|${fileStat.size}|${fileStat.mtimeMs}` : filePath;
+  const cached = exifToolFlagCache.get(cacheKey);
+  if (cached) return cached;
+  const task = (async () => {
+    try {
+      // Do not use ExifTool's -fast mode here: some proprietary maker-note
+      // protection fields are only reached during a complete metadata walk.
+      const tags = await exifTool.read<Record<string, unknown>>(filePath, { readArgs: [] });
+      return tags;
+    } catch {
+      return undefined;
+    }
+  })();
+  exifToolFlagCache.set(cacheKey, task);
+  if (exifToolFlagCache.size > EXIFTOOL_FLAG_CACHE_MAX) {
+    const oldest = exifToolFlagCache.keys().next().value as string | undefined;
+    if (oldest) exifToolFlagCache.delete(oldest);
+  }
+  return task;
+}
+
+function applyFlagMetadata(
+  exif: Record<string, unknown>,
+  currentRating: number | undefined,
+  currentProtected: boolean,
+): { rating: number | undefined; isProtected: boolean } {
+  let rating = currentRating;
+  let isProtected = currentProtected;
+  if (rating === undefined) {
+    rating = normalizeCameraRating(metadataValue(exif,
+      ['Rating', 'RatingStars', 'RatingValue', 'ImageRating', 'UserRating']));
+  }
+  if (rating === undefined) {
+    rating = normalizeCameraRating(metadataValue(exif, ['RatingPercent']), true);
+  }
+  if (rating === undefined) {
+    const ratingEntry = metadataEntriesMatching(exif, /rating|stars?/i)
+      .find(([key]) => !/percent/i.test(key));
+    rating = normalizeCameraRating(ratingEntry?.[1]);
+  }
+  if (!isProtected) {
+    isProtected = [
+      'ProtectStatus', 'Protected', 'Protection', 'Protect', 'FileProtection',
+      'ImageProtection', 'LockStatus', 'Locked',
+    ].some((name) => metadataBoolean(metadataValue(exif, [name])));
+  }
+  if (!isProtected) {
+    isProtected = metadataEntriesMatching(exif, /(?:protect(?:ed|ion|status)?|(?:image|file)?lock(?:ed|status)?)$/i)
+      .some(([, value]) => metadataBoolean(value));
+  }
+  return { rating, isProtected };
 }
 
 export function normalizeExifOrientation(value: unknown): number | undefined {
@@ -378,12 +497,21 @@ export async function parseExifDate(
           'ISO', 'FNumber', 'ExposureTime', 'FocalLength',
           'Make', 'Model', 'LensModel',
           'Rating', 'RatingPercent', 'ProtectStatus',
+          'RatingStars', 'RatingValue', 'ImageRating', 'UserRating',
+          'Protected', 'Protection', 'Protect', 'FileProtection', 'ImageProtection', 'LockStatus', 'Locked',
           'latitude', 'longitude', 'GPSLatitude', 'GPSLongitude', 'GPSAltitude',
         ],
+        // Camera applications store these values in XMP and/or proprietary
+        // maker notes. Both readers are opt-in in Exifr; without them the
+        // same image can scan correctly on one camera and lose its flags on
+        // another.
+        xmp: true,
+        makerNote: true,
         reviveValues: true,
         gps: true,
       });
       if (exif) {
+        const exifRecord = exif as Record<string, unknown>;
         dateTaken = exif.DateTimeOriginal || exif.CreateDate || exif.ModifyDate || null;
         orientation = normalizeExifOrientation(exif.Orientation);
         if (typeof exif.ISO === 'number') iso = exif.ISO;
@@ -393,15 +521,21 @@ export async function parseExifDate(
         if (typeof exif.Make === 'string') cameraMake = exif.Make;
         if (typeof exif.Model === 'string') cameraModel = exif.Model;
         if (typeof exif.LensModel === 'string') lensModel = exif.LensModel;
-        if (typeof exif.Rating === 'number') rating = exif.Rating;
-        else if (typeof exif.RatingPercent === 'number') rating = Math.round(exif.RatingPercent / 20);
-        if (exif.ProtectStatus && exif.ProtectStatus !== 0 && exif.ProtectStatus !== 'Off') {
-          exifProtected = true;
-        }
+        ({ rating, isProtected: exifProtected } = applyFlagMetadata(exifRecord, rating, exifProtected));
         gps = gpsFromExif(exif as Record<string, unknown>);
       }
     } catch {
       // EXIF parse failed
+    }
+  }
+
+  // ExifTool carries the broadest maintained database of proprietary camera
+  // tags. Use it only when Exifr did not expose one of the two user flags so
+  // normal scans retain the fast in-process path for ordinary JPEGs.
+  if (file.type === 'photo' && (rating === undefined || !exifProtected)) {
+    const toolExif = await readExifToolMetadata(file.path);
+    if (toolExif) {
+      ({ rating, isProtected: exifProtected } = applyFlagMetadata(toolExif, rating, exifProtected));
     }
   }
 

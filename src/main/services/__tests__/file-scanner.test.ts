@@ -129,6 +129,8 @@ describe('scanFiles', () => {
       hiddenOrSystemEntriesSkipped: 1,
       inaccessibleDirectories: 0,
       statFailures: 1,
+      ratedFiles: 0,
+      protectedFiles: 0,
     });
   });
 

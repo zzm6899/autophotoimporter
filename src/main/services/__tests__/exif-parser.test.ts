@@ -48,8 +48,20 @@ vi.mock('exifr', () => ({
   })(),
 }));
 
+vi.mock('exiftool-vendored', () => {
+  const read = vi.fn(async () => ({} as Record<string, unknown>));
+  return {
+    exiftoolPath: vi.fn(async () => '/tmp/exiftool'),
+    ExifTool: class {
+      async read(): Promise<Record<string, unknown>> { return read(); }
+    },
+    __read: read,
+  };
+});
+
 vi.mock('node:fs/promises', () => ({
   stat: vi.fn(),
+  access: vi.fn(),
   readFile: vi.fn(),
   mkdir: vi.fn(),
   writeFile: vi.fn(),
@@ -71,12 +83,16 @@ vi.mock('electron', () => ({
 }));
 
 import exifr from 'exifr';
-import { stat, readFile, unlink } from 'node:fs/promises';
+import * as exiftoolVendored from 'exiftool-vendored';
+import { stat, access, readFile, unlink } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { resolvePattern } from '../../../shared/types';
 import { parseExifDate, extractEmbeddedThumbnail, generatePreview, generateThumbnail, getRawPreviewCacheDiagnostics, normalizeExifOrientation, readExifOrientation, resetRawPreviewCacheDiagnostics, setRawPreviewCache, setRawPreviewQuality } from '../exif-parser';
 
 const mockExifrParse = vi.mocked(exifr.parse);
+const mockExifToolRead = (exiftoolVendored as typeof exiftoolVendored & {
+  __read: ReturnType<typeof vi.fn>;
+}).__read;
 const mockExifrThumbnail = vi.mocked(exifr.thumbnail);
 const mockExifrInstances = (exifr as typeof exifr & {
   __instances: Array<{ file: { closeSpy: ReturnType<typeof vi.fn> } }>;
@@ -85,6 +101,7 @@ const mockExifrCloseHook = (exifr as typeof exifr & {
   __closeHook: ReturnType<typeof vi.fn>;
 }).__closeHook;
 const mockStat = vi.mocked(stat);
+const mockAccess = vi.mocked(access);
 const mockReadFile = vi.mocked(readFile);
 const mockUnlink = vi.mocked(unlink);
 const mockExecFile = vi.mocked(execFile);
@@ -92,6 +109,8 @@ const mockExecFile = vi.mocked(execFile);
 beforeEach(() => {
   mockExifrInstances.length = 0;
   mockExifrCloseHook.mockReset().mockResolvedValue(undefined);
+  mockAccess.mockResolvedValue(undefined);
+  mockExifToolRead.mockReset().mockResolvedValue({});
 });
 
 function makeFile(overrides: Partial<MediaFile> = {}): MediaFile {
@@ -233,6 +252,49 @@ describe('parseExifDate', () => {
     expect(result.cameraModel).toBe('EOS R5');
     expect(result.lensModel).toBe('RF 50mm F1.2L');
     expect(result.orientation).toBe(6);
+  });
+
+  it('reads XMP/maker-note ratings and protection flags across camera brands', async () => {
+    mockExifrParse.mockResolvedValue({
+      DateTimeOriginal: new Date(2024, 0, 1),
+      RatingPercent: '80',
+      Protection: 'Locked',
+    });
+
+    const result = await parseExifDate(makeFile());
+
+    expect(result.rating).toBe(4);
+    expect(result.isProtected).toBe(true);
+    expect(mockExifrParse).toHaveBeenCalledWith('/photos/IMG_001.jpg', expect.objectContaining({
+      xmp: true,
+      makerNote: true,
+    }));
+  });
+
+  it('falls back to unfamiliar manufacturer-specific tag names', async () => {
+    mockExifrParse.mockResolvedValue({
+      DateTimeOriginal: new Date(2024, 0, 1),
+      SomeNewBrandRating: '3 stars',
+      SomeNewBrandImageLock: 1,
+    });
+
+    const result = await parseExifDate(makeFile());
+
+    expect(result.rating).toBe(3);
+    expect(result.isProtected).toBe(true);
+  });
+
+  it('uses ExifTool when a proprietary flag is not decoded by Exifr', async () => {
+    mockExifrParse.mockResolvedValue(null);
+    mockExifToolRead.mockResolvedValue({
+      SonyImageRating: 5,
+      CanonImageProtection: 'Locked',
+    });
+
+    const result = await parseExifDate(makeFile({ path: '/photos/proprietary-fallback.jpg', name: 'proprietary-fallback.jpg' }));
+
+    expect(result.rating).toBe(5);
+    expect(result.isProtected).toBe(true);
   });
 
   it('normalizes text EXIF orientation values', async () => {

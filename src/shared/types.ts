@@ -828,6 +828,8 @@ export interface ImportProgress {
 }
 
 export interface ImportResult {
+  /** True only when this run finished its intended transfers without interruption. */
+  finishedTransfers?: boolean;
   imported: number;
   skipped: number;
   verified?: number;
@@ -1238,6 +1240,8 @@ export interface ScanDiagnostics {
   hiddenOrSystemEntriesSkipped: number;
   inaccessibleDirectories: number;
   statFailures: number;
+  ratedFiles: number;
+  protectedFiles: number;
   catalogDuplicatesMarked: number;
   staleEventsIgnored: number;
 }
@@ -1722,6 +1726,9 @@ export const PHOTO_EXTENSIONS = new Set([
   '.mrw',
   // Epson
   '.erf',
+  // Additional RAW / cinema formats recognized for metadata import.
+  '.dcr', '.kdc', '.k25', '.mos', '.mef', '.mdc', '.qtk', '.cap', '.eip',
+  '.pxn', '.r3d', '.ari', '.braw', '.cine', '.raw',
 ]);
 
 export const VIDEO_EXTENSIONS = new Set([

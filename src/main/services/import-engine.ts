@@ -1429,6 +1429,7 @@ export async function importFiles(
   const createdDirs = new Set<string>();
   const destinationReservations: DestinationReservations = new Set();
   let processedCount = 0;
+  let existingBackupEncountered = false;
   const ftpUploads: Array<{ localPath: string; remoteRelPath: string; fileName: string; size: number }> = [];
   const ftpMirrorActive =
     !!config.ftpDestEnabled &&
@@ -1772,7 +1773,11 @@ export async function importFiles(
           }
         } catch (mirrorErr: unknown) {
           const e = mirrorErr as NodeJS.ErrnoException;
-          if (e.code !== 'EEXIST') {
+          if (e.code === 'EEXIST') {
+            // The primary may be repaired even when an earlier backup is present.
+            // That path alone is not evidence of a completed second copy in this run.
+            existingBackupEncountered = true;
+          } else {
             recordPostCopyError('backup', e.message || 'Backup copy failed');
           }
         }
@@ -2024,6 +2029,8 @@ export async function importFiles(
   }
 
   return {
+    finishedTransfers: !config.dryRun && !signal.aborted && processedCount === files.length
+      && !existingBackupEncountered && (!config.ftpDestEnabled || ftpMirrorActive),
     imported,
     skipped,
     verified,

@@ -11,6 +11,7 @@ import { stripLocalFaceAndSubjectData } from '../shared/face-data';
 import { listVolumes, startWatching, stopWatching } from './services/volume-watcher';
 import { scanFiles, cancelScan, drainFileScannerBackground, pauseScan, resumeScan, type FileScanDiagnostics } from './services/file-scanner';
 import { importFiles, cancelImport, planImportFiles } from './services/import-engine';
+import { canAutoEjectAfterImport } from './services/auto-eject';
 import { writeLightroomHandoff } from './services/lightroom-handoff';
 import { ImportLedgerWriter, readLatestImportLedger as readLatestImportLedgerFile } from './services/import-ledger';
 import { isDuplicate } from './services/duplicate-detector';
@@ -2692,6 +2693,8 @@ export function registerIpcHandlers(): void {
       hiddenOrSystemEntriesSkipped: 0,
       inaccessibleDirectories: 0,
       statFailures: 0,
+      ratedFiles: 0,
+      protectedFiles: 0,
     };
     try {
       const total = await measurePerformance('scan.total', () => scanFiles(
@@ -2734,6 +2737,8 @@ export function registerIpcHandlers(): void {
         hiddenOrSystemEntriesSkipped: fileDiagnostics.hiddenOrSystemEntriesSkipped,
         inaccessibleDirectories: fileDiagnostics.inaccessibleDirectories,
         statFailures: fileDiagnostics.statFailures,
+        ratedFiles: fileDiagnostics.ratedFiles,
+        protectedFiles: fileDiagnostics.protectedFiles,
         catalogDuplicatesMarked,
         staleEventsIgnored: 0,
       };
@@ -2749,6 +2754,8 @@ export function registerIpcHandlers(): void {
         hiddenOrSystemEntriesSkipped: fileDiagnostics.hiddenOrSystemEntriesSkipped,
         inaccessibleDirectories: fileDiagnostics.inaccessibleDirectories,
         statFailures: fileDiagnostics.statFailures,
+        ratedFiles: fileDiagnostics.ratedFiles,
+        protectedFiles: fileDiagnostics.protectedFiles,
         catalogDuplicatesMarked: 0,
         staleEventsIgnored: 0,
       };
@@ -3230,7 +3237,7 @@ export function registerIpcHandlers(): void {
           return undefined;
         });
       await recordCatalogImport(config, result).catch((error) => log.warn('[catalog] import record failed', error));
-      if (config.autoEject && result.imported > 0 && config.sourcePath) {
+      if (canAutoEjectAfterImport(config, result)) {
         const eject = await ejectVolume(config.sourcePath);
         if (!eject.ok) {
           result.errors.push({
@@ -4494,8 +4501,9 @@ async function runAutoImport(volume: Volume, options: Omit<QueuedAutoImport, 'vo
       });
     await recordCatalogImport(importConfig, result).catch((error) => log.warn('[catalog] auto import record failed', error));
 
-    if (autoEject && result.imported > 0) {
-      void ejectVolume(volume.path);
+    if (canAutoEjectAfterImport(importConfig, result)) {
+      const eject = await ejectVolume(volume.path);
+      if (!eject.ok) result.errors.push({ file: 'source-eject', error: eject.error || 'Could not eject source volume' });
     }
     sendToRenderer(IPC.AUTO_IMPORT_COMPLETE, result);
   } catch (err) {
