@@ -1,6 +1,6 @@
 # Smoke Fixtures
 
-Tiny checked-in files used by benchmark and fixture-backed test scaffolding.
+Benchmarks and tests use these small files.
 
 Regenerate them with:
 
@@ -8,6 +8,5 @@ Regenerate them with:
 npm run fixtures:smoke
 ```
 
-These are intentionally minimal files so CI can verify filesystem,
-extension mix, benchmark output, image handling, and corrupt-file handling without large assets.
-Real camera RAW/HEIC fixtures should be added only when licensing and size are acceptable.
+The small files let CI check filesystem behavior, file extensions, benchmark output and how the app handles valid and corrupt images without large assets.
+Add real camera RAW or HEIC fixtures only if the license allows it and the files are small enough.

@@ -20,25 +20,19 @@
 
 ## Features
 
-- **Cross-platform** — macOS (DMG) and Windows (EXE installer) builds
-- **Auto-detect volumes** — Cameras and SD cards detected on mount, DCIM cards sorted first
-- **FTP source** — Pull images straight from Wi-Fi cameras or NAS via FTP / FTPS
-- **Protected-first ordering** — Files you locked in-camera or flagged read-only appear at the top for fast import
-- **Star ratings** — Read EXIF `Rating` / `RatingPercent` and set 0–5 stars with keyboard
-- **Quick-cull mode** — Detail view + auto-advance on rate; tear through a shoot in minutes
-- **Filters** — Protected / picked / rejected / unrated / duplicates
-- **Manifest export** — CSV of every scanned file (rating, pick state, camera, EXIF)
-- **EXIF metadata** — Date, camera model, lens, dimensions, ISO / aperture / shutter
-- **Folder patterns** — Organize imports by `YYYY/YYYY-MM-DD` or custom patterns
-- **Duplicate detection** — Skip files that already exist at the destination
-- **Pick / Reject workflow** — Flag keepers and rejects before importing
-- **Light & dark themes** — Follows system preference
+- Install on macOS from a DMG or Windows from an EXE.
+- Keptra detects cameras and SD cards as they mount and lists cards with DCIM folders first. It can also pull photos from Wi-Fi cameras or network storage over FTP or FTPS.
+- Files you locked in-camera or marked read-only appear first. Pick or reject photos before importing, or filter to protected files, picks, rejects, unrated photos or duplicates.
+- Keptra reads EXIF `Rating` / `RatingPercent`. Use the keyboard to set 0 to 5 stars. Quick-cull mode opens the detail view and advances when you rate a photo.
+- See EXIF data such as date, camera model, lens, dimensions, ISO, aperture and shutter speed. Export a CSV of all scanned files with ratings, picks, camera details and EXIF data.
+- Organize imports by `YYYY/YYYY-MM-DD` or your own pattern. Keptra skips files already at the destination.
+- The light and dark themes follow your system setting.
 
 ## Download
 
-**macOS** — download the matching Intel (`x64`) or Apple Silicon (`arm64`) `.dmg`, open it, then drag Keptra to Applications. Updates are manual DMG downloads until the signed/notarized updater path is finalized.
+**macOS:** Download the matching Intel (`x64`) or Apple Silicon (`arm64`) `.dmg`, open it, then drag Keptra to Applications. Download updates as DMGs until the signed and notarized updater is ready.
 
-**Windows** — download `Keptra-Setup.exe`. SmartScreen may warn on first run — click **More info → Run anyway**. Portable `.zip` builds are also attached to each release if you'd rather avoid the installer.
+**Windows:** Download `Keptra-Setup.exe`. If SmartScreen warns on first run, click **More info → Run anyway**. Each release also includes a portable `.zip` you can run without an installer.
 
 ## Keyboard Shortcuts
 
@@ -65,21 +59,21 @@ For cameras and NAS devices that expose an FTP server (Canon EOS / Nikon WT / So
 - User, password
 - Remote path (commonly `/DCIM`)
 
-**Test** probes the connection and counts media. **Mirror & Scan** downloads everything under the remote path into a staging directory inside the app's user data folder and runs the normal scan over it — so EXIF, duplicate detection, picks and imports all behave the same as a local card. Re-mirrors are incremental; files already present at the same size are skipped.
+**Test** checks the connection and counts media files. **Mirror & Scan** downloads everything under the remote path to a staging directory inside the app's user data folder. The scan handles EXIF, duplicates, picks and imports the same way it does for a local card. Subsequent mirrors skip files already present at the same size.
 
 ## Protected / locked files first
 
-Any file that is read-only at the filesystem level (e.g. you used the camera's in-body "Protect" button, or your card is physically write-locked) is surfaced at the top of the grid with a green **PROTECTED** badge. Pair with the **Protected** filter for a clean keepers-only view.
+Keptra shows files that are read-only at the filesystem level at the top of the grid with a green **PROTECTED** badge. This can happen when you use the camera's "Protect" button or physically write-lock the card. Use the **Protected** filter to see only those files.
 
 ## AI acceleration and diagnostics
 
-Keptra runs face, person, eye-detail, and similarity analysis locally through ONNX Runtime. The shipped execution providers are deliberately explicit:
+Keptra runs face, person, eye-detail and similarity analysis locally through ONNX Runtime. The execution provider depends on the platform and model.
 
 - **Windows:** the face detector and face embedder benchmark DirectML against CPU at startup and keep DirectML only when it is stable and measurably faster. Person detection remains on CPU.
 - **macOS and Linux:** the current build uses CPU inference. CoreML and CUDA are not shipped execution providers yet.
-- A failed model or provider run is returned as a retryable per-file error; it is not cached as a valid "no subject found" result.
+- When a model or provider fails, Keptra reports an error for that file and lets you retry. It does not cache the failure as a valid "no subject found" result.
 
-Open **Settings → Workflow → Performance → Diagnose GPU** to see the provider, model-load time, warm inference timing, and fallback reason for this machine. Performance depends heavily on RAW preview size, storage, subject count, and hardware, so Keptra does not publish unverified per-photo timing claims.
+Open **Settings → Workflow → Performance → Diagnose GPU** to see the provider, model-load time, warm inference timing and fallback reason on your machine. RAW preview size, storage, subject count and hardware all affect those timings. Keptra doesn't publish per-photo timings it hasn't verified.
 
 ## Compatibility & Support Matrix
 
@@ -142,7 +136,7 @@ Unsigned macOS DMG/ZIP artifacts can still be built without Apple secrets. They 
 
 ### Windows one-shot setup
 
-Prefer clicking over typing? Double-click `scripts\setup-windows.cmd` (or run it from a Command Prompt in the repo root). It verifies Node 20+, installs dependencies, and shows a menu for dev / build / install-only. You can also pass the action directly:
+Double-click `scripts\setup-windows.cmd` or run it from a Command Prompt in the repo root. It checks for Node 20+, installs dependencies and lets you choose dev, build or install-only. You can also pass the action directly:
 
 ```cmd
 scripts\setup-windows.cmd dev      :: install + npm start (dev mode)
@@ -217,9 +211,8 @@ Without a valid license, the app stays in browse/review mode and importing is bl
 ## License
 
 MIT
-"# autophotoimporter"
-"# autophotoimporter"
-# Hosted Updates
+
+## Hosted Updates
 
 For the TrueNAS-hosted update/admin stack:
 
@@ -249,7 +242,7 @@ Public endpoints:
 - `https://admin.keptra.z2hs.au`
 - `https://updates.keptra.z2hs.au`
 
-If you prefer the TrueNAS Apps UI instead of shell-driven `docker compose`, use:
+To set up the stack in the TrueNAS Apps UI, use this file instead of running `docker compose`:
 
 - [deploy/truenas/custom-app.yaml](deploy/truenas/custom-app.yaml)
 
@@ -276,6 +269,6 @@ $env:UPDATE_ADMIN_API_TOKEN="your-admin-api-token"
 npm run update:publish -- --endpoint https://admin.keptra.z2hs.au --platform windows --version 1.1.11 --file .\out\make\squirrel.windows\x64\Keptra-Setup.exe --release-name "Keptra 1.1.11" --release-url https://keptra.z2hs.au/releases/1.1.11 --notes "Manual release import" --rollout live
 ```
 
-That helper uploads the installer to the hosted admin/update service and registers the release record there. GitHub Actions does the same thing automatically once `UPDATE_ADMIN_ENDPOINT` and `UPDATE_ADMIN_API_TOKEN` are configured as repo secrets.
+The helper uploads the installer to the hosted admin and update service, then registers the release. GitHub Actions does this automatically when you set `UPDATE_ADMIN_ENDPOINT` and `UPDATE_ADMIN_API_TOKEN` as repo secrets.
 
 If the hosted admin container has both `public.pem` and `private.pem` mounted, the Licenses page can also generate customer license keys directly in the web UI.

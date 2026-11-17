@@ -10,17 +10,11 @@ The Node service listens on `0.0.0.0:5071` inside the app container, and the rev
 
 ## TrueNAS Apps UI
 
-If you want this to show up in the TrueNAS Apps UI as a Custom App, use:
+Use the following file to install the stack as a Custom App in the TrueNAS Apps UI:
 
 - [custom-app.yaml](deploy/truenas/custom-app.yaml)
 
-Recommended image:
-
-- `ghcr.io/zzm6899/photo-importer-update-admin:latest`
-
-This image is published from the private GitHub repo by:
-
-- `publish-update-admin-image.yml` (private workflow in release infra repo)
+The recommended image is `ghcr.io/zzm6899/photo-importer-update-admin:latest`. The private release infrastructure repo publishes it through `publish-update-admin-image.yml`.
 
 In TrueNAS:
 
@@ -93,11 +87,11 @@ node scripts/publish-update-release.mjs \
   --rollout live
 ```
 
-If your repo is private, you can also configure the admin panel to inspect the latest GitHub release from TrueNAS itself by setting:
+For a private repo, set these variables so the admin panel can read the latest GitHub release from TrueNAS:
 
 - `GITHUB_RELEASE_OWNER`
 - `GITHUB_RELEASE_REPO`
 - `GITHUB_RELEASE_TOKEN`
 - `GITHUB_API_BASE_URL` (optional)
 
-Those values are now exposed in [custom-app.yaml](deploy/truenas/custom-app.yaml), so they stay easy to edit from the TrueNAS Apps UI.
+These variables are in [custom-app.yaml](deploy/truenas/custom-app.yaml) and can be edited in the TrueNAS Apps UI.

@@ -3,15 +3,15 @@
 Use these entry points:
 
 - `license-tools.cmd`
-  Windows interactive menu for status, keypair creation, customer license generation, and build.
+  Opens the Windows menu to check status, create signing keys, generate customer licenses or build the app.
 - `license-console.mjs`
-  Console command runner if you prefer typed commands.
+  Runs the license tools from the command line.
 - `publish-update-release.mjs`
-  Upload a built Windows/macOS release into the hosted update admin service and register it.
+  Uploads and registers a Windows or macOS build with the hosted update service.
 - `release-manifest.mjs`
   Generate `artifacts/release/release-readiness-manifest.json` from package metadata, git state, smoke manifests, benchmark summaries, support matrix coverage, release artifacts, and key commands.
 - `setup-windows.cmd`
-  Dependency install and dev/build helper.
+  Installs dependencies and starts the app in development mode or builds it.
 
 Typical license flow:
 
