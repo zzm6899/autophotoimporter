@@ -206,6 +206,9 @@ jobs:
           cache: npm
 
       - run: npm ci
+        env:
+          # The release job uploads prebuilt artifacts and does not use CUDA.
+          ONNXRUNTIME_NODE_INSTALL_CUDA: skip
 
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
